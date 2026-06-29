@@ -1,0 +1,9 @@
+.DS_Store
+
+# Reference projects and old app snapshots used for analysis only.
+explore/
+
+# Runtime data produced by the rewritten backend.
+backend/data/
+backend/amdl-api
+

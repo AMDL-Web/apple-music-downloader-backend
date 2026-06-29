@@ -1,0 +1,47 @@
+server:
+  listen: "127.0.0.1:18080"
+
+database:
+  path: "data/amdl.db"
+
+wrapper:
+  address: "192.168.3.42:8080"
+  insecure: true
+  timeout_seconds: 30
+
+catalog:
+  default_storefront: "us"
+  language: "en-US"
+  authorization_token: ""
+  token_cache_ttl_hours: 12
+
+download:
+  quality_priority: ["alac", "aac"]
+  max_running_jobs: 2
+  max_parallel_tracks: 3
+  retries: 3
+  downloads_dir: "data/downloads"
+  temp_dir: "data/tmp"
+  cover_size: "5000x5000"
+  cover_format: "jpg"
+  embed_cover: true
+  embed_lyrics: true
+  save_lyrics_file: false
+  lyrics_format: "lrc"
+  artist_folder_format: "{ArtistName}"
+  album_folder_format: "{AlbumName}"
+  song_file_format: "{TrackNumber:02d}. {SongName}"
+  playlist_folder_format: "{PlaylistName}"
+  playlist_song_file_format: "{SongNumer:02d}. {ArtistName} - {SongName}"
+  alac_max_sample_rate: 192000
+  alac_max_bit_depth: 24
+  codec_alternative: true
+  check_integrity: true
+
+tools:
+  ffmpeg: "ffmpeg"
+  gpac: "gpac"
+  mp4box: "MP4Box"
+  mp4extract: "mp4extract"
+  mp4edit: "mp4edit"
+
