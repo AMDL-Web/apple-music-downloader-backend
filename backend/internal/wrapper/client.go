@@ -113,7 +113,10 @@ func (c *Client) License(ctx context.Context, adamID, challenge, uri string) (st
 	return resp.GetData().GetLicense(), nil
 }
 
-func (c *Client) Decrypt(ctx context.Context, adamID string, samples []DecryptSample) ([][]byte, error) {
+// Decrypt sends all samples to the wrapper for decryption and returns them in
+// order. onSample, if non-nil, is called after each sample is received with
+// (receivedCount, totalCount) so callers can track decryption progress.
+func (c *Client) Decrypt(ctx context.Context, adamID string, samples []DecryptSample, onSample func(received, total int)) ([][]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout())
 	defer cancel()
 	stream, err := c.api.Decrypt(ctx)
@@ -153,6 +156,9 @@ func (c *Client) Decrypt(ctx context.Context, adamID string, samples []DecryptSa
 		}
 		out[idx] = resp.GetData().GetSample()
 		received++
+		if onSample != nil {
+			onSample(received, len(samples))
+		}
 	}
 	if err := <-sendErr; err != nil {
 		return nil, err
@@ -162,3 +168,4 @@ func (c *Client) Decrypt(ctx context.Context, adamID string, samples []DecryptSa
 	}
 	return out, nil
 }
+

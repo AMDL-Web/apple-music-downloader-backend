@@ -81,6 +81,7 @@ type songAttributes struct {
 	ISRC                string            `json:"isrc"`
 	ContentRating       string            `json:"contentRating"`
 	HasTimeSyncedLyrics bool              `json:"hasTimeSyncedLyrics"`
+	HasLyrics           bool              `json:"hasLyrics"`
 	Artwork             artwork           `json:"artwork"`
 	ExtendedAssetURLs   extendedAssetURLs `json:"extendedAssetUrls"`
 }

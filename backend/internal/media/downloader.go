@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -148,12 +149,35 @@ func (d *Downloader) resolveTracks(ctx context.Context, parsed applemusic.Parsed
 }
 
 func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item domain.JobItem, initial applemusic.Song, storefront string, playlistIndex int, folderArtist string, reporter jobs.Reporter) error {
+	// set updates item state and emits an item_progress SSE event.
+	// The full JobItem is embedded in the event Payload so the frontend can
+	// update the UI directly from SSE without any additional HTTP round-trips.
+	// To avoid flooding the stream, we only emit when status changes or
+	// progress moves by at least 1 percentage point.
+	var lastEmittedStatus domain.ItemStatus
+	var lastEmittedProgress float64 = -1
 	set := func(status domain.ItemStatus, progress float64, message string) {
 		item.Status = status
 		item.Progress = progress
+		item.StatusMessage = message
 		_ = reporter.UpdateItem(ctx, item)
-		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_progress", Phase: string(status), Message: message})
+		progPct := math.Round(progress * 100)
+		lastPct := math.Round(lastEmittedProgress * 100)
+		if status != lastEmittedStatus || progPct != lastPct {
+			lastEmittedStatus = status
+			lastEmittedProgress = progress
+			_ = reporter.Event(ctx, domain.Event{
+				JobID:   job.ID,
+				ItemID:  item.ID,
+				Type:    "item_progress",
+				Phase:   string(status),
+				Message: message,
+				Payload: marshalPayload(item), // full item state for frontend
+			})
+		}
 	}
+
+
 	set(domain.ItemResolving, 0.02, "resolving metadata")
 
 	song, metadataAttempts, err := retryValue(ctx, d.cfg.Download.Retries, retryBackoff, func(attempt int) (applemusic.Song, error) {
@@ -209,7 +233,7 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 		}
 	}
 	lyrics := ""
-	if d.cfg.Download.EmbedLyrics || d.cfg.Download.SaveLyricsFile {
+	if (d.cfg.Download.EmbedLyrics || d.cfg.Download.SaveLyricsFile) && song.HasLyrics {
 		raw, lyricsAttempts, lyricsErr := retryValue(ctx, d.cfg.Download.Retries, retryBackoff, func(attempt int) (string, error) {
 			d.setItemAttempt(ctx, reporter, &item, "lyrics", attempt, maxAttempts(d.cfg.Download.Retries), fmt.Sprintf("正在获取歌词（%d/%d）", attempt, maxAttempts(d.cfg.Download.Retries)))
 			return d.wrapper.Lyrics(ctx, song.ID, storefront, d.cfg.Catalog.Language)
@@ -330,7 +354,14 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_selected", Phase: codec, Payload: string(payload)})
 
 	set(domain.ItemDownloading, 0.25, "downloading encrypted media")
-	raw, err := downloadBytes(ctx, d.http, info.MediaURI)
+	// Stream-download with per-chunk progress from 25% → 45%
+	raw, err := downloadBytes(ctx, d.http, info.MediaURI, func(p float64) {
+		if p < 0 {
+			return // Content-Length unknown, stay at 25%
+		}
+		// map [0,1] → [0.25, 0.45]
+		set(domain.ItemDownloading, 0.25+p*0.20, fmt.Sprintf("downloading encrypted media %.0f%%", p*100))
+	})
 	if err != nil {
 		return fmt.Errorf("download encrypted media: %w", err)
 	}
@@ -347,7 +378,15 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 		}
 		samples = append(samples, wrapper.DecryptSample{Key: info.Keys[keyIndex], Index: i, Data: sample.Data})
 	}
-	decryptedSamples, err := d.wrapper.Decrypt(ctx, song.ID, samples)
+	// Decrypt with per-sample progress from 45% → 70%
+	decryptedSamples, err := d.wrapper.Decrypt(ctx, song.ID, samples, func(received, total int) {
+		if total <= 0 {
+			return
+		}
+		p := float64(received) / float64(total)
+		// map [0,1] → [0.45, 0.70]
+		set(domain.ItemDecrypting, 0.45+p*0.25, fmt.Sprintf("decrypting samples %d/%d", received, total))
+	})
 	if err != nil {
 		return fmt.Errorf("decrypt samples: %w", err)
 	}
@@ -419,11 +458,18 @@ func (d *Downloader) downloadAACLC(ctx context.Context, job domain.Job, item *do
 	})})
 
 	set(domain.ItemDownloading, 0.25, "downloading encrypted AAC-LC media")
-	raw, err := downloadBytes(ctx, d.http, media.MediaURI)
+	// Stream-download with per-chunk progress from 25% → 50%
+	raw, err := downloadBytes(ctx, d.http, media.MediaURI, func(p float64) {
+		if p < 0 {
+			return
+		}
+		// map [0,1] → [0.25, 0.50]
+		set(domain.ItemDownloading, 0.25+p*0.25, fmt.Sprintf("downloading encrypted AAC-LC media %.0f%%", p*100))
+	})
 	if err != nil {
 		return fmt.Errorf("download encrypted AAC-LC media: %w", err)
 	}
-	set(domain.ItemDecrypting, 0.5, "acquiring Widevine license")
+	set(domain.ItemDecrypting, 0.50, "acquiring Widevine license")
 	challenge, parseLicense, err := newWidevineSession(media.KID)
 	if err != nil {
 		return err
