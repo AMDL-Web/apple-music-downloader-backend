@@ -23,8 +23,12 @@ func safeName(v string) string {
 	return v
 }
 
-func outputPath(cfg config.Config, song applemusic.Song, playlistIndex int) string {
-	artist := formatPattern(cfg.Download.ArtistFolderFormat, song, playlistIndex, "")
+func outputPath(cfg config.Config, song applemusic.Song, playlistIndex int, folderArtist string) string {
+	folderSong := song
+	if folderArtist != "" {
+		folderSong.ArtistName = folderArtist
+	}
+	artist := formatPattern(cfg.Download.ArtistFolderFormat, folderSong, playlistIndex, "")
 	album := formatPattern(cfg.Download.AlbumFolderFormat, song, playlistIndex, "")
 	namePattern := cfg.Download.SongFileFormat
 	if playlistIndex > 0 && cfg.Download.PlaylistSongFileFormat != "" {

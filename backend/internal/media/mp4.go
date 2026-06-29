@@ -142,7 +142,9 @@ func (p *MP4Processor) encapsulate(ctx context.Context, info songInfo, decrypted
 	default:
 		return nil, fmt.Errorf("unsupported codec %s", info.Codec)
 	}
-	_ = run(ctx, p.cfg.Tools.MP4Box, "-brand", "M4A ", "-ab", "M4A ", "-ab", "mp42", outPath)
+	if err := run(ctx, p.cfg.Tools.MP4Box, "-brand", "M4A ", "-ab", "M4A ", "-ab", "mp42", outPath); err != nil {
+		return nil, err
+	}
 	return os.ReadFile(outPath)
 }
 
@@ -173,8 +175,12 @@ func (p *MP4Processor) fixESDS(ctx context.Context, rawSong, song []byte) ([]byt
 	inPath := filepath.Join(dir, "in.m4a")
 	atomPath := filepath.Join(dir, "esds.atom")
 	outPath := filepath.Join(dir, "out.m4a")
-	_ = os.WriteFile(rawPath, rawSong, 0o644)
-	_ = os.WriteFile(inPath, song, 0o644)
+	if err := os.WriteFile(rawPath, rawSong, 0o644); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(inPath, song, 0o644); err != nil {
+		return nil, err
+	}
 	if err := run(ctx, p.cfg.Tools.MP4Extract, "moov/trak/mdia/minf/stbl/stsd/enca[0]/esds", rawPath, atomPath); err != nil {
 		return nil, err
 	}
@@ -203,13 +209,16 @@ func (p *MP4Processor) writeMetadata(ctx context.Context, path string, song appl
 	if p.cfg.Download.EmbedCover && len(cover) > 0 {
 		dir := filepath.Dir(path)
 		coverPath = filepath.Join(dir, "cover."+p.cfg.Download.CoverFormat)
-		if err := os.WriteFile(coverPath, cover, 0o644); err == nil {
-			args[3] += ":cover=" + coverPath
-			defer os.Remove(coverPath)
+		if err := os.WriteFile(coverPath, cover, 0o644); err != nil {
+			return err
 		}
+		args[3] += ":cover=" + coverPath
+		defer os.Remove(coverPath)
 	}
 	args = append(args, path)
-	_ = run(ctx, p.cfg.Tools.MP4Box, args...)
+	if err := run(ctx, p.cfg.Tools.MP4Box, args...); err != nil {
+		return err
+	}
 
 	tags := &mp4tag.MP4Tags{
 		Title:       song.Name,

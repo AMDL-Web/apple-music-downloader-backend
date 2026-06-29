@@ -98,7 +98,24 @@ func (c *Client) WebPlayback(ctx context.Context, adamID string) (string, error)
 	return resp.GetData().GetM3U8(), nil
 }
 
+func (c *Client) License(ctx context.Context, adamID, challenge, uri string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout())
+	defer cancel()
+	resp, err := c.api.License(ctx, &pb.LicenseRequest{Data: &pb.LicenseDataRequest{
+		AdamId: adamID, Challenge: challenge, Uri: uri,
+	}})
+	if err != nil {
+		return "", err
+	}
+	if resp.GetHeader().GetCode() != 0 {
+		return "", fmt.Errorf("wrapper license: %s", resp.GetHeader().GetMsg())
+	}
+	return resp.GetData().GetLicense(), nil
+}
+
 func (c *Client) Decrypt(ctx context.Context, adamID string, samples []DecryptSample) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout())
+	defer cancel()
 	stream, err := c.api.Decrypt(ctx)
 	if err != nil {
 		return nil, err

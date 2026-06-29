@@ -43,21 +43,25 @@ type Job struct {
 }
 
 type JobItem struct {
-	ID         string     `json:"id"`
-	JobID      string     `json:"job_id"`
-	AdamID     string     `json:"adam_id"`
-	Kind       string     `json:"kind"`
-	Index      int        `json:"index"`
-	Title      string     `json:"title,omitempty"`
-	Artist     string     `json:"artist,omitempty"`
-	Album      string     `json:"album,omitempty"`
-	Status     ItemStatus `json:"status"`
-	Progress   float64    `json:"progress"`
-	Codec      string     `json:"codec,omitempty"`
-	OutputPath string     `json:"output_path,omitempty"`
-	Error      string     `json:"error,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	ID            string     `json:"id"`
+	JobID         string     `json:"job_id"`
+	AdamID        string     `json:"adam_id"`
+	Kind          string     `json:"kind"`
+	Index         int        `json:"index"`
+	Title         string     `json:"title,omitempty"`
+	Artist        string     `json:"artist,omitempty"`
+	Album         string     `json:"album,omitempty"`
+	Status        ItemStatus `json:"status"`
+	Progress      float64    `json:"progress"`
+	Codec         string     `json:"codec,omitempty"`
+	RetryKind     string     `json:"retry_kind,omitempty"`
+	Attempt       int        `json:"attempt,omitempty"`
+	MaxAttempts   int        `json:"max_attempts,omitempty"`
+	StatusMessage string     `json:"status_message,omitempty"`
+	OutputPath    string     `json:"output_path,omitempty"`
+	Error         string     `json:"error,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 type Event struct {

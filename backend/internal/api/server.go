@@ -69,8 +69,12 @@ func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 		"api":                "v1",
 		"supported_inputs":   []string{"song_url", "album_url", "playlist_url"},
 		"unsupported_inputs": []string{"music_video", "artist", "station", "search"},
-		"quality_priority":   s.cfg.Download.QualityPriority,
-		"tools":              s.tools.Check(r.Context()),
+		"codec":              s.cfg.Download.Codec,
+		"fallback_codec":     "aac-lc",
+		"retry_policy": map[string]int{
+			"operation_retries": s.cfg.Download.Retries,
+		},
+		"tools": s.tools.Check(r.Context()),
 	})
 }
 
@@ -141,7 +145,12 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request, id string) 
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"job": job, "items": items})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"job": job, "items": items,
+		"retry_policy": map[string]int{
+			"operation_retries": s.cfg.Download.Retries,
+		},
+	})
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request, id string) {

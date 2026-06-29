@@ -37,6 +37,7 @@ func (c *CatalogClient) Song(ctx context.Context, storefront, id string) (Song, 
 	var resp catalogSongResponse
 	if err := c.get(ctx, fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s", storefront, id), url.Values{
 		"include": []string{"albums,artists"},
+		"extend":  []string{"extendedAssetUrls"},
 		"l":       []string{c.cfg.Language},
 	}, &resp); err != nil {
 		return Song{}, err

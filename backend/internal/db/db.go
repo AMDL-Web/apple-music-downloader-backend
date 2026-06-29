@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"amdl/backend/internal/domain"
@@ -56,6 +57,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			status TEXT NOT NULL,
 			progress REAL NOT NULL DEFAULT 0,
 			codec TEXT NOT NULL DEFAULT '',
+			retry_kind TEXT NOT NULL DEFAULT '',
+			attempt INTEGER NOT NULL DEFAULT 0,
+			max_attempts INTEGER NOT NULL DEFAULT 0,
+			status_message TEXT NOT NULL DEFAULT '',
 			output_path TEXT NOT NULL DEFAULT '',
 			error TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
@@ -77,6 +82,16 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE job_items ADD COLUMN retry_kind TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE job_items ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE job_items ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE job_items ADD COLUMN status_message TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return err
 		}
 	}
@@ -145,20 +160,20 @@ func scanJob(row jobScanner) (domain.Job, error) {
 }
 
 func (s *Store) CreateItem(ctx context.Context, item domain.JobItem) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO job_items(id,job_id,adam_id,kind,idx,title,artist,album,status,progress,codec,output_path,error,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, item.ID, item.JobID, item.AdamID, item.Kind, item.Index, item.Title, item.Artist, item.Album,
-		string(item.Status), item.Progress, item.Codec, item.OutputPath, item.Error, formatTime(item.CreatedAt), formatTime(item.UpdatedAt))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO job_items(id,job_id,adam_id,kind,idx,title,artist,album,status,progress,codec,retry_kind,attempt,max_attempts,status_message,output_path,error,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, item.ID, item.JobID, item.AdamID, item.Kind, item.Index, item.Title, item.Artist, item.Album,
+		string(item.Status), item.Progress, item.Codec, item.RetryKind, item.Attempt, item.MaxAttempts, item.StatusMessage, item.OutputPath, item.Error, formatTime(item.CreatedAt), formatTime(item.UpdatedAt))
 	return err
 }
 
 func (s *Store) UpdateItem(ctx context.Context, item domain.JobItem) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE job_items SET title=?,artist=?,album=?,status=?,progress=?,codec=?,output_path=?,error=?,updated_at=? WHERE id=?`,
-		item.Title, item.Artist, item.Album, string(item.Status), item.Progress, item.Codec, item.OutputPath, item.Error, formatTime(item.UpdatedAt), item.ID)
+	_, err := s.db.ExecContext(ctx, `UPDATE job_items SET title=?,artist=?,album=?,status=?,progress=?,codec=?,retry_kind=?,attempt=?,max_attempts=?,status_message=?,output_path=?,error=?,updated_at=? WHERE id=?`,
+		item.Title, item.Artist, item.Album, string(item.Status), item.Progress, item.Codec, item.RetryKind, item.Attempt, item.MaxAttempts, item.StatusMessage, item.OutputPath, item.Error, formatTime(item.UpdatedAt), item.ID)
 	return err
 }
 
 func (s *Store) ListItems(ctx context.Context, jobID string) ([]domain.JobItem, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,job_id,adam_id,kind,idx,title,artist,album,status,progress,codec,output_path,error,created_at,updated_at FROM job_items WHERE job_id=? ORDER BY idx`, jobID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,job_id,adam_id,kind,idx,title,artist,album,status,progress,codec,retry_kind,attempt,max_attempts,status_message,output_path,error,created_at,updated_at FROM job_items WHERE job_id=? ORDER BY idx`, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +193,7 @@ func scanItem(row jobScanner) (domain.JobItem, error) {
 	var item domain.JobItem
 	var status, created, updated string
 	err := row.Scan(&item.ID, &item.JobID, &item.AdamID, &item.Kind, &item.Index, &item.Title, &item.Artist, &item.Album, &status,
-		&item.Progress, &item.Codec, &item.OutputPath, &item.Error, &created, &updated)
+		&item.Progress, &item.Codec, &item.RetryKind, &item.Attempt, &item.MaxAttempts, &item.StatusMessage, &item.OutputPath, &item.Error, &created, &updated)
 	item.Status = domain.ItemStatus(status)
 	item.CreatedAt = parseTime(created)
 	item.UpdatedAt = parseTime(updated)

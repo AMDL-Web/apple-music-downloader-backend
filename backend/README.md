@@ -33,6 +33,14 @@ go run ./cmd/amdl-api
 192.168.3.42:8080
 ```
 
+## 重试与编码降级
+
+- `download.retries`：元数据、封面和歌词等普通外部调用的重试次数。
+- `download.codec`：唯一的首选编码；支持 `alac`、`aac`、`aac-binaural`、`aac-downmix`、`ec3`、`ac3` 和 `aac-lc`。
+- `download.retries` 表示普通操作首次尝试之后的额外重试次数；例如 `3` 表示最多尝试 `4` 次。
+- 当首选编码不是 `aac-lc` 且歌曲没有 Enhanced HLS 时，固定回退到 WebPlayback AAC-LC。
+- 重试、耗尽、恢复和编码回退会通过任务 SSE 事件返回；任务详情中的每个项目也会返回 `retry_kind`、`attempt`、`max_attempts` 和 `status_message`。
+
 ## 外部媒体工具
 
 后端自身不再调用旧的编译下载模块，但媒体封装阶段需要这些命令：
@@ -86,4 +94,3 @@ data/downloads/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
 ```
 
 歌单里的歌曲也会按真实歌曲元数据归入艺术家和专辑目录。
-
