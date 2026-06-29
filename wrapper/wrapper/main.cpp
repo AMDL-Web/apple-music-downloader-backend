@@ -15,13 +15,11 @@ extern "C" uint8_t handle_cpp(int fd) {
 }
 
 static void endLeaseCb(int const &c) {
-    fprintf(stderr, "[.] end lease code %d\n", c);
-    exit(1);
+    fprintf(stderr, "[.] end lease code %d - ignoring exit in concurrent mode\n", c);
 }
 
 static void pbErrCb(void *) {
-    fprintf(stderr, "[.] playback error\n");
-    exit(1);
+    fprintf(stderr, "[.] playback error - ignoring exit in concurrent mode\n");
 }
 
 extern "C" std::function<void (int const&)> endLeaseCallback(endLeaseCb);
