@@ -1,0 +1,16 @@
+services:
+  wrapper-manager:
+    build: .
+    container_name: wrapper-manager
+    command: [
+      "--host", "0.0.0.0",
+      "--port", "8080",
+      "--mirror", "false"
+    ]
+    ports:
+      - "8080:8080"
+    volumes:
+      - data:/root/data
+      
+volumes:
+  data:
