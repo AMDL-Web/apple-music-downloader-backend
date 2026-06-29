@@ -127,6 +127,7 @@ func (m *Manager) run(parent context.Context, jobID string) {
 
 	err = m.processor.ProcessJob(ctx, job, m)
 	if err != nil {
+		m.refreshCounts(&job)
 		if errors.Is(ctx.Err(), context.Canceled) {
 			job.Status = domain.JobCancelled
 			job.Error = "cancelled"
@@ -137,20 +138,8 @@ func (m *Manager) run(parent context.Context, jobID string) {
 			_ = m.Event(context.Background(), domain.Event{JobID: job.ID, Type: "job_failed", Message: err.Error()})
 		}
 	} else {
-		items, _ := m.store.ListItems(context.Background(), job.ID)
-		failed := 0
-		done := 0
-		for _, item := range items {
-			switch item.Status {
-			case domain.ItemFailed:
-				failed++
-			case domain.ItemCompleted, domain.ItemSkipped:
-				done++
-			}
-		}
-		job.DoneItems = done
-		job.FailedItems = failed
-		if failed > 0 {
+		m.refreshCounts(&job)
+		if job.FailedItems > 0 {
 			job.Status = domain.JobFailed
 		} else {
 			job.Status = domain.JobCompleted
@@ -159,6 +148,22 @@ func (m *Manager) run(parent context.Context, jobID string) {
 	}
 	job.UpdatedAt = time.Now().UTC()
 	_ = m.store.UpdateJob(context.Background(), job)
+}
+
+func (m *Manager) refreshCounts(job *domain.Job) {
+	items, _ := m.store.ListItems(context.Background(), job.ID)
+	failed := 0
+	done := 0
+	for _, item := range items {
+		switch item.Status {
+		case domain.ItemFailed:
+			failed++
+		case domain.ItemCompleted, domain.ItemSkipped:
+			done++
+		}
+	}
+	job.DoneItems = done
+	job.FailedItems = failed
 }
 
 func (m *Manager) SetJob(ctx context.Context, job domain.Job) error {

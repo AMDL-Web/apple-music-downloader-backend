@@ -204,6 +204,12 @@ func (d *Downloader) downloadCodec(ctx context.Context, job domain.Job, item *do
 			return err
 		}
 		master = m3u8
+	} else if master == "" {
+		m3u8, err := d.wrapper.WebPlayback(ctx, song.ID)
+		if err != nil {
+			return err
+		}
+		master = m3u8
 	}
 	if master == "" {
 		return fmt.Errorf("no enhanced hls manifest")
