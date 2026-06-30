@@ -37,6 +37,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			input TEXT NOT NULL,
 			type TEXT NOT NULL,
 			storefront TEXT,
+			force INTEGER NOT NULL DEFAULT 0,
 			status TEXT NOT NULL,
 			total_items INTEGER NOT NULL DEFAULT 0,
 			done_items INTEGER NOT NULL DEFAULT 0,
@@ -86,6 +87,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	for _, stmt := range []string{
+		`ALTER TABLE jobs ADD COLUMN force INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE job_items ADD COLUMN retry_kind TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE job_items ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE job_items ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 0`,
@@ -108,20 +110,20 @@ func parseTime(v string) time.Time {
 }
 
 func (s *Store) CreateJob(ctx context.Context, job domain.Job) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO jobs(id,input,type,storefront,status,total_items,done_items,failed_items,error,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)`, job.ID, job.Input, job.Type, job.Storefront, string(job.Status), job.TotalItems,
+	_, err := s.db.ExecContext(ctx, `INSERT INTO jobs(id,input,type,storefront,force,status,total_items,done_items,failed_items,error,created_at,updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, job.ID, job.Input, job.Type, job.Storefront, job.Force, string(job.Status), job.TotalItems,
 		job.DoneItems, job.FailedItems, job.Error, formatTime(job.CreatedAt), formatTime(job.UpdatedAt))
 	return err
 }
 
 func (s *Store) UpdateJob(ctx context.Context, job domain.Job) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
-		job.Type, job.Storefront, string(job.Status), job.TotalItems, job.DoneItems, job.FailedItems, job.Error, formatTime(job.UpdatedAt), job.ID)
+	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, force=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
+		job.Type, job.Storefront, job.Force, string(job.Status), job.TotalItems, job.DoneItems, job.FailedItems, job.Error, formatTime(job.UpdatedAt), job.ID)
 	return err
 }
 
 func (s *Store) GetJob(ctx context.Context, id string) (domain.Job, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,force,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE id=?`, id)
 	return scanJob(row)
 }
 
@@ -129,7 +131,7 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,input,type,storefront,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,input,type,storefront,force,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +154,7 @@ type jobScanner interface {
 func scanJob(row jobScanner) (domain.Job, error) {
 	var job domain.Job
 	var status, created, updated string
-	err := row.Scan(&job.ID, &job.Input, &job.Type, &job.Storefront, &status, &job.TotalItems, &job.DoneItems, &job.FailedItems, &job.Error, &created, &updated)
+	err := row.Scan(&job.ID, &job.Input, &job.Type, &job.Storefront, &job.Force, &status, &job.TotalItems, &job.DoneItems, &job.FailedItems, &job.Error, &created, &updated)
 	job.Status = domain.JobStatus(status)
 	job.CreatedAt = parseTime(created)
 	job.UpdatedAt = parseTime(updated)

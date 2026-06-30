@@ -36,9 +36,11 @@ go run ./cmd/amdl-api
 ## 重试与编码降级
 
 - `download.retries`：元数据、封面和歌词等普通外部调用的重试次数。
-- `download.codec`：唯一的首选编码；支持 `alac`、`aac`、`aac-binaural`、`aac-downmix`、`ec3`、`ac3` 和 `aac-lc`。
+- `download.quality_priority`：按顺序尝试的 Enhanced HLS 编码回退链；支持 `alac`、`aac`、`aac-binaural`、`aac-downmix`、`ec3` 和 `ac3`。
+- `download.codec_alternative`：是否在前一个编码重试耗尽后继续尝试回退链；关闭时只尝试第一个。
+- `aac-lc` 无需写入 `quality_priority`；开启回退时会自动追加为最后的 WebPlayback 保底格式。
 - `download.retries` 表示普通操作首次尝试之后的额外重试次数；例如 `3` 表示最多尝试 `4` 次。
-- 当首选编码不是 `aac-lc` 且歌曲没有 Enhanced HLS 时，固定回退到 WebPlayback AAC-LC。
+- 只有回退链的第一个编码使用 `download.retries`；后续编码（包括隐式 AAC-LC 保底）均只尝试一次。
 - 重试、耗尽、恢复和编码回退会通过任务 SSE 事件返回；任务详情中的每个项目也会返回 `retry_kind`、`attempt`、`max_attempts` 和 `status_message`。
 
 ## 外部媒体工具
@@ -64,8 +66,10 @@ curl http://127.0.0.1:18080/api/v1/capabilities
 ```bash
 curl -X POST http://127.0.0.1:18080/api/v1/downloads \
   -H 'Content-Type: application/json' \
-  -d '{"url":"https://music.apple.com/us/album/example/123456789?i=987654321"}'
+  -d '{"url":"https://music.apple.com/us/album/example/123456789?i=987654321","force":true}'
 ```
+
+`force: true` 会覆盖已存在的音频及其歌词边车文件；默认为 `false`，已存在的文件会被跳过。
 
 查询任务：
 

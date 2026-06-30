@@ -18,9 +18,18 @@ catalog:
   album_track_url_mode: "song"
 
 download:
-  codec: "alac"
-  max_running_jobs: 10
-  max_parallel_tracks: 15
+  # Available codecs:
+  # - alac: Apple Lossless Audio Codec
+  # - aac: standard Enhanced HLS AAC
+  # - aac-binaural: binaural AAC
+  # - aac-downmix: Dolby downmix AAC
+  # - ec3: Dolby Digital Plus / Dolby Atmos
+  # - ac3: Dolby Digital
+  # AAC-LC does not need to be listed; it is always appended as the final fallback.
+  quality_priority: ["alac", "aac"]
+  codec_alternative: true
+  max_running_jobs: 3
+  max_parallel_tracks: 5
   retries: 2
   downloads_dir: "data/downloads"
   songs_folder_name: "songs"

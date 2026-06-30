@@ -70,11 +70,14 @@ func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 		"api":                  "v1",
 		"supported_inputs":     []string{"song_url", "album_url", "playlist_url"},
 		"unsupported_inputs":   []string{"music_video", "artist", "station", "search"},
-		"codec":                s.cfg.Download.Codec,
+		"quality_priority":     s.cfg.Download.QualityPriority,
+		"codec_alternative":    s.cfg.Download.CodecAlternative,
 		"fallback_codec":       "aac-lc",
 		"album_track_url_mode": s.cfg.Catalog.AlbumTrackURLMode,
 		"retry_policy": map[string]int{
-			"operation_retries": s.cfg.Download.Retries,
+			"operation_retries":      s.cfg.Download.Retries,
+			"first_codec_retries":    s.cfg.Download.Retries,
+			"fallback_codec_retries": 0,
 		},
 		"tools": s.tools.Check(r.Context()),
 	})
@@ -150,7 +153,9 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request, id string) 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"job": job, "items": items,
 		"retry_policy": map[string]int{
-			"operation_retries": s.cfg.Download.Retries,
+			"operation_retries":      s.cfg.Download.Retries,
+			"first_codec_retries":    s.cfg.Download.Retries,
+			"fallback_codec_retries": 0,
 		},
 	})
 }

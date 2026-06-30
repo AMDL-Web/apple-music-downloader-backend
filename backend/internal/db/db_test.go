@@ -96,3 +96,26 @@ func TestJobItemRetryStateRoundTrip(t *testing.T) {
 		t.Fatalf("retry state = %+v, want %+v", got, want)
 	}
 }
+
+func TestJobForceRoundTrip(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	want := domain.Job{
+		ID: "job-force", Input: "https://music.apple.com/cn/song/test/1", Type: "song", Storefront: "cn",
+		Force: true, Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateJob(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetJob(context.Background(), want.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Force {
+		t.Fatal("Force was not persisted")
+	}
+}

@@ -100,7 +100,7 @@ func (p *MP4Processor) encapsulate(ctx context.Context, info songInfo, decrypted
 	}
 	defer os.RemoveAll(dir)
 	name := "song"
-	
+
 	ext := ".media"
 	if info.Codec == "ec3" || info.Codec == "ac3" {
 		ext = "." + info.Codec
@@ -216,9 +216,9 @@ func (p *MP4Processor) writeMetadata(ctx context.Context, path string, song appl
 	args := []string{"-name", "1=" + song.Name, "-itags", "tool=:" + "artist=AppleMusic"}
 	var coverPath string
 	if p.cfg.Download.EmbedCover && len(cover) > 0 {
-		dir := filepath.Dir(path)
-		coverPath = filepath.Join(dir, "cover."+p.cfg.Download.CoverFormat)
-		if err := os.WriteFile(coverPath, cover, 0o644); err != nil {
+		var err error
+		coverPath, err = p.writeTemporaryCover(cover)
+		if err != nil {
 			return err
 		}
 		args[3] += ":cover=" + coverPath
@@ -280,6 +280,28 @@ func (p *MP4Processor) writeMetadata(ctx context.Context, path string, song appl
 	}
 	defer mp4.Close()
 	return mp4.Write(tags, []string{})
+}
+
+func (p *MP4Processor) writeTemporaryCover(cover []byte) (string, error) {
+	if err := os.MkdirAll(p.cfg.Download.TempDir, 0o755); err != nil {
+		return "", err
+	}
+	ext := standaloneCoverExt(p.cfg.Download.CoverFormat)
+	file, err := os.CreateTemp(p.cfg.Download.TempDir, "embedded-cover-*."+ext)
+	if err != nil {
+		return "", err
+	}
+	path := file.Name()
+	if _, err := file.Write(cover); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
 }
 
 func parseSamples(nhml, xml string, media []byte) ([]sampleInfo, error) {

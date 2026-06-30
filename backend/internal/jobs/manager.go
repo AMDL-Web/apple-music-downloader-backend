@@ -89,7 +89,7 @@ func (m *Manager) Submit(ctx context.Context, req domain.DownloadRequest) (domai
 
 	now := time.Now().UTC()
 	job := domain.Job{
-		ID: storage.NewID("job"), Input: req.URL, Type: validated.Type, Storefront: validated.Storefront, Status: domain.JobQueued,
+		ID: storage.NewID("job"), Input: req.URL, Type: validated.Type, Storefront: validated.Storefront, Force: req.Force, Status: domain.JobQueued,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := m.store.CreateJob(ctx, job); err != nil {

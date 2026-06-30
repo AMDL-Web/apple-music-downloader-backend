@@ -267,7 +267,7 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "standalone_cover_failed", Message: coverErr.Error()})
 		}
 	}
-	if _, err := os.Stat(outPath); err == nil {
+	if _, err := os.Stat(outPath); err == nil && !job.Force {
 		item.Status = domain.ItemSkipped
 		item.Progress = 1
 		item.RetryKind = ""
@@ -278,6 +278,10 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 		_ = reporter.UpdateItem(ctx, item)
 		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_skipped", Message: "already exists"})
 		return nil
+	}
+	if job.Force {
+		cleanupFailedOutput(outPath)
+		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_overwrite", Message: "force overwrite enabled"})
 	}
 
 	var cover []byte
@@ -327,58 +331,67 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	if err := d.tools.Require(ctx); err != nil {
 		return d.failItem(ctx, reporter, job, item, err)
 	}
-	requestedCodec, err := configuredCodec(d.cfg.Download.Codec)
+	codecs, err := configuredCodecs(d.cfg.Download)
 	if err != nil {
 		return d.failItem(ctx, reporter, job, item, err)
 	}
-	effectiveCodec, fallback := selectCodec(requestedCodec, song.EnhancedHLS != "")
-	if fallback {
-		item.StatusMessage = fmt.Sprintf("%s 没有 Enhanced HLS，固定回退到 AAC-LC", strings.ToUpper(requestedCodec))
-		_ = reporter.UpdateItem(ctx, item)
-		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_fallback", Phase: requestedCodec, Message: item.StatusMessage, Payload: marshalPayload(map[string]any{
-			"from_codec": requestedCodec, "to_codec": effectiveCodec, "reason": "enhanced_hls_unavailable",
-		})})
-	}
-	item.Codec = effectiveCodec
-	_, attempts, downloadErr := retryValue(ctx, d.cfg.Download.Retries, retryBackoff, func(attempt int) (struct{}, error) {
-		d.setItemAttempt(ctx, reporter, &item, "download", attempt, maxAttempts(d.cfg.Download.Retries), fmt.Sprintf("正在下载 %s（%d/%d）", strings.ToUpper(effectiveCodec), attempt, maxAttempts(d.cfg.Download.Retries)))
-		if effectiveCodec == "aac-lc" {
-			return struct{}{}, d.downloadAACLC(ctx, job, &item, song, lyrics, cover, outPath, reporter, set)
+	var lastErr error
+	for codecIndex, codec := range codecs {
+		codecRetries := retriesForCodec(d.cfg.Download.Retries, codecIndex)
+		if codecIndex > 0 {
+			item.StatusMessage = fmt.Sprintf("编码 %s 失败，回退到 %s", strings.ToUpper(codecs[codecIndex-1]), strings.ToUpper(codec))
+			_ = reporter.UpdateItem(ctx, item)
+			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_fallback", Phase: codec, Message: item.StatusMessage, Payload: marshalPayload(map[string]any{
+				"from_codec": codecs[codecIndex-1], "to_codec": codec, "reason": codecFailureReason(lastErr),
+			})})
 		}
-		return struct{}{}, d.downloadEnhancedCodec(ctx, job, &item, song, effectiveCodec, lyrics, cover, outPath, reporter, set)
-	}, func(failure retryFailure) {
-		cleanupFailedOutput(outPath)
-		d.setRetryFailure(ctx, reporter, &item, "download", strings.ToUpper(effectiveCodec), failure)
-		d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "download", effectiveCodec, failure)
-	})
-	if downloadErr != nil {
-		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_failed", Phase: effectiveCodec, Message: downloadErr.Error(), Payload: marshalPayload(map[string]any{
-			"codec": effectiveCodec, "attempts": attempts, "max_attempts": maxAttempts(d.cfg.Download.Retries), "error": downloadErr.Error(),
+		item.Codec = codec
+		_, attempts, downloadErr := retryValue(ctx, codecRetries, retryBackoff, func(attempt int) (struct{}, error) {
+			d.setItemAttempt(ctx, reporter, &item, "download", attempt, maxAttempts(codecRetries), fmt.Sprintf("正在下载 %s（%d/%d）", strings.ToUpper(codec), attempt, maxAttempts(codecRetries)))
+			if codec == "aac-lc" {
+				return struct{}{}, d.downloadAACLC(ctx, job, &item, song, lyrics, cover, outPath, reporter, set)
+			}
+			return struct{}{}, d.downloadEnhancedCodec(ctx, job, &item, song, codec, lyrics, cover, outPath, reporter, set)
+		}, func(failure retryFailure) {
+			cleanupFailedOutput(outPath)
+			d.setRetryFailure(ctx, reporter, &item, "download", strings.ToUpper(codec), failure)
+			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "download", codec, failure)
+		})
+		if downloadErr != nil {
+			lastErr = downloadErr
+			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_failed", Phase: codec, Message: downloadErr.Error(), Payload: marshalPayload(map[string]any{
+				"codec": codec, "attempts": attempts, "max_attempts": maxAttempts(codecRetries), "error": downloadErr.Error(),
+			})})
+			continue
+		}
+
+		item.Attempt = attempts
+		if codecIndex > 0 {
+			item.StatusMessage = fmt.Sprintf("已回退为 %s 并下载完成", strings.ToUpper(codec))
+		} else if attempts > 1 {
+			item.StatusMessage = fmt.Sprintf("%s 在第 %d 次尝试成功", strings.ToUpper(codec), attempts)
+		} else {
+			item.StatusMessage = fmt.Sprintf("%s 下载完成", strings.ToUpper(codec))
+		}
+		_ = reporter.UpdateItem(ctx, item)
+		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_completed", Message: outPath, Payload: marshalPayload(map[string]any{
+			"codec": codec, "attempt": attempts, "max_attempts": maxAttempts(codecRetries), "fallback_from": fallbackCodec(codecs, codecIndex),
 		})})
-		return d.failItem(ctx, reporter, job, item, downloadErr)
+		if attempts > 1 {
+			d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "download", codec, attempts)
+		}
+		return nil
 	}
-	item.Attempt = attempts
-	if fallback {
-		item.StatusMessage = fmt.Sprintf("%s 没有 Enhanced HLS，已回退为 AAC-LC 并下载完成", strings.ToUpper(requestedCodec))
-	} else if attempts > 1 {
-		item.StatusMessage = fmt.Sprintf("%s 在第 %d 次尝试成功", strings.ToUpper(effectiveCodec), attempts)
-	} else {
-		item.StatusMessage = fmt.Sprintf("%s 下载完成", strings.ToUpper(effectiveCodec))
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no configured codec succeeded")
 	}
-	_ = reporter.UpdateItem(ctx, item)
-	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_completed", Message: outPath, Payload: marshalPayload(map[string]any{
-		"codec": effectiveCodec, "attempt": attempts, "max_attempts": maxAttempts(d.cfg.Download.Retries), "fallback_from": fallbackCodec(requestedCodec, fallback),
-	})})
-	if attempts > 1 {
-		d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "download", effectiveCodec, attempts)
-	}
-	return nil
+	return d.failItem(ctx, reporter, job, item, lastErr)
 }
 
 func configuredCodec(value string) (string, error) {
 	codec := strings.ToLower(strings.TrimSpace(value))
 	if codec == "" {
-		codec = "alac"
+		return "", fmt.Errorf("codec in quality_priority cannot be empty")
 	}
 	switch codec {
 	case "alac", "aac", "aac-binaural", "aac-downmix", "ec3", "ac3", "aac-lc":
@@ -388,18 +401,55 @@ func configuredCodec(value string) (string, error) {
 	}
 }
 
-func selectCodec(requested string, hasEnhancedHLS bool) (effective string, fallback bool) {
-	if requested != "aac-lc" && !hasEnhancedHLS {
-		return "aac-lc", true
+func configuredCodecs(cfg config.DownloadConfig) ([]string, error) {
+	values := append([]string(nil), cfg.QualityPriority...)
+	if len(values) == 0 {
+		return nil, fmt.Errorf("quality_priority must contain at least one codec")
 	}
-	return requested, false
+	if !cfg.CodecAlternative && len(values) > 1 {
+		values = values[:1]
+	}
+	if cfg.CodecAlternative {
+		values = append(values, "aac-lc")
+	}
+	codecs := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		codec, err := configuredCodec(value)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := seen[codec]; exists {
+			continue
+		}
+		seen[codec] = struct{}{}
+		codecs = append(codecs, codec)
+	}
+	if len(codecs) == 0 {
+		return nil, fmt.Errorf("quality_priority must contain at least one codec")
+	}
+	return codecs, nil
 }
 
-func fallbackCodec(requested string, fallback bool) string {
-	if fallback {
-		return requested
+func fallbackCodec(codecs []string, selectedIndex int) string {
+	if selectedIndex > 0 && len(codecs) > 0 {
+		return codecs[0]
 	}
 	return ""
+}
+
+func codecFailureReason(err error) string {
+	if err == nil {
+		return "previous codec failed"
+	}
+	return err.Error()
+}
+
+func retriesForCodec(configuredRetries, codecIndex int) int {
+	if codecIndex > 0 {
+		return 0
+	}
+	return configuredRetries
 }
 
 func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, codec, lyrics string, cover []byte, outPath string, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) error {

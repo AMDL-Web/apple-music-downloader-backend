@@ -33,6 +33,7 @@ type Job struct {
 	Input       string    `json:"input"`
 	Type        string    `json:"type"`
 	Storefront  string    `json:"storefront,omitempty"`
+	Force       bool      `json:"force"`
 	Status      JobStatus `json:"status"`
 	TotalItems  int       `json:"total_items"`
 	DoneItems   int       `json:"done_items"`

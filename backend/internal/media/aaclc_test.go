@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"amdl/backend/internal/config"
 )
 
 func TestExtractAACLCMedia(t *testing.T) {
@@ -38,14 +40,45 @@ func TestEmbeddedWidevineDeviceLoads(t *testing.T) {
 	}
 }
 
-func TestSelectCodecFallsBackOnlyWhenEnhancedHLSIsMissing(t *testing.T) {
-	if codec, fallback := selectCodec("alac", false); codec != "aac-lc" || !fallback {
-		t.Fatalf("missing Enhanced HLS selected codec=%q fallback=%v", codec, fallback)
+func TestConfiguredCodecsUsesFallbackChain(t *testing.T) {
+	cfg := config.DownloadConfig{
+		QualityPriority: []string{"alac", "aac"}, CodecAlternative: true,
 	}
-	if codec, fallback := selectCodec("alac", true); codec != "alac" || fallback {
-		t.Fatalf("available Enhanced HLS selected codec=%q fallback=%v", codec, fallback)
+	got, err := configuredCodecs(cfg)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if codec, fallback := selectCodec("aac-lc", false); codec != "aac-lc" || fallback {
-		t.Fatalf("explicit AAC-LC selected codec=%q fallback=%v", codec, fallback)
+	want := []string{"alac", "aac", "aac-lc"}
+	if len(got) != len(want) {
+		t.Fatalf("configuredCodecs() = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("configuredCodecs() = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestConfiguredCodecsCanDisableFallback(t *testing.T) {
+	got, err := configuredCodecs(config.DownloadConfig{
+		QualityPriority: []string{"alac", "aac-lc"}, CodecAlternative: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "alac" {
+		t.Fatalf("configuredCodecs() = %#v, want [alac]", got)
+	}
+}
+
+func TestRetriesForCodecOnlyRetriesFirstCodec(t *testing.T) {
+	if got := retriesForCodec(3, 0); got != 3 {
+		t.Fatalf("first codec retries = %d, want 3", got)
+	}
+	if got := retriesForCodec(3, 1); got != 0 {
+		t.Fatalf("fallback codec retries = %d, want 0", got)
+	}
+	if got := retriesForCodec(3, 2); got != 0 {
+		t.Fatalf("final fallback retries = %d, want 0", got)
 	}
 }
