@@ -27,13 +27,7 @@ func outputPath(cfg config.Config, song applemusic.Song, collectionType applemus
 	typeDir := filepath.Join(cfg.Download.DownloadsDir, downloadTypeFolder(cfg, collectionType))
 	if collectionType == applemusic.TypePlaylist && playlistName != "" {
 		folderPattern := cfg.Download.PlaylistFolderFormat
-		if folderPattern == "" {
-			folderPattern = "{PlaylistName}"
-		}
 		filePattern := cfg.Download.PlaylistSongFileFormat
-		if filePattern == "" {
-			filePattern = "{SongNumer:02d}. {SongName}"
-		}
 		folder := formatPattern(folderPattern, song, playlistIndex, "", playlistName)
 		file := formatPattern(filePattern, song, playlistIndex, "", playlistName)
 		return filepath.Join(typeDir, safeName(folder), safeName(file)+".m4a")
@@ -56,16 +50,6 @@ func downloadTypeFolder(cfg config.Config, collectionType applemusic.URLType) st
 		name = cfg.Download.AlbumsFolderName
 	case applemusic.TypePlaylist:
 		name = cfg.Download.PlaylistsFolderName
-	}
-	if strings.TrimSpace(name) == "" {
-		switch collectionType {
-		case applemusic.TypeAlbum:
-			name = "albums"
-		case applemusic.TypePlaylist:
-			name = "playlists"
-		default:
-			name = "songs"
-		}
 	}
 	return safeName(name)
 }

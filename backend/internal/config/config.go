@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -118,8 +121,50 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return cfg, err
 	}
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
+		return cfg, err
+	}
+	if err := cfg.validate(); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+func (c Config) validate() error {
+	if c.Catalog.AlbumTrackURLMode != "song" && c.Catalog.AlbumTrackURLMode != "album" {
+		return fmt.Errorf("catalog.album_track_url_mode must be song or album")
+	}
+	for name, value := range map[string]string{
+		"download.songs_folder_name":         c.Download.SongsFolderName,
+		"download.albums_folder_name":        c.Download.AlbumsFolderName,
+		"download.playlists_folder_name":     c.Download.PlaylistsFolderName,
+		"download.artist_folder_format":      c.Download.ArtistFolderFormat,
+		"download.album_folder_format":       c.Download.AlbumFolderFormat,
+		"download.song_file_format":          c.Download.SongFileFormat,
+		"download.playlist_folder_format":    c.Download.PlaylistFolderFormat,
+		"download.playlist_song_file_format": c.Download.PlaylistSongFileFormat,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s cannot be empty", name)
+		}
+	}
+	switch c.Download.CoverFormat {
+	case "jpg", "jpeg", "png":
+	default:
+		return fmt.Errorf("download.cover_format must be jpg, jpeg, or png")
+	}
+	if len(c.Download.QualityPriority) == 0 {
+		return fmt.Errorf("download.quality_priority must contain at least one codec")
+	}
+	allowedCodecs := map[string]struct{}{
+		"alac": {}, "aac": {}, "aac-binaural": {}, "aac-downmix": {}, "ec3": {}, "ac3": {},
+	}
+	for _, codec := range c.Download.QualityPriority {
+		if _, ok := allowedCodecs[codec]; !ok {
+			return fmt.Errorf("unsupported codec %q in download.quality_priority", codec)
+		}
+	}
+	return nil
 }

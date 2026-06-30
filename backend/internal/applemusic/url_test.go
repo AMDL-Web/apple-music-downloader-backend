@@ -3,7 +3,7 @@ package applemusic
 import "testing"
 
 func TestParseAlbumTrackURLAsSong(t *testing.T) {
-	got, err := Parse("https://music.apple.com/us/album/foo/123456789?i=987654321")
+	got, err := ParseWithAlbumTrackMode("https://music.apple.com/us/album/foo/123456789?i=987654321", "song")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func TestParseAlbumTrackURLRejectsInvalidMode(t *testing.T) {
 }
 
 func TestParsePlaylistURL(t *testing.T) {
-	got, err := Parse("https://music.apple.com/jp/playlist/foo/pl.abcdef")
+	got, err := ParseWithAlbumTrackMode("https://music.apple.com/jp/playlist/foo/pl.abcdef", "song")
 	if err != nil {
 		t.Fatal(err)
 	}

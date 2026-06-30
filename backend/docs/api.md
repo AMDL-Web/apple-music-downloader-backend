@@ -25,14 +25,16 @@
 
 ```json
 {
-  "id": "job_xxx",
-  "input": "...",
-  "type": "unknown",
-  "status": "queued"
+	"id": "job_xxx",
+	"input": "...",
+	"type": "song",
+	"storefront": "us",
+	"force": false,
+	"status": "queued"
 }
 ```
 
-当前 `force` 字段已预留；第一版会先按目标文件是否存在自动跳过。
+`force: true` 会覆盖已存在的音频和歌词边车文件；默认为 `false`，已存在的文件会被跳过。链接类型和区域在入队前完成校验。
 
 ## `GET /api/v1/downloads`
 
@@ -68,4 +70,3 @@ SSE 事件流。支持 `Last-Event-ID` 断点续接。
 - `job_finished`
 - `job_failed`
 - `job_cancelled`
-

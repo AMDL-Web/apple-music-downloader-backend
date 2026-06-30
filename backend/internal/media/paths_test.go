@@ -9,7 +9,7 @@ import (
 )
 
 func TestOutputPathUsesAlbumFolderArtistWithoutChangingTrackMetadata(t *testing.T) {
-	cfg := config.Config{}
+	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
 	cfg.Download.ArtistFolderFormat = "{ArtistName}"
 	cfg.Download.AlbumFolderFormat = "{AlbumName}"
@@ -34,7 +34,7 @@ func TestOutputPathUsesAlbumFolderArtistWithoutChangingTrackMetadata(t *testing.
 }
 
 func TestOutputPathKeepsTrackArtistWhenNoAlbumFolderArtist(t *testing.T) {
-	cfg := config.Config{}
+	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
 	cfg.Download.ArtistFolderFormat = "{ArtistName}"
 	cfg.Download.AlbumFolderFormat = "{AlbumName}"
@@ -62,7 +62,7 @@ func TestCollectionFolderArtistOnlyGroupsAlbums(t *testing.T) {
 }
 
 func TestOutputPathPlaylistUsesFlatFolder(t *testing.T) {
-	cfg := config.Config{}
+	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
 	cfg.Download.PlaylistFolderFormat = "{PlaylistName}"
 	cfg.Download.PlaylistSongFileFormat = "{SongNumer:02d}. {SongName}"
@@ -83,7 +83,7 @@ func TestCollectionFolderArtistFallsBackToFirstTrack(t *testing.T) {
 }
 
 func TestOutputPathUsesConfiguredTypeFolderNames(t *testing.T) {
-	cfg := config.Config{}
+	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
 	cfg.Download.SongsFolderName = "single tracks"
 	cfg.Download.AlbumsFolderName = "records"

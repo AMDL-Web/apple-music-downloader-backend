@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"time"
 
 	"amdl/backend/internal/domain"
@@ -21,7 +20,7 @@ func Open(path string) (*Store, error) {
 	}
 	database.SetMaxOpenConns(1)
 	s := &Store{db: database}
-	if err := s.migrate(context.Background()); err != nil {
+	if err := s.initSchema(context.Background()); err != nil {
 		_ = database.Close()
 		return nil, err
 	}
@@ -30,7 +29,7 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-func (s *Store) migrate(ctx context.Context) error {
+func (s *Store) initSchema(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS jobs (
 			id TEXT PRIMARY KEY,
@@ -83,17 +82,6 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
-	}
-	for _, stmt := range []string{
-		`ALTER TABLE jobs ADD COLUMN force INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE job_items ADD COLUMN retry_kind TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE job_items ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE job_items ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE job_items ADD COLUMN status_message TEXT NOT NULL DEFAULT ''`,
-	} {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return err
 		}
 	}

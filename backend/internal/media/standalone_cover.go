@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"amdl/backend/internal/applemusic"
@@ -18,7 +17,11 @@ func (d *Downloader) savePlaylistCover(ctx context.Context, artworkURL, playlist
 	if artworkURL == "" {
 		return nil
 	}
-	path := filepath.Join(playlistDir, "cover."+standaloneCoverExt(d.cfg.Download.CoverFormat))
+	ext, err := standaloneCoverExt(d.cfg.Download.CoverFormat)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(playlistDir, "cover."+ext)
 	if err := d.ensureStandaloneCover(ctx, path, func(context.Context) (string, error) {
 		return artworkURL, nil
 	}); err != nil {
@@ -34,7 +37,10 @@ func (d *Downloader) saveStandaloneCovers(ctx context.Context, song applemusic.S
 
 	albumDir := filepath.Dir(outputPath)
 	artistDir := filepath.Dir(albumDir)
-	ext := standaloneCoverExt(d.cfg.Download.CoverFormat)
+	ext, err := standaloneCoverExt(d.cfg.Download.CoverFormat)
+	if err != nil {
+		return err
+	}
 	var saveErrors []error
 	if d.cfg.Download.SaveAlbumCover {
 		artworkURL := firstNonEmpty(song.AlbumArtworkURL, song.ArtworkURL)
@@ -95,11 +101,13 @@ func (d *Downloader) ensureStandaloneCover(ctx context.Context, path string, res
 	return os.WriteFile(path, data, 0o644)
 }
 
-func standaloneCoverExt(format string) string {
-	switch strings.ToLower(strings.TrimSpace(format)) {
+func standaloneCoverExt(format string) (string, error) {
+	switch format {
+	case "jpg", "jpeg":
+		return "jpg", nil
 	case "png":
-		return "png"
+		return "png", nil
 	default:
-		return "jpg"
+		return "", fmt.Errorf("unsupported cover format %q", format)
 	}
 }

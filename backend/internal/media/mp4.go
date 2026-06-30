@@ -286,7 +286,10 @@ func (p *MP4Processor) writeTemporaryCover(cover []byte) (string, error) {
 	if err := os.MkdirAll(p.cfg.Download.TempDir, 0o755); err != nil {
 		return "", err
 	}
-	ext := standaloneCoverExt(p.cfg.Download.CoverFormat)
+	ext, err := standaloneCoverExt(p.cfg.Download.CoverFormat)
+	if err != nil {
+		return "", err
+	}
 	file, err := os.CreateTemp(p.cfg.Download.TempDir, "embedded-cover-*."+ext)
 	if err != nil {
 		return "", err
