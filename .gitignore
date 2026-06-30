@@ -1,4 +1,5 @@
 .DS_Store
+.worktrees/
 
 # Reference projects and old app snapshots used for analysis only.
 explore/
