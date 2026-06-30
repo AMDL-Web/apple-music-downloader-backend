@@ -100,7 +100,12 @@ func (p *MP4Processor) encapsulate(ctx context.Context, info songInfo, decrypted
 	}
 	defer os.RemoveAll(dir)
 	name := "song"
-	mediaPath := filepath.Join(dir, name+".media")
+	
+	ext := ".media"
+	if info.Codec == "ec3" || info.Codec == "ac3" {
+		ext = "." + info.Codec
+	}
+	mediaPath := filepath.Join(dir, name+ext)
 	if err := os.WriteFile(mediaPath, decrypted, 0o644); err != nil {
 		return nil, err
 	}
@@ -137,6 +142,10 @@ func (p *MP4Processor) encapsulate(ctx context.Context, info songInfo, decrypted
 			return nil, err
 		}
 		if err := run(ctx, p.cfg.Tools.GPAC, "-i", nhmlPath, "nhmlr", "-o", outPath); err != nil {
+			return nil, err
+		}
+	case "ec3", "ac3":
+		if err := run(ctx, p.cfg.Tools.GPAC, "-i", mediaPath, "-o", outPath); err != nil {
 			return nil, err
 		}
 	default:
