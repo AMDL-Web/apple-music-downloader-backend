@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <fcntl.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +11,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <string.h>
+#include <sys/mount.h>
 
 #include "cmdline.h"
 
@@ -67,6 +69,23 @@ int main(int argc, char *argv[], char *envp[]) {
         return 1;
     }
 
+    if (mkdir("./rootfs/dev", 0755) != 0 && errno != EEXIST) {
+        perror("mkdir ./rootfs/dev failed");
+        return 1;
+    }
+
+    int fd = open("./rootfs/dev/urandom", O_CREAT | O_RDWR, 0666);
+    if (fd < 0) {
+        perror("open ./rootfs/dev/urandom failed");
+        return 1;
+    }
+    close(fd);
+
+    if (mount("/dev/urandom", "./rootfs/dev/urandom", NULL, MS_BIND, NULL) != 0) {
+        perror("mount /dev/urandom failed");
+        return 1;
+    }
+
     if (chdir("./rootfs") != 0) {
         perror("chdir");
         return 1;
@@ -75,7 +94,12 @@ int main(int argc, char *argv[], char *envp[]) {
         perror("chroot");
         return 1;
     }
-    mknod("/dev/urandom", S_IFCHR | 0666, makedev(0x1, 0x9));
+
+    if (mkdir("/proc", 0755) != 0 && errno != EEXIST) {
+        perror("mkdir /proc failed");
+        return 1;
+    }
+
     chmod("/system/bin/linker64", 0755);
     chmod("/system/bin/main", 0755);
 
@@ -97,10 +121,23 @@ int main(int argc, char *argv[], char *envp[]) {
         return 0;
     }
 
-    // Child process logic
-    mkdir(args_info.base_dir_arg, 0777);
-    mkdir(strcat(args_info.base_dir_arg, "/mpl_db"), 0777);
+    if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
+        perror("mount proc failed");
+        return 1;
+    }
+
+    if (mkdir(args_info.base_dir_arg, 0777) != 0 && errno != EEXIST) {
+        perror("mkdir base_dir_arg failed");
+    }
+    
+    char db_dir[1024];
+    snprintf(db_dir, sizeof(db_dir), "%s/mpl_db", args_info.base_dir_arg);
+    if (mkdir(db_dir, 0777) != 0 && errno != EEXIST) {
+        perror("mkdir mpl_db failed");
+    }
+
     execve("/system/bin/main", argv, envp);
+    
     perror("execve");
     return 1;
 }

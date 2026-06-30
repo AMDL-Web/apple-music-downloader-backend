@@ -1,3 +1,5 @@
+# Editor
+.vscode/
 
 # Prerequisites
 *.d
@@ -88,5 +90,11 @@ dkms.conf
 rootfs/
 .vscode/
 wrapper
+wrapper-rootless
 rootfs/system/bin/linker64
 build/
+android-ndk-r23b/
+
+# Enviroment Variables
+.env
+!.env.example

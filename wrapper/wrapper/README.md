@@ -4,13 +4,6 @@ A tool to decrypt Apple Music songs. An active subscription is still needed.
 
 Supports only x86_64 and arm64 Linux.
 
-## Features
-
-- **Concurrent Decryption**: Multi-threaded architecture allows simultaneous handling of multiple decryption requests
-- **Three Service Ports**: Decrypt (10020), M3U8 (20020), Account API (30020)
-- **High Performance**: Each connection is processed in a separate thread for maximum throughput
-- **API-Driven Login**: Login via HTTP API with SSE status updates
-
 ## Installation
 
 Installation methods:
@@ -26,16 +19,23 @@ Available for x86_64 and arm64. Need to download prebuilt version from releases 
 1. Build image:
 
 ```
-docker build --tag wrapper .
+docker build --tag ghcr.io/worldobservationlog/wrapper:local .
 ```
 
-2. Run:
+2. Login:
 
 ```
-docker run -v ./rootfs/data:/app/rootfs/data -p 10020:10020 -p 20020:20020 -p 30020:30020 -e args="-H 0.0.0.0" wrapper
+docker run --privileged --rm -it -v ./rootfs/data:/app/rootfs/data --entrypoint ./wrapper ghcr.io/worldobservationlog/wrapper:local -L "username:password" -H 0.0.0.0
 ```
 
-3. Login via API (see [Account API](#account-api) section)
+Quit after this (using Ctrl-C).
+
+3. Run:
+
+```
+docker run --privileged -v ./rootfs/data:/app/rootfs/data -p 10020:10020 -p 20020:20020 -p 30020:30020 -e args="-H 0.0.0.0" ghcr.io/worldobservationlog/wrapper:local
+```
+
 
 ### Build from source
 
@@ -44,7 +44,7 @@ docker run -v ./rootfs/data:/app/rootfs/data -p 10020:10020 -p 20020:20020 -p 30
 - Build tools:
 
   ```
-  sudo apt install build-essential cmake wget unzip git
+  sudo apt install build-essential cmake curl unzip git
   ```
 
 - LLVM:
@@ -55,8 +55,8 @@ docker run -v ./rootfs/data:/app/rootfs/data -p 10020:10020 -p 20020:20020 -p 30
 
 - Android NDK r23b:
   ```
-  wget -O android-ndk-r23b-linux.zip https://dl.google.com/android/repository/android-ndk-r23b-linux.zip
-  unzip -q -d ~ android-ndk-r23b-linux.zip
+  curl -fLO https://dl.google.com/android/repository/android-ndk-r23b-linux.zip
+  unzip -d . android-ndk-r23b-linux.zip
   ```
 
 2. Build:
@@ -82,59 +82,9 @@ Usage: wrapper [OPTION]...
   -M, --m3u8-port=INT       (default=`20020')
   -A, --account-port=INT    (default=`30020')
   -P, --proxy=STRING        (default=`')
+  -L, --login=STRING        (username:password)
+  -F, --code-from-file      (default=off)
 ```
-
-## Account API
-
-The Account API (port 30020) provides login management via HTTP endpoints.
-
-### Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/info` | GET | Get current login status and account info |
-| `/login` | POST | Submit credentials to start login |
-| `/2fa` | POST | Submit 2FA verification code |
-| `/logout` | POST | Clear login state and saved credentials |
-| `/events` | GET | SSE stream for real-time status updates |
-
-### Login Flow
-
-```bash
-# 1. Check status
-curl http://localhost:30020/info
-# Returns: {"logged_in":false,"status":"need_login"}
-
-# 2. Subscribe to SSE events (in another terminal)
-curl -N http://localhost:30020/events
-
-# 3. Login
-curl -X POST http://localhost:30020/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"your@email.com","password":"your_password"}'
-
-# 4. If 2FA required, submit code
-curl -X POST http://localhost:30020/2fa \
-  -H "Content-Type: application/json" \
-  -d '{"code":"123456"}'
-
-# 5. Check account info
-curl http://localhost:30020/info
-# Returns: {"logged_in":true,"storefront_id":"...","dev_token":"...","music_token":"..."}
-
-# 6. Logout (optional)
-curl -X POST http://localhost:30020/logout
-# Returns: {"message":"logged out"}
-```
-
-### SSE Events
-
-The `/events` endpoint streams status updates:
-- `{"status":"need_login"}` - Waiting for login
-- `{"status":"logging_in"}` - Login in progress
-- `{"status":"need_2fa"}` - 2FA code required
-- `{"status":"logged_in"}` - Successfully logged in
-- `{"status":"login_failed","error":"..."}` - Login failed
 
 ## Special thanks
 
