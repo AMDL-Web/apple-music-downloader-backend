@@ -35,13 +35,61 @@ func NewDownloader(cfg config.Config, catalog *applemusic.CatalogClient, wrapper
 	return &Downloader{cfg: cfg, catalog: catalog, wrapper: wrapperClient, tools: tools, http: newHTTPClient(), mp4: newMP4Processor(cfg), logger: logger}
 }
 
+func (d *Downloader) ValidateRequest(ctx context.Context, req domain.DownloadRequest) (jobs.ValidationResult, error) {
+	parsed, err := applemusic.ParseWithAlbumTrackMode(req.URL, d.cfg.Catalog.AlbumTrackURLMode)
+	if err != nil {
+		if strings.Contains(err.Error(), "album_track_url_mode") {
+			return jobs.ValidationResult{}, &jobs.RequestError{Code: "invalid_configuration", Message: err.Error(), Cause: err}
+		}
+		return jobs.ValidationResult{}, &jobs.RequestError{Code: "invalid_url", Message: err.Error(), Cause: err}
+	}
+	if parsed.Type == applemusic.TypeArtist || parsed.Type == applemusic.TypeVideo {
+		message := fmt.Sprintf("%s download is not implemented", parsed.Type)
+		return jobs.ValidationResult{}, &jobs.RequestError{Code: "unsupported_input", Message: message}
+	}
+	if err := d.validateStorefront(ctx, parsed.Storefront); err != nil {
+		return jobs.ValidationResult{}, err
+	}
+	return jobs.ValidationResult{Type: string(parsed.Type), Storefront: parsed.Storefront}, nil
+}
+
+func (d *Downloader) validateStorefront(ctx context.Context, storefront string) error {
+	status, err := d.wrapper.Status(ctx)
+	if err != nil {
+		message := fmt.Sprintf("failed to check decryptor status: %v", err)
+		return &jobs.RequestError{Code: "decryptor_unavailable", Message: message, Cause: err}
+	}
+	if len(status.Regions) == 0 && (!status.Ready || !status.Status) {
+		return &jobs.RequestError{Code: "decryptor_unavailable", Message: "decryptor is not ready"}
+	}
+	for _, region := range status.Regions {
+		if strings.EqualFold(region, storefront) {
+			if !status.Ready || !status.Status {
+				return &jobs.RequestError{Code: "decryptor_unavailable", Message: "decryptor is not ready"}
+			}
+			return nil
+		}
+	}
+	message := fmt.Sprintf("storefront %q is not supported by decryptor (supported: %s)", storefront, strings.Join(status.Regions, ", "))
+	return &jobs.RequestError{
+		Code: "unsupported_storefront", Message: message, Storefront: storefront,
+		SupportedStorefronts: append([]string(nil), status.Regions...),
+	}
+}
+
 func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jobs.Reporter) error {
-	parsed, err := applemusic.Parse(job.Input)
+	parsed, err := applemusic.ParseWithAlbumTrackMode(job.Input, d.cfg.Catalog.AlbumTrackURLMode)
 	if err != nil {
 		return err
 	}
 	if parsed.Type == applemusic.TypeArtist || parsed.Type == applemusic.TypeVideo {
 		return fmt.Errorf("%s download is not implemented in core phase", parsed.Type)
+	}
+
+	// The wrapper may change between submission and execution, so retain a
+	// defensive check even though Submit already validated this storefront.
+	if err := d.validateStorefront(ctx, parsed.Storefront); err != nil {
+		return err
 	}
 	job.Type = string(parsed.Type)
 	job.Storefront = parsed.Storefront
@@ -62,6 +110,12 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	}
 	tracks := resolved.Tracks
 	collectionName := resolved.Name
+	if parsed.Type == applemusic.TypePlaylist && d.cfg.Download.SavePlaylistCover && len(tracks) > 0 {
+		firstOutput := outputPath(d.cfg, tracks[0], parsed.Type, 1, "", collectionName)
+		if coverErr := d.savePlaylistCover(ctx, resolved.ArtworkURL, filepath.Dir(firstOutput)); coverErr != nil {
+			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, Type: "standalone_cover_failed", Phase: "playlist_cover", Message: coverErr.Error()})
+		}
+	}
 	job.TotalItems = len(tracks)
 	if err := reporter.SetJob(ctx, job); err != nil {
 		return err
@@ -126,8 +180,9 @@ func collectionFolderArtist(collectionType applemusic.URLType, tracks []applemus
 }
 
 type resolvedCollection struct {
-	Tracks []applemusic.Song
-	Name   string
+	Tracks     []applemusic.Song
+	Name       string
+	ArtworkURL string
 }
 
 func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.ParsedURL) (resolvedCollection, error) {
@@ -149,7 +204,7 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 		if err != nil {
 			return resolvedCollection{}, err
 		}
-		return resolvedCollection{Tracks: playlist.Tracks, Name: playlist.Name}, nil
+		return resolvedCollection{Tracks: playlist.Tracks, Name: playlist.Name, ArtworkURL: playlist.ArtworkURL}, nil
 	default:
 		return resolvedCollection{}, fmt.Errorf("unsupported input type %s", parsed.Type)
 	}
@@ -184,7 +239,6 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 		}
 	}
 
-
 	set(domain.ItemResolving, 0.01, "resolving metadata")
 
 	song, metadataAttempts, err := retryValue(ctx, d.cfg.Download.Retries, retryBackoff, func(attempt int) (applemusic.Song, error) {
@@ -206,6 +260,13 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	_ = reporter.UpdateItem(ctx, item)
 
 	outPath := outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName)
+	if d.cfg.Download.SaveAlbumCover || d.cfg.Download.SaveArtistCover {
+		if coverErr := d.saveStandaloneCovers(ctx, song, collectionType, storefront, outPath); coverErr != nil {
+			item.StatusMessage = "独立封面保存失败，继续下载：" + coverErr.Error()
+			_ = reporter.UpdateItem(ctx, item)
+			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "standalone_cover_failed", Message: coverErr.Error()})
+		}
+	}
 	if _, err := os.Stat(outPath); err == nil {
 		item.Status = domain.ItemSkipped
 		item.Progress = 1

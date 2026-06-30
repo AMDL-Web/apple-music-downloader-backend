@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -66,11 +67,12 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"api":                "v1",
-		"supported_inputs":   []string{"song_url", "album_url", "playlist_url"},
-		"unsupported_inputs": []string{"music_video", "artist", "station", "search"},
-		"codec":              s.cfg.Download.Codec,
-		"fallback_codec":     "aac-lc",
+		"api":                  "v1",
+		"supported_inputs":     []string{"song_url", "album_url", "playlist_url"},
+		"unsupported_inputs":   []string{"music_video", "artist", "station", "search"},
+		"codec":                s.cfg.Download.Codec,
+		"fallback_codec":       "aac-lc",
+		"album_track_url_mode": s.cfg.Catalog.AlbumTrackURLMode,
 		"retry_policy": map[string]int{
 			"operation_retries": s.cfg.Download.Retries,
 		},
@@ -91,7 +93,7 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := s.manager.Submit(r.Context(), req)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeSubmitError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, job)
@@ -202,6 +204,34 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]any{"error": err.Error()})
+}
+
+func writeSubmitError(w http.ResponseWriter, err error) {
+	var requestErr *jobs.RequestError
+	if errors.As(err, &requestErr) {
+		status := http.StatusUnprocessableEntity
+		if requestErr.Code == "invalid_url" {
+			status = http.StatusBadRequest
+		} else if requestErr.Code == "decryptor_unavailable" {
+			status = http.StatusServiceUnavailable
+		} else if requestErr.Code == "invalid_configuration" {
+			status = http.StatusInternalServerError
+		}
+		body := map[string]any{"error": requestErr.Code, "message": requestErr.Message}
+		if requestErr.Storefront != "" {
+			body["storefront"] = requestErr.Storefront
+		}
+		if requestErr.SupportedStorefronts != nil {
+			body["supported_storefronts"] = requestErr.SupportedStorefronts
+		}
+		writeJSON(w, status, body)
+		return
+	}
+	if errors.Is(err, jobs.ErrQueueFull) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "queue_full", "message": err.Error()})
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err)
 }
 
 func errorString(err error) string {

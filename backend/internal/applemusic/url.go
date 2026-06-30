@@ -27,6 +27,17 @@ type ParsedURL struct {
 var storefrontPattern = regexp.MustCompile(`^[a-z]{2}$`)
 
 func Parse(raw string) (ParsedURL, error) {
+	return ParseWithAlbumTrackMode(raw, "song")
+}
+
+func ParseWithAlbumTrackMode(raw, albumTrackURLMode string) (ParsedURL, error) {
+	mode := strings.ToLower(strings.TrimSpace(albumTrackURLMode))
+	if mode == "" {
+		mode = "song"
+	}
+	if mode != "song" && mode != "album" {
+		return ParsedURL{}, fmt.Errorf("invalid album_track_url_mode %q (expected song or album)", albumTrackURLMode)
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return ParsedURL{}, err
@@ -46,7 +57,7 @@ func Parse(raw string) (ParsedURL, error) {
 	id := parts[len(parts)-1]
 	switch kind {
 	case TypeAlbum:
-		if songID := u.Query().Get("i"); songID != "" {
+		if songID := u.Query().Get("i"); songID != "" && mode == "song" {
 			return ParsedURL{Raw: raw, Storefront: storefront, Type: TypeSong, ID: songID}, nil
 		}
 		return ParsedURL{Raw: raw, Storefront: storefront, Type: TypeAlbum, ID: id}, nil

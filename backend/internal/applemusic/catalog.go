@@ -49,6 +49,8 @@ func (c *CatalogClient) Song(ctx context.Context, storefront, id string) (Song, 
 	if song.AlbumID != "" {
 		if album, err := c.Album(ctx, storefront, song.AlbumID); err == nil && len(album.Tracks) > 0 {
 			song.AlbumArtworkURL = album.ArtworkURL
+			song.AlbumArtistID = album.ArtistID
+			song.AlbumArtistArtworkURL = album.ArtistArtworkURL
 			for _, track := range album.Tracks {
 				if track.ID == song.ID {
 					song.TrackCount = track.TrackCount
@@ -81,6 +83,12 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 		return Collection{}, fmt.Errorf("album %s not found", id)
 	}
 	album := resp.Data[0]
+	var albumArtistID, albumArtistArtworkURL string
+	if len(album.Relationships.Artists.Data) > 0 {
+		albumArtist := album.Relationships.Artists.Data[0]
+		albumArtistID = albumArtist.ID
+		albumArtistArtworkURL = albumArtist.Attributes.Artwork.URL
+	}
 	tracks := make([]Song, 0, len(album.Relationships.Tracks.Data))
 	discCount := 0
 	for _, raw := range album.Relationships.Tracks.Data {
@@ -88,6 +96,8 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 		s.AlbumID = album.ID
 		s.AlbumName = firstNonEmpty(s.AlbumName, album.Attributes.Name)
 		s.AlbumArtist = album.Attributes.ArtistName
+		s.AlbumArtistID = albumArtistID
+		s.AlbumArtistArtworkURL = albumArtistArtworkURL
 		s.AlbumRelease = album.Attributes.ReleaseDate
 		s.Copyright = album.Attributes.Copyright
 		s.RecordLabel = album.Attributes.RecordLabel
@@ -103,7 +113,10 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 			tracks[i].DiscCount = discCount
 		}
 	}
-	return Collection{ID: album.ID, Type: TypeAlbum, Name: album.Attributes.Name, Artist: album.Attributes.ArtistName, ArtworkURL: album.Attributes.Artwork.URL, Tracks: tracks}, nil
+	return Collection{
+		ID: album.ID, Type: TypeAlbum, Name: album.Attributes.Name, Artist: album.Attributes.ArtistName,
+		ArtworkURL: album.Attributes.Artwork.URL, ArtistID: albumArtistID, ArtistArtworkURL: albumArtistArtworkURL, Tracks: tracks,
+	}, nil
 }
 
 func (c *CatalogClient) Playlist(ctx context.Context, storefront, id string) (Collection, error) {
@@ -125,6 +138,20 @@ func (c *CatalogClient) Playlist(ctx context.Context, storefront, id string) (Co
 		tracks = append(tracks, mapSong(raw))
 	}
 	return Collection{ID: playlist.ID, Type: TypePlaylist, Name: playlist.Attributes.Name, Artist: firstNonEmpty(playlist.Attributes.CuratorName, playlist.Attributes.ArtistName), ArtworkURL: playlist.Attributes.Artwork.URL, Tracks: tracks}, nil
+}
+
+func (c *CatalogClient) Artist(ctx context.Context, storefront, id string) (Artist, error) {
+	var resp catalogArtistResponse
+	if err := c.get(ctx, fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/artists/%s", storefront, id), url.Values{
+		"l": []string{c.cfg.Language},
+	}, &resp); err != nil {
+		return Artist{}, err
+	}
+	if len(resp.Data) == 0 {
+		return Artist{}, fmt.Errorf("artist %s not found", id)
+	}
+	raw := resp.Data[0]
+	return Artist{ID: raw.ID, Name: raw.Attributes.Name, ArtworkURL: raw.Attributes.Artwork.URL}, nil
 }
 
 func (c *CatalogClient) Cover(ctx context.Context, artworkURL, format, size string) ([]byte, error) {
@@ -310,7 +337,9 @@ func mapSong(raw catalogSongData) Song {
 		s.TrackCount = album.Attributes.TrackCount
 	}
 	if len(raw.Relationships.Artists.Data) > 0 {
-		s.ArtistID = raw.Relationships.Artists.Data[0].ID
+		artist := raw.Relationships.Artists.Data[0]
+		s.ArtistID = artist.ID
+		s.ArtistArtworkURL = artist.Attributes.Artwork.URL
 	}
 	return s
 }

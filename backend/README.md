@@ -87,14 +87,35 @@ curl -X POST http://127.0.0.1:18080/api/v1/downloads/{job_id}/cancel
 
 ## 保存格式
 
-默认按“艺术家 / 专辑 / 歌曲”保存：
+不同下载任务会保存到 `downloads` 下独立的类型目录。单曲默认按“艺术家 / 专辑 / 歌曲”保存：
 
 ```text
-data/downloads/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
+data/downloads/songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
+```
+
+专辑任务保存到：
+
+```text
+data/downloads/albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
 ```
 
 歌单下载单独保存到以歌单名命名的文件夹，歌曲文件直接放在该文件夹内：
 
 ```text
-data/downloads/{PlaylistName}/{SongNumer:02d}. {SongName}.m4a
+data/downloads/playlists/{PlaylistName}/{SongNumer:02d}. {SongName}.m4a
 ```
+
+三个类型目录名可分别通过 `download.songs_folder_name`、`download.albums_folder_name`、`download.playlists_folder_name` 自定义。
+
+可选择在音频文件外额外保存独立封面：
+
+- `download.save_album_cover: true`：在专辑目录保存 `cover.jpg`/`cover.png`。
+- `download.save_artist_cover: true`：在艺术家目录保存 `artist.jpg`/`artist.png`。
+- `download.save_playlist_cover: true`：在歌单目录保存 `cover.jpg`/`cover.png`。
+
+文件扩展名跟随 `download.cover_format`。歌单为平铺目录，可保存歌单封面，但不会额外写入专辑或艺术家封面。
+
+对于带 `?i=<song_id>` 的专辑链接，可通过 `catalog.album_track_url_mode` 选择任务类型：
+
+- `song`（默认）：视为单曲任务，使用 `i` 参数中的歌曲 ID。
+- `album`：忽略 `i` 参数，视为专辑任务并下载整张专辑。

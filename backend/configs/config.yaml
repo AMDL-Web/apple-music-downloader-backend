@@ -10,21 +10,29 @@ wrapper:
   timeout_seconds: 30
 
 catalog:
-  default_storefront: "us"
-  language: "en-US"
+  default_storefront: "cn"
+  language: "zh-Hans_CN"
   authorization_token: ""
   token_cache_ttl_hours: 12
+  # song: album URLs containing ?i= are single-song tasks; album: download the full album.
+  album_track_url_mode: "song"
 
 download:
   codec: "alac"
-  max_running_jobs: 2
+  max_running_jobs: 10
   max_parallel_tracks: 15
-  retries: 3
+  retries: 2
   downloads_dir: "data/downloads"
+  songs_folder_name: "songs"
+  albums_folder_name: "albums"
+  playlists_folder_name: "playlists"
   temp_dir: "data/tmp"
   cover_size: "5000x5000"
   cover_format: "jpg"
   embed_cover: true
+  save_album_cover: true
+  save_artist_cover: true
+  save_playlist_cover: true
   embed_lyrics: true
   save_lyrics_file: false
   lyrics_format: "lrc"

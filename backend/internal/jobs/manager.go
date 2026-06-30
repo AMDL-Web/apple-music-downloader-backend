@@ -15,8 +15,28 @@ import (
 )
 
 type Processor interface {
+	ValidateRequest(ctx context.Context, req domain.DownloadRequest) (ValidationResult, error)
 	ProcessJob(ctx context.Context, job domain.Job, reporter Reporter) error
 }
+
+type ValidationResult struct {
+	Type       string
+	Storefront string
+}
+
+type RequestError struct {
+	Code                 string
+	Message              string
+	Storefront           string
+	SupportedStorefronts []string
+	Cause                error
+}
+
+func (e *RequestError) Error() string { return e.Message }
+
+func (e *RequestError) Unwrap() error { return e.Cause }
+
+var ErrQueueFull = errors.New("job queue is full")
 
 type Reporter interface {
 	SetJob(ctx context.Context, job domain.Job) error
@@ -32,6 +52,7 @@ type Manager struct {
 	queue     chan string
 	logger    *slog.Logger
 	mu        sync.Mutex
+	submitMu  sync.Mutex
 	cancels   map[string]context.CancelFunc
 	workers   int
 }
@@ -53,20 +74,29 @@ func (m *Manager) Start(ctx context.Context) {
 }
 
 func (m *Manager) Submit(ctx context.Context, req domain.DownloadRequest) (domain.Job, error) {
+	validated, err := m.processor.ValidateRequest(ctx, req)
+	if err != nil {
+		return domain.Job{}, err
+	}
+
+	// Serialize capacity check, persistence and enqueue. Only Submit writes to
+	// the queue, so a free slot cannot disappear while this lock is held.
+	m.submitMu.Lock()
+	defer m.submitMu.Unlock()
+	if len(m.queue) >= cap(m.queue) {
+		return domain.Job{}, ErrQueueFull
+	}
+
 	now := time.Now().UTC()
 	job := domain.Job{
-		ID: storage.NewID("job"), Input: req.URL, Type: "unknown", Status: domain.JobQueued,
+		ID: storage.NewID("job"), Input: req.URL, Type: validated.Type, Storefront: validated.Storefront, Status: domain.JobQueued,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := m.store.CreateJob(ctx, job); err != nil {
 		return job, err
 	}
 	_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_queued", Message: "job queued"})
-	select {
-	case m.queue <- job.ID:
-	default:
-		return job, errors.New("job queue is full")
-	}
+	m.queue <- job.ID
 	return job, nil
 }
 

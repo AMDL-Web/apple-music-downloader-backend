@@ -1,39 +1,50 @@
 package applemusic
 
 type Song struct {
-	ID            string
-	Name          string
-	ArtistName    string
-	AlbumName     string
-	ComposerName  string
-	GenreNames    []string
-	ReleaseDate   string
-	TrackNumber   int
-	DiscNumber    int
-	TrackCount    int
-	DiscCount     int
-	ISRC          string
-	ContentRating string
-	HasLyrics     bool
-	ArtworkURL      string
-	AlbumArtworkURL string
-	EnhancedHLS     string
-	AlbumID       string
-	AlbumArtist   string
-	AlbumRelease  string
-	Copyright     string
-	RecordLabel   string
-	UPC           string
-	ArtistID      string
+	ID                    string
+	Name                  string
+	ArtistName            string
+	AlbumName             string
+	ComposerName          string
+	GenreNames            []string
+	ReleaseDate           string
+	TrackNumber           int
+	DiscNumber            int
+	TrackCount            int
+	DiscCount             int
+	ISRC                  string
+	ContentRating         string
+	HasLyrics             bool
+	ArtworkURL            string
+	AlbumArtworkURL       string
+	ArtistArtworkURL      string
+	EnhancedHLS           string
+	AlbumID               string
+	AlbumArtist           string
+	AlbumArtistID         string
+	AlbumArtistArtworkURL string
+	AlbumRelease          string
+	Copyright             string
+	RecordLabel           string
+	UPC                   string
+	ArtistID              string
 }
 
 type Collection struct {
+	ID               string
+	Type             URLType
+	Name             string
+	Artist           string
+	ArtworkURL       string
+	ArtistID         string
+	ArtistArtworkURL string
+	Tracks           []Song
+}
+
+type Artist struct {
 	ID         string
-	Type       URLType
 	Name       string
-	Artist     string
 	ArtworkURL string
-	Tracks     []Song
 }
 
 type catalogSongResponse struct {
@@ -46,6 +57,10 @@ type catalogAlbumResponse struct {
 
 type catalogPlaylistResponse struct {
 	Data []catalogPlaylistData `json:"data"`
+}
+
+type catalogArtistResponse struct {
+	Data []artistData `json:"data"`
 }
 
 type catalogSongData struct {
@@ -121,7 +136,8 @@ type songRelationships struct {
 }
 
 type albumRelationships struct {
-	Tracks relationshipSongs `json:"tracks"`
+	Tracks  relationshipSongs   `json:"tracks"`
+	Artists relationshipArtists `json:"artists"`
 }
 
 type playlistRelationships struct {
@@ -147,5 +163,6 @@ type artistData struct {
 }
 
 type artistAttributes struct {
-	Name string `json:"name"`
+	Name    string  `json:"name"`
+	Artwork artwork `json:"artwork"`
 }
