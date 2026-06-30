@@ -2,8 +2,14 @@ package wrapper
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
+	"sync"
+	"time"
 
 	"amdl/backend/internal/config"
 	pb "amdl/backend/internal/wrapperproto"
@@ -13,9 +19,41 @@ import (
 )
 
 type Client struct {
-	conn *grpc.ClientConn
-	api  pb.WrapperManagerServiceClient
-	cfg  config.WrapperConfig
+	conn         *grpc.ClientConn
+	api          pb.WrapperManagerServiceClient
+	cfg          config.WrapperConfig
+	loginTimeout time.Duration
+	sessionsMu   sync.Mutex
+	sessions     map[string]*loginSession
+}
+
+var (
+	ErrAuthenticationFailed = errors.New("wrapper authentication failed")
+	ErrAlreadyLoggedIn      = errors.New("wrapper account already logged in")
+	ErrLoginSessionNotFound = errors.New("wrapper login session not found")
+	ErrLoginSessionBusy     = errors.New("wrapper login session is already being verified")
+	ErrLoginTimeout         = errors.New("wrapper login timed out")
+	ErrAccountNotFound      = errors.New("wrapper account not found")
+	ErrWrapperResponse      = errors.New("wrapper returned an unexpected response")
+)
+
+const (
+	LoginStatusLoggedIn     = "logged_in"
+	LoginStatusNeedsTwoStep = "needs_2fa"
+)
+
+type LoginResult struct {
+	Status  string `json:"status"`
+	LoginID string `json:"login_id,omitempty"`
+}
+
+type loginSession struct {
+	stream    pb.WrapperManagerService_LoginClient
+	cancel    context.CancelFunc
+	username  string
+	expiresAt time.Time
+	timer     *time.Timer
+	busy      bool
 }
 
 type Status struct {
@@ -40,10 +78,176 @@ func NewClient(cfg config.WrapperConfig) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{conn: conn, api: pb.NewWrapperManagerServiceClient(conn), cfg: cfg}, nil
+	return &Client{conn: conn, api: pb.NewWrapperManagerServiceClient(conn), cfg: cfg, sessions: make(map[string]*loginSession)}, nil
 }
 
-func (c *Client) Close() error { return c.conn.Close() }
+func (c *Client) Close() error {
+	c.sessionsMu.Lock()
+	for id, session := range c.sessions {
+		if session.timer != nil {
+			session.timer.Stop()
+		}
+		session.cancel()
+		delete(c.sessions, id)
+	}
+	c.sessionsMu.Unlock()
+	return c.conn.Close()
+}
+
+func (c *Client) authTimeout() time.Duration {
+	if c.loginTimeout > 0 {
+		return c.loginTimeout
+	}
+	return c.cfg.Timeout()
+}
+
+func (c *Client) StartLogin(ctx context.Context, username, password string) (LoginResult, error) {
+	streamCtx, cancel := context.WithCancel(context.Background())
+	stream, err := c.api.Login(streamCtx)
+	if err != nil {
+		cancel()
+		return LoginResult{}, err
+	}
+	if err := stream.Send(&pb.LoginRequest{Data: &pb.LoginData{Username: username, Password: password}}); err != nil {
+		cancel()
+		return LoginResult{}, err
+	}
+	reply, err := receiveLoginReply(ctx, stream, c.authTimeout())
+	if err != nil {
+		cancel()
+		return LoginResult{}, err
+	}
+	switch reply.GetHeader().GetCode() {
+	case 0:
+		cancel()
+		return LoginResult{Status: LoginStatusLoggedIn}, nil
+	case 2:
+		id, err := randomLoginID()
+		if err != nil {
+			cancel()
+			return LoginResult{}, err
+		}
+		timeout := c.authTimeout()
+		session := &loginSession{stream: stream, cancel: cancel, username: username, expiresAt: time.Now().Add(timeout)}
+		c.sessionsMu.Lock()
+		c.sessions[id] = session
+		session.timer = time.AfterFunc(timeout, func() { c.expireSession(id, session) })
+		c.sessionsMu.Unlock()
+		return LoginResult{Status: LoginStatusNeedsTwoStep, LoginID: id}, nil
+	case -1:
+		cancel()
+		if strings.Contains(strings.ToLower(reply.GetHeader().GetMsg()), "already login") {
+			return LoginResult{}, ErrAlreadyLoggedIn
+		}
+		return LoginResult{}, ErrAuthenticationFailed
+	default:
+		cancel()
+		return LoginResult{}, fmt.Errorf("%w: login code %d: %s", ErrWrapperResponse, reply.GetHeader().GetCode(), reply.GetHeader().GetMsg())
+	}
+}
+
+func (c *Client) SubmitTwoStepCode(ctx context.Context, loginID, code string) (LoginResult, error) {
+	session, remaining, err := c.acquireSession(loginID)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	defer c.removeSession(loginID, session)
+	if err := session.stream.Send(&pb.LoginRequest{Data: &pb.LoginData{Username: session.username, TwoStepCode: code}}); err != nil {
+		return LoginResult{}, err
+	}
+	reply, err := receiveLoginReply(ctx, session.stream, remaining)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	switch reply.GetHeader().GetCode() {
+	case 0:
+		return LoginResult{Status: LoginStatusLoggedIn}, nil
+	case -1:
+		return LoginResult{}, ErrAuthenticationFailed
+	default:
+		return LoginResult{}, fmt.Errorf("%w: two-step code %d: %s", ErrWrapperResponse, reply.GetHeader().GetCode(), reply.GetHeader().GetMsg())
+	}
+}
+
+func (c *Client) Logout(ctx context.Context, username string) error {
+	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout())
+	defer cancel()
+	reply, err := c.api.Logout(ctx, &pb.LogoutRequest{Data: &pb.LogoutData{Username: username}})
+	if err != nil {
+		return err
+	}
+	if reply.GetHeader().GetCode() == 0 {
+		return nil
+	}
+	if strings.Contains(strings.ToLower(reply.GetHeader().GetMsg()), "no such account") {
+		return ErrAccountNotFound
+	}
+	return fmt.Errorf("%w: logout code %d: %s", ErrWrapperResponse, reply.GetHeader().GetCode(), reply.GetHeader().GetMsg())
+}
+
+func receiveLoginReply(ctx context.Context, stream pb.WrapperManagerService_LoginClient, timeout time.Duration) (*pb.LoginReply, error) {
+	type result struct {
+		reply *pb.LoginReply
+		err   error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		reply, err := stream.Recv()
+		resultCh <- result{reply: reply, err: err}
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+		return nil, ErrLoginTimeout
+	case result := <-resultCh:
+		return result.reply, result.err
+	}
+}
+
+func randomLoginID() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate login id: %w", err)
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+func (c *Client) acquireSession(id string) (*loginSession, time.Duration, error) {
+	c.sessionsMu.Lock()
+	defer c.sessionsMu.Unlock()
+	session, ok := c.sessions[id]
+	if !ok || time.Now().After(session.expiresAt) {
+		return nil, 0, ErrLoginSessionNotFound
+	}
+	if session.busy {
+		return nil, 0, ErrLoginSessionBusy
+	}
+	session.busy = true
+	if session.timer != nil {
+		session.timer.Stop()
+	}
+	return session, time.Until(session.expiresAt), nil
+}
+
+func (c *Client) expireSession(id string, expected *loginSession) {
+	c.removeSession(id, expected)
+}
+
+func (c *Client) removeSession(id string, expected *loginSession) {
+	c.sessionsMu.Lock()
+	session, ok := c.sessions[id]
+	if ok && session == expected {
+		delete(c.sessions, id)
+		if session.timer != nil {
+			session.timer.Stop()
+		}
+		session.cancel()
+	}
+	c.sessionsMu.Unlock()
+}
 
 func (c *Client) Status(ctx context.Context) (Status, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout())

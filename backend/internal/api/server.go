@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,12 +25,19 @@ type Server struct {
 	store   *db.Store
 	hub     *events.Hub
 	manager *jobs.Manager
-	wrapper *wrapper.Client
+	wrapper wrapperService
 	tools   *media.ToolChecker
 	logger  *slog.Logger
 }
 
-func NewServer(cfg config.Config, store *db.Store, hub *events.Hub, manager *jobs.Manager, wrapperClient *wrapper.Client, tools *media.ToolChecker, logger *slog.Logger) *Server {
+type wrapperService interface {
+	Status(context.Context) (wrapper.Status, error)
+	StartLogin(context.Context, string, string) (wrapper.LoginResult, error)
+	SubmitTwoStepCode(context.Context, string, string) (wrapper.LoginResult, error)
+	Logout(context.Context, string) error
+}
+
+func NewServer(cfg config.Config, store *db.Store, hub *events.Hub, manager *jobs.Manager, wrapperClient wrapperService, tools *media.ToolChecker, logger *slog.Logger) *Server {
 	return &Server{cfg: cfg, store: store, hub: hub, manager: manager, wrapper: wrapperClient, tools: tools, logger: logger}
 }
 
@@ -37,10 +45,91 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/capabilities", s.capabilities)
+	mux.HandleFunc("GET /api/v1/wrapper/status", s.wrapperStatus)
+	mux.HandleFunc("POST /api/v1/wrapper/login", s.wrapperLogin)
+	mux.HandleFunc("POST /api/v1/wrapper/login/{login_id}/2fa", s.wrapperTwoStep)
+	mux.HandleFunc("POST /api/v1/wrapper/logout", s.wrapperLogout)
 	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
 	mux.HandleFunc("GET /api/v1/downloads", s.listDownloads)
 	mux.HandleFunc("/api/v1/downloads/", s.downloadByID)
 	return cors(mux)
+}
+
+func (s *Server) wrapperStatus(w http.ResponseWriter, r *http.Request) {
+	status, err := s.wrapper.Status(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) wrapperLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	req.Password = strings.TrimSpace(req.Password)
+	if req.Username == "" || req.Password == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("username and password are required"))
+		return
+	}
+	result, err := s.wrapper.StartLogin(r.Context(), req.Username, req.Password)
+	if err != nil {
+		writeWrapperError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if result.Status == wrapper.LoginStatusNeedsTwoStep {
+		status = http.StatusAccepted
+	}
+	writeJSON(w, status, result)
+}
+
+func (s *Server) wrapperTwoStep(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string `json:"two_step_code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.Code = strings.TrimSpace(req.Code)
+	if req.Code == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("two_step_code is required"))
+		return
+	}
+	result, err := s.wrapper.SubmitTwoStepCode(r.Context(), r.PathValue("login_id"), req.Code)
+	if err != nil {
+		writeWrapperError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) wrapperLogout(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("username is required"))
+		return
+	}
+	if err := s.wrapper.Logout(r.Context(), req.Username); err != nil {
+		writeWrapperError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "logged_out", "username": req.Username})
 }
 
 func cors(next http.Handler) http.Handler {
@@ -209,6 +298,21 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]any{"error": err.Error()})
+}
+
+func writeWrapperError(w http.ResponseWriter, err error) {
+	status := http.StatusBadGateway
+	switch {
+	case errors.Is(err, wrapper.ErrAuthenticationFailed):
+		status = http.StatusUnauthorized
+	case errors.Is(err, wrapper.ErrAlreadyLoggedIn), errors.Is(err, wrapper.ErrLoginSessionBusy):
+		status = http.StatusConflict
+	case errors.Is(err, wrapper.ErrLoginSessionNotFound), errors.Is(err, wrapper.ErrAccountNotFound):
+		status = http.StatusNotFound
+	case errors.Is(err, wrapper.ErrLoginTimeout):
+		status = http.StatusGatewayTimeout
+	}
+	writeError(w, status, err)
 }
 
 func writeSubmitError(w http.ResponseWriter, err error) {

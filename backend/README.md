@@ -61,6 +61,36 @@ curl http://127.0.0.1:18080/api/v1/capabilities
 
 ## API
 
+检查 wrapper-manager 状态：
+
+```bash
+curl http://127.0.0.1:18080/api/v1/wrapper/status
+```
+
+登录 wrapper 账号：
+
+```bash
+curl -X POST http://127.0.0.1:18080/api/v1/wrapper/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"apple-id@example.com","password":"password"}'
+```
+
+如果响应包含 `"status":"needs_2fa"`，使用响应中的 `login_id` 在 30 秒内提交验证码：
+
+```bash
+curl -X POST http://127.0.0.1:18080/api/v1/wrapper/login/{login_id}/2fa \
+  -H 'Content-Type: application/json' \
+  -d '{"two_step_code":"123456"}'
+```
+
+登出 wrapper 账号：
+
+```bash
+curl -X POST http://127.0.0.1:18080/api/v1/wrapper/logout \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"apple-id@example.com"}'
+```
+
 创建下载任务：
 
 ```bash

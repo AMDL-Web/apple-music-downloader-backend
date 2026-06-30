@@ -8,6 +8,70 @@
 
 返回当前支持的输入类型、音质优先级、外部媒体工具检查结果。
 
+## Wrapper 管理
+
+### `GET /api/v1/wrapper/status`
+
+返回 wrapper-manager 的独立状态：
+
+```json
+{
+  "ready": true,
+  "status": true,
+  "regions": ["us"],
+  "client_count": 1
+}
+```
+
+wrapper-manager 不可用时返回 `503 Service Unavailable`。
+
+### `POST /api/v1/wrapper/login`
+
+开始登录：
+
+```json
+{
+  "username": "apple-id@example.com",
+  "password": "password"
+}
+```
+
+无需两步验证时返回 `200 OK`：
+
+```json
+{"status":"logged_in"}
+```
+
+需要两步验证时返回 `202 Accepted`：
+
+```json
+{"status":"needs_2fa","login_id":"opaque-login-id"}
+```
+
+### `POST /api/v1/wrapper/login/{login_id}/2fa`
+
+继续同一次登录并提交验证码：
+
+```json
+{"two_step_code":"123456"}
+```
+
+成功时返回 `200 OK` 和 `{"status":"logged_in"}`。`login_id` 仅保存在内存中；验证码等待与验证完成共用 30 秒时限，服务重启后失效。
+
+### `POST /api/v1/wrapper/logout`
+
+```json
+{"username":"apple-id@example.com"}
+```
+
+成功时返回：
+
+```json
+{"status":"logged_out","username":"apple-id@example.com"}
+```
+
+认证接口可能返回 `400`（参数错误）、`401`（认证失败）、`404`（会话或账号不存在）、`409`（重复操作）、`502`（wrapper 上游错误）或 `504`（登录超时）。
+
 ## `POST /api/v1/downloads`
 
 创建下载任务。
