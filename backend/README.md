@@ -2,7 +2,7 @@
 
 这是新的 AMDL 核心下载后端。当前阶段只关注歌曲下载核心：
 
-- 支持 Apple Music 单曲、专辑、歌单 URL。
+- 支持 Apple Music 单曲、专辑、歌单、MV（music-video）URL。
 - 不做 OAuth、不做通知、不兼容旧前端。
 - 直接对接 `wrapper-manager` gRPC。
 - 使用 SQLite 持久化任务、任务项和事件。
@@ -94,3 +94,18 @@ data/downloads/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
 ```
 
 歌单里的歌曲也会按真实歌曲元数据归入艺术家和专辑目录。
+
+## MV（Music Video）下载
+
+- 直接提交 MV 链接即可，例如 `https://music.apple.com/cn/music-video/<name>/<id>`。
+- 通过 `wrapper-manager` 的 `WebPlayback`（媒体用户令牌由 wrapper 持有）拿到 MV 主清单，再分别选取视频流与音频流。
+- 视频流与音频流各自走 Widevine 许可证 + 进程内解密（无需外部 `mp4decrypt`），最终用 `MP4Box` 封装为单个 `.mp4`，并写入元数据与封面。
+- 相关配置项：
+  - `download.mv_max_height`：视频分辨率上限（默认 `2160`，即最高 4K；找不到不超过该高度的清晰度时回退到最低清晰度）。
+  - `download.mv_audio_type`：音频偏好，`atmos`（默认，优先 Atmos→AC3→立体声 256）、`ac3`、`aac`/`stereo`。
+  - `download.mv_folder_format` / `download.mv_file_format`：MV 保存目录与文件名格式，默认 `{ArtistName}/{SongName}.mp4`。
+- 默认保存为：
+
+```text
+data/downloads/{ArtistName}/{SongName}.mp4
+```

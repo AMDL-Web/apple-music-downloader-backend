@@ -17,6 +17,10 @@ import (
 
 const prefetchKey = "skd://itunes.apple.com/P000000000/s1/e1"
 
+// mediaUserAgent mimics a desktop browser so Apple's media CDN serves playlists
+// and segments without 403ing automated clients.
+const mediaUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
 type m3u8Info struct {
 	MediaURI   string
 	Keys       []string
@@ -182,6 +186,7 @@ func downloadText(ctx context.Context, client *http.Client, uri string) (string,
 	if err != nil {
 		return "", err
 	}
+	req.Header.Set("User-Agent", mediaUserAgent)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -203,6 +208,7 @@ func downloadBytes(ctx context.Context, client *http.Client, uri string, onProgr
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("User-Agent", mediaUserAgent)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

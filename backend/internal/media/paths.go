@@ -38,6 +38,37 @@ func outputPath(cfg config.Config, song applemusic.Song, playlistIndex int, fold
 	return filepath.Join(cfg.Download.DownloadsDir, safeName(artist), safeName(album), safeName(file)+".m4a")
 }
 
+func mvOutputPath(cfg config.Config, mv applemusic.MusicVideo) string {
+	folderPattern := cfg.Download.MVFolderFormat
+	if folderPattern == "" {
+		folderPattern = "{ArtistName}"
+	}
+	filePattern := cfg.Download.MVFileFormat
+	if filePattern == "" {
+		filePattern = "{SongName}"
+	}
+	folder := formatMVPattern(folderPattern, mv)
+	file := formatMVPattern(filePattern, mv)
+	return filepath.Join(cfg.Download.DownloadsDir, safeName(folder), safeName(file)+".mp4")
+}
+
+func formatMVPattern(pattern string, mv applemusic.MusicVideo) string {
+	repl := map[string]string{
+		"ArtistName":  mv.ArtistName,
+		"AlbumName":   mv.AlbumName,
+		"SongName":    mv.Name,
+		"SongId":      mv.ID,
+		"TrackNumber": strconv.Itoa(max(1, mv.TrackNumber)),
+		"DiscNumber":  strconv.Itoa(max(1, mv.DiscNumber)),
+	}
+	out := pattern
+	for key, val := range repl {
+		out = strings.ReplaceAll(out, "{"+key+"}", val)
+		out = strings.ReplaceAll(out, "{"+key+":02d}", fmt.Sprintf("%02d", atoi(val)))
+	}
+	return out
+}
+
 func formatPattern(pattern string, song applemusic.Song, playlistIndex int, codec string) string {
 	repl := map[string]string{
 		"SongId":       song.ID,
