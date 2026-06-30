@@ -67,8 +67,8 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"api":                "v1",
-		"supported_inputs":   []string{"song_url", "album_url", "playlist_url", "music_video_url"},
-		"unsupported_inputs": []string{"artist", "station", "search"},
+		"supported_inputs":   []string{"song_url", "album_url", "playlist_url"},
+		"unsupported_inputs": []string{"music_video", "artist", "station", "search"},
 		"codec":              s.cfg.Download.Codec,
 		"fallback_codec":     "aac-lc",
 		"retry_policy": map[string]int{

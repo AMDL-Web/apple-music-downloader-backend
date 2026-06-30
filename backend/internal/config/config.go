@@ -72,10 +72,6 @@ type DownloadConfig struct {
 	ALACMaxSampleRate      int    `yaml:"alac_max_sample_rate" json:"alac_max_sample_rate"`
 	ALACMaxBitDepth        int    `yaml:"alac_max_bit_depth" json:"alac_max_bit_depth"`
 	CheckIntegrity         bool   `yaml:"check_integrity" json:"check_integrity"`
-	MVMaxHeight            int    `yaml:"mv_max_height" json:"mv_max_height"`
-	MVAudioType            string `yaml:"mv_audio_type" json:"mv_audio_type"`
-	MVFolderFormat         string `yaml:"mv_folder_format" json:"mv_folder_format"`
-	MVFileFormat           string `yaml:"mv_file_format" json:"mv_file_format"`
 }
 
 type ToolsConfig struct {
@@ -99,8 +95,6 @@ func Default() Config {
 			ArtistFolderFormat: "{ArtistName}", AlbumFolderFormat: "{AlbumName}", SongFileFormat: "{TrackNumber:02d}. {SongName}",
 			PlaylistFolderFormat: "{PlaylistName}", PlaylistSongFileFormat: "{SongNumer:02d}. {ArtistName} - {SongName}",
 			ALACMaxSampleRate: 192000, ALACMaxBitDepth: 24, CheckIntegrity: true,
-			MVMaxHeight: 2160, MVAudioType: "atmos",
-			MVFolderFormat: "{ArtistName}", MVFileFormat: "{SongName}",
 		},
 		Tools: ToolsConfig{FFmpeg: "ffmpeg", GPAC: "gpac", MP4Box: "MP4Box", MP4Extract: "mp4extract", MP4Edit: "mp4edit"},
 	}

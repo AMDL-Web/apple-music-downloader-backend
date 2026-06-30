@@ -36,53 +36,6 @@ type Collection struct {
 	Tracks     []Song
 }
 
-// MusicVideo holds the catalog metadata needed to download and tag a music video.
-type MusicVideo struct {
-	ID            string
-	Name          string
-	ArtistName    string
-	AlbumName     string
-	GenreNames    []string
-	ReleaseDate   string
-	TrackNumber   int
-	DiscNumber    int
-	ISRC          string
-	ContentRating string
-	ArtworkURL    string
-	ArtistID      string
-	Copyright     string
-	UPC           string
-}
-
-type catalogMusicVideoResponse struct {
-	Data []catalogMusicVideoData `json:"data"`
-}
-
-type catalogMusicVideoData struct {
-	ID            string                  `json:"id"`
-	Type          string                  `json:"type"`
-	Attributes    musicVideoAttributes    `json:"attributes"`
-	Relationships musicVideoRelationships `json:"relationships"`
-}
-
-type musicVideoAttributes struct {
-	Name          string   `json:"name"`
-	ArtistName    string   `json:"artistName"`
-	AlbumName     string   `json:"albumName"`
-	GenreNames    []string `json:"genreNames"`
-	ReleaseDate   string   `json:"releaseDate"`
-	TrackNumber   int      `json:"trackNumber"`
-	DiscNumber    int      `json:"discNumber"`
-	ISRC          string   `json:"isrc"`
-	ContentRating string   `json:"contentRating"`
-	Artwork       artwork  `json:"artwork"`
-}
-
-type musicVideoRelationships struct {
-	Artists relationshipArtists `json:"artists"`
-	Albums  relationshipAlbums  `json:"albums"`
-}
-
 type catalogSongResponse struct {
 	Data []catalogSongData `json:"data"`
 }

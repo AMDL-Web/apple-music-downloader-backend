@@ -57,49 +57,18 @@ func extractAACLCMedia(ctx context.Context, client *http.Client, playlistURL str
 	return media, nil
 }
 
-func loadWidevineDevice() (*widevine.Device, error) {
+func newWidevineSession(kidBase64 string) ([]byte, func([]byte) ([]*widevine.Key, error), error) {
 	deviceRaw, err := base64.StdEncoding.DecodeString(widevineDeviceBase64)
 	if err != nil {
-		return nil, fmt.Errorf("decode embedded Widevine device: %w", err)
+		return nil, nil, fmt.Errorf("decode embedded Widevine device: %w", err)
 	}
 	device, err := widevine.NewDevice(widevine.FromWVD(bytes.NewReader(deviceRaw)))
 	if err != nil {
-		return nil, fmt.Errorf("load Widevine device: %w", err)
-	}
-	return device, nil
-}
-
-func newWidevineSession(kidBase64 string) ([]byte, func([]byte) ([]*widevine.Key, error), error) {
-	device, err := loadWidevineDevice()
-	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("load Widevine device: %w", err)
 	}
 	pssh, err := makeWidevinePSSH(kidBase64)
 	if err != nil {
 		return nil, nil, err
-	}
-	challenge, parseLicense, err := widevine.NewCDM(device).GetLicenseChallenge(pssh, wvpb.LicenseType_AUTOMATIC, false)
-	if err != nil {
-		return nil, nil, fmt.Errorf("generate Widevine license challenge: %w", err)
-	}
-	return challenge, parseLicense, nil
-}
-
-// newWidevineSessionFromPSSH builds a license challenge from a complete
-// base64-encoded Widevine pssh box (as embedded in HLS "data:" key URIs used by
-// music videos).
-func newWidevineSessionFromPSSH(psshBase64 string) ([]byte, func([]byte) ([]*widevine.Key, error), error) {
-	device, err := loadWidevineDevice()
-	if err != nil {
-		return nil, nil, err
-	}
-	psshBytes, err := base64.StdEncoding.DecodeString(psshBase64)
-	if err != nil {
-		return nil, nil, fmt.Errorf("decode Widevine pssh: %w", err)
-	}
-	pssh, err := widevine.NewPSSH(psshBytes)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse Widevine pssh: %w", err)
 	}
 	challenge, parseLicense, err := widevine.NewCDM(device).GetLicenseChallenge(pssh, wvpb.LicenseType_AUTOMATIC, false)
 	if err != nil {

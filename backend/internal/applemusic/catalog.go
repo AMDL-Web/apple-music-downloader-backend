@@ -127,45 +127,6 @@ func (c *CatalogClient) Playlist(ctx context.Context, storefront, id string) (Co
 	return Collection{ID: playlist.ID, Type: TypePlaylist, Name: playlist.Attributes.Name, Artist: firstNonEmpty(playlist.Attributes.CuratorName, playlist.Attributes.ArtistName), ArtworkURL: playlist.Attributes.Artwork.URL, Tracks: tracks}, nil
 }
 
-func (c *CatalogClient) MusicVideo(ctx context.Context, storefront, id string) (MusicVideo, error) {
-	var resp catalogMusicVideoResponse
-	if err := c.get(ctx, fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/music-videos/%s", storefront, id), url.Values{
-		"include": []string{"albums,artists"},
-		"l":       []string{c.cfg.Language},
-	}, &resp); err != nil {
-		return MusicVideo{}, err
-	}
-	if len(resp.Data) == 0 {
-		return MusicVideo{}, fmt.Errorf("music video %s not found", id)
-	}
-	raw := resp.Data[0]
-	mv := MusicVideo{
-		ID:            raw.ID,
-		Name:          raw.Attributes.Name,
-		ArtistName:    raw.Attributes.ArtistName,
-		AlbumName:     raw.Attributes.AlbumName,
-		GenreNames:    raw.Attributes.GenreNames,
-		ReleaseDate:   raw.Attributes.ReleaseDate,
-		TrackNumber:   raw.Attributes.TrackNumber,
-		DiscNumber:    raw.Attributes.DiscNumber,
-		ISRC:          raw.Attributes.ISRC,
-		ContentRating: raw.Attributes.ContentRating,
-		ArtworkURL:    raw.Attributes.Artwork.URL,
-	}
-	if len(raw.Relationships.Artists.Data) > 0 {
-		mv.ArtistID = raw.Relationships.Artists.Data[0].ID
-	}
-	if len(raw.Relationships.Albums.Data) > 0 {
-		album := raw.Relationships.Albums.Data[0]
-		if mv.AlbumName == "" {
-			mv.AlbumName = album.Attributes.Name
-		}
-		mv.Copyright = album.Attributes.Copyright
-		mv.UPC = album.Attributes.UPC
-	}
-	return mv, nil
-}
-
 func (c *CatalogClient) Cover(ctx context.Context, artworkURL, format, size string) ([]byte, error) {
 	return c.FetchCover(ctx, []string{artworkURL}, format, size)
 }

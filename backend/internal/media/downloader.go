@@ -40,7 +40,7 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	if err != nil {
 		return err
 	}
-	if parsed.Type == applemusic.TypeArtist {
+	if parsed.Type == applemusic.TypeArtist || parsed.Type == applemusic.TypeVideo {
 		return fmt.Errorf("%s download is not implemented in core phase", parsed.Type)
 	}
 	job.Type = string(parsed.Type)
@@ -50,14 +50,6 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	}
 	if err := reporter.Event(ctx, domain.Event{JobID: job.ID, Type: "resolved_input", Message: string(parsed.Type)}); err != nil {
 		return err
-	}
-
-	if parsed.Type == applemusic.TypeVideo {
-		job.TotalItems = 1
-		if err := reporter.SetJob(ctx, job); err != nil {
-			return err
-		}
-		return d.processMusicVideo(ctx, job, parsed, reporter)
 	}
 
 	resolved, _, err := retryValue(ctx, d.cfg.Download.Retries, retryBackoff, func(int) (resolvedCollection, error) {

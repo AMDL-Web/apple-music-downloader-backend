@@ -36,10 +36,6 @@ download:
   alac_max_sample_rate: 192000
   alac_max_bit_depth: 24
   check_integrity: true
-  mv_max_height: 2160
-  mv_audio_type: "atmos"
-  mv_folder_format: "{ArtistName}"
-  mv_file_format: "{SongName}"
 
 tools:
   ffmpeg: "ffmpeg"

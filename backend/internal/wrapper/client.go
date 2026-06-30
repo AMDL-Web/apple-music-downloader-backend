@@ -168,4 +168,3 @@ func (c *Client) Decrypt(ctx context.Context, adamID string, samples []DecryptSa
 	}
 	return out, nil
 }
-
