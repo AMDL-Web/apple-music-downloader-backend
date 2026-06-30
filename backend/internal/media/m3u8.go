@@ -2,6 +2,7 @@ package media
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -193,7 +194,11 @@ func downloadText(ctx context.Context, client *http.Client, uri string) (string,
 	return string(raw), err
 }
 
-func downloadBytes(ctx context.Context, client *http.Client, uri string) ([]byte, error) {
+// downloadBytes fetches uri into memory. onProgress, if non-nil, is called
+// periodically with a value in [0,1] representing download progress based on
+// Content-Length. If the server does not advertise Content-Length the callback
+// receives -1 on every call.
+func downloadBytes(ctx context.Context, client *http.Client, uri string, onProgress func(float64)) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
 		return nil, err
@@ -206,7 +211,39 @@ func downloadBytes(ctx context.Context, client *http.Client, uri string) ([]byte
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("download %s failed: %s", uri, resp.Status)
 	}
-	return io.ReadAll(resp.Body)
+
+	total, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
+	if total <= 0 {
+		// Fallback: try X-Apple-MS-Content-Length used by Apple CDN
+		total, _ = strconv.ParseInt(resp.Header.Get("X-Apple-MS-Content-Length"), 10, 64)
+	}
+
+	if onProgress == nil || total <= 0 {
+		// No progress tracking possible – just read all at once
+		if onProgress != nil {
+			onProgress(-1)
+		}
+		return io.ReadAll(resp.Body)
+	}
+
+	buf := bytes.NewBuffer(make([]byte, 0, total))
+	chunk := make([]byte, 32*1024)
+	var downloaded int64
+	for {
+		n, readErr := resp.Body.Read(chunk)
+		if n > 0 {
+			buf.Write(chunk[:n])
+			downloaded += int64(n)
+			onProgress(float64(downloaded) / float64(total))
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
+	}
+	return buf.Bytes(), nil
 }
 
 func absURL(base, ref string) string {

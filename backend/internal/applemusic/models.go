@@ -15,8 +15,9 @@ type Song struct {
 	ISRC          string
 	ContentRating string
 	HasLyrics     bool
-	ArtworkURL    string
-	EnhancedHLS   string
+	ArtworkURL      string
+	AlbumArtworkURL string
+	EnhancedHLS     string
 	AlbumID       string
 	AlbumArtist   string
 	AlbumRelease  string
@@ -27,11 +28,12 @@ type Song struct {
 }
 
 type Collection struct {
-	ID     string
-	Type   URLType
-	Name   string
-	Artist string
-	Tracks []Song
+	ID         string
+	Type       URLType
+	Name       string
+	Artist     string
+	ArtworkURL string
+	Tracks     []Song
 }
 
 type catalogSongResponse struct {
@@ -81,6 +83,7 @@ type songAttributes struct {
 	ISRC                string            `json:"isrc"`
 	ContentRating       string            `json:"contentRating"`
 	HasTimeSyncedLyrics bool              `json:"hasTimeSyncedLyrics"`
+	HasLyrics           bool              `json:"hasLyrics"`
 	Artwork             artwork           `json:"artwork"`
 	ExtendedAssetURLs   extendedAssetURLs `json:"extendedAssetUrls"`
 }

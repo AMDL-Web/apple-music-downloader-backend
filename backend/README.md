@@ -93,4 +93,8 @@ curl -X POST http://127.0.0.1:18080/api/v1/downloads/{job_id}/cancel
 data/downloads/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
 ```
 
-歌单里的歌曲也会按真实歌曲元数据归入艺术家和专辑目录。
+歌单下载单独保存到以歌单名命名的文件夹，歌曲文件直接放在该文件夹内：
+
+```text
+data/downloads/{PlaylistName}/{SongNumer:02d}. {SongName}.m4a
+```
