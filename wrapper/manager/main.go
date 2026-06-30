@@ -523,12 +523,7 @@ func main() {
 	}
 
 	if _, err := os.Stat("data/wrapper/wrapper"); errors.Is(err, os.ErrNotExist) {
-		log.Warn("wrapper does not exist, downloading...")
-		err = os.MkdirAll("data/wrapper", 0777)
-		if err != nil {
-			panic(err)
-		}
-		PrepareWrapper(*mirror)
+		log.Panicln("wrapper binary not found in data/wrapper/wrapper. Please build and place it there first.")
 	}
 
 	if _, err := os.Stat("data/storefront_ids.json"); errors.Is(err, os.ErrNotExist) {

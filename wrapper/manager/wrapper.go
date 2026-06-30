@@ -231,51 +231,7 @@ func RemoveWrapperData(id string) {
 }
 
 func DownloadWrapperRelease(mirror bool) {
-	var resp *http.Response
-	if runtime.GOARCH == "amd64" {
-		var err error
-		resp, err = GetHttpClient().Get("https://api.github.com/repos/WorldObservationLog/wrapper/releases/latest")
-		if err != nil {
-			panic(err)
-		}
-	} else if runtime.GOARCH == "arm64" {
-		var err error
-		resp, err = GetHttpClient().Get("https://api.github.com/repos/WorldObservationLog/wrapper/releases/tags/Wrapper.arm64.latest")
-		if err != nil {
-			panic(err)
-		}
-	} else {
-		panic("unsupported arch")
-	}
-	buf := new(strings.Builder)
-	_, err := io.Copy(buf, resp.Body)
-	var info struct {
-		Assets []map[string]interface{} `json:"assets"`
-	}
-	err = json.Unmarshal([]byte(buf.String()), &info)
-	if err != nil {
-		panic(err)
-	}
-	downloadUrl := info.Assets[0]["browser_download_url"]
-	if mirror {
-		downloadUrl = strings.Replace(downloadUrl.(string), "github.com", "gh-proxy.com/github.com", -1)
-	}
-	wrapperResp, err := GetHttpClient().Get(downloadUrl.(string))
-	if err != nil {
-		panic(err)
-	}
-	binary, err := io.ReadAll(wrapperResp.Body)
-	if runtime.GOARCH == "amd64" {
-		err = os.WriteFile("data/wrapper-x86_64.zip", binary, 0777)
-	} else if runtime.GOARCH == "arm64" {
-		err = os.WriteFile("data/wrapper-arm64.zip", binary, 0777)
-	} else {
-		panic("unsupported arch")
-	}
-
-	if err != nil {
-		panic(err)
-	}
+	panic("Downloading wrapper binary is disabled. Please provide the binary manually in data/wrapper/wrapper.")
 }
 
 func DownloadStorefrontIds() {
