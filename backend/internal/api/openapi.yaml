@@ -1,0 +1,542 @@
+openapi: 3.1.0
+info:
+  title: AMDL Backend API
+  version: 1.0.0
+  description: Apple Music 下载任务与 wrapper-manager 管理接口。
+servers:
+  - url: /
+tags:
+  - name: System
+  - name: Wrapper
+  - name: Downloads
+paths:
+  /api/v1/health:
+    get:
+      tags: [System]
+      summary: 后端健康检查
+      operationId: getHealth
+      responses:
+        '200':
+          description: 后端状态；wrapper 不可用时错误写入 wrapper_error。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /api/v1/capabilities:
+    get:
+      tags: [System]
+      summary: 查询下载能力和外部工具
+      operationId: getCapabilities
+      responses:
+        '200':
+          description: 当前配置与工具可用性。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilitiesResponse'
+  /api/v1/wrapper/status:
+    get:
+      tags: [Wrapper]
+      summary: 查询 wrapper-manager 状态
+      operationId: getWrapperStatus
+      responses:
+        '200':
+          description: Wrapper 状态。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WrapperStatus'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/wrapper/login:
+    post:
+      tags: [Wrapper]
+      summary: 登录 wrapper 账号
+      description: 登录可能直接成功，也可能返回 login_id 要求两步验证码。
+      operationId: loginWrapper
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: 登录成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoggedInResponse'
+        '202':
+          description: 需要提交两步验证码。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NeedsTwoStepResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /api/v1/wrapper/login/{login_id}/2fa:
+    post:
+      tags: [Wrapper]
+      summary: 提交两步验证码
+      operationId: submitWrapperTwoStepCode
+      parameters:
+        - $ref: '#/components/parameters/LoginID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TwoStepRequest'
+      responses:
+        '200':
+          description: 登录成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoggedInResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+  /api/v1/wrapper/logout:
+    post:
+      tags: [Wrapper]
+      summary: 登出 wrapper 账号
+      operationId: logoutWrapper
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+      responses:
+        '200':
+          description: 登出成功。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoggedOutResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+  /api/v1/downloads:
+    get:
+      tags: [Downloads]
+      summary: 列出下载任务
+      operationId: listDownloads
+      parameters:
+        - name: limit
+          in: query
+          description: 返回数量，默认 50，最大 200。
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: 下载任务列表。
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Job'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [Downloads]
+      summary: 创建下载任务
+      operationId: createDownload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DownloadRequest'
+      responses:
+        '202':
+          description: 任务已入队。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          description: URL 对应的内容或 storefront 不受支持。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/downloads/{job_id}:
+    get:
+      tags: [Downloads]
+      summary: 查询下载任务详情
+      operationId: getDownload
+      parameters:
+        - $ref: '#/components/parameters/JobID'
+      responses:
+        '200':
+          description: 任务、任务项与重试策略。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DownloadDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v1/downloads/{job_id}/cancel:
+    post:
+      tags: [Downloads]
+      summary: 取消下载任务
+      operationId: cancelDownload
+      parameters:
+        - $ref: '#/components/parameters/JobID'
+      responses:
+        '200':
+          description: 任务已取消。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: cancelled
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v1/downloads/{job_id}/events:
+    get:
+      tags: [Downloads]
+      summary: 订阅下载任务事件
+      description: Server-Sent Events 流，支持 Last-Event-ID 断点续接。
+      operationId: streamDownloadEvents
+      parameters:
+        - $ref: '#/components/parameters/JobID'
+        - name: Last-Event-ID
+          in: header
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: SSE 事件流。
+          content:
+            text/event-stream:
+              schema:
+                type: string
+components:
+  parameters:
+    LoginID:
+      name: login_id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: 4f0f2c79acda4c28b69ebf4f702f8a51
+    JobID:
+      name: job_id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: job_01JZ0000000000000000000000
+  responses:
+    BadRequest:
+      description: 请求参数错误。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: 登录或验证码错误。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: 资源不存在或登录会话已过期。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: 账号已经登录或会话正在验证。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    BadGateway:
+      description: wrapper-manager 返回异常。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ServiceUnavailable:
+      description: 服务暂时不可用。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    GatewayTimeout:
+      description: wrapper 登录超时。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: 服务器内部错误。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        storefront:
+          type: string
+        supported_storefronts:
+          type: array
+          items:
+            type: string
+    WrapperStatus:
+      type: object
+      required: [ready, status, regions, client_count]
+      properties:
+        ready:
+          type: boolean
+        status:
+          type: boolean
+        regions:
+          type: array
+          items:
+            type: string
+        client_count:
+          type: integer
+          format: int32
+    HealthResponse:
+      type: object
+      required: [status, wrapper, wrapper_error]
+      properties:
+        status:
+          type: string
+          const: ok
+        wrapper:
+          $ref: '#/components/schemas/WrapperStatus'
+        wrapper_error:
+          type: string
+    ToolCapability:
+      type: object
+      required: [name, available]
+      properties:
+        name:
+          type: string
+        available:
+          type: boolean
+        path:
+          type: string
+        error:
+          type: string
+    RetryPolicy:
+      type: object
+      required: [operation_retries, first_codec_retries, fallback_codec_retries]
+      properties:
+        operation_retries:
+          type: integer
+        first_codec_retries:
+          type: integer
+        fallback_codec_retries:
+          type: integer
+    CapabilitiesResponse:
+      type: object
+      required: [api, supported_inputs, unsupported_inputs, quality_priority, codec_alternative, fallback_codec, album_track_url_mode, retry_policy, tools]
+      properties:
+        api:
+          type: string
+        supported_inputs:
+          type: array
+          items:
+            type: string
+        unsupported_inputs:
+          type: array
+          items:
+            type: string
+        quality_priority:
+          type: array
+          items:
+            type: string
+        codec_alternative:
+          type: boolean
+        fallback_codec:
+          type: string
+        album_track_url_mode:
+          type: string
+        retry_policy:
+          $ref: '#/components/schemas/RetryPolicy'
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCapability'
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          format: email
+          example: user@example.com
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          example: example-password
+    TwoStepRequest:
+      type: object
+      required: [two_step_code]
+      properties:
+        two_step_code:
+          type: string
+          example: '123456'
+    LogoutRequest:
+      type: object
+      required: [username]
+      properties:
+        username:
+          type: string
+          example: user@example.com
+    LoggedInResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: logged_in
+    NeedsTwoStepResponse:
+      type: object
+      required: [status, login_id]
+      properties:
+        status:
+          type: string
+          const: needs_2fa
+        login_id:
+          type: string
+    LoggedOutResponse:
+      type: object
+      required: [status, username]
+      properties:
+        status:
+          type: string
+          const: logged_out
+        username:
+          type: string
+    DownloadRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          example: https://music.apple.com/cn/album/example/123456789?i=987654321
+        force:
+          type: boolean
+          default: false
+    Job:
+      type: object
+      required: [id, input, type, force, status, total_items, done_items, failed_items, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        input:
+          type: string
+        type:
+          type: string
+          enum: [song, album, playlist]
+        storefront:
+          type: string
+        force:
+          type: boolean
+        status:
+          type: string
+          enum: [queued, running, completed, failed, cancelled]
+        total_items:
+          type: integer
+        done_items:
+          type: integer
+        failed_items:
+          type: integer
+        error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    JobItem:
+      type: object
+      required: [id, job_id, adam_id, kind, index, status, progress, created_at, updated_at]
+      properties:
+        id: {type: string}
+        job_id: {type: string}
+        adam_id: {type: string}
+        kind: {type: string}
+        index: {type: integer}
+        title: {type: string}
+        artist: {type: string}
+        album: {type: string}
+        status:
+          type: string
+          enum: [queued, resolving, downloading, decrypting, remuxing, tagging, saving, completed, failed, skipped_existing, cancelled]
+        progress: {type: number, format: double}
+        codec: {type: string}
+        retry_kind: {type: string}
+        attempt: {type: integer}
+        max_attempts: {type: integer}
+        status_message: {type: string}
+        output_path: {type: string}
+        error: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    DownloadDetail:
+      type: object
+      required: [job, items, retry_policy]
+      properties:
+        job:
+          $ref: '#/components/schemas/Job'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobItem'
+        retry_policy:
+          $ref: '#/components/schemas/RetryPolicy'

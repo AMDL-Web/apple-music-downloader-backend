@@ -63,6 +63,18 @@ curl http://127.0.0.1:18080/api/v1/capabilities
 
 ## API
 
+交互式 Swagger UI：
+
+```text
+http://127.0.0.1:18080/docs
+```
+
+OpenAPI 3.1 规范：
+
+```text
+http://127.0.0.1:18080/api/openapi.yaml
+```
+
 检查 wrapper-manager 状态：
 
 ```bash

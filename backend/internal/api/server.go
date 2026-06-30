@@ -43,6 +43,8 @@ func NewServer(cfg config.Config, store *db.Store, hub *events.Hub, manager *job
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /docs", swaggerUI)
+	mux.HandleFunc("GET /api/openapi.yaml", openAPI)
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/capabilities", s.capabilities)
 	mux.HandleFunc("GET /api/v1/wrapper/status", s.wrapperStatus)
