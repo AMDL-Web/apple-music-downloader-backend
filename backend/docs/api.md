@@ -56,7 +56,7 @@ wrapper-manager 不可用时返回 `503 Service Unavailable`。
 {"two_step_code":"123456"}
 ```
 
-成功时返回 `200 OK` 和 `{"status":"logged_in"}`。`login_id` 仅保存在内存中；验证码等待与验证完成共用 30 秒时限，服务重启后失效。
+成功时返回 `200 OK` 和 `{"status":"logged_in"}`。`login_id` 仅保存在内存中；验证码等待与验证完成共用 `wrapper.login_timeout_seconds` 时限（默认 120 秒），服务重启后失效。
 
 ### `POST /api/v1/wrapper/logout`
 

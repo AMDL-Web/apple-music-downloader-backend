@@ -28,9 +28,17 @@ type DatabaseConfig struct {
 }
 
 type WrapperConfig struct {
-	Address        string `yaml:"address" json:"address"`
-	Insecure       bool   `yaml:"insecure" json:"insecure"`
-	TimeoutSeconds int    `yaml:"timeout_seconds" json:"timeout_seconds"`
+	Address             string `yaml:"address" json:"address"`
+	Insecure            bool   `yaml:"insecure" json:"insecure"`
+	TimeoutSeconds      int    `yaml:"timeout_seconds" json:"timeout_seconds"`
+	LoginTimeoutSeconds int    `yaml:"login_timeout_seconds" json:"login_timeout_seconds"`
+}
+
+func (c WrapperConfig) LoginTimeout() time.Duration {
+	if c.LoginTimeoutSeconds <= 0 {
+		return 120 * time.Second
+	}
+	return time.Duration(c.LoginTimeoutSeconds) * time.Second
 }
 
 func (c WrapperConfig) Timeout() time.Duration {
@@ -97,7 +105,9 @@ func Default() Config {
 	return Config{
 		Server:   ServerConfig{Listen: "127.0.0.1:18080"},
 		Database: DatabaseConfig{Path: "data/amdl.db"},
-		Wrapper:  WrapperConfig{Address: "192.168.3.42:8080", Insecure: true, TimeoutSeconds: 30},
+		Wrapper: WrapperConfig{
+			Address: "192.168.3.42:8080", Insecure: true, TimeoutSeconds: 30, LoginTimeoutSeconds: 120,
+		},
 		Catalog: CatalogConfig{
 			DefaultStorefront: "us", Language: "en-US", TokenCacheTTLHours: 12, AlbumTrackURLMode: "song",
 		},

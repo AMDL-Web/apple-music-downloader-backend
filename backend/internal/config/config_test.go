@@ -5,7 +5,26 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestWrapperLoginTimeout(t *testing.T) {
+	defaults := Default().Wrapper
+	if got := defaults.LoginTimeout(); got != 120*time.Second {
+		t.Fatalf("default login timeout = %s, want 2m", got)
+	}
+	if got := defaults.Timeout(); got != 30*time.Second {
+		t.Fatalf("default RPC timeout = %s, want 30s", got)
+	}
+
+	configured := WrapperConfig{TimeoutSeconds: 15, LoginTimeoutSeconds: 90}
+	if got := configured.LoginTimeout(); got != 90*time.Second {
+		t.Fatalf("configured login timeout = %s, want 1m30s", got)
+	}
+	if got := configured.Timeout(); got != 15*time.Second {
+		t.Fatalf("configured RPC timeout = %s, want 15s", got)
+	}
+}
 
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()

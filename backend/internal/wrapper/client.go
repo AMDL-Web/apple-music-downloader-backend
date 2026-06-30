@@ -98,7 +98,7 @@ func (c *Client) authTimeout() time.Duration {
 	if c.loginTimeout > 0 {
 		return c.loginTimeout
 	}
-	return c.cfg.Timeout()
+	return c.cfg.LoginTimeout()
 }
 
 func (c *Client) StartLogin(ctx context.Context, username, password string) (LoginResult, error) {

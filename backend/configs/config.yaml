@@ -8,6 +8,7 @@ wrapper:
   address: "192.168.3.42:8080"
   insecure: true
   timeout_seconds: 30
+  login_timeout_seconds: 120
 
 catalog:
   default_storefront: "cn"

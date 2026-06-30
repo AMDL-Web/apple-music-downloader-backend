@@ -61,6 +61,13 @@ func successReply() *pb.LoginReply {
 	return &pb.LoginReply{Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"}}
 }
 
+func TestAuthTimeoutUsesDedicatedWrapperSetting(t *testing.T) {
+	client := &Client{cfg: config.WrapperConfig{TimeoutSeconds: 30, LoginTimeoutSeconds: 120}}
+	if got := client.authTimeout(); got != 120*time.Second {
+		t.Fatalf("auth timeout = %s, want 2m", got)
+	}
+}
+
 func TestStartLoginSucceedsWithoutTwoStep(t *testing.T) {
 	server := &authTestServer{login: func(stream grpc.BidiStreamingServer[pb.LoginRequest, pb.LoginReply]) error {
 		req, err := stream.Recv()
