@@ -9,7 +9,6 @@ import (
 	"github.com/gofrs/uuid/v5"
 	log "github.com/sirupsen/logrus"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
