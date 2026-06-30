@@ -23,7 +23,7 @@ func TestOutputPathUsesAlbumFolderArtistWithoutChangingTrackMetadata(t *testing.
 		TrackNumber: 2,
 	}
 
-	got := outputPath(cfg, song, 2, song.AlbumArtist)
+	got := outputPath(cfg, song, applemusic.TypeAlbum, 2, song.AlbumArtist, "")
 	want := filepath.Join("downloads", "Primary Artist", "Shared Album", "02. Guest Track.m4a")
 	if got != want {
 		t.Fatalf("outputPath() = %q, want %q", got, want)
@@ -41,7 +41,7 @@ func TestOutputPathKeepsTrackArtistWhenNoAlbumFolderArtist(t *testing.T) {
 	cfg.Download.SongFileFormat = "{SongName}"
 
 	song := applemusic.Song{ArtistName: "Track Artist", AlbumName: "Album", Name: "Song"}
-	got := outputPath(cfg, song, 1, "")
+	got := outputPath(cfg, song, applemusic.TypeSong, 1, "", "")
 	want := filepath.Join("downloads", "Track Artist", "Album", "Song.m4a")
 	if got != want {
 		t.Fatalf("outputPath() = %q, want %q", got, want)
@@ -58,6 +58,20 @@ func TestCollectionFolderArtistOnlyGroupsAlbums(t *testing.T) {
 	}
 	if got := collectionFolderArtist(applemusic.TypePlaylist, tracks); got != "" {
 		t.Fatalf("playlist folder artist = %q, want empty", got)
+	}
+}
+
+func TestOutputPathPlaylistUsesFlatFolder(t *testing.T) {
+	cfg := config.Config{}
+	cfg.Download.DownloadsDir = "downloads"
+	cfg.Download.PlaylistFolderFormat = "{PlaylistName}"
+	cfg.Download.PlaylistSongFileFormat = "{SongNumer:02d}. {SongName}"
+
+	song := applemusic.Song{ArtistName: "Artist A", AlbumName: "Album X", Name: "Track One"}
+	got := outputPath(cfg, song, applemusic.TypePlaylist, 3, "", "My Playlist")
+	want := filepath.Join("downloads", "My Playlist", "03. Track One.m4a")
+	if got != want {
+		t.Fatalf("outputPath() = %q, want %q", got, want)
 	}
 }
 

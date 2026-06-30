@@ -15,8 +15,9 @@ type Song struct {
 	ISRC          string
 	ContentRating string
 	HasLyrics     bool
-	ArtworkURL    string
-	EnhancedHLS   string
+	ArtworkURL      string
+	AlbumArtworkURL string
+	EnhancedHLS     string
 	AlbumID       string
 	AlbumArtist   string
 	AlbumRelease  string
@@ -27,11 +28,12 @@ type Song struct {
 }
 
 type Collection struct {
-	ID     string
-	Type   URLType
-	Name   string
-	Artist string
-	Tracks []Song
+	ID         string
+	Type       URLType
+	Name       string
+	Artist     string
+	ArtworkURL string
+	Tracks     []Song
 }
 
 // MusicVideo holds the catalog metadata needed to download and tag a music video.

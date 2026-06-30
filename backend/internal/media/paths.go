@@ -23,18 +23,28 @@ func safeName(v string) string {
 	return v
 }
 
-func outputPath(cfg config.Config, song applemusic.Song, playlistIndex int, folderArtist string) string {
+func outputPath(cfg config.Config, song applemusic.Song, collectionType applemusic.URLType, playlistIndex int, folderArtist, playlistName string) string {
+	if collectionType == applemusic.TypePlaylist && playlistName != "" {
+		folderPattern := cfg.Download.PlaylistFolderFormat
+		if folderPattern == "" {
+			folderPattern = "{PlaylistName}"
+		}
+		filePattern := cfg.Download.PlaylistSongFileFormat
+		if filePattern == "" {
+			filePattern = "{SongNumer:02d}. {SongName}"
+		}
+		folder := formatPattern(folderPattern, song, playlistIndex, "", playlistName)
+		file := formatPattern(filePattern, song, playlistIndex, "", playlistName)
+		return filepath.Join(cfg.Download.DownloadsDir, safeName(folder), safeName(file)+".m4a")
+	}
+
 	folderSong := song
 	if folderArtist != "" {
 		folderSong.ArtistName = folderArtist
 	}
-	artist := formatPattern(cfg.Download.ArtistFolderFormat, folderSong, playlistIndex, "")
-	album := formatPattern(cfg.Download.AlbumFolderFormat, song, playlistIndex, "")
-	namePattern := cfg.Download.SongFileFormat
-	if playlistIndex > 0 && cfg.Download.PlaylistSongFileFormat != "" {
-		namePattern = cfg.Download.PlaylistSongFileFormat
-	}
-	file := formatPattern(namePattern, song, playlistIndex, "")
+	artist := formatPattern(cfg.Download.ArtistFolderFormat, folderSong, playlistIndex, "", "")
+	album := formatPattern(cfg.Download.AlbumFolderFormat, song, playlistIndex, "", "")
+	file := formatPattern(cfg.Download.SongFileFormat, song, playlistIndex, "", "")
 	return filepath.Join(cfg.Download.DownloadsDir, safeName(artist), safeName(album), safeName(file)+".m4a")
 }
 
@@ -69,7 +79,7 @@ func formatMVPattern(pattern string, mv applemusic.MusicVideo) string {
 	return out
 }
 
-func formatPattern(pattern string, song applemusic.Song, playlistIndex int, codec string) string {
+func formatPattern(pattern string, song applemusic.Song, playlistIndex int, codec, playlistName string) string {
 	repl := map[string]string{
 		"SongId":       song.ID,
 		"ArtistName":   song.ArtistName,
@@ -81,7 +91,7 @@ func formatPattern(pattern string, song applemusic.Song, playlistIndex int, code
 		"Quality":      strings.ToUpper(codec),
 		"Codec":        strings.ToUpper(codec),
 		"Tag":          "",
-		"PlaylistName": song.AlbumName,
+		"PlaylistName": playlistName,
 	}
 	out := pattern
 	for key, val := range repl {

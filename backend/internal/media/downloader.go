@@ -60,14 +60,16 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 		return d.processMusicVideo(ctx, job, parsed, reporter)
 	}
 
-	tracks, _, err := retryValue(ctx, d.cfg.Download.Retries, retryBackoff, func(int) ([]applemusic.Song, error) {
-		return d.resolveTracks(ctx, parsed)
+	resolved, _, err := retryValue(ctx, d.cfg.Download.Retries, retryBackoff, func(int) (resolvedCollection, error) {
+		return d.resolveCollection(ctx, parsed)
 	}, func(failure retryFailure) {
 		d.emitRetryEvent(ctx, reporter, job.ID, "", "resolve_tracks", "", failure)
 	})
 	if err != nil {
 		return err
 	}
+	tracks := resolved.Tracks
+	collectionName := resolved.Name
 	job.TotalItems = len(tracks)
 	if err := reporter.SetJob(ctx, job); err != nil {
 		return err
@@ -107,7 +109,7 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := d.processTrack(ctx, job, items[i], tracks[i], parsed.Storefront, i+1, folderArtist, reporter); err != nil {
+			if err := d.processTrack(ctx, job, items[i], tracks[i], parsed.Storefront, parsed.Type, collectionName, i+1, folderArtist, reporter); err != nil {
 				d.logger.Error("track failed", "adam_id", tracks[i].ID, "error", err)
 				mu.Lock()
 				if firstErr == nil {
@@ -131,32 +133,37 @@ func collectionFolderArtist(collectionType applemusic.URLType, tracks []applemus
 	return tracks[0].ArtistName
 }
 
-func (d *Downloader) resolveTracks(ctx context.Context, parsed applemusic.ParsedURL) ([]applemusic.Song, error) {
+type resolvedCollection struct {
+	Tracks []applemusic.Song
+	Name   string
+}
+
+func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.ParsedURL) (resolvedCollection, error) {
 	switch parsed.Type {
 	case applemusic.TypeSong:
 		song, err := d.catalog.Song(ctx, parsed.Storefront, parsed.ID)
 		if err != nil {
-			return nil, err
+			return resolvedCollection{}, err
 		}
-		return []applemusic.Song{song}, nil
+		return resolvedCollection{Tracks: []applemusic.Song{song}}, nil
 	case applemusic.TypeAlbum:
 		album, err := d.catalog.Album(ctx, parsed.Storefront, parsed.ID)
 		if err != nil {
-			return nil, err
+			return resolvedCollection{}, err
 		}
-		return album.Tracks, nil
+		return resolvedCollection{Tracks: album.Tracks}, nil
 	case applemusic.TypePlaylist:
 		playlist, err := d.catalog.Playlist(ctx, parsed.Storefront, parsed.ID)
 		if err != nil {
-			return nil, err
+			return resolvedCollection{}, err
 		}
-		return playlist.Tracks, nil
+		return resolvedCollection{Tracks: playlist.Tracks, Name: playlist.Name}, nil
 	default:
-		return nil, fmt.Errorf("unsupported input type %s", parsed.Type)
+		return resolvedCollection{}, fmt.Errorf("unsupported input type %s", parsed.Type)
 	}
 }
 
-func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item domain.JobItem, initial applemusic.Song, storefront string, playlistIndex int, folderArtist string, reporter jobs.Reporter) error {
+func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item domain.JobItem, initial applemusic.Song, storefront string, collectionType applemusic.URLType, collectionName string, playlistIndex int, folderArtist string, reporter jobs.Reporter) error {
 	// set updates item state and emits an item_progress SSE event.
 	// The full JobItem is embedded in the event Payload so the frontend can
 	// update the UI directly from SSE without any additional HTTP round-trips.
@@ -206,7 +213,7 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	item.Album = song.AlbumName
 	_ = reporter.UpdateItem(ctx, item)
 
-	outPath := outputPath(d.cfg, song, playlistIndex, folderArtist)
+	outPath := outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName)
 	if _, err := os.Stat(outPath); err == nil {
 		item.Status = domain.ItemSkipped
 		item.Progress = 1
@@ -222,10 +229,11 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 
 	var cover []byte
 	if d.cfg.Download.EmbedCover {
+		coverURLs := trackCoverURLs(song, collectionType)
 		var coverAttempts int
 		cover, coverAttempts, err = retryValue(ctx, d.cfg.Download.Retries, retryBackoff, func(attempt int) ([]byte, error) {
 			d.setItemAttempt(ctx, reporter, &item, "cover", attempt, maxAttempts(d.cfg.Download.Retries), fmt.Sprintf("正在获取封面（%d/%d）", attempt, maxAttempts(d.cfg.Download.Retries)))
-			return d.catalog.Cover(ctx, song.ArtworkURL, d.cfg.Download.CoverFormat, d.cfg.Download.CoverSize)
+			return d.catalog.FetchCover(ctx, coverURLs, d.cfg.Download.CoverFormat, d.cfg.Download.CoverSize)
 		}, func(failure retryFailure) {
 			d.setRetryFailure(ctx, reporter, &item, "cover", "cover", failure)
 			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "cover", "", failure)
