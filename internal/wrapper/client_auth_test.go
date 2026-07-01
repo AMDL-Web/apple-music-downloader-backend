@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"amdl/internal/config"
-	pb "amdl/internal/wrapperproto"
+	pb "github.com/AMDL-Web/wrapper-manager/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"

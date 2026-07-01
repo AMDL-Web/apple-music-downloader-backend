@@ -1,3 +1,5 @@
+github.com/AMDL-Web/wrapper-manager/proto v0.1.0 h1:Pgk/h9mzXiApYESZile1k78I6/SOMBCLbY4V5BDgewA=
+github.com/AMDL-Web/wrapper-manager/proto v0.1.0/go.mod h1:a8VoI05utYic2CrXgsYAFrwLLxp3FUjVa01Y9WuMx4k=
 github.com/Eyevinn/mp4ff v0.48.0 h1:PwCeFOHGi07LffijQtFmIeIIY7BRURN2c5I2tnQbwds=
 github.com/Eyevinn/mp4ff v0.48.0/go.mod h1:hJNUUqOBryLAzUW9wpCJyw2HaI+TCd2rUPhafoS5lgg=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
