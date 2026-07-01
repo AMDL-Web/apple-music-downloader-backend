@@ -26,6 +26,7 @@ type Server struct {
 	hub     *events.Hub
 	manager *jobs.Manager
 	wrapper wrapperService
+	quality qualityService
 	tools   *media.ToolChecker
 	logger  *slog.Logger
 }
@@ -37,8 +38,12 @@ type wrapperService interface {
 	Logout(context.Context, string) error
 }
 
-func NewServer(cfg config.Config, store *db.Store, hub *events.Hub, manager *jobs.Manager, wrapperClient wrapperService, tools *media.ToolChecker, logger *slog.Logger) *Server {
-	return &Server{cfg: cfg, store: store, hub: hub, manager: manager, wrapper: wrapperClient, tools: tools, logger: logger}
+type qualityService interface {
+	QueryQuality(context.Context, media.QualityRequest) (media.QualityResult, error)
+}
+
+func NewServer(cfg config.Config, store *db.Store, hub *events.Hub, manager *jobs.Manager, wrapperClient wrapperService, qualityClient qualityService, tools *media.ToolChecker, logger *slog.Logger) *Server {
+	return &Server{cfg: cfg, store: store, hub: hub, manager: manager, wrapper: wrapperClient, quality: qualityClient, tools: tools, logger: logger}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -51,10 +56,34 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/wrapper/login", s.wrapperLogin)
 	mux.HandleFunc("POST /api/v1/wrapper/login/{login_id}/2fa", s.wrapperTwoStep)
 	mux.HandleFunc("POST /api/v1/wrapper/logout", s.wrapperLogout)
+	mux.HandleFunc("POST /api/v1/quality", s.queryQuality)
 	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
 	mux.HandleFunc("GET /api/v1/downloads", s.listDownloads)
 	mux.HandleFunc("/api/v1/downloads/", s.downloadByID)
 	return cors(mux)
+}
+
+func (s *Server) queryQuality(w http.ResponseWriter, r *http.Request) {
+	var req media.QualityRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.URL = strings.TrimSpace(req.URL)
+	if req.URL == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("url is required"))
+		return
+	}
+	if s.quality == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("quality service is not configured"))
+		return
+	}
+	result, err := s.quality.QueryQuality(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) wrapperStatus(w http.ResponseWriter, r *http.Request) {
@@ -151,7 +180,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	if s.store != nil {
 		if err := s.store.Ping(r.Context()); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-				"status":          "degraded",
+				"status":         "degraded",
 				"database_error": err.Error(),
 			})
 			return

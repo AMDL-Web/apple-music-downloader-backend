@@ -8,6 +8,7 @@ servers:
 tags:
   - name: System
   - name: Wrapper
+  - name: Quality
   - name: Downloads
 paths:
   /api/v1/health:
@@ -146,6 +147,31 @@ paths:
           $ref: '#/components/responses/NotFound'
         '502':
           $ref: '#/components/responses/BadGateway'
+  /api/v1/quality:
+    post:
+      tags: [Quality]
+      summary: 查询歌曲可用音质
+      description: 解析 Apple Music 单曲 URL 或带 i 参数的专辑 URL，返回可用 codec、码率、采样率和位深摘要；不会创建下载任务。
+      operationId: queryQuality
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QualityRequest'
+      responses:
+        '200':
+          description: 可用音质摘要。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QualityResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/downloads:
     get:
       tags: [Downloads]
@@ -476,6 +502,58 @@ components:
         force:
           type: boolean
           default: false
+    QualityRequest:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          example: https://music.apple.com/cn/album/one-last-kiss/1542953969?i=1542953977
+    QualitySong:
+      type: object
+      required: [id, name, artist, album]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        artist: {type: string}
+        album: {type: string}
+    QualityOption:
+      type: object
+      required: [id, label, available]
+      properties:
+        id:
+          type: string
+          enum: [aac, aac-binaural, aac-downmix, alac, ec3, ac3]
+        label: {type: string}
+        available: {type: boolean}
+        codec: {type: string}
+        codec_id: {type: string}
+        channels: {type: integer}
+        bit_depth: {type: integer}
+        sample_rate:
+          type: integer
+          description: Hz.
+        bitrate:
+          type: integer
+          description: bits per second.
+        description: {type: string}
+    QualityResponse:
+      type: object
+      required: [input, storefront, type, adam_id, song, qualities]
+      properties:
+        input: {type: string}
+        storefront: {type: string}
+        type:
+          type: string
+          const: song
+        adam_id: {type: string}
+        song:
+          $ref: '#/components/schemas/QualitySong'
+        qualities:
+          type: array
+          items:
+            $ref: '#/components/schemas/QualityOption'
     Job:
       type: object
       required: [id, input, type, force, status, total_items, done_items, failed_items, created_at, updated_at]
