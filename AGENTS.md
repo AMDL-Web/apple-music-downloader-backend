@@ -10,9 +10,11 @@ It is actively evolving and serves as the **single source of truth for productio
 
 # 1. Primary System (Source of Truth)
 
-## backend/
+## Repository Root
 
-All implementation work MUST be done in this directory unless explicitly stated otherwise.
+The Go backend now lives at the repository root. Production code and configuration are under root-level paths such as `cmd/`, `internal/`, `configs/`, and `proto/`.
+
+All implementation work MUST stay in the root backend module unless explicitly stated otherwise.
 
 ---
 
@@ -52,15 +54,15 @@ Python-based system (WorldObservationLog)
 - Prefer correctness and architecture improvement over backward compatibility.
 - When making breaking changes, ensure all affected modules are updated consistently.
 - If database schema changes are required, explain migration impact before applying.
-- When adding or modifying any `backend/configs/config.yaml` configuration item, keep the sample config comments complete: document all allowed enum values, valid boolean values, numeric units/default behavior, list item options, and supported template variables next to the relevant key.
+- When adding or modifying any `configs/config.yaml` configuration item, keep the sample config comments complete: document all allowed enum values, valid boolean values, numeric units/default behavior, list item options, and supported template variables next to the relevant key.
 
 ---
 
 # 4. Implementation Constraints
 
-- backend/ is the only writable production codebase
+- The root Go module is the only writable production codebase
 - Reference repositories are read-only
-- Do not copy code blindly; always adapt to backend/ architecture
+- Do not copy code blindly; always adapt to the root backend architecture
 - Keep changes minimal and consistent with existing patterns
 - Avoid unnecessary refactoring unless explicitly requested
 
