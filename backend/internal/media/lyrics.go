@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const appleLyricsNamespace = "http://music.apple.com/lyric-ttml-internal"
+
 type lyricNode struct {
 	tag      string
 	attrs    map[string]string
@@ -358,6 +360,12 @@ func attr(node *lyricNode, names ...string) string {
 	for _, name := range names {
 		if value, ok := node.attrs[name]; ok {
 			return value
+		}
+		if strings.HasPrefix(name, "itunes:") {
+			expandedName := appleLyricsNamespace + ":" + strings.TrimPrefix(name, "itunes:")
+			if value, ok := node.attrs[expandedName]; ok {
+				return value
+			}
 		}
 	}
 	return ""

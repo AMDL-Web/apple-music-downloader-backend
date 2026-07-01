@@ -71,6 +71,22 @@ func TestConvertLyricsWordTimingOutputsEnhancedLRC(t *testing.T) {
 	}
 }
 
+func TestConvertLyricsWordTimingWithNamespacesOutputsEnhancedLRC(t *testing.T) {
+	raw := `<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word">` +
+		`<body><div><p itunes:key="L1">` +
+		`<span begin="20.626" end="20.942">初めて</span> ` +
+		`<span begin="20.942" end="21.406">の</span>` +
+		`</p></div></body></tt>`
+	got, err := convertLyrics(raw, "lrc", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[00:20.62]<00:20.62>初めて <00:20.94>の<00:21.40>"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
 func TestConvertLyricsUsesTextAttributesNestedSpansAndEscapes(t *testing.T) {
 	raw := `<tt><body><div><p begin="00:01.000" text="from attr"></p><p begin="00:02.000">hello <span>wide</span> &amp; clear</p></div></body></tt>`
 	got, err := convertLyrics(raw, "lrc", nil)
