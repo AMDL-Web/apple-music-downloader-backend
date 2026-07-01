@@ -52,6 +52,7 @@ Python-based system (WorldObservationLog)
 - Prefer correctness and architecture improvement over backward compatibility.
 - When making breaking changes, ensure all affected modules are updated consistently.
 - If database schema changes are required, explain migration impact before applying.
+- When adding or modifying any `backend/configs/config.yaml` configuration item, keep the sample config comments complete: document all allowed enum values, valid boolean values, numeric units/default behavior, list item options, and supported template variables next to the relevant key.
 
 ---
 

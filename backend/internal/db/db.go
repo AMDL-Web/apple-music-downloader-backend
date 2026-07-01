@@ -139,6 +139,24 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
 	return out, rows.Err()
 }
 
+func (s *Store) ListRecoverableJobs(ctx context.Context) ([]domain.Job, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,input,type,storefront,force,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE status IN (?,?) ORDER BY created_at ASC`,
+		string(domain.JobQueued), string(domain.JobRunning))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Job
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, job)
+	}
+	return out, rows.Err()
+}
+
 type jobScanner interface {
 	Scan(dest ...any) error
 }

@@ -83,15 +83,19 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 		return Collection{}, fmt.Errorf("album %s not found", id)
 	}
 	album := resp.Data[0]
+	rawTracks, err := c.allTrackPages(ctx, album.Relationships.Tracks)
+	if err != nil {
+		return Collection{}, err
+	}
 	var albumArtistID, albumArtistArtworkURL string
 	if len(album.Relationships.Artists.Data) > 0 {
 		albumArtist := album.Relationships.Artists.Data[0]
 		albumArtistID = albumArtist.ID
 		albumArtistArtworkURL = albumArtist.Attributes.Artwork.URL
 	}
-	tracks := make([]Song, 0, len(album.Relationships.Tracks.Data))
+	tracks := make([]Song, 0, len(rawTracks))
 	discCount := 0
-	for _, raw := range album.Relationships.Tracks.Data {
+	for _, raw := range rawTracks {
 		s := mapSong(raw)
 		s.AlbumID = album.ID
 		s.AlbumName = firstNonEmpty(s.AlbumName, album.Attributes.Name)
@@ -130,14 +134,41 @@ func (c *CatalogClient) Playlist(ctx context.Context, storefront, id string) (Co
 		return Collection{}, fmt.Errorf("playlist %s not found", id)
 	}
 	playlist := resp.Data[0]
-	tracks := make([]Song, 0, len(playlist.Relationships.Tracks.Data))
-	for _, raw := range playlist.Relationships.Tracks.Data {
+	rawTracks, err := c.allTrackPages(ctx, playlist.Relationships.Tracks)
+	if err != nil {
+		return Collection{}, err
+	}
+	tracks := make([]Song, 0, len(rawTracks))
+	for _, raw := range rawTracks {
 		if raw.Type != "songs" {
 			continue
 		}
 		tracks = append(tracks, mapSong(raw))
 	}
 	return Collection{ID: playlist.ID, Type: TypePlaylist, Name: playlist.Attributes.Name, Artist: firstNonEmpty(playlist.Attributes.CuratorName, playlist.Attributes.ArtistName), ArtworkURL: playlist.Attributes.Artwork.URL, Tracks: tracks}, nil
+}
+
+func (c *CatalogClient) allTrackPages(ctx context.Context, first relationshipSongs) ([]catalogSongData, error) {
+	tracks := append([]catalogSongData(nil), first.Data...)
+	for next := strings.TrimSpace(first.Next); next != ""; {
+		var page relationshipSongs
+		if err := c.get(ctx, catalogNextURL(next), nil, &page); err != nil {
+			return nil, err
+		}
+		tracks = append(tracks, page.Data...)
+		next = strings.TrimSpace(page.Next)
+	}
+	return tracks, nil
+}
+
+func catalogNextURL(next string) string {
+	if strings.HasPrefix(next, "http://") || strings.HasPrefix(next, "https://") {
+		return next
+	}
+	if strings.HasPrefix(next, "/") {
+		return "https://amp-api.music.apple.com" + next
+	}
+	return "https://amp-api.music.apple.com/" + next
 }
 
 func (c *CatalogClient) Artist(ctx context.Context, storefront, id string) (Artist, error) {

@@ -73,6 +73,34 @@ func (m *Manager) Start(ctx context.Context) {
 	}
 }
 
+func (m *Manager) RecoverUnfinished(ctx context.Context) (int, error) {
+	jobs, err := m.store.ListRecoverableJobs(ctx)
+	if err != nil {
+		return 0, err
+	}
+	m.submitMu.Lock()
+	defer m.submitMu.Unlock()
+	if len(jobs) > cap(m.queue)-len(m.queue) {
+		return 0, ErrQueueFull
+	}
+	now := time.Now().UTC()
+	for _, job := range jobs {
+		if job.Status == domain.JobRunning {
+			job.Status = domain.JobQueued
+			job.Error = ""
+			job.UpdatedAt = now
+			if err := m.store.UpdateJob(ctx, job); err != nil {
+				return 0, err
+			}
+		}
+		if err := m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_recovered", Message: "job recovered after backend restart"}); err != nil {
+			return 0, err
+		}
+		m.queue <- job.ID
+	}
+	return len(jobs), nil
+}
+
 func (m *Manager) Submit(ctx context.Context, req domain.DownloadRequest) (domain.Job, error) {
 	validated, err := m.processor.ValidateRequest(ctx, req)
 	if err != nil {

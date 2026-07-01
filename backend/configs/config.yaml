@@ -1,25 +1,35 @@
 server:
+  # string: API listen address in "host:port" form, for example "127.0.0.1:18080" or ":18080".
   listen: "127.0.0.1:18080"
 
 database:
+  # string: SQLite database file path. Relative paths are resolved from the backend working directory.
   path: "data/amdl.db"
 
 wrapper:
+  # string: wrapper-manager gRPC address in "host:port" form.
   address: "192.168.3.42:8080"
+  # bool: true uses insecure gRPC transport; false requires transport credentials support in code/config.
   insecure: true
+  # integer seconds: wrapper RPC timeout. Values <= 0 fall back to 30 seconds.
   timeout_seconds: 30
+  # integer seconds: wrapper login/2FA timeout. Values <= 0 fall back to 120 seconds.
   login_timeout_seconds: 120
 
 catalog:
+  # string: default Apple Music storefront code used when an input URL has no region, for example "us", "cn", "jp".
   default_storefront: "cn"
+  # string: Apple Music catalog language tag passed as the "l" query parameter, for example "en-US", "zh-Hans_CN", "ja-JP".
   language: "zh-Hans_CN"
+  # string: optional Apple Music bearer token override. Empty string means auto-discover from music.apple.com.
   authorization_token: ""
+  # integer hours: cached Apple Music bearer-token TTL. Values <= 0 fall back to 12 hours.
   token_cache_ttl_hours: 12
-  # song: album URLs containing ?i= are single-song tasks; album: download the full album.
+  # enum: song, album. song means album URLs containing ?i= are single-song tasks; album downloads the full album.
   album_track_url_mode: "song"
 
 download:
-  # Available codecs:
+  # list enum: alac, aac, aac-binaural, aac-downmix, ec3, ac3.
   # - alac: Apple Lossless Audio Codec
   # - aac: standard Enhanced HLS AAC
   # - aac-binaural: binaural AAC
@@ -28,36 +38,71 @@ download:
   # - ac3: Dolby Digital
   # AAC-LC does not need to be listed; it is always appended as the final fallback.
   quality_priority: ["alac", "aac"]
+  # bool: true tries the next codec in quality_priority after failure; false only tries the first codec.
   codec_alternative: true
+  # integer: maximum concurrently running jobs. Values <= 0 currently behave as the downloader manager default.
   max_running_jobs: 3
+  # integer: maximum tracks downloaded in parallel per collection. Values <= 0 fall back to 1.
   max_parallel_tracks: 5
+  # integer: retry count after the first attempt for metadata, cover, lyrics, and the first codec. 0 means one attempt.
   retries: 2
+  # string path: root download directory. Relative paths are resolved from the backend working directory.
   downloads_dir: "data/downloads"
+  # string folder name: directory under downloads_dir for single-song tasks. Must be non-empty.
   songs_folder_name: "songs"
+  # string folder name: directory under downloads_dir for album tasks. Must be non-empty.
   albums_folder_name: "albums"
+  # string folder name: directory under downloads_dir for playlist tasks. Must be non-empty.
   playlists_folder_name: "playlists"
+  # string path: temporary media working directory. Relative paths are resolved from the backend working directory.
   temp_dir: "data/tmp"
+  # string: cover artwork size as "{width}x{height}", for example "5000x5000", "3000x3000", "1400x1400".
   cover_size: "5000x5000"
+  # enum: jpg, jpeg, png.
   cover_format: "jpg"
+  # bool: true embeds track cover art into the MP4 metadata; false skips embedded cover art.
   embed_cover: true
+  # bool: true saves standalone album cover files for album downloads; false skips them.
   save_album_cover: true
+  # bool: true saves standalone artist cover files when available; false skips them.
   save_artist_cover: true
+  # bool: true saves standalone playlist cover files for playlist downloads; false skips them.
   save_playlist_cover: true
+  # bool: true embeds converted lyrics into MP4 metadata; false skips embedded lyrics.
   embed_lyrics: true
+  # bool: true writes a sidecar lyrics file next to the audio file; false skips sidecar lyrics files.
   save_lyrics_file: false
+  # enum: lrc, ttml. lrc converts Apple TTML to LRC; ttml preserves wrapper-returned TTML.
   lyrics_format: "lrc"
+  # enum: lyrics, syllable-lyrics. syllable-lyrics requests word-timed lyrics from compatible wrappers.
+  lyrics_type: "lyrics"
+  # list enum: translation, pronunciation. Empty list disables extra localized lines.
+  lyrics_extras: []
+  # string template, non-empty. Variables: {SongId}, {ArtistName}, {AlbumName}, {SongName}, {DiscNumber}, {DiscNumber:02d}, {TrackNumber}, {TrackNumber:02d}, {SongNumer}, {SongNumer:02d}, {Quality}, {Codec}, {Tag}, {PlaylistName}.
   artist_folder_format: "{ArtistName}"
+  # string template, non-empty. Variables: {SongId}, {ArtistName}, {AlbumName}, {SongName}, {DiscNumber}, {DiscNumber:02d}, {TrackNumber}, {TrackNumber:02d}, {SongNumer}, {SongNumer:02d}, {Quality}, {Codec}, {Tag}, {PlaylistName}.
   album_folder_format: "{AlbumName}"
+  # string template, non-empty. Variables: {SongId}, {ArtistName}, {AlbumName}, {SongName}, {DiscNumber}, {DiscNumber:02d}, {TrackNumber}, {TrackNumber:02d}, {SongNumer}, {SongNumer:02d}, {Quality}, {Codec}, {Tag}, {PlaylistName}.
   song_file_format: "{TrackNumber:02d}. {SongName}"
+  # string template, non-empty. Variables: {SongId}, {ArtistName}, {AlbumName}, {SongName}, {DiscNumber}, {DiscNumber:02d}, {TrackNumber}, {TrackNumber:02d}, {SongNumer}, {SongNumer:02d}, {Quality}, {Codec}, {Tag}, {PlaylistName}.
   playlist_folder_format: "{PlaylistName}"
+  # string template, non-empty. Variables: {SongId}, {ArtistName}, {AlbumName}, {SongName}, {DiscNumber}, {DiscNumber:02d}, {TrackNumber}, {TrackNumber:02d}, {SongNumer}, {SongNumer:02d}, {Quality}, {Codec}, {Tag}, {PlaylistName}.
   playlist_song_file_format: "{SongNumer:02d}. {SongName}"
+  # integer Hz: maximum selected ALAC sample rate. Use 192000 for up to 192 kHz.
   alac_max_sample_rate: 192000
+  # integer bits: maximum selected ALAC bit depth. Use 24 for up to 24-bit.
   alac_max_bit_depth: 24
+  # bool: true verifies output MP4 integrity and repairs known ALAC terminator issues; false skips the integrity gate.
   check_integrity: true
 
 tools:
+  # string path or command name: ffmpeg executable.
   ffmpeg: "ffmpeg"
+  # string path or command name: GPAC executable.
   gpac: "gpac"
+  # string path or command name: MP4Box executable.
   mp4box: "MP4Box"
+  # string path or command name: mp4extract executable.
   mp4extract: "mp4extract"
+  # string path or command name: mp4edit executable.
   mp4edit: "mp4edit"

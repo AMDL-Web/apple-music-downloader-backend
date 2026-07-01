@@ -57,16 +57,25 @@ type loginSession struct {
 }
 
 type Status struct {
-	Ready       bool     `json:"ready"`
-	Status      bool     `json:"status"`
-	Regions     []string `json:"regions"`
-	ClientCount int32    `json:"client_count"`
+	Ready             bool     `json:"ready"`
+	Status            bool     `json:"status"`
+	Regions           []string `json:"regions"`
+	ClientCount       int32    `json:"client_count"`
+	Accounts          []string `json:"accounts,omitempty"`
+	AccountsSupported bool     `json:"accounts_supported"`
 }
 
 type DecryptSample struct {
 	Key   string
 	Index int
 	Data  []byte
+}
+
+type LyricsRequestOptions struct {
+	Region                  string
+	Language                string
+	Type                    string
+	ExtendTtmlLocalizations bool
 }
 
 func NewClient(cfg config.WrapperConfig) (*Client, error) {
@@ -260,7 +269,22 @@ func (c *Client) Status(ctx context.Context) (Status, error) {
 		return Status{}, fmt.Errorf("wrapper status: %s", resp.GetHeader().GetMsg())
 	}
 	data := resp.GetData()
-	return Status{Ready: data.GetReady(), Status: data.GetStatus(), Regions: data.GetRegions(), ClientCount: data.GetClientCount()}, nil
+	return Status{
+		Ready:             data.GetReady(),
+		Status:            data.GetStatus(),
+		Regions:           data.GetRegions(),
+		ClientCount:       data.GetClientCount(),
+		Accounts:          data.GetAccounts(),
+		AccountsSupported: statusAccountsSupported(data),
+	}, nil
+}
+
+func statusAccountsSupported(data *pb.StatusData) bool {
+	if data == nil {
+		return false
+	}
+	field := data.ProtoReflect().Descriptor().Fields().ByName("accounts")
+	return field != nil && data.ProtoReflect().Get(field).List().Len() > 0
 }
 
 func (c *Client) M3U8(ctx context.Context, adamID string) (string, error) {
@@ -276,10 +300,13 @@ func (c *Client) M3U8(ctx context.Context, adamID string) (string, error) {
 	return resp.GetData().GetM3U8(), nil
 }
 
-func (c *Client) Lyrics(ctx context.Context, adamID, region, language string) (string, error) {
+func (c *Client) Lyrics(ctx context.Context, adamID string, opts LyricsRequestOptions) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout())
 	defer cancel()
-	resp, err := c.api.Lyrics(ctx, &pb.LyricsRequest{Data: &pb.LyricsDataRequest{AdamId: adamID, Region: region, Language: language}})
+	resp, err := c.api.Lyrics(ctx, &pb.LyricsRequest{Data: &pb.LyricsDataRequest{
+		AdamId: adamID, Region: opts.Region, Language: opts.Language,
+		Type: opts.Type, ExtendTtmlLocalizations: opts.ExtendTtmlLocalizations,
+	}})
 	if err != nil {
 		return "", err
 	}

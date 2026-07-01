@@ -12,6 +12,7 @@ import (
 
 	"amdl/backend/internal/db"
 	"amdl/backend/internal/jobs"
+	"amdl/backend/internal/media"
 	"amdl/backend/internal/wrapper"
 	"gopkg.in/yaml.v3"
 )
@@ -49,6 +50,17 @@ func (f *fakeWrapperService) SubmitTwoStepCode(_ context.Context, loginID, code 
 func (f *fakeWrapperService) Logout(_ context.Context, username string) error {
 	f.username = username
 	return f.logoutErr
+}
+
+type fakeQualityService struct {
+	result media.QualityResult
+	err    error
+	req    media.QualityRequest
+}
+
+func (f *fakeQualityService) QueryQuality(_ context.Context, req media.QualityRequest) (media.QualityResult, error) {
+	f.req = req
+	return f.result, f.err
 }
 
 func requestJSON(t *testing.T, handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
@@ -137,7 +149,10 @@ func TestHealthEndpointDatabaseUnavailable(t *testing.T) {
 }
 
 func TestWrapperStatusEndpoint(t *testing.T) {
-	fake := &fakeWrapperService{statusResult: wrapper.Status{Ready: true, Status: true, Regions: []string{"us"}, ClientCount: 1}}
+	fake := &fakeWrapperService{statusResult: wrapper.Status{
+		Ready: true, Status: true, Regions: []string{"us"}, ClientCount: 1,
+		Accounts: []string{"user@example.com"}, AccountsSupported: true,
+	}}
 	server := &Server{wrapper: fake}
 	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/wrapper/status", "")
 	if recorder.Code != http.StatusOK {
@@ -149,6 +164,25 @@ func TestWrapperStatusEndpoint(t *testing.T) {
 	}
 	if !body.Ready || body.ClientCount != 1 || len(body.Regions) != 1 {
 		t.Fatalf("unexpected body: %#v", body)
+	}
+	if !body.AccountsSupported || len(body.Accounts) != 1 || body.Accounts[0] != "user@example.com" {
+		t.Fatalf("unexpected accounts support: %#v", body)
+	}
+}
+
+func TestWrapperStatusEndpointReportsUnsupportedAccounts(t *testing.T) {
+	fake := &fakeWrapperService{statusResult: wrapper.Status{Ready: true, Status: true, Regions: []string{"us"}, ClientCount: 1}}
+	server := &Server{wrapper: fake}
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/wrapper/status", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var body wrapper.Status
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.AccountsSupported {
+		t.Fatalf("accounts_supported = true, want false: %#v", body)
 	}
 }
 
@@ -268,6 +302,37 @@ func TestWrapperLogoutValidatesUsername(t *testing.T) {
 	}
 }
 
+func TestQualityEndpointReturnsOptions(t *testing.T) {
+	fake := &fakeQualityService{result: media.QualityResult{
+		Input: "https://music.apple.com/cn/album/example/1?i=2", Storefront: "cn", Type: "song", AdamID: "2",
+		Song:      media.QualitySong{ID: "2", Name: "One Last Kiss", Artist: "Hikaru Utada", Album: "One Last Kiss"},
+		Qualities: []media.QualityOption{{ID: "alac", Label: "Lossless", Available: true, CodecID: "audio-alac-stereo-44100-16", BitDepth: 16, SampleRate: 44100}},
+	}}
+	server := &Server{quality: fake}
+	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/quality", `{"url":" https://music.apple.com/cn/album/example/1?i=2 "}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if fake.req.URL != "https://music.apple.com/cn/album/example/1?i=2" {
+		t.Fatalf("quality request URL = %q", fake.req.URL)
+	}
+	var body media.QualityResult
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.AdamID != "2" || len(body.Qualities) != 1 || body.Qualities[0].ID != "alac" {
+		t.Fatalf("unexpected quality response: %#v", body)
+	}
+}
+
+func TestQualityEndpointValidatesURL(t *testing.T) {
+	server := &Server{quality: &fakeQualityService{}}
+	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/quality", `{"url":" "}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}
+
 func TestSwaggerUI(t *testing.T) {
 	server := &Server{}
 	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/docs", "")
@@ -311,6 +376,7 @@ func TestOpenAPISpecification(t *testing.T) {
 		"/api/v1/wrapper/login":                {"post"},
 		"/api/v1/wrapper/login/{login_id}/2fa": {"post"},
 		"/api/v1/wrapper/logout":               {"post"},
+		"/api/v1/quality":                      {"post"},
 		"/api/v1/downloads":                    {"get", "post"},
 		"/api/v1/downloads/{job_id}":           {"get"},
 		"/api/v1/downloads/{job_id}/cancel":    {"post"},
