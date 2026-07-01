@@ -63,7 +63,7 @@ func main() {
 	catalog := applemusic.NewCatalogClient(cfg.Catalog, logger)
 	toolChecker := media.NewToolChecker(cfg.Tools)
 	downloader := media.NewDownloader(cfg, catalog, wrapperClient, toolChecker, logger)
-	qualityService := media.NewQualityService(cfg, catalog, wrapperClient)
+	qualityService := media.NewQualityService(cfg, catalog)
 	manager := jobs.NewManager(store, hub, downloader, cfg.Download.MaxRunningJobs, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

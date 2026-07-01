@@ -1,6 +1,14 @@
 package media
 
-import "testing"
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"amdl/backend/internal/applemusic"
+	"amdl/backend/internal/config"
+)
 
 func TestSummarizeQualitiesFromMasterPlaylist(t *testing.T) {
 	const master = `#EXTM3U
@@ -38,5 +46,37 @@ atmos/master.m3u8
 	}
 	if got["alac"].Description == "" {
 		t.Fatalf("ALAC description is empty")
+	}
+}
+
+type fakeQualityCatalog struct {
+	song applemusic.Song
+}
+
+func (f fakeQualityCatalog) Song(context.Context, string, string) (applemusic.Song, error) {
+	return f.song, nil
+}
+
+func TestQualityQueryUsesCatalogManifestWithoutWrapperM3U8(t *testing.T) {
+	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio-stereo-256",NAME="AAC"
+#EXT-X-STREAM-INF:BANDWIDTH=281000,AVERAGE-BANDWIDTH=256000,CODECS="mp4a.40.2",AUDIO="audio-stereo-256"
+audio.m3u8
+`))
+	}))
+	defer manifest.Close()
+
+	service := NewQualityServiceWithCatalog(config.Default(), fakeQualityCatalog{song: applemusic.Song{
+		ID: "song-1", Name: "Song", ArtistName: "Artist", AlbumName: "Album", EnhancedHLS: manifest.URL + "/master.m3u8",
+	}})
+
+	result, err := service.QueryQuality(context.Background(), QualityRequest{URL: "https://music.apple.com/cn/song/example/song-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Qualities) == 0 || !result.Qualities[0].Available {
+		t.Fatalf("expected catalog manifest qualities, got %#v", result.Qualities)
 	}
 }

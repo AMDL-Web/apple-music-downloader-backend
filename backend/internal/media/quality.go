@@ -47,17 +47,20 @@ type QualityResult struct {
 
 type QualityService struct {
 	cfg     config.Config
-	catalog *applemusic.CatalogClient
-	wrapper interface {
-		M3U8(context.Context, string) (string, error)
-	}
-	http *http.Client
+	catalog qualityCatalog
+	http    *http.Client
 }
 
-func NewQualityService(cfg config.Config, catalog *applemusic.CatalogClient, wrapperClient interface {
-	M3U8(context.Context, string) (string, error)
-}) *QualityService {
-	return &QualityService{cfg: cfg, catalog: catalog, wrapper: wrapperClient, http: newHTTPClient()}
+type qualityCatalog interface {
+	Song(context.Context, string, string) (applemusic.Song, error)
+}
+
+func NewQualityService(cfg config.Config, catalog *applemusic.CatalogClient) *QualityService {
+	return NewQualityServiceWithCatalog(cfg, catalog)
+}
+
+func NewQualityServiceWithCatalog(cfg config.Config, catalog qualityCatalog) *QualityService {
+	return &QualityService{cfg: cfg, catalog: catalog, http: newHTTPClient()}
 }
 
 func (s *QualityService) QueryQuality(ctx context.Context, req QualityRequest) (QualityResult, error) {
@@ -73,11 +76,6 @@ func (s *QualityService) QueryQuality(ctx context.Context, req QualityRequest) (
 		return QualityResult{}, err
 	}
 	master := song.EnhancedHLS
-	if s.wrapper != nil {
-		if m3u8, err := s.wrapper.M3U8(ctx, song.ID); err == nil && strings.TrimSpace(m3u8) != "" {
-			master = m3u8
-		}
-	}
 	if strings.TrimSpace(master) == "" {
 		return QualityResult{}, fmt.Errorf("song %s has no enhanced hls manifest", song.ID)
 	}
