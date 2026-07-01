@@ -533,7 +533,22 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 		outBytes = fixed
 	}
 	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrity(ctx, outBytes) {
-		return fmt.Errorf("integrity check failed")
+		if codec != "alac" {
+			return fmt.Errorf("integrity check failed")
+		}
+		repaired, patched, err := repairALACTerminators(outBytes)
+		if err != nil {
+			return fmt.Errorf("integrity check failed; alac repair failed: %w", err)
+		}
+		if patched == 0 {
+			return fmt.Errorf("integrity check failed; alac repair found no malformed packets")
+		}
+		payload, _ := json.Marshal(map[string]any{"patched_packets": patched})
+		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "alac_repaired", Phase: codec, Payload: string(payload)})
+		if !d.mp4.checkIntegrity(ctx, repaired) {
+			return fmt.Errorf("integrity check failed after alac repair")
+		}
+		outBytes = repaired
 	}
 	set(domain.ItemSaving, 0.94, "saving")
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
