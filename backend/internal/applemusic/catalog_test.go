@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +83,77 @@ func TestSongRequestsAndMapsExtendedAssetURLs(t *testing.T) {
 	if song.EnhancedHLS != "https://example.test/master.m3u8" {
 		t.Fatalf("EnhancedHLS = %q", song.EnhancedHLS)
 	}
+}
+
+func TestAlbumFetchesAllTrackPages(t *testing.T) {
+	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client.token = "test-token"
+	client.tokenUntil = time.Now().Add(time.Hour)
+	var paths []string
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		paths = append(paths, req.URL.RequestURI())
+		if req.URL.Path == "/v1/catalog/cn/albums/album-1" {
+			body := `{"data":[{"id":"album-1","type":"albums","attributes":{"name":"Album","artistName":"Album Artist","trackCount":3},"relationships":{"artists":{"data":[{"id":"artist-1","attributes":{"name":"Album Artist","artwork":{"url":"artist-art"}}}]},"tracks":{"data":[{"id":"song-1","type":"songs","attributes":{"name":"One","artistName":"Artist","albumName":"Album","trackNumber":1,"discNumber":1}}],"next":"/v1/catalog/cn/albums/album-1/tracks?offset=1"}}}]}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		}
+		if req.URL.Path == "/v1/catalog/cn/albums/album-1/tracks" {
+			body := `{"data":[{"id":"song-2","type":"songs","attributes":{"name":"Two","artistName":"Artist","albumName":"Album","trackNumber":2,"discNumber":1}},{"id":"song-3","type":"songs","attributes":{"name":"Three","artistName":"Artist","albumName":"Album","trackNumber":3,"discNumber":2}}]}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		}
+		return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("unexpected path: " + req.URL.RequestURI())), Header: make(http.Header)}, nil
+	})}
+
+	album, err := client.Album(context.Background(), "cn", "album-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := trackIDs(album.Tracks), []string{"song-1", "song-2", "song-3"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("track IDs = %#v, want %#v", got, want)
+	}
+	if got, want := album.Tracks[2].DiscCount, 2; got != want {
+		t.Fatalf("last track DiscCount = %d, want %d", got, want)
+	}
+	if len(paths) != 2 || paths[1] != "/v1/catalog/cn/albums/album-1/tracks?offset=1" {
+		t.Fatalf("request paths = %#v", paths)
+	}
+}
+
+func TestPlaylistFetchesAllTrackPages(t *testing.T) {
+	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client.token = "test-token"
+	client.tokenUntil = time.Now().Add(time.Hour)
+	var paths []string
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		paths = append(paths, req.URL.RequestURI())
+		if req.URL.Path == "/v1/catalog/cn/playlists/pl.1" {
+			body := `{"data":[{"id":"pl.1","type":"playlists","attributes":{"name":"Playlist","curatorName":"Curator","artwork":{"url":"playlist-art"}},"relationships":{"tracks":{"data":[{"id":"song-1","type":"songs","attributes":{"name":"One","artistName":"Artist"}}],"next":"/v1/catalog/cn/playlists/pl.1/tracks?offset=1"}}}]}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		}
+		if req.URL.Path == "/v1/catalog/cn/playlists/pl.1/tracks" {
+			body := `{"data":[{"id":"song-2","type":"songs","attributes":{"name":"Two","artistName":"Artist"}},{"id":"video-1","type":"music-videos","attributes":{"name":"Video"}},{"id":"song-3","type":"songs","attributes":{"name":"Three","artistName":"Artist"}}]}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		}
+		return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("unexpected path: " + req.URL.RequestURI())), Header: make(http.Header)}, nil
+	})}
+
+	playlist, err := client.Playlist(context.Background(), "cn", "pl.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := trackIDs(playlist.Tracks), []string{"song-1", "song-2", "song-3"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("track IDs = %#v, want %#v", got, want)
+	}
+	if len(paths) != 2 || paths[1] != "/v1/catalog/cn/playlists/pl.1/tracks?offset=1" {
+		t.Fatalf("request paths = %#v", paths)
+	}
+}
+
+func trackIDs(tracks []Song) []string {
+	out := make([]string, 0, len(tracks))
+	for _, track := range tracks {
+		out = append(out, track.ID)
+	}
+	return out
 }
 
 func TestSongMapsHasLyrics(t *testing.T) {
