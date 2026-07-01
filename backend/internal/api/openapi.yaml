@@ -17,7 +17,13 @@ paths:
       operationId: getHealth
       responses:
         '200':
-          description: 后端状态；wrapper 不可用时错误写入 wrapper_error。
+          description: 后端可用。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: 本地数据库不可用。
           content:
             application/json:
               schema:
@@ -38,6 +44,7 @@ paths:
     get:
       tags: [Wrapper]
       summary: 查询 wrapper-manager 状态
+      description: 探测 wrapper-manager 连通性与登录/区域等运行状态；下载前或账号管理前使用。
       operationId: getWrapperStatus
       responses:
         '200':
@@ -347,14 +354,12 @@ components:
           format: int32
     HealthResponse:
       type: object
-      required: [status, wrapper, wrapper_error]
+      required: [status]
       properties:
         status:
           type: string
-          const: ok
-        wrapper:
-          $ref: '#/components/schemas/WrapperStatus'
-        wrapper_error:
+          enum: [ok, degraded]
+        database_error:
           type: string
     ToolCapability:
       type: object

@@ -148,12 +148,16 @@ func cors(next http.Handler) http.Handler {
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	status, err := s.wrapper.Status(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":        "ok",
-		"wrapper":       status,
-		"wrapper_error": errorString(err),
-	})
+	if s.store != nil {
+		if err := s.store.Ping(r.Context()); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"status":          "degraded",
+				"database_error": err.Error(),
+			})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
 func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
@@ -343,11 +347,4 @@ func writeSubmitError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeError(w, http.StatusInternalServerError, err)
-}
-
-func errorString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }

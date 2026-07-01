@@ -10,12 +10,14 @@ import (
 	"strings"
 	"testing"
 
+	"amdl/backend/internal/db"
 	"amdl/backend/internal/jobs"
 	"amdl/backend/internal/wrapper"
 	"gopkg.in/yaml.v3"
 )
 
 type fakeWrapperService struct {
+	statusCalls  int
 	statusResult wrapper.Status
 	statusErr    error
 	startResult  wrapper.LoginResult
@@ -30,6 +32,7 @@ type fakeWrapperService struct {
 }
 
 func (f *fakeWrapperService) Status(context.Context) (wrapper.Status, error) {
+	f.statusCalls++
 	return f.statusResult, f.statusErr
 }
 
@@ -81,6 +84,55 @@ func TestWriteSubmitErrorDecryptorUnavailable(t *testing.T) {
 	writeSubmitError(recorder, &jobs.RequestError{Code: "decryptor_unavailable", Message: "offline"})
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestHealthEndpoint(t *testing.T) {
+	store, err := db.Open(t.TempDir() + "/health.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	fake := &fakeWrapperService{statusErr: errors.New("should not be called")}
+	server := &Server{store: store, wrapper: fake}
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/health", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if fake.statusCalls != 0 {
+		t.Fatalf("health called wrapper.Status %d times", fake.statusCalls)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["status"] != "ok" {
+		t.Fatalf("unexpected body: %#v", body)
+	}
+}
+
+func TestHealthEndpointWithoutStore(t *testing.T) {
+	server := &Server{}
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/health", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestHealthEndpointDatabaseUnavailable(t *testing.T) {
+	store, err := db.Open(t.TempDir() + "/health-closed.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	server := &Server{store: store}
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/health", "")
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d, body = %s", recorder.Code, http.StatusServiceUnavailable, recorder.Body.String())
 	}
 }
 

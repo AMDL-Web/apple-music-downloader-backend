@@ -33,8 +33,6 @@ go run ./cmd/amdl-api
 192.168.3.42:8080
 ```
 
-`wrapper.timeout_seconds` 控制普通 gRPC 调用，默认 30 秒；`wrapper.login_timeout_seconds` 单独控制登录和 2FA 会话，默认 120 秒。
-
 ## 重试与编码降级
 
 - `download.retries`：元数据、封面和歌词等普通外部调用的重试次数。

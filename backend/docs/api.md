@@ -2,7 +2,19 @@
 
 ## `GET /api/v1/health`
 
-返回后端和 wrapper-manager 的健康状态。
+轻量后端存活检查，仅验证 API 进程与本地数据库，**不**探测 wrapper-manager。适合负载均衡或进程监控。
+
+成功时返回 `200 OK`：
+
+```json
+{"status": "ok"}
+```
+
+数据库不可用时返回 `503 Service Unavailable`：
+
+```json
+{"status": "degraded", "database_error": "..."}
+```
 
 ## `GET /api/v1/capabilities`
 
@@ -12,7 +24,9 @@
 
 ### `GET /api/v1/wrapper/status`
 
-返回 wrapper-manager 的独立状态：
+探测 wrapper-manager 连通性与运行状态（登录、区域、客户端数等）。下载或账号管理前应使用此接口，而非 `/api/v1/health`。
+
+返回 wrapper-manager 状态：
 
 ```json
 {
