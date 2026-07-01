@@ -68,6 +68,12 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if recovered, err := manager.RecoverUnfinished(ctx); err != nil {
+		logger.Error("recover unfinished jobs", "error", err)
+		os.Exit(1)
+	} else if recovered > 0 {
+		logger.Info("recovered unfinished jobs", "count", recovered)
+	}
 	manager.Start(ctx)
 
 	httpServer := &http.Server{
