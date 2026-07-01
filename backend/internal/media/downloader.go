@@ -309,15 +309,26 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	if (d.cfg.Download.EmbedLyrics || d.cfg.Download.SaveLyricsFile) && song.HasLyrics {
 		raw, lyricsAttempts, lyricsErr := retryValue(ctx, d.cfg.Download.Retries, retryBackoff, func(attempt int) (string, error) {
 			d.setItemAttempt(ctx, reporter, &item, "lyrics", attempt, maxAttempts(d.cfg.Download.Retries), fmt.Sprintf("正在获取歌词（%d/%d）", attempt, maxAttempts(d.cfg.Download.Retries)))
-			return d.wrapper.Lyrics(ctx, song.ID, storefront, d.cfg.Catalog.Language)
+			return d.wrapper.Lyrics(ctx, song.ID, wrapper.LyricsRequestOptions{
+				Region:                  storefront,
+				Language:                d.cfg.Catalog.Language,
+				Type:                    d.cfg.Download.LyricsType,
+				ExtendTtmlLocalizations: len(d.cfg.Download.LyricsExtras) > 0 || d.cfg.Download.LyricsType == "syllable-lyrics",
+			})
 		}, func(failure retryFailure) {
 			d.setRetryFailure(ctx, reporter, &item, "lyrics", "lyrics", failure)
 			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "lyrics", "", failure)
 		})
 		if lyricsErr == nil {
-			lyrics = convertLyrics(raw, d.cfg.Download.LyricsFormat)
-			if lyricsAttempts > 1 {
-				d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "lyrics", "", lyricsAttempts)
+			converted, convertErr := convertLyrics(raw, d.cfg.Download.LyricsFormat, d.cfg.Download.LyricsExtras)
+			if convertErr != nil {
+				item.StatusMessage = "歌词转换失败，继续下载但不嵌入歌词：" + convertErr.Error()
+				_ = reporter.UpdateItem(ctx, item)
+			} else {
+				lyrics = converted
+				if lyricsAttempts > 1 {
+					d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "lyrics", "", lyricsAttempts)
+				}
 			}
 		} else {
 			if ctx.Err() != nil {

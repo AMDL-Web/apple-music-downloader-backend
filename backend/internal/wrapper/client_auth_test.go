@@ -19,6 +19,7 @@ type authTestServer struct {
 	pb.UnimplementedWrapperManagerServiceServer
 	login  func(grpc.BidiStreamingServer[pb.LoginRequest, pb.LoginReply]) error
 	logout func(context.Context, *pb.LogoutRequest) (*pb.LogoutReply, error)
+	lyrics func(context.Context, *pb.LyricsRequest) (*pb.LyricsReply, error)
 }
 
 func (s *authTestServer) Login(stream grpc.BidiStreamingServer[pb.LoginRequest, pb.LoginReply]) error {
@@ -27,6 +28,10 @@ func (s *authTestServer) Login(stream grpc.BidiStreamingServer[pb.LoginRequest, 
 
 func (s *authTestServer) Logout(ctx context.Context, req *pb.LogoutRequest) (*pb.LogoutReply, error) {
 	return s.logout(ctx, req)
+}
+
+func (s *authTestServer) Lyrics(ctx context.Context, req *pb.LyricsRequest) (*pb.LyricsReply, error) {
+	return s.lyrics(ctx, req)
 }
 
 func newAuthTestClient(t *testing.T, server *authTestServer, timeout time.Duration) *Client {
@@ -319,5 +324,48 @@ func TestLogout(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestLyricsSendsTypeAndLocalizationOptions(t *testing.T) {
+	server := &authTestServer{
+		login:  func(grpc.BidiStreamingServer[pb.LoginRequest, pb.LoginReply]) error { return nil },
+		logout: func(context.Context, *pb.LogoutRequest) (*pb.LogoutReply, error) { return nil, nil },
+		lyrics: func(_ context.Context, req *pb.LyricsRequest) (*pb.LyricsReply, error) {
+			data := req.GetData()
+			if data.GetAdamId() != "123" {
+				t.Fatalf("adam id = %q, want 123", data.GetAdamId())
+			}
+			if data.GetRegion() != "jp" {
+				t.Fatalf("region = %q, want jp", data.GetRegion())
+			}
+			if data.GetLanguage() != "ja-JP" {
+				t.Fatalf("language = %q, want ja-JP", data.GetLanguage())
+			}
+			if data.GetType() != "syllable-lyrics" {
+				t.Fatalf("type = %q, want syllable-lyrics", data.GetType())
+			}
+			if !data.GetExtendTtmlLocalizations() {
+				t.Fatal("extend_ttml_localizations = false, want true")
+			}
+			return &pb.LyricsReply{
+				Header: &pb.ReplyHeader{Code: 0},
+				Data:   &pb.LyricsDataResponse{AdamId: "123", Lyrics: "<tt/>"},
+			}, nil
+		},
+	}
+	client := newAuthTestClient(t, server, time.Second)
+
+	got, err := client.Lyrics(context.Background(), "123", LyricsRequestOptions{
+		Region:                  "jp",
+		Language:                "ja-JP",
+		Type:                    "syllable-lyrics",
+		ExtendTtmlLocalizations: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "<tt/>" {
+		t.Fatalf("lyrics = %q, want <tt/>", got)
 	}
 }

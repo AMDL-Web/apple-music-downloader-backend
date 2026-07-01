@@ -43,6 +43,15 @@ go run ./cmd/amdl-api
 - 只有回退链的第一个编码使用 `download.retries`；后续编码（包括隐式 AAC-LC 保底）均只尝试一次。
 - 重试、耗尽、恢复和编码回退会通过任务 SSE 事件返回；任务详情中的每个项目也会返回 `retry_kind`、`attempt`、`max_attempts` 和 `status_message`。
 
+## 歌词
+
+- `download.embed_lyrics` 控制是否写入 MP4 歌词标签，`download.save_lyrics_file` 控制是否保存 `.lrc` 或 `.ttml` 边车文件。
+- `download.lyrics_format` 支持 `lrc` 和 `ttml`；`ttml` 会保留 wrapper 返回的原始 TTML。
+- `download.lyrics_type` 支持 `lyrics` 和 `syllable-lyrics`；后者用于请求 Apple Music 逐词歌词。
+- `download.lyrics_extras` 可配置 `translation`、`pronunciation`，仅在 `lyrics_format: "lrc"` 时参与转换。
+- 歌词、逐词歌词、翻译和音译需要 wrapper-manager 具备有效 Apple Music 订阅登录态。旧 wrapper 可以继续返回默认歌词，但高级字段需要 wrapper 同步支持。
+- 歌词获取或转换失败不会中断音频下载；后端会继续保存无歌词音频并在任务项状态中说明原因。
+
 ## 外部媒体工具
 
 后端自身不再调用旧的编译下载模块，但媒体封装阶段需要这些命令：

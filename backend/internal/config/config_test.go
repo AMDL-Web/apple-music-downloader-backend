@@ -26,6 +26,19 @@ func TestWrapperLoginTimeout(t *testing.T) {
 	}
 }
 
+func TestDefaultLyricsOptions(t *testing.T) {
+	defaults := Default().Download
+	if defaults.LyricsType != "lyrics" {
+		t.Fatalf("default lyrics type = %q, want lyrics", defaults.LyricsType)
+	}
+	if defaults.LyricsFormat != "lrc" {
+		t.Fatalf("default lyrics format = %q, want lrc", defaults.LyricsFormat)
+	}
+	if len(defaults.LyricsExtras) != 0 {
+		t.Fatalf("default lyrics extras = %#v, want empty", defaults.LyricsExtras)
+	}
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -53,6 +66,27 @@ func TestLoadRejectsUnknownCoverFormat(t *testing.T) {
 	path := writeConfig(t, "download:\n  cover_format: webp\n")
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "cover_format") {
 		t.Fatalf("Load() error = %v, want cover_format validation error", err)
+	}
+}
+
+func TestLoadRejectsUnknownLyricsFormat(t *testing.T) {
+	path := writeConfig(t, "download:\n  lyrics_format: json\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "lyrics_format") {
+		t.Fatalf("Load() error = %v, want lyrics_format validation error", err)
+	}
+}
+
+func TestLoadRejectsUnknownLyricsType(t *testing.T) {
+	path := writeConfig(t, "download:\n  lyrics_type: word-by-word\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "lyrics_type") {
+		t.Fatalf("Load() error = %v, want lyrics_type validation error", err)
+	}
+}
+
+func TestLoadRejectsUnknownLyricsExtra(t *testing.T) {
+	path := writeConfig(t, "download:\n  lyrics_extras: [translation, romanization]\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "lyrics_extras") {
+		t.Fatalf("Load() error = %v, want lyrics_extras validation error", err)
 	}
 }
 

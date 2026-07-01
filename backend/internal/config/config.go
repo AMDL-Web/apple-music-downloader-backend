@@ -83,6 +83,8 @@ type DownloadConfig struct {
 	EmbedLyrics            bool     `yaml:"embed_lyrics" json:"embed_lyrics"`
 	SaveLyricsFile         bool     `yaml:"save_lyrics_file" json:"save_lyrics_file"`
 	LyricsFormat           string   `yaml:"lyrics_format" json:"lyrics_format"`
+	LyricsType             string   `yaml:"lyrics_type" json:"lyrics_type"`
+	LyricsExtras           []string `yaml:"lyrics_extras" json:"lyrics_extras"`
 	ArtistFolderFormat     string   `yaml:"artist_folder_format" json:"artist_folder_format"`
 	AlbumFolderFormat      string   `yaml:"album_folder_format" json:"album_folder_format"`
 	SongFileFormat         string   `yaml:"song_file_format" json:"song_file_format"`
@@ -116,7 +118,7 @@ func Default() Config {
 			MaxRunningJobs: 2, MaxParallelTracks: 3, Retries: 3,
 			DownloadsDir: "data/downloads", SongsFolderName: "songs", AlbumsFolderName: "albums", PlaylistsFolderName: "playlists",
 			TempDir: "data/tmp", CoverSize: "5000x5000", CoverFormat: "jpg",
-			EmbedCover: true, EmbedLyrics: true, LyricsFormat: "lrc",
+			EmbedCover: true, EmbedLyrics: true, LyricsFormat: "lrc", LyricsType: "lyrics", LyricsExtras: []string{},
 			ArtistFolderFormat: "{ArtistName}", AlbumFolderFormat: "{AlbumName}", SongFileFormat: "{TrackNumber:02d}. {SongName}",
 			PlaylistFolderFormat: "{PlaylistName}", PlaylistSongFileFormat: "{SongNumer:02d}. {ArtistName} - {SongName}",
 			ALACMaxSampleRate: 192000, ALACMaxBitDepth: 24, CheckIntegrity: true,
@@ -164,6 +166,22 @@ func (c Config) validate() error {
 	case "jpg", "jpeg", "png":
 	default:
 		return fmt.Errorf("download.cover_format must be jpg, jpeg, or png")
+	}
+	switch c.Download.LyricsFormat {
+	case "lrc", "ttml":
+	default:
+		return fmt.Errorf("download.lyrics_format must be lrc or ttml")
+	}
+	switch c.Download.LyricsType {
+	case "lyrics", "syllable-lyrics":
+	default:
+		return fmt.Errorf("download.lyrics_type must be lyrics or syllable-lyrics")
+	}
+	allowedLyricsExtras := map[string]struct{}{"translation": {}, "pronunciation": {}}
+	for _, extra := range c.Download.LyricsExtras {
+		if _, ok := allowedLyricsExtras[extra]; !ok {
+			return fmt.Errorf("download.lyrics_extras contains unsupported value %q", extra)
+		}
 	}
 	if len(c.Download.QualityPriority) == 0 {
 		return fmt.Errorf("download.quality_priority must contain at least one codec")

@@ -114,6 +114,16 @@ wrapper-manager 不可用时返回 `503 Service Unavailable`。
 
 `force: true` 会覆盖已存在的音频和歌词边车文件；默认为 `false`，已存在的文件会被跳过。链接类型和区域在入队前完成校验。
 
+歌词行为由后端配置控制：
+
+- `download.embed_lyrics`: 写入 MP4 歌词标签。
+- `download.save_lyrics_file`: 保存 `.lrc` 或 `.ttml` 边车文件。
+- `download.lyrics_format`: `lrc` 或 `ttml`。
+- `download.lyrics_type`: `lyrics` 或 `syllable-lyrics`。
+- `download.lyrics_extras`: 可选 `translation`、`pronunciation`。
+
+歌词请求通过 wrapper-manager 完成，需要有效 Apple Music 订阅登录态。歌词获取或转换失败不会使下载任务失败，任务项会继续下载并记录无歌词原因。
+
 ## `GET /api/v1/downloads`
 
 列出任务。

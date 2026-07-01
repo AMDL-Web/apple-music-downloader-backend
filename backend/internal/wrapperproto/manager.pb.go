@@ -892,12 +892,14 @@ func (x *LyricsRequest) GetData() *LyricsDataRequest {
 }
 
 type LyricsDataRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AdamId        string                 `protobuf:"bytes,1,opt,name=adam_id,json=adamId,proto3" json:"adam_id,omitempty"`
-	Region        string                 `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`
-	Language      string                 `protobuf:"bytes,3,opt,name=language,proto3" json:"language,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                   protoimpl.MessageState `protogen:"open.v1"`
+	AdamId                  string                 `protobuf:"bytes,1,opt,name=adam_id,json=adamId,proto3" json:"adam_id,omitempty"`
+	Region                  string                 `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`
+	Language                string                 `protobuf:"bytes,3,opt,name=language,proto3" json:"language,omitempty"`
+	Type                    string                 `protobuf:"bytes,4,opt,name=type,proto3" json:"type,omitempty"`
+	ExtendTtmlLocalizations bool                   `protobuf:"varint,5,opt,name=extend_ttml_localizations,json=extendTtmlLocalizations,proto3" json:"extend_ttml_localizations,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *LyricsDataRequest) Reset() {
@@ -949,6 +951,20 @@ func (x *LyricsDataRequest) GetLanguage() string {
 		return x.Language
 	}
 	return ""
+}
+
+func (x *LyricsDataRequest) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *LyricsDataRequest) GetExtendTtmlLocalizations() bool {
+	if x != nil {
+		return x.ExtendTtmlLocalizations
+	}
+	return false
 }
 
 type LyricsReply struct {
@@ -1564,11 +1580,13 @@ const file_proto_manager_proto_rawDesc = "" +
 	"\aadam_id\x18\x01 \x01(\tR\x06adamId\x12\x12\n" +
 	"\x04m3u8\x18\x02 \x01(\tR\x04m3u8\"B\n" +
 	"\rLyricsRequest\x121\n" +
-	"\x04data\x18\x01 \x01(\v2\x1d.manager.v1.LyricsDataRequestR\x04data\"`\n" +
+	"\x04data\x18\x01 \x01(\v2\x1d.manager.v1.LyricsDataRequestR\x04data\"\xb0\x01\n" +
 	"\x11LyricsDataRequest\x12\x17\n" +
 	"\aadam_id\x18\x01 \x01(\tR\x06adamId\x12\x16\n" +
 	"\x06region\x18\x02 \x01(\tR\x06region\x12\x1a\n" +
-	"\blanguage\x18\x03 \x01(\tR\blanguage\"r\n" +
+	"\blanguage\x18\x03 \x01(\tR\blanguage\x12\x12\n" +
+	"\x04type\x18\x04 \x01(\tR\x04type\x12:\n" +
+	"\x19extend_ttml_localizations\x18\x05 \x01(\bR\x17extendTtmlLocalizations\"r\n" +
 	"\vLyricsReply\x12/\n" +
 	"\x06header\x18\x01 \x01(\v2\x17.manager.v1.ReplyHeaderR\x06header\x122\n" +
 	"\x04data\x18\x02 \x01(\v2\x1e.manager.v1.LyricsDataResponseR\x04data\"E\n" +
