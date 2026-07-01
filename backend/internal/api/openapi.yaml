@@ -365,7 +365,7 @@ components:
             type: string
     WrapperStatus:
       type: object
-      required: [ready, status, regions, client_count]
+      required: [ready, status, regions, client_count, accounts_supported]
       properties:
         ready:
           type: boolean
@@ -378,6 +378,14 @@ components:
         client_count:
           type: integer
           format: int32
+        accounts_supported:
+          type: boolean
+          description: Whether wrapper-manager returned the optional accounts field; false means the connected manager version does not support it.
+        accounts:
+          type: array
+          description: Logged-in wrapper account identifiers when supported by wrapper-manager.
+          items:
+            type: string
     HealthResponse:
       type: object
       required: [status]

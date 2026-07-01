@@ -13,24 +13,42 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 type authTestServer struct {
 	pb.UnimplementedWrapperManagerServiceServer
+	status func(context.Context, *emptypb.Empty) (*pb.StatusReply, error)
 	login  func(grpc.BidiStreamingServer[pb.LoginRequest, pb.LoginReply]) error
 	logout func(context.Context, *pb.LogoutRequest) (*pb.LogoutReply, error)
 	lyrics func(context.Context, *pb.LyricsRequest) (*pb.LyricsReply, error)
 }
 
+func (s *authTestServer) Status(ctx context.Context, req *emptypb.Empty) (*pb.StatusReply, error) {
+	if s.status == nil {
+		return nil, errors.New("unexpected status call")
+	}
+	return s.status(ctx, req)
+}
+
 func (s *authTestServer) Login(stream grpc.BidiStreamingServer[pb.LoginRequest, pb.LoginReply]) error {
+	if s.login == nil {
+		return errors.New("unexpected login call")
+	}
 	return s.login(stream)
 }
 
 func (s *authTestServer) Logout(ctx context.Context, req *pb.LogoutRequest) (*pb.LogoutReply, error) {
+	if s.logout == nil {
+		return nil, errors.New("unexpected logout call")
+	}
 	return s.logout(ctx, req)
 }
 
 func (s *authTestServer) Lyrics(ctx context.Context, req *pb.LyricsRequest) (*pb.LyricsReply, error) {
+	if s.lyrics == nil {
+		return nil, errors.New("unexpected lyrics call")
+	}
 	return s.lyrics(ctx, req)
 }
 
@@ -70,6 +88,27 @@ func TestAuthTimeoutUsesDedicatedWrapperSetting(t *testing.T) {
 	client := &Client{cfg: config.WrapperConfig{TimeoutSeconds: 30, LoginTimeoutSeconds: 120}}
 	if got := client.authTimeout(); got != 120*time.Second {
 		t.Fatalf("auth timeout = %s, want 2m", got)
+	}
+}
+
+func TestStatusReturnsAccountsWhenManagerProvidesThem(t *testing.T) {
+	server := &authTestServer{status: func(context.Context, *emptypb.Empty) (*pb.StatusReply, error) {
+		return &pb.StatusReply{
+			Header: &pb.ReplyHeader{Code: 0, Msg: "SUCCESS"},
+			Data: &pb.StatusData{
+				Ready: true, Status: true, Regions: []string{"us"}, ClientCount: 1,
+				Accounts: []string{"user@example.com"},
+			},
+		}, nil
+	}}
+	client := newAuthTestClient(t, server, time.Second)
+
+	status, err := client.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.AccountsSupported || len(status.Accounts) != 1 || status.Accounts[0] != "user@example.com" {
+		t.Fatalf("unexpected accounts status: %#v", status)
 	}
 }
 

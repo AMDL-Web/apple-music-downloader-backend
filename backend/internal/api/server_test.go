@@ -149,7 +149,10 @@ func TestHealthEndpointDatabaseUnavailable(t *testing.T) {
 }
 
 func TestWrapperStatusEndpoint(t *testing.T) {
-	fake := &fakeWrapperService{statusResult: wrapper.Status{Ready: true, Status: true, Regions: []string{"us"}, ClientCount: 1}}
+	fake := &fakeWrapperService{statusResult: wrapper.Status{
+		Ready: true, Status: true, Regions: []string{"us"}, ClientCount: 1,
+		Accounts: []string{"user@example.com"}, AccountsSupported: true,
+	}}
 	server := &Server{wrapper: fake}
 	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/wrapper/status", "")
 	if recorder.Code != http.StatusOK {
@@ -161,6 +164,25 @@ func TestWrapperStatusEndpoint(t *testing.T) {
 	}
 	if !body.Ready || body.ClientCount != 1 || len(body.Regions) != 1 {
 		t.Fatalf("unexpected body: %#v", body)
+	}
+	if !body.AccountsSupported || len(body.Accounts) != 1 || body.Accounts[0] != "user@example.com" {
+		t.Fatalf("unexpected accounts support: %#v", body)
+	}
+}
+
+func TestWrapperStatusEndpointReportsUnsupportedAccounts(t *testing.T) {
+	fake := &fakeWrapperService{statusResult: wrapper.Status{Ready: true, Status: true, Regions: []string{"us"}, ClientCount: 1}}
+	server := &Server{wrapper: fake}
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/wrapper/status", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var body wrapper.Status
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.AccountsSupported {
+		t.Fatalf("accounts_supported = true, want false: %#v", body)
 	}
 }
 

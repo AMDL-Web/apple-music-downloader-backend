@@ -57,10 +57,12 @@ type loginSession struct {
 }
 
 type Status struct {
-	Ready       bool     `json:"ready"`
-	Status      bool     `json:"status"`
-	Regions     []string `json:"regions"`
-	ClientCount int32    `json:"client_count"`
+	Ready             bool     `json:"ready"`
+	Status            bool     `json:"status"`
+	Regions           []string `json:"regions"`
+	ClientCount       int32    `json:"client_count"`
+	Accounts          []string `json:"accounts,omitempty"`
+	AccountsSupported bool     `json:"accounts_supported"`
 }
 
 type DecryptSample struct {
@@ -267,7 +269,22 @@ func (c *Client) Status(ctx context.Context) (Status, error) {
 		return Status{}, fmt.Errorf("wrapper status: %s", resp.GetHeader().GetMsg())
 	}
 	data := resp.GetData()
-	return Status{Ready: data.GetReady(), Status: data.GetStatus(), Regions: data.GetRegions(), ClientCount: data.GetClientCount()}, nil
+	return Status{
+		Ready:             data.GetReady(),
+		Status:            data.GetStatus(),
+		Regions:           data.GetRegions(),
+		ClientCount:       data.GetClientCount(),
+		Accounts:          data.GetAccounts(),
+		AccountsSupported: statusAccountsSupported(data),
+	}, nil
+}
+
+func statusAccountsSupported(data *pb.StatusData) bool {
+	if data == nil {
+		return false
+	}
+	field := data.ProtoReflect().Descriptor().Fields().ByName("accounts")
+	return field != nil && data.ProtoReflect().Get(field).List().Len() > 0
 }
 
 func (c *Client) M3U8(ctx context.Context, adamID string) (string, error) {
