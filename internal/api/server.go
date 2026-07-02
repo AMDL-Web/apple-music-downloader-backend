@@ -68,7 +68,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/quality", s.queryQuality)
 	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
 	mux.HandleFunc("GET /api/v1/downloads", s.listDownloads)
-	mux.HandleFunc("/api/v1/downloads/", s.downloadByID)
+	mux.HandleFunc("GET /api/v1/downloads/{id}", s.getDownload)
+	mux.HandleFunc("POST /api/v1/downloads/{id}/cancel", s.cancelDownload)
+	mux.HandleFunc("GET /api/v1/downloads/{id}/events", s.events)
 	return cors(mux)
 }
 
@@ -257,34 +259,16 @@ func (s *Server) listDownloads(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, jobs)
 }
 
-func (s *Server) downloadByID(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/downloads/")
-	parts := strings.Split(strings.Trim(rest, "/"), "/")
-	if len(parts) == 0 || parts[0] == "" {
-		writeError(w, http.StatusNotFound, fmt.Errorf("not found"))
+func (s *Server) cancelDownload(w http.ResponseWriter, r *http.Request) {
+	if err := s.manager.Cancel(r.Context(), r.PathValue("id")); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	id := parts[0]
-	if len(parts) == 1 && r.Method == http.MethodGet {
-		s.getDownload(w, r, id)
-		return
-	}
-	if len(parts) == 2 && parts[1] == "cancel" && r.Method == http.MethodPost {
-		if err := s.manager.Cancel(r.Context(), id); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
-		return
-	}
-	if len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet {
-		s.events(w, r, id)
-		return
-	}
-	writeError(w, http.StatusNotFound, fmt.Errorf("not found"))
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
-func (s *Server) getDownload(w http.ResponseWriter, r *http.Request, id string) {
+func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
 	job, err := s.store.GetJob(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err)
@@ -305,7 +289,8 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request, id string) 
 	})
 }
 
-func (s *Server) events(w http.ResponseWriter, r *http.Request, id string) {
+func (s *Server) events(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -315,26 +300,41 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	lastID, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
-	existing, _ := s.store.ListEventsAfter(r.Context(), id, lastID)
-	for _, ev := range existing {
-		writeSSE(w, ev)
-		lastID = ev.ID
+
+	// drain streams every persisted event newer than lastID directly from the
+	// store, so delivery never depends on the in-memory hub channel. The hub
+	// only wakes us to drain sooner; any event dropped by a full channel buffer
+	// is still picked up on the next drain, and the ticker bounds the tail
+	// latency for a dropped final event that has no successor to wake us.
+	drain := func() {
+		events, err := s.store.ListEventsAfter(r.Context(), id, lastID)
+		if err != nil {
+			return
+		}
+		for _, ev := range events {
+			writeSSE(w, ev)
+			lastID = ev.ID
+		}
+		flusher.Flush()
 	}
-	flusher.Flush()
+
+	// Subscribe before the first drain so an event published between reading the
+	// backlog and registering for live updates still wakes a subsequent drain
+	// instead of being lost in the gap.
 	ch, cancel := s.hub.Subscribe(id)
 	defer cancel()
-	ticker := time.NewTicker(25 * time.Second)
+	drain()
+
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case ev := <-ch:
-			if ev.ID > lastID {
-				writeSSE(w, ev)
-				flusher.Flush()
-			}
+		case <-ch:
+			drain()
 		case <-ticker.C:
+			drain()
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
 		}
