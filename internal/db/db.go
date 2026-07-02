@@ -114,6 +114,11 @@ func (s *Store) UpdateJob(ctx context.Context, job domain.Job) error {
 	return err
 }
 
+func (s *Store) UpdateJobStatus(ctx context.Context, id string, status domain.JobStatus, updatedAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET status=?, updated_at=? WHERE id=?`, string(status), formatTime(updatedAt), id)
+	return err
+}
+
 func (s *Store) GetJob(ctx context.Context, id string) (domain.Job, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,force,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE id=?`, id)
 	return scanJob(row)

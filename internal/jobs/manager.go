@@ -142,9 +142,7 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 	if job.Status == domain.JobCompleted || job.Status == domain.JobFailed {
 		return nil
 	}
-	job.Status = domain.JobCancelled
-	job.UpdatedAt = time.Now().UTC()
-	if err := m.store.UpdateJob(ctx, job); err != nil {
+	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobCancelled, time.Now().UTC()); err != nil {
 		return err
 	}
 	return m.Event(ctx, domain.Event{JobID: jobID, Type: "job_cancelled", Message: "job cancelled"})
@@ -184,6 +182,9 @@ func (m *Manager) run(parent context.Context, jobID string) {
 	_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_started", Message: "job started"})
 
 	err = m.processor.ProcessJob(ctx, job, m)
+	if latest, loadErr := m.store.GetJob(context.Background(), job.ID); loadErr == nil {
+		job = latest
+	}
 	if err != nil {
 		m.refreshCounts(&job)
 		if errors.Is(ctx.Err(), context.Canceled) {

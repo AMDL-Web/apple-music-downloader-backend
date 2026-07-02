@@ -54,6 +54,8 @@ download:
   albums_folder_name: "albums"
   # string folder name: directory under downloads_dir for playlist tasks. Must be non-empty.
   playlists_folder_name: "playlists"
+  # string folder name: directory under downloads_dir for artist tasks. Must be non-empty.
+  artists_folder_name: "artists"
   # string path: temporary media working directory. Relative paths are resolved from the backend working directory.
   temp_dir: "data/tmp"
   # string: cover artwork size as "{width}x{height}", for example "5000x5000", "3000x3000", "1400x1400".

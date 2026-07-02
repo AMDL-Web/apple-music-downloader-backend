@@ -39,6 +39,12 @@ func TestDefaultLyricsOptions(t *testing.T) {
 	}
 }
 
+func TestDefaultArtistsFolderName(t *testing.T) {
+	if got := Default().Download.ArtistsFolderName; got != "artists" {
+		t.Fatalf("default artists folder name = %q, want artists", got)
+	}
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -94,5 +100,12 @@ func TestLoadRejectsExplicitAACLCInPriority(t *testing.T) {
 	path := writeConfig(t, "download:\n  quality_priority: [alac, aac-lc]\n")
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "aac-lc") {
 		t.Fatalf("Load() error = %v, want implicit AAC-LC validation error", err)
+	}
+}
+
+func TestLoadRejectsEmptyArtistsFolderName(t *testing.T) {
+	path := writeConfig(t, "download:\n  artists_folder_name: \"\"\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "artists_folder_name") {
+		t.Fatalf("Load() error = %v, want artists_folder_name validation error", err)
 	}
 }

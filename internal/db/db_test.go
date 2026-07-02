@@ -60,6 +60,38 @@ func TestJobForceRoundTrip(t *testing.T) {
 	}
 }
 
+func TestUpdateJobStatusPreservesCountsAndError(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	job := domain.Job{
+		ID: "job-status", Input: "https://music.apple.com/cn/artist/example/1", Type: "artist", Storefront: "cn",
+		Status: domain.JobRunning, TotalItems: 4, DoneItems: 2, FailedItems: 1, Error: "partial", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.UpdateJobStatus(ctx, job.ID, domain.JobCancelled, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.JobCancelled {
+		t.Fatalf("status = %s, want %s", got.Status, domain.JobCancelled)
+	}
+	if got.TotalItems != 4 || got.DoneItems != 2 || got.FailedItems != 1 || got.Error != "partial" {
+		t.Fatalf("job fields were overwritten: %+v", got)
+	}
+}
+
 func TestListRecoverableJobsOnlyReturnsQueuedAndRunning(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "amdl.db"))
 	if err != nil {

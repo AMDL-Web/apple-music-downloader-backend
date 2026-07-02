@@ -90,6 +90,8 @@ func downloadTypeFolder(cfg config.Config, collectionType applemusic.URLType) st
 		name = cfg.Download.AlbumsFolderName
 	case applemusic.TypePlaylist:
 		name = cfg.Download.PlaylistsFolderName
+	case applemusic.TypeArtist:
+		name = cfg.Download.ArtistsFolderName
 	}
 	return safeName(name)
 }
