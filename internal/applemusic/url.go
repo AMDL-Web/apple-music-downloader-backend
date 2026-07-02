@@ -26,6 +26,12 @@ type ParsedURL struct {
 
 var storefrontPattern = regexp.MustCompile(`^[a-z]{2}$`)
 
+const (
+	appleMusicHost          = "music.apple.com"
+	betaAppleMusicHost      = "beta.music.apple.com"
+	classicalAppleMusicHost = "classical.music.apple.com"
+)
+
 func ParseWithAlbumTrackMode(raw, albumTrackURLMode string) (ParsedURL, error) {
 	if albumTrackURLMode != "song" && albumTrackURLMode != "album" {
 		return ParsedURL{}, fmt.Errorf("invalid album_track_url_mode %q (expected song or album)", albumTrackURLMode)
@@ -34,7 +40,7 @@ func ParseWithAlbumTrackMode(raw, albumTrackURLMode string) (ParsedURL, error) {
 	if err != nil {
 		return ParsedURL{}, err
 	}
-	if u.Host != "music.apple.com" && u.Host != "beta.music.apple.com" {
+	if u.Host != appleMusicHost && u.Host != betaAppleMusicHost && u.Host != classicalAppleMusicHost {
 		return ParsedURL{}, fmt.Errorf("unsupported host %q", u.Host)
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
@@ -46,6 +52,9 @@ func ParseWithAlbumTrackMode(raw, albumTrackURLMode string) (ParsedURL, error) {
 		return ParsedURL{}, fmt.Errorf("invalid storefront %q", storefront)
 	}
 	kind := URLType(parts[1])
+	if u.Host == classicalAppleMusicHost && kind == TypeVideo {
+		return ParsedURL{}, fmt.Errorf("unsupported Apple Music Classical URL type %q", kind)
+	}
 	id := parts[len(parts)-1]
 	switch kind {
 	case TypeAlbum:
