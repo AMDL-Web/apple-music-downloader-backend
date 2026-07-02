@@ -7,6 +7,7 @@ AMDL Backend 是 Apple Music 下载系统的核心后端服务。它负责解析
 ## 功能
 
 - 支持 Apple Music 单曲、专辑、歌单和艺术家 URL。
+- 不会支持 Apple Music MV 下载；受 L3 限制，当前链路只能获取低分辨率视频，不符合本项目的下载质量目标。
 - 通过 `wrapper-manager` gRPC 获取账号状态、播放清单和媒体数据。
 - 使用 SQLite 持久化任务、任务项和事件。
 - 通过 SSE 推送下载进度。
@@ -127,6 +128,8 @@ curl -X POST http://localhost:18080/api/v1/downloads/{job_id}/cancel
 ```
 
 ## 下载行为
+
+仅音频下载是受支持目标。Apple Music MV 下载不会支持，因为 L3 限制下只能获取低分辨率视频。
 
 ### 重试与编码降级
 
