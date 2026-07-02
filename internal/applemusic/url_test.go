@@ -45,7 +45,7 @@ func TestParseClassicalSupportedURLs(t *testing.T) {
 		mode string
 		want ParsedURL
 	}{
-		{name: "album", raw: "https://classical.music.apple.com/us/album/foo/123456789", mode: "song", want: ParsedURL{Storefront: "us", Type: TypeAlbum, ID: "123456789"}},
+		{name: "album", raw: "https://classical.music.apple.com/cn/album/89286124?l=zh-Hans-CN", mode: "song", want: ParsedURL{Storefront: "cn", Type: TypeAlbum, ID: "89286124"}},
 		{name: "album track as song", raw: "https://classical.music.apple.com/us/album/foo/123456789?i=987654321", mode: "song", want: ParsedURL{Storefront: "us", Type: TypeSong, ID: "987654321"}},
 		{name: "album track as album", raw: "https://classical.music.apple.com/us/album/foo/123456789?i=987654321", mode: "album", want: ParsedURL{Storefront: "us", Type: TypeAlbum, ID: "123456789"}},
 		{name: "song", raw: "https://classical.music.apple.com/gb/song/foo/987654321", mode: "song", want: ParsedURL{Storefront: "gb", Type: TypeSong, ID: "987654321"}},
