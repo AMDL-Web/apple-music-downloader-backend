@@ -56,6 +56,9 @@ func TestCollectionFolderArtistOnlyGroupsAlbums(t *testing.T) {
 	if got := collectionFolderArtist(applemusic.TypeAlbum, tracks); got != "Album Artist" {
 		t.Fatalf("album folder artist = %q, want %q", got, "Album Artist")
 	}
+	if got := collectionFolderArtist(applemusic.TypeArtist, tracks); got != "Album Artist" {
+		t.Fatalf("artist folder artist = %q, want %q", got, "Album Artist")
+	}
 	if got := collectionFolderArtist(applemusic.TypePlaylist, tracks); got != "" {
 		t.Fatalf("playlist folder artist = %q, want empty", got)
 	}
@@ -88,6 +91,7 @@ func TestOutputPathUsesConfiguredTypeFolderNames(t *testing.T) {
 	cfg.Download.SongsFolderName = "single tracks"
 	cfg.Download.AlbumsFolderName = "records"
 	cfg.Download.PlaylistsFolderName = "lists"
+	cfg.Download.ArtistsFolderName = "artists"
 	cfg.Download.ArtistFolderFormat = "{ArtistName}"
 	cfg.Download.AlbumFolderFormat = "{AlbumName}"
 	cfg.Download.SongFileFormat = "{SongName}"
@@ -102,6 +106,7 @@ func TestOutputPathUsesConfiguredTypeFolderNames(t *testing.T) {
 	}{
 		{applemusic.TypeSong, "", filepath.Join("downloads", "single tracks", "Artist", "Album", "Song.m4a")},
 		{applemusic.TypeAlbum, "", filepath.Join("downloads", "records", "Artist", "Album", "Song.m4a")},
+		{applemusic.TypeArtist, "", filepath.Join("downloads", "artists", "Artist", "Album", "Song.m4a")},
 		{applemusic.TypePlaylist, "List", filepath.Join("downloads", "lists", "List", "Song.m4a")},
 	}
 	for _, tt := range tests {

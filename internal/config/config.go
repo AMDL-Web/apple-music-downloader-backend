@@ -73,6 +73,7 @@ type DownloadConfig struct {
 	SongsFolderName        string   `yaml:"songs_folder_name" json:"songs_folder_name"`
 	AlbumsFolderName       string   `yaml:"albums_folder_name" json:"albums_folder_name"`
 	PlaylistsFolderName    string   `yaml:"playlists_folder_name" json:"playlists_folder_name"`
+	ArtistsFolderName      string   `yaml:"artists_folder_name" json:"artists_folder_name"`
 	TempDir                string   `yaml:"temp_dir" json:"temp_dir"`
 	CoverSize              string   `yaml:"cover_size" json:"cover_size"`
 	CoverFormat            string   `yaml:"cover_format" json:"cover_format"`
@@ -116,7 +117,7 @@ func Default() Config {
 		Download: DownloadConfig{
 			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true,
 			MaxRunningJobs: 2, MaxParallelTracks: 3, Retries: 3,
-			DownloadsDir: "data/downloads", SongsFolderName: "songs", AlbumsFolderName: "albums", PlaylistsFolderName: "playlists",
+			DownloadsDir: "data/downloads", SongsFolderName: "songs", AlbumsFolderName: "albums", PlaylistsFolderName: "playlists", ArtistsFolderName: "artists",
 			TempDir: "data/tmp", CoverSize: "5000x5000", CoverFormat: "jpg",
 			EmbedCover: true, EmbedLyrics: true, LyricsFormat: "lrc", LyricsType: "lyrics", LyricsExtras: []string{},
 			ArtistFolderFormat: "{ArtistName}", AlbumFolderFormat: "{AlbumName}", SongFileFormat: "{TrackNumber:02d}. {SongName}",
@@ -152,6 +153,7 @@ func (c Config) validate() error {
 		"download.songs_folder_name":         c.Download.SongsFolderName,
 		"download.albums_folder_name":        c.Download.AlbumsFolderName,
 		"download.playlists_folder_name":     c.Download.PlaylistsFolderName,
+		"download.artists_folder_name":       c.Download.ArtistsFolderName,
 		"download.artist_folder_format":      c.Download.ArtistFolderFormat,
 		"download.album_folder_format":       c.Download.AlbumFolderFormat,
 		"download.song_file_format":          c.Download.SongFileFormat,

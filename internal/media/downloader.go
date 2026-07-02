@@ -23,12 +23,30 @@ import (
 
 type Downloader struct {
 	cfg     config.Config
-	catalog *applemusic.CatalogClient
-	wrapper *wrapper.Client
+	catalog downloaderCatalog
+	wrapper downloaderWrapper
 	tools   *ToolChecker
 	http    *http.Client
 	mp4     *MP4Processor
 	logger  *slog.Logger
+}
+
+type downloaderCatalog interface {
+	Song(context.Context, string, string) (applemusic.Song, error)
+	Album(context.Context, string, string) (applemusic.Collection, error)
+	Playlist(context.Context, string, string) (applemusic.Collection, error)
+	ArtistAlbums(context.Context, string, string) (applemusic.ArtistAlbums, error)
+	Artist(context.Context, string, string) (applemusic.Artist, error)
+	FetchCover(context.Context, []string, string, string) ([]byte, error)
+}
+
+type downloaderWrapper interface {
+	Status(context.Context) (wrapper.Status, error)
+	M3U8(context.Context, string) (string, error)
+	Lyrics(context.Context, string, wrapper.LyricsRequestOptions) (string, error)
+	WebPlayback(context.Context, string) (string, error)
+	Decrypt(context.Context, string, []wrapper.DecryptSample, func(int, int)) ([][]byte, error)
+	License(context.Context, string, string, string) (string, error)
 }
 
 func NewDownloader(cfg config.Config, catalog *applemusic.CatalogClient, wrapperClient *wrapper.Client, tools *ToolChecker, logger *slog.Logger) *Downloader {
@@ -43,7 +61,7 @@ func (d *Downloader) ValidateRequest(ctx context.Context, req domain.DownloadReq
 		}
 		return jobs.ValidationResult{}, &jobs.RequestError{Code: "invalid_url", Message: err.Error(), Cause: err}
 	}
-	if parsed.Type == applemusic.TypeArtist || parsed.Type == applemusic.TypeVideo {
+	if parsed.Type == applemusic.TypeVideo {
 		message := fmt.Sprintf("%s download is not implemented", parsed.Type)
 		return jobs.ValidationResult{}, &jobs.RequestError{Code: "unsupported_input", Message: message}
 	}
@@ -82,7 +100,7 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	if err != nil {
 		return err
 	}
-	if parsed.Type == applemusic.TypeArtist || parsed.Type == applemusic.TypeVideo {
+	if parsed.Type == applemusic.TypeVideo {
 		return fmt.Errorf("%s download is not implemented in core phase", parsed.Type)
 	}
 
@@ -170,13 +188,20 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 }
 
 func collectionFolderArtist(collectionType applemusic.URLType, tracks []applemusic.Song) string {
-	if collectionType != applemusic.TypeAlbum || len(tracks) == 0 {
+	if outputCollectionType(collectionType) != applemusic.TypeAlbum || len(tracks) == 0 {
 		return ""
 	}
 	if tracks[0].AlbumArtist != "" {
 		return tracks[0].AlbumArtist
 	}
 	return tracks[0].ArtistName
+}
+
+func outputCollectionType(collectionType applemusic.URLType) applemusic.URLType {
+	if collectionType == applemusic.TypeArtist {
+		return applemusic.TypeAlbum
+	}
+	return collectionType
 }
 
 type resolvedCollection struct {
@@ -205,9 +230,38 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 			return resolvedCollection{}, err
 		}
 		return resolvedCollection{Tracks: playlist.Tracks, Name: playlist.Name, ArtworkURL: playlist.ArtworkURL}, nil
+	case applemusic.TypeArtist:
+		artist, err := d.catalog.ArtistAlbums(ctx, parsed.Storefront, parsed.ID)
+		if err != nil {
+			return resolvedCollection{}, err
+		}
+		tracks, err := d.artistTracks(ctx, parsed.Storefront, artist.Albums)
+		if err != nil {
+			return resolvedCollection{}, err
+		}
+		return resolvedCollection{Tracks: tracks, Name: artist.Name, ArtworkURL: artist.ArtworkURL}, nil
 	default:
 		return resolvedCollection{}, fmt.Errorf("unsupported input type %s", parsed.Type)
 	}
+}
+
+func (d *Downloader) artistTracks(ctx context.Context, storefront string, albums []applemusic.Collection) ([]applemusic.Song, error) {
+	tracks := make([]applemusic.Song, 0)
+	seen := make(map[string]struct{})
+	for _, summary := range albums {
+		album, err := d.catalog.Album(ctx, storefront, summary.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, track := range album.Tracks {
+			if _, exists := seen[track.ID]; exists {
+				continue
+			}
+			seen[track.ID] = struct{}{}
+			tracks = append(tracks, track)
+		}
+	}
+	return tracks, nil
 }
 
 func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item domain.JobItem, initial applemusic.Song, storefront string, collectionType applemusic.URLType, collectionName string, playlistIndex int, folderArtist string, reporter jobs.Reporter) error {

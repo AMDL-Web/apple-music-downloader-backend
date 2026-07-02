@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"amdl/internal/config"
 	"amdl/internal/db"
 	"amdl/internal/jobs"
 	"amdl/internal/media"
@@ -61,6 +62,10 @@ type fakeQualityService struct {
 func (f *fakeQualityService) QueryQuality(_ context.Context, req media.QualityRequest) (media.QualityResult, error) {
 	f.req = req
 	return f.result, f.err
+}
+
+func configureTestTools() config.ToolsConfig {
+	return config.ToolsConfig{FFmpeg: "true", GPAC: "true", MP4Box: "true", MP4Extract: "true", MP4Edit: "true"}
 }
 
 func requestJSON(t *testing.T, handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
@@ -331,6 +336,36 @@ func TestQualityEndpointValidatesURL(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
+}
+
+func TestCapabilitiesAdvertisesArtistDownloads(t *testing.T) {
+	server := &Server{tools: media.NewToolChecker(configureTestTools())}
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/capabilities", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		SupportedInputs   []string `json:"supported_inputs"`
+		UnsupportedInputs []string `json:"unsupported_inputs"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !containsString(body.SupportedInputs, "artist_url") {
+		t.Fatalf("supported_inputs = %#v, want artist_url", body.SupportedInputs)
+	}
+	if containsString(body.UnsupportedInputs, "artist") {
+		t.Fatalf("unsupported_inputs = %#v, did not want artist", body.UnsupportedInputs)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSwaggerUI(t *testing.T) {

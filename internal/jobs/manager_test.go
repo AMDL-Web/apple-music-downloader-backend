@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +21,32 @@ func (recoveryProcessor) ValidateRequest(context.Context, domain.DownloadRequest
 
 func (recoveryProcessor) ProcessJob(context.Context, domain.Job, Reporter) error {
 	return nil
+}
+
+type cancelAfterTotalProcessor struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (p *cancelAfterTotalProcessor) ValidateRequest(context.Context, domain.DownloadRequest) (ValidationResult, error) {
+	return ValidationResult{Type: "artist", Storefront: "cn"}, nil
+}
+
+func (p *cancelAfterTotalProcessor) ProcessJob(ctx context.Context, job domain.Job, reporter Reporter) error {
+	job.TotalItems = 2
+	if err := reporter.SetJob(ctx, job); err != nil {
+		return err
+	}
+	for i := 1; i <= 2; i++ {
+		if err := reporter.AddItem(ctx, domain.JobItem{
+			JobID: job.ID, AdamID: "song", Kind: "song", Index: i, Title: "Song", Status: domain.ItemQueued,
+		}); err != nil {
+			return err
+		}
+	}
+	p.once.Do(func() { close(p.started) })
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func TestRecoverUnfinishedRequeuesQueuedAndRunningJobs(t *testing.T) {
@@ -74,5 +101,50 @@ func TestRecoverUnfinishedRequeuesQueuedAndRunningJobs(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Type != "job_recovered" {
 		t.Fatalf("running job recovery events = %+v, want one job_recovered", events)
+	}
+}
+
+func TestCancelledJobPreservesProcessorUpdatedTotalItems(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+
+	processor := &cancelAfterTotalProcessor{started: make(chan struct{})}
+	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
+	manager.Start(ctx)
+	job, err := manager.Submit(ctx, domain.DownloadRequest{URL: "https://music.apple.com/cn/artist/example/1495777901"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-processor.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("processor did not start")
+	}
+	if err := manager.Cancel(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var got domain.Job
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		got, err = store.GetJob(ctx, job.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == domain.JobCancelled && got.Error == "cancelled" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got.Status != domain.JobCancelled {
+		t.Fatalf("status = %s, want %s", got.Status, domain.JobCancelled)
+	}
+	if got.TotalItems != 2 {
+		t.Fatalf("total_items = %d, want 2", got.TotalItems)
 	}
 }

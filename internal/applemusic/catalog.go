@@ -96,6 +96,9 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 	tracks := make([]Song, 0, len(rawTracks))
 	discCount := 0
 	for _, raw := range rawTracks {
+		if raw.Type != "songs" {
+			continue
+		}
 		s := mapSong(raw)
 		s.AlbumID = album.ID
 		s.AlbumName = firstNonEmpty(s.AlbumName, album.Attributes.Name)
@@ -148,6 +151,40 @@ func (c *CatalogClient) Playlist(ctx context.Context, storefront, id string) (Co
 	return Collection{ID: playlist.ID, Type: TypePlaylist, Name: playlist.Attributes.Name, Artist: firstNonEmpty(playlist.Attributes.CuratorName, playlist.Attributes.ArtistName), ArtworkURL: playlist.Attributes.Artwork.URL, Tracks: tracks}, nil
 }
 
+func (c *CatalogClient) ArtistAlbums(ctx context.Context, storefront, id string) (ArtistAlbums, error) {
+	var resp catalogArtistResponse
+	if err := c.get(ctx, fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/artists/%s", storefront, id), url.Values{
+		"include": []string{"albums"},
+		"l":       []string{c.cfg.Language},
+	}, &resp); err != nil {
+		return ArtistAlbums{}, err
+	}
+	if len(resp.Data) == 0 {
+		return ArtistAlbums{}, fmt.Errorf("artist %s not found", id)
+	}
+	raw := resp.Data[0]
+	rawAlbums, err := c.allAlbumPages(ctx, raw.Relationships.Albums)
+	if err != nil {
+		return ArtistAlbums{}, err
+	}
+	albums := make([]Collection, 0, len(rawAlbums))
+	seen := make(map[string]struct{}, len(rawAlbums))
+	for _, rawAlbum := range rawAlbums {
+		if rawAlbum.Type != "albums" {
+			continue
+		}
+		if _, exists := seen[rawAlbum.ID]; exists {
+			continue
+		}
+		seen[rawAlbum.ID] = struct{}{}
+		albums = append(albums, mapAlbumSummary(rawAlbum))
+	}
+	return ArtistAlbums{
+		Artist: Artist{ID: raw.ID, Name: raw.Attributes.Name, ArtworkURL: raw.Attributes.Artwork.URL},
+		Albums: albums,
+	}, nil
+}
+
 func (c *CatalogClient) allTrackPages(ctx context.Context, first relationshipSongs) ([]catalogSongData, error) {
 	tracks := append([]catalogSongData(nil), first.Data...)
 	for next := strings.TrimSpace(first.Next); next != ""; {
@@ -159,6 +196,19 @@ func (c *CatalogClient) allTrackPages(ctx context.Context, first relationshipSon
 		next = strings.TrimSpace(page.Next)
 	}
 	return tracks, nil
+}
+
+func (c *CatalogClient) allAlbumPages(ctx context.Context, first relationshipAlbums) ([]catalogAlbumData, error) {
+	albums := append([]catalogAlbumData(nil), first.Data...)
+	for next := strings.TrimSpace(first.Next); next != ""; {
+		var page relationshipAlbums
+		if err := c.get(ctx, catalogNextURL(next), nil, &page); err != nil {
+			return nil, err
+		}
+		albums = append(albums, page.Data...)
+		next = strings.TrimSpace(page.Next)
+	}
+	return albums, nil
 }
 
 func catalogNextURL(next string) string {
@@ -373,6 +423,19 @@ func mapSong(raw catalogSongData) Song {
 		s.ArtistArtworkURL = artist.Attributes.Artwork.URL
 	}
 	return s
+}
+
+func mapAlbumSummary(raw catalogAlbumData) Collection {
+	var artistID, artistArtworkURL string
+	if len(raw.Relationships.Artists.Data) > 0 {
+		artist := raw.Relationships.Artists.Data[0]
+		artistID = artist.ID
+		artistArtworkURL = artist.Attributes.Artwork.URL
+	}
+	return Collection{
+		ID: raw.ID, Type: TypeAlbum, Name: raw.Attributes.Name, Artist: raw.Attributes.ArtistName,
+		ArtworkURL: raw.Attributes.Artwork.URL, ArtistID: artistID, ArtistArtworkURL: artistArtworkURL,
+	}
 }
 
 func maxDisc(tracks []Song) int {

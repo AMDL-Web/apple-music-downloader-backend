@@ -1,12 +1,12 @@
 # AMDL Backend
 
-AMDL Backend 是 Apple Music 下载系统的核心后端服务。它负责解析 Apple Music 单曲、专辑和歌单链接，调度下载任务，对接 `wrapper-manager` 获取媒体数据，并通过 HTTP API 与 SSE 暴露任务状态。
+AMDL Backend 是 Apple Music 下载系统的核心后端服务。它负责解析 Apple Music 单曲、专辑、歌单和艺术家链接，调度下载任务，对接 `wrapper-manager` 获取媒体数据，并通过 HTTP API 与 SSE 暴露任务状态。
 
 当前仓库以根目录 Go 模块为生产代码来源，主要代码位于 `cmd/`、`internal/`、`configs/` 等目录。
 
 ## 功能
 
-- 支持 Apple Music 单曲、专辑、歌单 URL。
+- 支持 Apple Music 单曲、专辑、歌单和艺术家 URL。
 - 通过 `wrapper-manager` gRPC 获取账号状态、播放清单和媒体数据。
 - 使用 SQLite 持久化任务、任务项和事件。
 - 通过 SSE 推送下载进度。
@@ -163,13 +163,19 @@ data/downloads/songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
 data/downloads/albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
 ```
 
+艺术家任务会展开为该艺术家的专辑/单曲列表，并保存到 artists 类型目录：
+
+```text
+data/downloads/artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
+```
+
 歌单默认保存到：
 
 ```text
 data/downloads/playlists/{PlaylistName}/{SongNumer:02d}. {SongName}.m4a
 ```
 
-三个类型目录名可分别通过 `download.songs_folder_name`、`download.albums_folder_name`、`download.playlists_folder_name` 自定义。
+四个类型目录名可分别通过 `download.songs_folder_name`、`download.albums_folder_name`、`download.playlists_folder_name`、`download.artists_folder_name` 自定义。
 
 可选择在音频文件外额外保存独立封面：
 

@@ -47,6 +47,11 @@ type Artist struct {
 	ArtworkURL string
 }
 
+type ArtistAlbums struct {
+	Artist
+	Albums []Collection
+}
+
 type catalogSongResponse struct {
 	Data []catalogSongData `json:"data"`
 }
@@ -151,6 +156,7 @@ type relationshipSongs struct {
 
 type relationshipAlbums struct {
 	Data []catalogAlbumData `json:"data"`
+	Next string             `json:"next"`
 }
 
 type relationshipArtists struct {
@@ -158,11 +164,16 @@ type relationshipArtists struct {
 }
 
 type artistData struct {
-	ID         string           `json:"id"`
-	Attributes artistAttributes `json:"attributes"`
+	ID            string              `json:"id"`
+	Attributes    artistAttributes    `json:"attributes"`
+	Relationships artistRelationships `json:"relationships"`
 }
 
 type artistAttributes struct {
 	Name    string  `json:"name"`
 	Artwork artwork `json:"artwork"`
+}
+
+type artistRelationships struct {
+	Albums relationshipAlbums `json:"albums"`
 }
