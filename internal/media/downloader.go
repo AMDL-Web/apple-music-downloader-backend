@@ -661,7 +661,7 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 		if d.cfg.Download.LyricsFormat == "ttml" {
 			ext = ".ttml"
 		}
-		if err := os.WriteFile(stringsTrimSuffix(outPath, ".m4a")+ext, []byte(lyrics), 0o644); err != nil {
+		if err := os.WriteFile(strings.TrimSuffix(outPath, ".m4a")+ext, []byte(lyrics), 0o644); err != nil {
 			return fmt.Errorf("write lyrics file: %w", err)
 		}
 	}
@@ -731,7 +731,7 @@ func (d *Downloader) downloadAACLC(ctx context.Context, job domain.Job, item *do
 		if d.cfg.Download.LyricsFormat == "ttml" {
 			ext = ".ttml"
 		}
-		if err := os.WriteFile(stringsTrimSuffix(outPath, ".m4a")+ext, []byte(lyrics), 0o644); err != nil {
+		if err := os.WriteFile(strings.TrimSuffix(outPath, ".m4a")+ext, []byte(lyrics), 0o644); err != nil {
 			return fmt.Errorf("write lyrics file: %w", err)
 		}
 	}
@@ -801,8 +801,8 @@ func marshalPayload(value any) string {
 
 func cleanupFailedOutput(outPath string) {
 	_ = os.Remove(outPath)
-	_ = os.Remove(stringsTrimSuffix(outPath, ".m4a") + ".lrc")
-	_ = os.Remove(stringsTrimSuffix(outPath, ".m4a") + ".ttml")
+	_ = os.Remove(strings.TrimSuffix(outPath, ".m4a") + ".lrc")
+	_ = os.Remove(strings.TrimSuffix(outPath, ".m4a") + ".ttml")
 }
 
 func (d *Downloader) failItem(ctx context.Context, reporter jobs.Reporter, job domain.Job, item domain.JobItem, err error) error {
@@ -814,11 +814,4 @@ func (d *Downloader) failItem(ctx context.Context, reporter jobs.Reporter, job d
 	_ = reporter.UpdateItem(ctx, item)
 	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_failed", Message: err.Error()})
 	return err
-}
-
-func stringsTrimSuffix(v, suffix string) string {
-	if len(v) >= len(suffix) && v[len(v)-len(suffix):] == suffix {
-		return v[:len(v)-len(suffix)]
-	}
-	return v
 }
