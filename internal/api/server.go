@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,14 @@ import (
 	"amdl/internal/media"
 	"amdl/internal/wrapper"
 )
+
+// maxBatchSubmitURLs caps the number of URLs accepted in a single batch
+// submit request.
+const maxBatchSubmitURLs = 100
+
+// urlSplitPattern splits a pasted textarea blob of URLs on newlines,
+// whitespace, commas, and semicolons (ASCII and full-width variants).
+var urlSplitPattern = regexp.MustCompile(`[\r\n\s,;，；]+`)
 
 type Server struct {
 	cfg     config.Config
@@ -213,17 +222,29 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	req.URL = strings.TrimSpace(req.URL)
-	if req.URL == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("url is required"))
+	var urls []string
+	for _, raw := range req.URLs {
+		for _, entry := range urlSplitPattern.Split(raw, -1) {
+			entry = strings.TrimSpace(entry)
+			if entry != "" {
+				urls = append(urls, entry)
+			}
+		}
+	}
+	if len(urls) == 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("urls is required"))
 		return
 	}
-	job, err := s.manager.Submit(r.Context(), req)
-	if err != nil {
-		writeSubmitError(w, err)
+	if len(urls) > maxBatchSubmitURLs {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("too many urls: max %d per request", maxBatchSubmitURLs))
 		return
 	}
-	writeJSON(w, http.StatusAccepted, job)
+	resp := s.manager.SubmitBatch(r.Context(), urls, req.Force)
+	status := http.StatusUnprocessableEntity
+	if resp.Accepted > 0 {
+		status = http.StatusAccepted
+	}
+	writeJSON(w, status, resp)
 }
 
 func (s *Server) listDownloads(w http.ResponseWriter, r *http.Request) {

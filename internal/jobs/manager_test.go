@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,7 +16,7 @@ import (
 
 type recoveryProcessor struct{}
 
-func (recoveryProcessor) ValidateRequest(context.Context, domain.DownloadRequest) (ValidationResult, error) {
+func (recoveryProcessor) ValidateRequest(context.Context, string) (ValidationResult, error) {
 	return ValidationResult{Type: "song", Storefront: "cn"}, nil
 }
 
@@ -28,8 +29,8 @@ type cancelAfterTotalProcessor struct {
 	once    sync.Once
 }
 
-func (p *cancelAfterTotalProcessor) ValidateRequest(context.Context, domain.DownloadRequest) (ValidationResult, error) {
-	return ValidationResult{Type: "artist", Storefront: "cn"}, nil
+func (p *cancelAfterTotalProcessor) ValidateRequest(context.Context, string) (ValidationResult, error) {
+	return ValidationResult{Type: "artist", Storefront: "cn", ID: "1495777901"}, nil
 }
 
 func (p *cancelAfterTotalProcessor) ProcessJob(ctx context.Context, job domain.Job, reporter Reporter) error {
@@ -57,9 +58,9 @@ func TestRecoverUnfinishedRequeuesQueuedAndRunningJobs(t *testing.T) {
 	defer store.Close()
 	ctx := context.Background()
 	now := time.Now().UTC()
-	queued := domain.Job{ID: "job-queued", Input: "https://music.apple.com/cn/song/queued/1", Type: "song", Storefront: "cn", Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now}
-	running := domain.Job{ID: "job-running", Input: "https://music.apple.com/cn/song/running/2", Type: "song", Storefront: "cn", Status: domain.JobRunning, CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second)}
-	completed := domain.Job{ID: "job-completed", Input: "https://music.apple.com/cn/song/completed/3", Type: "song", Storefront: "cn", Status: domain.JobCompleted, CreatedAt: now.Add(2 * time.Second), UpdatedAt: now.Add(2 * time.Second)}
+	queued := domain.Job{ID: "job-queued", Input: "https://music.apple.com/cn/song/queued/1", Type: "song", Storefront: "cn", CanonicalKey: "song:cn:1", Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now}
+	running := domain.Job{ID: "job-running", Input: "https://music.apple.com/cn/song/running/2", Type: "song", Storefront: "cn", CanonicalKey: "song:cn:2", Status: domain.JobRunning, CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second)}
+	completed := domain.Job{ID: "job-completed", Input: "https://music.apple.com/cn/song/completed/3", Type: "song", Storefront: "cn", CanonicalKey: "song:cn:3", Status: domain.JobCompleted, CreatedAt: now.Add(2 * time.Second), UpdatedAt: now.Add(2 * time.Second)}
 	for _, job := range []domain.Job{queued, running, completed} {
 		if err := store.CreateJob(ctx, job); err != nil {
 			t.Fatal(err)
@@ -116,10 +117,11 @@ func TestCancelledJobPreservesProcessorUpdatedTotalItems(t *testing.T) {
 	processor := &cancelAfterTotalProcessor{started: make(chan struct{})}
 	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
 	manager.Start(ctx)
-	job, err := manager.Submit(ctx, domain.DownloadRequest{URL: "https://music.apple.com/cn/artist/example/1495777901"})
-	if err != nil {
-		t.Fatal(err)
+	resp := manager.SubmitBatch(ctx, []string{"https://music.apple.com/cn/artist/example/1495777901"}, false)
+	if resp.Accepted != 1 || len(resp.Results) != 1 || resp.Results[0].Status != domain.SubmitAccepted || resp.Results[0].Job == nil {
+		t.Fatalf("unexpected submit result: %+v", resp)
 	}
+	job := *resp.Results[0].Job
 
 	select {
 	case <-processor.started:
@@ -146,5 +148,107 @@ func TestCancelledJobPreservesProcessorUpdatedTotalItems(t *testing.T) {
 	}
 	if got.TotalItems != 2 {
 		t.Fatalf("total_items = %d, want 2", got.TotalItems)
+	}
+}
+
+// keyedProcessor derives ValidationResult from a "type|storefront|id" test
+// URL so canonical-key dedup can be exercised without real Apple Music
+// parsing. URLs prefixed "bad:" are treated as invalid.
+type keyedProcessor struct{}
+
+func (keyedProcessor) ValidateRequest(_ context.Context, url string) (ValidationResult, error) {
+	if strings.HasPrefix(url, "bad:") {
+		return ValidationResult{}, &RequestError{Code: "invalid_url", Message: "bad test url"}
+	}
+	parts := strings.SplitN(url, "|", 3)
+	if len(parts) != 3 {
+		return ValidationResult{}, &RequestError{Code: "invalid_url", Message: "malformed test url"}
+	}
+	return ValidationResult{Type: parts[0], Storefront: parts[1], ID: parts[2]}, nil
+}
+
+func (keyedProcessor) ProcessJob(context.Context, domain.Job, Reporter) error {
+	return nil
+}
+
+func newTestManager(t *testing.T) *Manager {
+	t.Helper()
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return NewManager(store, events.NewHub(), keyedProcessor{}, 1, slog.Default())
+}
+
+func TestSubmitBatchDedupesWithinRequest(t *testing.T) {
+	manager := newTestManager(t)
+	ctx := context.Background()
+	resp := manager.SubmitBatch(ctx, []string{
+		"album|us|111",
+		"song|us|222",
+		"album|us|111", // same canonical key as the first entry
+	}, false)
+	if len(resp.Results) != 3 {
+		t.Fatalf("results = %+v, want 3", resp.Results)
+	}
+	if resp.Results[0].Status != domain.SubmitAccepted || resp.Results[1].Status != domain.SubmitAccepted {
+		t.Fatalf("first two results = %+v, want accepted", resp.Results[:2])
+	}
+	if resp.Results[2].Status != domain.SubmitDuplicateInRequest {
+		t.Fatalf("third result = %+v, want duplicate_in_request", resp.Results[2])
+	}
+	if resp.Accepted != 2 || resp.Rejected != 1 {
+		t.Fatalf("resp = %+v, want 2 accepted / 1 rejected", resp)
+	}
+}
+
+func TestSubmitBatchRejectsActiveDuplicateButAllowsAfterCompletion(t *testing.T) {
+	manager := newTestManager(t)
+	ctx := context.Background()
+
+	first := manager.SubmitBatch(ctx, []string{"song|us|222"}, false)
+	if first.Accepted != 1 {
+		t.Fatalf("first submit = %+v, want 1 accepted", first)
+	}
+	jobID := first.Results[0].Job.ID
+
+	second := manager.SubmitBatch(ctx, []string{"song|us|222"}, false)
+	if second.Results[0].Status != domain.SubmitDuplicateActive || second.Results[0].ExistingJobID != jobID {
+		t.Fatalf("second submit = %+v, want duplicate_active for %s", second.Results[0], jobID)
+	}
+
+	if err := manager.store.UpdateJobStatus(ctx, jobID, domain.JobCompleted, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	third := manager.SubmitBatch(ctx, []string{"song|us|222"}, false)
+	if third.Results[0].Status != domain.SubmitAccepted {
+		t.Fatalf("third submit = %+v, want accepted after completion", third.Results[0])
+	}
+}
+
+func TestSubmitBatchQueueFullMarksRemainingWithoutRollback(t *testing.T) {
+	manager := newTestManager(t)
+	manager.queue = make(chan string, 1)
+	ctx := context.Background()
+
+	resp := manager.SubmitBatch(ctx, []string{"song|us|1", "song|us|2", "song|us|3"}, false)
+	if resp.Results[0].Status != domain.SubmitAccepted {
+		t.Fatalf("first = %+v, want accepted", resp.Results[0])
+	}
+	if resp.Results[1].Status != domain.SubmitQueueFull || resp.Results[2].Status != domain.SubmitQueueFull {
+		t.Fatalf("remaining = %+v, want queue_full", resp.Results[1:])
+	}
+	if resp.Accepted != 1 || resp.Rejected != 2 {
+		t.Fatalf("resp = %+v, want 1 accepted / 2 rejected", resp)
+	}
+}
+
+func TestSubmitBatchInvalidURLReportsError(t *testing.T) {
+	manager := newTestManager(t)
+	resp := manager.SubmitBatch(context.Background(), []string{"bad:not-a-url"}, false)
+	if resp.Results[0].Status != domain.SubmitInvalid || resp.Results[0].Error == "" {
+		t.Fatalf("result = %+v, want invalid with error message", resp.Results[0])
 	}
 }

@@ -58,8 +58,8 @@ func NewDownloader(cfg config.Config, catalog *applemusic.CatalogClient, wrapper
 	return &Downloader{cfg: cfg, catalog: catalog, wrapper: wrapperClient, tools: tools, http: newHTTPClient(), mp4: newMP4Processor(cfg), logger: logger}
 }
 
-func (d *Downloader) ValidateRequest(ctx context.Context, req domain.DownloadRequest) (jobs.ValidationResult, error) {
-	parsed, err := applemusic.ParseWithAlbumTrackMode(req.URL, d.cfg.Catalog.AlbumTrackURLMode)
+func (d *Downloader) ValidateRequest(ctx context.Context, url string) (jobs.ValidationResult, error) {
+	parsed, err := applemusic.ParseWithAlbumTrackMode(url, d.cfg.Catalog.AlbumTrackURLMode)
 	if err != nil {
 		if strings.Contains(err.Error(), "album_track_url_mode") {
 			return jobs.ValidationResult{}, &jobs.RequestError{Code: "invalid_configuration", Message: err.Error(), Cause: err}
@@ -73,7 +73,7 @@ func (d *Downloader) ValidateRequest(ctx context.Context, req domain.DownloadReq
 	if err := d.validateStorefront(ctx, parsed.Storefront); err != nil {
 		return jobs.ValidationResult{}, err
 	}
-	return jobs.ValidationResult{Type: string(parsed.Type), Storefront: parsed.Storefront}, nil
+	return jobs.ValidationResult{Type: string(parsed.Type), Storefront: parsed.Storefront, ID: parsed.ID}, nil
 }
 
 func (d *Downloader) validateStorefront(ctx context.Context, storefront string) error {
