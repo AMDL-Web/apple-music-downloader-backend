@@ -1,0 +1,115 @@
+name: Weekly Snapshot Release
+
+on:
+#  # 每周一 UTC 时间 00:00 自动执行
+#  schedule:
+#    - cron: '0 0 * * 1'
+  # 手动触发
+  workflow_dispatch:
+    inputs:
+      base_tag:
+        description: '基础标签（可选，默认为最近的正式 release）'
+        required: false
+        type: string
+
+jobs:
+  weekly-snapshot:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate snapshot version
+        id: version
+        run: |
+          # 生成下一个周快照版本号
+          VERSION=$(node tools/weekly-snapshot.js)
+          
+          # 获取基础标签
+          BASE_TAG=$(node tools/weekly-snapshot.js --get-base-tag)
+          
+          # 如果手动指定了基础标签，使用手动指定的
+          if [ -n "${{ github.event.inputs.base_tag }}" ]; then
+            BASE_TAG="${{ github.event.inputs.base_tag }}"
+          fi
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "base_tag=$BASE_TAG" >> $GITHUB_OUTPUT
+          
+          echo "周快照版本: $VERSION"
+          echo "基础标签: ${BASE_TAG:-无}"
+          
+          # 检查是否有提交
+          if [ -n "$BASE_TAG" ]; then
+            COMMIT_COUNT=$(git rev-list --count $BASE_TAG..HEAD)
+          else
+            COMMIT_COUNT=$(git rev-list --count HEAD)
+          fi
+          
+          echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
+          echo "新提交数量: $COMMIT_COUNT"
+          
+          if [ "$COMMIT_COUNT" -eq 0 ]; then
+            echo "没有新的提交，取消发布"
+            echo "skip_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip_release=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate changelog
+        id: changelog
+        if: steps.version.outputs.skip_release == 'false'
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          BASE_TAG=${{ steps.version.outputs.base_tag }}
+          
+          # 构建参数
+          ARGS="--tag $VERSION --with-hash"
+          if [ -n "$BASE_TAG" ]; then
+            ARGS="$ARGS --base $BASE_TAG"
+          fi
+          
+          # 生成 changelog
+          CHANGELOG_CONTENT=$(node tools/generate-changelog.js $ARGS --output-only)
+          
+          # 保存到输出
+          echo "changelog_content<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG_CONTENT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "$CHANGELOG_CONTENT"
+
+      - name: Cancel release if no commits
+        if: steps.version.outputs.skip_release == 'true'
+        run: |
+          echo "没有新的提交，取消发布"
+          exit 0
+
+      - name: Create Pre-release
+        if: steps.version.outputs.skip_release == 'false'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Snapshot ${{ steps.version.outputs.version }}
+          body: |
+            # 每周快照发布
+            
+            这是一个每周自动生成的快照版本，用于测试和预览最新功能。
+            
+            ⚠️ **注意**: 这是一个预发布版本，可能包含不稳定的功能。
+            
+            ${{ steps.changelog.outputs.changelog_content }}
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

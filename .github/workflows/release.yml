@@ -1,14 +1,15 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
-      tag:
-        description: Existing version tag to publish, for example v1.2.3.
+      version:
+        description: '版本号 (例如: v1.0.0)'
         required: true
+        type: string
+      base_tag:
+        description: '基础标签 (可选，默认为上一个标签)'
+        required: false
         type: string
 
 permissions:
@@ -18,6 +19,8 @@ jobs:
   release:
     name: Create GitHub release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout source
@@ -31,35 +34,89 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
       - name: Run tests
         run: go test ./...
 
-      - name: Resolve release tag
-        id: release_tag
-        env:
-          DISPATCH_TAG: ${{ inputs.tag }}
+      - name: Get base tag
+        id: get-base-tag
         run: |
-          if [ -n "$DISPATCH_TAG" ]; then
-            tag="$DISPATCH_TAG"
+          # 如果手动指定了基础标签，使用手动指定的
+          if [ -n "${{ github.event.inputs.base_tag }}" ]; then
+            BASE_TAG="${{ github.event.inputs.base_tag }}"
           else
-            tag="${GITHUB_REF_NAME}"
+            # 获取最新的任何类型标签（通用方式）
+            # 优先使用最新的正式 release（通过 GitHub API），如果失败则使用最新标签
+            BASE_TAG=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/latest" \
+              | jq -r '.tag_name' 2>/dev/null)
+            
+            # 如果还是没有标签，设置为空字符串
+            if [ "$BASE_TAG" = "null" ]; then
+              BASE_TAG=""
+            fi
+          fi
+          
+          echo "base_tag=$BASE_TAG" >> $GITHUB_OUTPUT
+          echo "使用基础标签: ${BASE_TAG:-无}"
+          
+          # 检查是否有提交
+          if [ -n "$BASE_TAG" ]; then
+            COMMIT_COUNT=$(git rev-list --count $BASE_TAG..HEAD)
+          else
+            # 如果没有标签，检查所有提交
+            COMMIT_COUNT=$(git rev-list --count HEAD)
+          fi
+          
+          echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
+          echo "新提交数量: $COMMIT_COUNT"
+          
+          if [ "$COMMIT_COUNT" -eq 0 ]; then
+            echo "没有新的提交，取消发布"
+            echo "skip_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip_release=false" >> $GITHUB_OUTPUT
           fi
 
-          if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            echo "Release tag '$tag' does not exist." >&2
-            exit 1
-          fi
-
-          {
-            echo "tag=$tag"
-            echo "title=${tag#v}"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Create release changelog
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Generate changelog
+        id: changelog
+        if: steps.get-base-tag.outputs.skip_release == 'false'
         run: |
-          gh release create "${{ steps.release_tag.outputs.tag }}" \
-            --verify-tag \
-            --title "${{ steps.release_tag.outputs.title }}" \
-            --generate-notes
+          # 构建参数
+          ARGS="--tag ${{ github.event.inputs.version }} --with-hash"
+          if [ -n "${{ steps.get-base-tag.outputs.base_tag }}" ]; then
+            ARGS="$ARGS --base ${{ steps.get-base-tag.outputs.base_tag }}"
+          fi
+          
+          # 运行 changelog 生成器
+          CHANGELOG_CONTENT=$(node tools/generate-changelog.js $ARGS --output-only)
+          
+          # 保存到环境变量，使用 GITHUB_OUTPUT 方式
+          echo "changelog_content<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG_CONTENT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          # 显示输出用于调试
+          echo "$CHANGELOG_CONTENT"
+
+      - name: Cancel release if no commits
+        if: steps.get-base-tag.outputs.skip_release == 'true'
+        run: |
+          echo "没有新的提交，取消发布"
+          exit 1
+
+      - name: Create Release
+        if: steps.get-base-tag.outputs.skip_release == 'false'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          name: Release ${{ github.event.inputs.version }}
+          body: ${{ steps.changelog.outputs.changelog_content }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
