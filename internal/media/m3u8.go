@@ -17,13 +17,7 @@ import (
 
 const prefetchKey = "skd://itunes.apple.com/P000000000/s1/e1"
 
-type m3u8Info struct {
-	MediaURI   string
-	Keys       []string
-	CodecID    string
-	BitDepth   int
-	SampleRate int
-}
+type m3u8Info = selectedMediaInfo
 
 type variant struct {
 	URI        string
@@ -87,7 +81,7 @@ func extractMedia(ctx context.Context, httpClient *http.Client, masterURL, codec
 	if err != nil {
 		return m3u8Info{}, err
 	}
-	return m3u8Info{MediaURI: mediaURI, Keys: keys, CodecID: selected.Audio, BitDepth: selected.BitDepth, SampleRate: selected.SampleRate}, nil
+	return m3u8Info{MediaURI: mediaURI, Keys: keys, CodecID: selected.Audio, BitDepth: selected.BitDepth, SampleRate: selected.SampleRate, Bandwidth: selected.Bandwidth}, nil
 }
 
 func parseMaster(body, base string) []variant {

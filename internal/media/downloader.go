@@ -31,6 +31,11 @@ type Downloader struct {
 	logger  *slog.Logger
 }
 
+type selectedDownloadMedia struct {
+	info selectedMediaInfo
+	raw  []byte
+}
+
 func NewDownloader(cfg config.Config, catalog *applemusic.CatalogClient, wrapperClient *wrapper.Client, tools *ToolChecker, logger *slog.Logger) *Downloader {
 	return &Downloader{cfg: cfg, catalog: catalog, wrapper: wrapperClient, tools: tools, http: newHTTPClient(), mp4: newMP4Processor(cfg), logger: logger}
 }
@@ -110,9 +115,10 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	}
 	tracks := resolved.Tracks
 	collectionName := resolved.Name
+	collectionID := resolved.ID
 	if parsed.Type == applemusic.TypePlaylist && d.cfg.Download.SavePlaylistCover && len(tracks) > 0 {
-		firstOutput := outputPath(d.cfg, tracks[0], parsed.Type, 1, "", collectionName)
-		if coverErr := d.savePlaylistCover(ctx, resolved.ArtworkURL, filepath.Dir(firstOutput)); coverErr != nil {
+		folder := playlistFolderPath(d.cfg, tracks[0], collectionName, collectionID)
+		if coverErr := d.savePlaylistCover(ctx, resolved.ArtworkURL, folder); coverErr != nil {
 			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, Type: "standalone_cover_failed", Phase: "playlist_cover", Message: coverErr.Error()})
 		}
 	}
@@ -155,7 +161,7 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := d.processTrack(ctx, job, items[i], tracks[i], parsed.Storefront, parsed.Type, collectionName, i+1, folderArtist, reporter); err != nil {
+			if err := d.processTrack(ctx, job, items[i], tracks[i], parsed.Storefront, parsed.Type, collectionName, collectionID, i+1, folderArtist, reporter); err != nil {
 				d.logger.Error("track failed", "adam_id", tracks[i].ID, "error", err)
 				mu.Lock()
 				if firstErr == nil {
@@ -181,6 +187,7 @@ func collectionFolderArtist(collectionType applemusic.URLType, tracks []applemus
 
 type resolvedCollection struct {
 	Tracks     []applemusic.Song
+	ID         string
 	Name       string
 	ArtworkURL string
 }
@@ -198,19 +205,19 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 		if err != nil {
 			return resolvedCollection{}, err
 		}
-		return resolvedCollection{Tracks: album.Tracks}, nil
+		return resolvedCollection{Tracks: album.Tracks, ID: album.ID, Name: album.Name}, nil
 	case applemusic.TypePlaylist:
 		playlist, err := d.catalog.Playlist(ctx, parsed.Storefront, parsed.ID)
 		if err != nil {
 			return resolvedCollection{}, err
 		}
-		return resolvedCollection{Tracks: playlist.Tracks, Name: playlist.Name, ArtworkURL: playlist.ArtworkURL}, nil
+		return resolvedCollection{Tracks: playlist.Tracks, ID: playlist.ID, Name: playlist.Name, ArtworkURL: playlist.ArtworkURL}, nil
 	default:
 		return resolvedCollection{}, fmt.Errorf("unsupported input type %s", parsed.Type)
 	}
 }
 
-func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item domain.JobItem, initial applemusic.Song, storefront string, collectionType applemusic.URLType, collectionName string, playlistIndex int, folderArtist string, reporter jobs.Reporter) error {
+func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item domain.JobItem, initial applemusic.Song, storefront string, collectionType applemusic.URLType, collectionName, collectionID string, playlistIndex int, folderArtist string, reporter jobs.Reporter) error {
 	// set updates item state and emits an item_progress SSE event.
 	// The full JobItem is embedded in the event Payload so the frontend can
 	// update the UI directly from SSE without any additional HTTP round-trips.
@@ -259,31 +266,14 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	item.Album = song.AlbumName
 	_ = reporter.UpdateItem(ctx, item)
 
-	outPath := outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName)
+	coverAnchorPath := outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, "", "")
 	if d.cfg.Download.SaveAlbumCover || d.cfg.Download.SaveArtistCover {
-		if coverErr := d.saveStandaloneCovers(ctx, song, collectionType, storefront, outPath); coverErr != nil {
+		if coverErr := d.saveStandaloneCovers(ctx, song, collectionType, storefront, coverAnchorPath); coverErr != nil {
 			item.StatusMessage = "独立封面保存失败，继续下载：" + coverErr.Error()
 			_ = reporter.UpdateItem(ctx, item)
 			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "standalone_cover_failed", Message: coverErr.Error()})
 		}
 	}
-	if _, err := os.Stat(outPath); err == nil && !job.Force {
-		item.Status = domain.ItemSkipped
-		item.Progress = 1
-		item.RetryKind = ""
-		item.Attempt = 0
-		item.MaxAttempts = 0
-		item.StatusMessage = "文件已存在，已跳过"
-		item.OutputPath = outPath
-		_ = reporter.UpdateItem(ctx, item)
-		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_skipped", Message: "already exists"})
-		return nil
-	}
-	if job.Force {
-		cleanupFailedOutput(outPath)
-		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_overwrite", Message: "force overwrite enabled"})
-	}
-
 	var cover []byte
 	if d.cfg.Download.EmbedCover {
 		coverURLs := trackCoverURLs(song, collectionType)
@@ -357,17 +347,35 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 			})})
 		}
 		item.Codec = codec
+		attemptOutPath := ""
 		_, attempts, downloadErr := retryValue(ctx, codecRetries, retryBackoff, func(attempt int) (struct{}, error) {
 			d.setItemAttempt(ctx, reporter, &item, "download", attempt, maxAttempts(codecRetries), fmt.Sprintf("正在下载 %s（%d/%d）", strings.ToUpper(codec), attempt, maxAttempts(codecRetries)))
 			if codec == "aac-lc" {
-				return struct{}{}, d.downloadAACLC(ctx, job, &item, song, lyrics, cover, outPath, reporter, set)
+				attemptOutPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, "256Kbps")
+				if skip, err := d.handleExistingOutput(ctx, reporter, job, &item, attemptOutPath); skip || err != nil {
+					return struct{}{}, err
+				}
+				return struct{}{}, d.downloadAACLC(ctx, job, &item, song, lyrics, cover, attemptOutPath, reporter, set)
 			}
-			return struct{}{}, d.downloadEnhancedCodec(ctx, job, &item, song, codec, lyrics, cover, outPath, reporter, set)
+			selected, selectErr := d.selectEnhancedMedia(ctx, job, &item, song, codec, reporter, set)
+			if selectErr != nil {
+				return struct{}{}, selectErr
+			}
+			attemptOutPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, qualityLabel(selected.info))
+			if skip, err := d.handleExistingOutput(ctx, reporter, job, &item, attemptOutPath); skip || err != nil {
+				return struct{}{}, err
+			}
+			return struct{}{}, d.downloadEnhancedCodec(ctx, job, &item, song, codec, lyrics, cover, attemptOutPath, selected, reporter, set)
 		}, func(failure retryFailure) {
-			cleanupFailedOutput(outPath)
+			if attemptOutPath != "" {
+				cleanupFailedOutput(attemptOutPath)
+			}
 			d.setRetryFailure(ctx, reporter, &item, "download", strings.ToUpper(codec), failure)
 			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "download", codec, failure)
 		})
+		if item.Status == domain.ItemSkipped && downloadErr == nil {
+			return nil
+		}
 		if downloadErr != nil {
 			lastErr = downloadErr
 			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_failed", Phase: codec, Message: downloadErr.Error(), Payload: marshalPayload(map[string]any{
@@ -385,7 +393,7 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 			item.StatusMessage = fmt.Sprintf("%s 下载完成", strings.ToUpper(codec))
 		}
 		_ = reporter.UpdateItem(ctx, item)
-		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_completed", Message: outPath, Payload: marshalPayload(map[string]any{
+		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_completed", Message: item.OutputPath, Payload: marshalPayload(map[string]any{
 			"codec": codec, "attempt": attempts, "max_attempts": maxAttempts(codecRetries), "fallback_from": fallbackCodec(codecs, codecIndex),
 		})})
 		if attempts > 1 {
@@ -463,22 +471,42 @@ func retriesForCodec(configuredRetries, codecIndex int) int {
 	return configuredRetries
 }
 
-func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, codec, lyrics string, cover []byte, outPath string, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) error {
+func (d *Downloader) handleExistingOutput(ctx context.Context, reporter jobs.Reporter, job domain.Job, item *domain.JobItem, outPath string) (bool, error) {
+	item.OutputPath = outPath
+	if _, err := os.Stat(outPath); err == nil && !job.Force {
+		item.Status = domain.ItemSkipped
+		item.Progress = 1
+		item.RetryKind = ""
+		item.Attempt = 0
+		item.MaxAttempts = 0
+		item.StatusMessage = "文件已存在，已跳过"
+		_ = reporter.UpdateItem(ctx, *item)
+		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_skipped", Message: "already exists"})
+		return true, nil
+	}
+	if job.Force {
+		cleanupFailedOutput(outPath)
+		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_overwrite", Message: "force overwrite enabled"})
+	}
+	return false, nil
+}
+
+func (d *Downloader) selectEnhancedMedia(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, codec string, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) (selectedDownloadMedia, error) {
 	set(domain.ItemDownloading, 0.03, "selecting manifest")
 	master := song.EnhancedHLS
 	if codec == "alac" {
 		m3u8, err := d.wrapper.M3U8(ctx, song.ID)
 		if err != nil {
-			return fmt.Errorf("request device m3u8: %w", err)
+			return selectedDownloadMedia{}, fmt.Errorf("request device m3u8: %w", err)
 		}
 		master = m3u8
 	}
 	if master == "" {
-		return fmt.Errorf("no enhanced hls manifest")
+		return selectedDownloadMedia{}, fmt.Errorf("no enhanced hls manifest")
 	}
 	info, err := extractMedia(ctx, d.http, master, codec, d.cfg.Download.ALACMaxSampleRate, d.cfg.Download.ALACMaxBitDepth)
 	if err != nil {
-		return fmt.Errorf("select %s media: %w", codec, err)
+		return selectedDownloadMedia{}, fmt.Errorf("select %s media: %w", codec, err)
 	}
 	payload, _ := json.Marshal(map[string]any{"codec_id": info.CodecID, "bit_depth": info.BitDepth, "sample_rate": info.SampleRate, "attempt": item.Attempt, "max_attempts": item.MaxAttempts})
 	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_selected", Phase: codec, Payload: string(payload)})
@@ -493,8 +521,14 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 		set(domain.ItemDownloading, 0.05+p*0.50, fmt.Sprintf("downloading %.0f%%", p*100))
 	})
 	if err != nil {
-		return fmt.Errorf("download encrypted media: %w", err)
+		return selectedDownloadMedia{}, fmt.Errorf("download encrypted media: %w", err)
 	}
+	return selectedDownloadMedia{info: info, raw: raw}, nil
+}
+
+func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, codec, lyrics string, cover []byte, outPath string, selected selectedDownloadMedia, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) error {
+	info := selected.info
+	raw := selected.raw
 	set(domain.ItemDecrypting, 0.55, "extracting samples")
 	extracted, err := d.mp4.extractSong(ctx, raw, codec)
 	if err != nil {
