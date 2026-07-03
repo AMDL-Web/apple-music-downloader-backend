@@ -5,13 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"amdl/internal/config"
 	"amdl/internal/db"
+	"amdl/internal/domain"
+	"amdl/internal/events"
 	"amdl/internal/jobs"
 	"amdl/internal/media"
 	"amdl/internal/wrapper"
@@ -431,5 +435,82 @@ func TestOpenAPISpecification(t *testing.T) {
 				t.Errorf("OpenAPI operation %s %s is missing", method, path)
 			}
 		}
+	}
+}
+
+// stubProcessor parses "type|storefront|id" test URLs into a ValidationResult
+// so createDownload can be exercised against a real jobs.Manager without
+// hitting Apple Music.
+type stubProcessor struct{}
+
+func (stubProcessor) ValidateRequest(_ context.Context, url string) (jobs.ValidationResult, error) {
+	parts := strings.SplitN(url, "|", 3)
+	if len(parts) != 3 {
+		return jobs.ValidationResult{}, &jobs.RequestError{Code: "invalid_url", Message: "malformed test url"}
+	}
+	return jobs.ValidationResult{Type: parts[0], Storefront: parts[1], ID: parts[2]}, nil
+}
+
+func (stubProcessor) ProcessJob(context.Context, domain.Job, jobs.Reporter) error { return nil }
+
+func newTestServerWithManager(t *testing.T) *Server {
+	t.Helper()
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	manager := jobs.NewManager(store, events.NewHub(), stubProcessor{}, 1, slog.Default())
+	return &Server{store: store, manager: manager}
+}
+
+func TestCreateDownloadSplitsBatchAndDedupes(t *testing.T) {
+	server := newTestServerWithManager(t)
+	body := `{"urls":["song|us|1, song|us|2","song|us|1"]}`
+	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads", body)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var resp domain.BatchSubmitResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Accepted != 2 || resp.Rejected != 1 || len(resp.Results) != 3 {
+		t.Fatalf("resp = %+v, want 2 accepted / 1 rejected across 3 results", resp)
+	}
+	if resp.Results[2].Status != domain.SubmitDuplicateInRequest {
+		t.Fatalf("third result = %+v, want duplicate_in_request", resp.Results[2])
+	}
+}
+
+func TestCreateDownloadRejectsEmptyURLs(t *testing.T) {
+	server := newTestServerWithManager(t)
+	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads", `{"urls":[" , ,"]}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}
+
+func TestCreateDownloadRejectsTooManyURLs(t *testing.T) {
+	server := newTestServerWithManager(t)
+	urls := make([]string, maxBatchSubmitURLs+1)
+	for i := range urls {
+		urls[i] = "song|us|" + strings.Repeat("1", 1) + string(rune('a'+i%26))
+	}
+	body, err := json.Marshal(domain.DownloadRequest{URLs: urls})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads", string(body))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}
+
+func TestCreateDownloadAllRejectedReturns422(t *testing.T) {
+	server := newTestServerWithManager(t)
+	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads", `{"urls":["bad-url"]}`)
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }

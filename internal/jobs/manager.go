@@ -15,13 +15,14 @@ import (
 )
 
 type Processor interface {
-	ValidateRequest(ctx context.Context, req domain.DownloadRequest) (ValidationResult, error)
+	ValidateRequest(ctx context.Context, url string) (ValidationResult, error)
 	ProcessJob(ctx context.Context, job domain.Job, reporter Reporter) error
 }
 
 type ValidationResult struct {
 	Type       string
 	Storefront string
+	ID         string
 }
 
 type RequestError struct {
@@ -101,33 +102,106 @@ func (m *Manager) RecoverUnfinished(ctx context.Context) (int, error) {
 	return len(jobs), nil
 }
 
-// Submit validates and enqueues a download request. userID attributes the job
-// to its owner; empty means unowned (single-user mode).
-func (m *Manager) Submit(ctx context.Context, req domain.DownloadRequest, userID string) (domain.Job, error) {
-	validated, err := m.processor.ValidateRequest(ctx, req)
-	if err != nil {
-		return domain.Job{}, err
+// SubmitBatch validates and enqueues each url independently, applying
+// three-layer dedup: request-internal (canonical key seen earlier in this
+// batch), active-job lookup, and the DB's partial unique index as a backstop
+// against races. See docs/multi-link-submit-design.md.
+//
+// userID attributes accepted jobs to their owner; empty means unowned
+// (single-user mode). The canonical key is scoped per user so different users
+// can download the same content into their own directories concurrently.
+func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool, userID string) domain.BatchSubmitResponse {
+	results := make([]domain.SubmitResult, len(urls))
+
+	type candidate struct {
+		index int
+		url   string
+		key   string
+		valid ValidationResult
+	}
+	var candidates []candidate
+	seenKeys := map[string]bool{}
+	for i, url := range urls {
+		validated, err := m.processor.ValidateRequest(ctx, url)
+		if err != nil {
+			results[i] = domain.SubmitResult{URL: url, Status: domain.SubmitInvalid, Error: requestErrorMessage(err)}
+			continue
+		}
+		key := validated.Type + ":" + validated.Storefront + ":" + validated.ID
+		if userID != "" {
+			key = userID + "|" + key
+		}
+		if seenKeys[key] {
+			results[i] = domain.SubmitResult{URL: url, Status: domain.SubmitDuplicateInRequest}
+			continue
+		}
+		seenKeys[key] = true
+		candidates = append(candidates, candidate{index: i, url: url, key: key, valid: validated})
 	}
 
-	// Serialize capacity check, persistence and enqueue. Only Submit writes to
-	// the queue, so a free slot cannot disappear while this lock is held.
+	// Serialize capacity check, dedup lookup, persistence and enqueue. Only
+	// SubmitBatch writes to the queue, so a free slot cannot disappear while
+	// this lock is held.
 	m.submitMu.Lock()
 	defer m.submitMu.Unlock()
-	if len(m.queue) >= cap(m.queue) {
-		return domain.Job{}, ErrQueueFull
-	}
 
 	now := time.Now().UTC()
-	job := domain.Job{
-		ID: storage.NewID("job"), UserID: userID, Input: req.URL, Type: validated.Type, Storefront: validated.Storefront, Force: req.Force, Status: domain.JobQueued,
-		CreatedAt: now, UpdatedAt: now,
+	queueFull := false
+	for _, c := range candidates {
+		if queueFull {
+			results[c.index] = domain.SubmitResult{URL: c.url, Status: domain.SubmitQueueFull}
+			continue
+		}
+		existing, found, err := m.store.FindActiveJobByKey(ctx, c.key)
+		if err != nil {
+			results[c.index] = domain.SubmitResult{URL: c.url, Status: domain.SubmitInvalid, Error: err.Error()}
+			continue
+		}
+		if found {
+			results[c.index] = domain.SubmitResult{URL: c.url, Status: domain.SubmitDuplicateActive, ExistingJobID: existing.ID}
+			continue
+		}
+		if len(m.queue) >= cap(m.queue) {
+			queueFull = true
+			results[c.index] = domain.SubmitResult{URL: c.url, Status: domain.SubmitQueueFull}
+			continue
+		}
+
+		job := domain.Job{
+			ID: storage.NewID("job"), UserID: userID, Input: c.url, Type: c.valid.Type, Storefront: c.valid.Storefront, CanonicalKey: c.key,
+			Force: force, Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now,
+		}
+		if err := m.store.CreateJob(ctx, job); err != nil {
+			if errors.Is(err, db.ErrDuplicateActive) {
+				results[c.index] = domain.SubmitResult{URL: c.url, Status: domain.SubmitDuplicateActive}
+				continue
+			}
+			results[c.index] = domain.SubmitResult{URL: c.url, Status: domain.SubmitInvalid, Error: err.Error()}
+			continue
+		}
+		_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_queued", Message: "job queued"})
+		m.queue <- job.ID
+		accepted := job
+		results[c.index] = domain.SubmitResult{URL: c.url, Status: domain.SubmitAccepted, Job: &accepted}
 	}
-	if err := m.store.CreateJob(ctx, job); err != nil {
-		return job, err
+
+	resp := domain.BatchSubmitResponse{Results: results}
+	for _, r := range results {
+		if r.Status == domain.SubmitAccepted {
+			resp.Accepted++
+		} else {
+			resp.Rejected++
+		}
 	}
-	_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_queued", Message: "job queued"})
-	m.queue <- job.ID
-	return job, nil
+	return resp
+}
+
+func requestErrorMessage(err error) string {
+	var reqErr *RequestError
+	if errors.As(err, &reqErr) {
+		return reqErr.Code + ": " + reqErr.Message
+	}
+	return err.Error()
 }
 
 func (m *Manager) Cancel(ctx context.Context, jobID string) error {

@@ -3,11 +3,25 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"amdl/internal/domain"
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
+
+// ErrDuplicateActive is returned by CreateJob when the job's canonical_key
+// collides with another queued/running job (partial unique index backstop).
+var ErrDuplicateActive = errors.New("duplicate active job")
+
+func isUniqueConstraintErr(err error) bool {
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		return sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE || sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT
+	}
+	return false
+}
 
 type Store struct {
 	db *sql.DB
@@ -58,6 +72,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 			input TEXT NOT NULL,
 			type TEXT NOT NULL,
 			storefront TEXT,
+			canonical_key TEXT NOT NULL,
 			force INTEGER NOT NULL DEFAULT 0,
 			status TEXT NOT NULL,
 			total_items INTEGER NOT NULL DEFAULT 0,
@@ -67,6 +82,9 @@ func (s *Store) initSchema(ctx context.Context) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_key
+			ON jobs(canonical_key)
+			WHERE status IN ('queued','running');`,
 		`CREATE TABLE IF NOT EXISTS job_items (
 			id TEXT PRIMARY KEY,
 			job_id TEXT NOT NULL,
@@ -132,14 +150,30 @@ func parseTime(v string) time.Time {
 	return t
 }
 
-const jobSelect = `SELECT j.id,j.user_id,COALESCE(u.username,''),j.input,j.type,j.storefront,j.force,j.status,j.total_items,j.done_items,j.failed_items,j.error,j.created_at,j.updated_at
+const jobSelect = `SELECT j.id,j.user_id,COALESCE(u.username,''),j.input,j.type,j.storefront,j.canonical_key,j.force,j.status,j.total_items,j.done_items,j.failed_items,j.error,j.created_at,j.updated_at
 	FROM jobs j LEFT JOIN users u ON u.id=j.user_id`
 
 func (s *Store) CreateJob(ctx context.Context, job domain.Job) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO jobs(id,user_id,input,type,storefront,force,status,total_items,done_items,failed_items,error,created_at,updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, job.ID, job.UserID, job.Input, job.Type, job.Storefront, job.Force, string(job.Status), job.TotalItems,
+	_, err := s.db.ExecContext(ctx, `INSERT INTO jobs(id,user_id,input,type,storefront,canonical_key,force,status,total_items,done_items,failed_items,error,created_at,updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, job.ID, job.UserID, job.Input, job.Type, job.Storefront, job.CanonicalKey, job.Force, string(job.Status), job.TotalItems,
 		job.DoneItems, job.FailedItems, job.Error, formatTime(job.CreatedAt), formatTime(job.UpdatedAt))
+	if err != nil && isUniqueConstraintErr(err) {
+		return ErrDuplicateActive
+	}
 	return err
+}
+
+// FindActiveJobByKey returns the queued/running job matching canonicalKey, if any.
+func (s *Store) FindActiveJobByKey(ctx context.Context, canonicalKey string) (domain.Job, bool, error) {
+	row := s.db.QueryRowContext(ctx, jobSelect+` WHERE j.canonical_key=? AND j.status IN (?,?)`, canonicalKey, string(domain.JobQueued), string(domain.JobRunning))
+	job, err := scanJob(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.Job{}, false, nil
+		}
+		return domain.Job{}, false, err
+	}
+	return job, true, nil
 }
 
 func (s *Store) UpdateJob(ctx context.Context, job domain.Job) error {
@@ -211,7 +245,7 @@ type jobScanner interface {
 func scanJob(row jobScanner) (domain.Job, error) {
 	var job domain.Job
 	var status, created, updated string
-	err := row.Scan(&job.ID, &job.UserID, &job.Username, &job.Input, &job.Type, &job.Storefront, &job.Force, &status, &job.TotalItems, &job.DoneItems, &job.FailedItems, &job.Error, &created, &updated)
+	err := row.Scan(&job.ID, &job.UserID, &job.Username, &job.Input, &job.Type, &job.Storefront, &job.CanonicalKey, &job.Force, &status, &job.TotalItems, &job.DoneItems, &job.FailedItems, &job.Error, &created, &updated)
 	job.Status = domain.JobStatus(status)
 	job.CreatedAt = parseTime(created)
 	job.UpdatedAt = parseTime(updated)

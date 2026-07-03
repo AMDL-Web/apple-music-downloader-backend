@@ -57,20 +57,21 @@ const (
 )
 
 type Job struct {
-	ID          string    `json:"id"`
-	UserID      string    `json:"user_id,omitempty"`
-	Username    string    `json:"username,omitempty"`
-	Input       string    `json:"input"`
-	Type        string    `json:"type"`
-	Storefront  string    `json:"storefront,omitempty"`
-	Force       bool      `json:"force"`
-	Status      JobStatus `json:"status"`
-	TotalItems  int       `json:"total_items"`
-	DoneItems   int       `json:"done_items"`
-	FailedItems int       `json:"failed_items"`
-	Error       string    `json:"error,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID           string    `json:"id"`
+	UserID       string    `json:"user_id,omitempty"`
+	Username     string    `json:"username,omitempty"`
+	Input        string    `json:"input"`
+	Type         string    `json:"type"`
+	Storefront   string    `json:"storefront,omitempty"`
+	CanonicalKey string    `json:"-"`
+	Force        bool      `json:"force"`
+	Status       JobStatus `json:"status"`
+	TotalItems   int       `json:"total_items"`
+	DoneItems    int       `json:"done_items"`
+	FailedItems  int       `json:"failed_items"`
+	Error        string    `json:"error,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type JobItem struct {
@@ -107,8 +108,32 @@ type Event struct {
 }
 
 type DownloadRequest struct {
-	URL   string `json:"url"`
-	Force bool   `json:"force"`
+	URLs  []string `json:"urls"`
+	Force bool     `json:"force"`
+}
+
+type SubmitStatus string
+
+const (
+	SubmitAccepted           SubmitStatus = "accepted"
+	SubmitInvalid            SubmitStatus = "invalid"
+	SubmitDuplicateInRequest SubmitStatus = "duplicate_in_request"
+	SubmitDuplicateActive    SubmitStatus = "duplicate_active"
+	SubmitQueueFull          SubmitStatus = "queue_full"
+)
+
+type SubmitResult struct {
+	URL           string       `json:"url"`
+	Status        SubmitStatus `json:"status"`
+	Job           *Job         `json:"job,omitempty"`
+	ExistingJobID string       `json:"existing_job_id,omitempty"`
+	Error         string       `json:"error,omitempty"`
+}
+
+type BatchSubmitResponse struct {
+	Accepted int            `json:"accepted"`
+	Rejected int            `json:"rejected"`
+	Results  []SubmitResult `json:"results"`
 }
 
 type Capability struct {

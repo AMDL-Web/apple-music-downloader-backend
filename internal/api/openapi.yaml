@@ -347,7 +347,11 @@ paths:
           $ref: '#/components/responses/InternalError'
     post:
       tags: [Downloads]
-      summary: 创建下载任务
+      summary: 批量创建下载任务
+      description: |
+        每个 URL 独立校验与入队，返回逐条结果。三层去重（请求内、活跃任务、数据库唯一索引）
+        按用户隔离：不同用户可同时下载相同内容到各自目录。单次最多 100 个 URL；
+        数组元素内的换行、空格、逗号、分号会被进一步拆分。
       operationId: createDownload
       requestBody:
         required: true
@@ -357,21 +361,19 @@ paths:
               $ref: '#/components/schemas/DownloadRequest'
       responses:
         '202':
-          description: 任务已入队。
+          description: 至少一个 URL 已入队；逐条结果见 results。
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Job'
+                $ref: '#/components/schemas/BatchSubmitResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '422':
-          description: URL 对应的内容或 storefront 不受支持。
+          description: 所有 URL 均被拒绝；逐条原因见 results。
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '503':
-          $ref: '#/components/responses/ServiceUnavailable'
+                $ref: '#/components/schemas/BatchSubmitResponse'
   /api/v1/downloads/{job_id}:
     get:
       tags: [Downloads]
@@ -666,15 +668,46 @@ components:
           type: string
     DownloadRequest:
       type: object
-      required: [url]
+      required: [urls]
       properties:
-        url:
-          type: string
-          format: uri
-          example: https://music.apple.com/cn/album/example/123456789?i=987654321
+        urls:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+            format: uri
+          example: ["https://music.apple.com/cn/album/example/123456789?i=987654321"]
         force:
           type: boolean
           default: false
+    SubmitResult:
+      type: object
+      required: [url, status]
+      properties:
+        url:
+          type: string
+        status:
+          type: string
+          enum: [accepted, invalid, duplicate_in_request, duplicate_active, queue_full]
+        job:
+          $ref: '#/components/schemas/Job'
+        existing_job_id:
+          type: string
+          description: status 为 duplicate_active 时指向已存在的活跃任务。
+        error:
+          type: string
+    BatchSubmitResponse:
+      type: object
+      required: [accepted, rejected, results]
+      properties:
+        accepted:
+          type: integer
+        rejected:
+          type: integer
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubmitResult'
     QualityRequest:
       type: object
       required: [url]

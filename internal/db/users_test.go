@@ -150,8 +150,8 @@ func TestJobUserAttributionAndFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	mine := domain.Job{ID: "job-mine", UserID: user.ID, Input: "https://music.apple.com/cn/song/x/1", Type: "song", Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now}
-	orphan := domain.Job{ID: "job-orphan", Input: "https://music.apple.com/cn/song/y/2", Type: "song", Status: domain.JobQueued, CreatedAt: now.Add(time.Second), UpdatedAt: now}
+	mine := domain.Job{ID: "job-mine", UserID: user.ID, Input: "https://music.apple.com/cn/song/x/1", Type: "song", CanonicalKey: "song:cn:1", Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now}
+	orphan := domain.Job{ID: "job-orphan", Input: "https://music.apple.com/cn/song/y/2", Type: "song", CanonicalKey: "song:cn:2", Status: domain.JobQueued, CreatedAt: now.Add(time.Second), UpdatedAt: now}
 	for _, job := range []domain.Job{mine, orphan} {
 		if err := store.CreateJob(ctx, job); err != nil {
 			t.Fatal(err)
@@ -199,6 +199,7 @@ func TestMigrationAddsUserIDColumn(t *testing.T) {
 			input TEXT NOT NULL,
 			type TEXT NOT NULL,
 			storefront TEXT,
+			canonical_key TEXT NOT NULL,
 			force INTEGER NOT NULL DEFAULT 0,
 			status TEXT NOT NULL,
 			total_items INTEGER NOT NULL DEFAULT 0,
@@ -208,8 +209,8 @@ func TestMigrationAddsUserIDColumn(t *testing.T) {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
-		`INSERT INTO jobs(id,input,type,storefront,status,created_at,updated_at)
-			VALUES('job-legacy','https://music.apple.com/cn/song/x/1','song','cn','completed','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');`,
+		`INSERT INTO jobs(id,input,type,storefront,canonical_key,status,created_at,updated_at)
+			VALUES('job-legacy','https://music.apple.com/cn/song/x/1','song','cn','song:cn:1','completed','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');`,
 	}
 	for _, stmt := range stmts {
 		if _, err := legacy.Exec(stmt); err != nil {

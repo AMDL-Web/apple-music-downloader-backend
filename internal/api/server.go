@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,14 @@ import (
 	"amdl/internal/media"
 	"amdl/internal/wrapper"
 )
+
+// maxBatchSubmitURLs caps the number of URLs accepted in a single batch
+// submit request.
+const maxBatchSubmitURLs = 100
+
+// urlSplitPattern splits a pasted textarea blob of URLs on newlines,
+// whitespace, commas, and semicolons (ASCII and full-width variants).
+var urlSplitPattern = regexp.MustCompile(`[\r\n\s,;，；]+`)
 
 type Server struct {
 	cfg     config.Config
@@ -66,7 +75,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/quality", s.queryQuality)
 	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
 	mux.HandleFunc("GET /api/v1/downloads", s.listDownloads)
-	mux.HandleFunc("/api/v1/downloads/", s.downloadByID)
+	mux.HandleFunc("GET /api/v1/downloads/{id}", s.getDownload)
+	mux.HandleFunc("POST /api/v1/downloads/{id}/cancel", s.cancelDownload)
+	mux.HandleFunc("GET /api/v1/downloads/{id}/events", s.events)
 	return cors(auth.Middleware(s.store, s.cfg.Auth)(mux))
 }
 
@@ -220,18 +231,30 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	req.URL = strings.TrimSpace(req.URL)
-	if req.URL == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("url is required"))
+	var urls []string
+	for _, raw := range req.URLs {
+		for _, entry := range urlSplitPattern.Split(raw, -1) {
+			entry = strings.TrimSpace(entry)
+			if entry != "" {
+				urls = append(urls, entry)
+			}
+		}
+	}
+	if len(urls) == 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("urls is required"))
+		return
+	}
+	if len(urls) > maxBatchSubmitURLs {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("too many urls: max %d per request", maxBatchSubmitURLs))
 		return
 	}
 	identity, _ := auth.FromContext(r.Context())
-	job, err := s.manager.Submit(r.Context(), req, identity.UserID)
-	if err != nil {
-		writeSubmitError(w, err)
-		return
+	resp := s.manager.SubmitBatch(r.Context(), urls, req.Force, identity.UserID)
+	status := http.StatusUnprocessableEntity
+	if resp.Accepted > 0 {
+		status = http.StatusAccepted
 	}
-	writeJSON(w, http.StatusAccepted, job)
+	writeJSON(w, status, resp)
 }
 
 func (s *Server) listDownloads(w http.ResponseWriter, r *http.Request) {
@@ -272,40 +295,20 @@ func (s *Server) authorizeJob(w http.ResponseWriter, r *http.Request, id string)
 	return job, true
 }
 
-func (s *Server) downloadByID(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/downloads/")
-	parts := strings.Split(strings.Trim(rest, "/"), "/")
-	if len(parts) == 0 || parts[0] == "" {
-		writeError(w, http.StatusNotFound, fmt.Errorf("not found"))
+func (s *Server) cancelDownload(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := s.authorizeJob(w, r, id); !ok {
 		return
 	}
-	id := parts[0]
-	if len(parts) == 1 && r.Method == http.MethodGet {
-		s.getDownload(w, r, id)
+	if err := s.manager.Cancel(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if len(parts) == 2 && parts[1] == "cancel" && r.Method == http.MethodPost {
-		if _, ok := s.authorizeJob(w, r, id); !ok {
-			return
-		}
-		if err := s.manager.Cancel(r.Context(), id); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
-		return
-	}
-	if len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet {
-		if _, ok := s.authorizeJob(w, r, id); !ok {
-			return
-		}
-		s.events(w, r, id)
-		return
-	}
-	writeError(w, http.StatusNotFound, fmt.Errorf("not found"))
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
-func (s *Server) getDownload(w http.ResponseWriter, r *http.Request, id string) {
+func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
 	job, ok := s.authorizeJob(w, r, id)
 	if !ok {
 		return
@@ -325,7 +328,11 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request, id string) 
 	})
 }
 
-func (s *Server) events(w http.ResponseWriter, r *http.Request, id string) {
+func (s *Server) events(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, ok := s.authorizeJob(w, r, id); !ok {
+		return
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -335,26 +342,41 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	lastID, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
-	existing, _ := s.store.ListEventsAfter(r.Context(), id, lastID)
-	for _, ev := range existing {
-		writeSSE(w, ev)
-		lastID = ev.ID
+
+	// drain streams every persisted event newer than lastID directly from the
+	// store, so delivery never depends on the in-memory hub channel. The hub
+	// only wakes us to drain sooner; any event dropped by a full channel buffer
+	// is still picked up on the next drain, and the ticker bounds the tail
+	// latency for a dropped final event that has no successor to wake us.
+	drain := func() {
+		events, err := s.store.ListEventsAfter(r.Context(), id, lastID)
+		if err != nil {
+			return
+		}
+		for _, ev := range events {
+			writeSSE(w, ev)
+			lastID = ev.ID
+		}
+		flusher.Flush()
 	}
-	flusher.Flush()
+
+	// Subscribe before the first drain so an event published between reading the
+	// backlog and registering for live updates still wakes a subsequent drain
+	// instead of being lost in the gap.
 	ch, cancel := s.hub.Subscribe(id)
 	defer cancel()
-	ticker := time.NewTicker(25 * time.Second)
+	drain()
+
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case ev := <-ch:
-			if ev.ID > lastID {
-				writeSSE(w, ev)
-				flusher.Flush()
-			}
+		case <-ch:
+			drain()
 		case <-ticker.C:
+			drain()
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
 		}

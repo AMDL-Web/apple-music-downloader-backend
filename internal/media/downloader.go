@@ -58,8 +58,8 @@ func NewDownloader(cfg config.Config, catalog *applemusic.CatalogClient, wrapper
 	return &Downloader{cfg: cfg, catalog: catalog, wrapper: wrapperClient, tools: tools, http: newHTTPClient(), mp4: newMP4Processor(cfg), logger: logger}
 }
 
-func (d *Downloader) ValidateRequest(ctx context.Context, req domain.DownloadRequest) (jobs.ValidationResult, error) {
-	parsed, err := applemusic.ParseWithAlbumTrackMode(req.URL, d.cfg.Catalog.AlbumTrackURLMode)
+func (d *Downloader) ValidateRequest(ctx context.Context, url string) (jobs.ValidationResult, error) {
+	parsed, err := applemusic.ParseWithAlbumTrackMode(url, d.cfg.Catalog.AlbumTrackURLMode)
 	if err != nil {
 		if strings.Contains(err.Error(), "album_track_url_mode") {
 			return jobs.ValidationResult{}, &jobs.RequestError{Code: "invalid_configuration", Message: err.Error(), Cause: err}
@@ -73,7 +73,7 @@ func (d *Downloader) ValidateRequest(ctx context.Context, req domain.DownloadReq
 	if err := d.validateStorefront(ctx, parsed.Storefront); err != nil {
 		return jobs.ValidationResult{}, err
 	}
-	return jobs.ValidationResult{Type: string(parsed.Type), Storefront: parsed.Storefront}, nil
+	return jobs.ValidationResult{Type: string(parsed.Type), Storefront: parsed.Storefront, ID: parsed.ID}, nil
 }
 
 func (d *Downloader) validateStorefront(ctx context.Context, storefront string) error {
@@ -673,7 +673,7 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 		if d.cfg.Download.LyricsFormat == "ttml" {
 			ext = ".ttml"
 		}
-		if err := os.WriteFile(stringsTrimSuffix(outPath, ".m4a")+ext, []byte(lyrics), 0o644); err != nil {
+		if err := os.WriteFile(strings.TrimSuffix(outPath, ".m4a")+ext, []byte(lyrics), 0o644); err != nil {
 			return fmt.Errorf("write lyrics file: %w", err)
 		}
 	}
@@ -743,7 +743,7 @@ func (d *Downloader) downloadAACLC(ctx context.Context, job domain.Job, item *do
 		if d.cfg.Download.LyricsFormat == "ttml" {
 			ext = ".ttml"
 		}
-		if err := os.WriteFile(stringsTrimSuffix(outPath, ".m4a")+ext, []byte(lyrics), 0o644); err != nil {
+		if err := os.WriteFile(strings.TrimSuffix(outPath, ".m4a")+ext, []byte(lyrics), 0o644); err != nil {
 			return fmt.Errorf("write lyrics file: %w", err)
 		}
 	}
@@ -813,8 +813,8 @@ func marshalPayload(value any) string {
 
 func cleanupFailedOutput(outPath string) {
 	_ = os.Remove(outPath)
-	_ = os.Remove(stringsTrimSuffix(outPath, ".m4a") + ".lrc")
-	_ = os.Remove(stringsTrimSuffix(outPath, ".m4a") + ".ttml")
+	_ = os.Remove(strings.TrimSuffix(outPath, ".m4a") + ".lrc")
+	_ = os.Remove(strings.TrimSuffix(outPath, ".m4a") + ".ttml")
 }
 
 func (d *Downloader) failItem(ctx context.Context, reporter jobs.Reporter, job domain.Job, item domain.JobItem, err error) error {
@@ -826,11 +826,4 @@ func (d *Downloader) failItem(ctx context.Context, reporter jobs.Reporter, job d
 	_ = reporter.UpdateItem(ctx, item)
 	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_failed", Message: err.Error()})
 	return err
-}
-
-func stringsTrimSuffix(v, suffix string) string {
-	if len(v) >= len(suffix) && v[len(v)-len(suffix):] == suffix {
-		return v[:len(v)-len(suffix)]
-	}
-	return v
 }

@@ -21,8 +21,8 @@ import (
 
 type acceptAllProcessor struct{}
 
-func (acceptAllProcessor) ValidateRequest(context.Context, domain.DownloadRequest) (jobs.ValidationResult, error) {
-	return jobs.ValidationResult{Type: "song", Storefront: "cn"}, nil
+func (acceptAllProcessor) ValidateRequest(_ context.Context, url string) (jobs.ValidationResult, error) {
+	return jobs.ValidationResult{Type: "song", Storefront: "cn", ID: url}, nil
 }
 
 func (acceptAllProcessor) ProcessJob(context.Context, domain.Job, jobs.Reporter) error { return nil }
@@ -141,8 +141,8 @@ func TestDownloadOwnership(t *testing.T) {
 	routes := fx.server.Routes()
 	ctx := context.Background()
 	now := time.Now().UTC()
-	aliceJob := domain.Job{ID: "job-alice", UserID: fx.user.ID, Input: "https://music.apple.com/cn/song/a/1", Type: "song", Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now}
-	adminJob := domain.Job{ID: "job-boss", UserID: fx.admin.ID, Input: "https://music.apple.com/cn/song/b/2", Type: "song", Status: domain.JobQueued, CreatedAt: now.Add(time.Second), UpdatedAt: now}
+	aliceJob := domain.Job{ID: "job-alice", UserID: fx.user.ID, Input: "https://music.apple.com/cn/song/a/1", Type: "song", CanonicalKey: "song:cn:1", Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now}
+	adminJob := domain.Job{ID: "job-boss", UserID: fx.admin.ID, Input: "https://music.apple.com/cn/song/b/2", Type: "song", CanonicalKey: "song:cn:2", Status: domain.JobQueued, CreatedAt: now.Add(time.Second), UpdatedAt: now}
 	for _, job := range []domain.Job{aliceJob, adminJob} {
 		if err := fx.store.CreateJob(ctx, job); err != nil {
 			t.Fatal(err)
@@ -199,14 +199,18 @@ func TestDownloadOwnership(t *testing.T) {
 
 func TestCreateDownloadAttributesOwner(t *testing.T) {
 	fx := newMultiUserFixture(t)
-	recorder := authedRequest(t, fx.server.Routes(), http.MethodPost, "/api/v1/downloads", `{"url":"https://music.apple.com/cn/song/a/1"}`, "alice")
+	recorder := authedRequest(t, fx.server.Routes(), http.MethodPost, "/api/v1/downloads", `{"urls":["https://music.apple.com/cn/song/a/1"]}`, "alice")
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	var job domain.Job
-	if err := json.Unmarshal(recorder.Body.Bytes(), &job); err != nil {
+	var resp domain.BatchSubmitResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
+	if resp.Accepted != 1 || len(resp.Results) != 1 || resp.Results[0].Job == nil {
+		t.Fatalf("resp = %+v", resp)
+	}
+	job := *resp.Results[0].Job
 	if job.UserID != fx.user.ID {
 		t.Fatalf("job.UserID = %q, want %q", job.UserID, fx.user.ID)
 	}
@@ -216,6 +220,30 @@ func TestCreateDownloadAttributesOwner(t *testing.T) {
 	}
 	if stored.UserID != fx.user.ID || stored.Username != "alice" {
 		t.Fatalf("stored attribution = %q/%q", stored.UserID, stored.Username)
+	}
+}
+
+// TestSubmitDedupIsScopedPerUser: two users downloading the same content into
+// their own directories must not collide on the canonical key.
+func TestSubmitDedupIsScopedPerUser(t *testing.T) {
+	fx := newMultiUserFixture(t)
+	routes := fx.server.Routes()
+	body := `{"urls":["https://music.apple.com/cn/song/a/1"]}`
+	if recorder := authedRequest(t, routes, http.MethodPost, "/api/v1/downloads", body, "alice"); recorder.Code != http.StatusAccepted {
+		t.Fatalf("alice submit status = %d", recorder.Code)
+	}
+	recorder := authedRequest(t, routes, http.MethodPost, "/api/v1/downloads", body, "boss")
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("boss submit status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	// Same user resubmitting stays deduplicated.
+	var resp domain.BatchSubmitResponse
+	recorder = authedRequest(t, routes, http.MethodPost, "/api/v1/downloads", body, "alice")
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Accepted != 0 || resp.Results[0].Status != domain.SubmitDuplicateActive {
+		t.Fatalf("alice resubmit = %+v, want duplicate_active", resp)
 	}
 }
 
