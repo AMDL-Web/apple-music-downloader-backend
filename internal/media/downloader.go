@@ -100,7 +100,19 @@ func (d *Downloader) validateStorefront(ctx context.Context, storefront string) 
 	}
 }
 
+// forUser returns a copy of the downloader whose download root is scoped to
+// the user's directory, leaving the shared temp dir untouched.
+func (d *Downloader) forUser(username string) *Downloader {
+	if username == "" {
+		return d
+	}
+	scoped := *d
+	scoped.cfg.Download.DownloadsDir = filepath.Join(d.cfg.Download.DownloadsDir, username)
+	return &scoped
+}
+
 func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jobs.Reporter) error {
+	d = d.forUser(job.Username)
 	parsed, err := applemusic.ParseWithAlbumTrackMode(job.Input, d.cfg.Catalog.AlbumTrackURLMode)
 	if err != nil {
 		return err

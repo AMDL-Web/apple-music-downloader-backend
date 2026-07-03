@@ -116,7 +116,7 @@ func TestCancelledJobPreservesProcessorUpdatedTotalItems(t *testing.T) {
 	processor := &cancelAfterTotalProcessor{started: make(chan struct{})}
 	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
 	manager.Start(ctx)
-	job, err := manager.Submit(ctx, domain.DownloadRequest{URL: "https://music.apple.com/cn/artist/example/1495777901"})
+	job, err := manager.Submit(ctx, domain.DownloadRequest{URL: "https://music.apple.com/cn/artist/example/1495777901"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

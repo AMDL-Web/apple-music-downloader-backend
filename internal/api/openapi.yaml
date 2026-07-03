@@ -2,11 +2,18 @@ openapi: 3.1.0
 info:
   title: AMDL Backend API
   version: 1.0.0
-  description: Apple Music 下载任务与 wrapper-manager 管理接口。
+  description: |
+    Apple Music 下载任务与 wrapper-manager 管理接口。
+
+    多用户模式（auth.enabled 为 true）下，后端信任反向代理注入的 X-User / X-Email 头解析身份；
+    未注册或被禁用的用户返回 403。auth.enabled 为 false 时所有请求视为内置管理员。
+    Wrapper 与 Users 分组接口仅管理员可用；普通用户只能访问自己的下载任务，
+    访问他人任务一律返回 404。
 servers:
   - url: /
 tags:
   - name: System
+  - name: Users
   - name: Wrapper
   - name: Quality
   - name: Downloads
@@ -41,10 +48,143 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CapabilitiesResponse'
+  /api/v1/me:
+    get:
+      tags: [Users]
+      summary: 查询当前登录用户
+      description: 返回当前身份的用户名、角色和头像，供前端渲染。单用户模式返回内置管理员。
+      operationId: getMe
+      responses:
+        '200':
+          description: 当前用户信息。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v1/users:
+    get:
+      tags: [Users]
+      summary: 列出用户（仅管理员）
+      operationId: listUsers
+      responses:
+        '200':
+          description: 用户列表。
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Users]
+      summary: 创建用户（仅管理员）
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: 用户已创建。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 用户名、别名或邮箱已被占用。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/users/{user_id}:
+    get:
+      tags: [Users]
+      summary: 查询用户（仅管理员）
+      operationId: getUser
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '200':
+          description: 用户详情。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Users]
+      summary: 更新用户（仅管理员）
+      description: 部分更新，仅提交的字段生效；aliases / emails 提交时整组替换。
+      operationId: updateUser
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+      responses:
+        '200':
+          description: 更新后的用户。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 别名或邮箱已被占用。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [Users]
+      summary: 禁用用户（仅管理员）
+      description: 软禁用（enabled=false），保留任务归属供审计；不物理删除。
+      operationId: disableUser
+      parameters:
+        - $ref: '#/components/parameters/UserID'
+      responses:
+        '200':
+          description: 用户已禁用。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, id]
+                properties:
+                  status:
+                    type: string
+                    const: disabled
+                  id:
+                    type: string
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v1/wrapper/status:
     get:
       tags: [Wrapper]
-      summary: 查询 wrapper-manager 状态
+      summary: 查询 wrapper-manager 状态（仅管理员）
       description: 探测 wrapper-manager 连通性与登录/区域等运行状态；下载前或账号管理前使用。
       operationId: getWrapperStatus
       responses:
@@ -54,6 +194,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WrapperStatus'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/wrapper/login:
@@ -177,6 +319,7 @@ paths:
       tags: [Downloads]
       summary: 列出下载任务
       operationId: listDownloads
+      description: 普通用户仅返回自己的任务；管理员返回全部任务，可用 user 参数按用户名过滤。
       parameters:
         - name: limit
           in: query
@@ -186,6 +329,11 @@ paths:
             minimum: 1
             maximum: 200
             default: 50
+        - name: user
+          in: query
+          description: 仅管理员有效：按用户名过滤；未知用户名返回空列表。
+          schema:
+            type: string
       responses:
         '200':
           description: 下载任务列表。
@@ -261,6 +409,8 @@ paths:
                   status:
                     type: string
                     const: cancelled
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
   /api/v1/downloads/{job_id}/events:
@@ -283,6 +433,8 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
 components:
   parameters:
     LoginID:
@@ -299,6 +451,13 @@ components:
       schema:
         type: string
       example: job_01JZ0000000000000000000000
+    UserID:
+      name: user_id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: user_01JZ0000000000000000000000
   responses:
     BadRequest:
       description: 请求参数错误。
@@ -308,6 +467,12 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
     Unauthorized:
       description: 登录或验证码错误。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: 身份未注册、已禁用或权限不足。
       content:
         application/json:
           schema:
@@ -562,12 +727,86 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/QualityOption'
+    MeResponse:
+      type: object
+      required: [user_id, username, role, avatar_url]
+      properties:
+        user_id:
+          type: string
+          description: 单用户模式下为空字符串。
+        username:
+          type: string
+        role:
+          type: string
+          enum: [admin, user]
+        avatar_url:
+          type: string
+    User:
+      type: object
+      required: [id, username, role, avatar_url, enabled, aliases, emails, created_at, updated_at]
+      properties:
+        id: {type: string}
+        username:
+          type: string
+          description: 须匹配 ^[a-z0-9_-]{1,32}$，同时用作用户下载目录名。
+        role:
+          type: string
+          enum: [admin, user]
+        avatar_url: {type: string}
+        enabled: {type: boolean}
+        aliases:
+          type: array
+          items: {type: string}
+        emails:
+          type: array
+          items: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    CreateUserRequest:
+      type: object
+      required: [username]
+      properties:
+        username:
+          type: string
+          description: 须匹配 ^[a-z0-9_-]{1,32}$。
+        role:
+          type: string
+          enum: [admin, user]
+          default: user
+        avatar_url: {type: string}
+        aliases:
+          type: array
+          items: {type: string}
+        emails:
+          type: array
+          items: {type: string}
+    UpdateUserRequest:
+      type: object
+      description: 所有字段可选，仅提交的字段生效。
+      properties:
+        role:
+          type: string
+          enum: [admin, user]
+        enabled: {type: boolean}
+        avatar_url: {type: string}
+        aliases:
+          type: array
+          items: {type: string}
+        emails:
+          type: array
+          items: {type: string}
     Job:
       type: object
       required: [id, input, type, force, status, total_items, done_items, failed_items, created_at, updated_at]
       properties:
         id:
           type: string
+        user_id:
+          type: string
+          description: 任务归属用户 ID；历史或单用户任务为空。
+        username:
+          type: string
+          description: 归属用户名，便于展示。
         input:
           type: string
         type:

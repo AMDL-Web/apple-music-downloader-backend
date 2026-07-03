@@ -201,3 +201,20 @@ func TestQualityLabelFormatsSelectedMedia(t *testing.T) {
 		})
 	}
 }
+
+func TestForUserScopesDownloadsDir(t *testing.T) {
+	cfg := config.Default()
+	cfg.Download.DownloadsDir = "data/downloads"
+	base := &Downloader{cfg: cfg}
+
+	scoped := base.forUser("lyjw")
+	if scoped.cfg.Download.DownloadsDir != filepath.Join("data/downloads", "lyjw") {
+		t.Fatalf("scoped dir = %q", scoped.cfg.Download.DownloadsDir)
+	}
+	if base.cfg.Download.DownloadsDir != "data/downloads" {
+		t.Fatalf("base dir mutated to %q", base.cfg.Download.DownloadsDir)
+	}
+	if same := base.forUser(""); same != base {
+		t.Fatal("empty username should return the shared downloader")
+	}
+}

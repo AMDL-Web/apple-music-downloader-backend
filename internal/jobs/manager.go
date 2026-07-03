@@ -101,7 +101,9 @@ func (m *Manager) RecoverUnfinished(ctx context.Context) (int, error) {
 	return len(jobs), nil
 }
 
-func (m *Manager) Submit(ctx context.Context, req domain.DownloadRequest) (domain.Job, error) {
+// Submit validates and enqueues a download request. userID attributes the job
+// to its owner; empty means unowned (single-user mode).
+func (m *Manager) Submit(ctx context.Context, req domain.DownloadRequest, userID string) (domain.Job, error) {
 	validated, err := m.processor.ValidateRequest(ctx, req)
 	if err != nil {
 		return domain.Job{}, err
@@ -117,7 +119,7 @@ func (m *Manager) Submit(ctx context.Context, req domain.DownloadRequest) (domai
 
 	now := time.Now().UTC()
 	job := domain.Job{
-		ID: storage.NewID("job"), Input: req.URL, Type: validated.Type, Storefront: validated.Storefront, Force: req.Force, Status: domain.JobQueued,
+		ID: storage.NewID("job"), UserID: userID, Input: req.URL, Type: validated.Type, Storefront: validated.Storefront, Force: req.Force, Status: domain.JobQueued,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := m.store.CreateJob(ctx, job); err != nil {

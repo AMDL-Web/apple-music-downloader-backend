@@ -407,6 +407,9 @@ func TestOpenAPISpecification(t *testing.T) {
 	wantOperations := map[string][]string{
 		"/api/v1/health":                       {"get"},
 		"/api/v1/capabilities":                 {"get"},
+		"/api/v1/me":                           {"get"},
+		"/api/v1/users":                        {"get", "post"},
+		"/api/v1/users/{user_id}":              {"get", "patch", "delete"},
 		"/api/v1/wrapper/status":               {"get"},
 		"/api/v1/wrapper/login":                {"post"},
 		"/api/v1/wrapper/login/{login_id}/2fa": {"post"},

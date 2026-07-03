@@ -7,12 +7,14 @@ import (
 	"strings"
 	"time"
 
+	"amdl/internal/domain"
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
 	Server   ServerConfig   `yaml:"server" json:"server"`
 	Database DatabaseConfig `yaml:"database" json:"database"`
+	Auth     AuthConfig     `yaml:"auth" json:"auth"`
 	Wrapper  WrapperConfig  `yaml:"wrapper" json:"wrapper"`
 	Catalog  CatalogConfig  `yaml:"catalog" json:"catalog"`
 	Download DownloadConfig `yaml:"download" json:"download"`
@@ -25,6 +27,13 @@ type ServerConfig struct {
 
 type DatabaseConfig struct {
 	Path string `yaml:"path" json:"path"`
+}
+
+type AuthConfig struct {
+	Enabled             bool   `yaml:"enabled" json:"enabled"`
+	InternalSecret      string `yaml:"internal_secret" json:"-"`
+	BootstrapAdmin      string `yaml:"bootstrap_admin" json:"bootstrap_admin"`
+	BootstrapAdminEmail string `yaml:"bootstrap_admin_email" json:"bootstrap_admin_email"`
 }
 
 type WrapperConfig struct {
@@ -146,6 +155,12 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) validate() error {
+	if c.Auth.Enabled && !domain.ValidUsername(c.Auth.BootstrapAdmin) {
+		return fmt.Errorf("auth.bootstrap_admin must match ^[a-z0-9_-]{1,32}$ when auth.enabled is true")
+	}
+	if !c.Auth.Enabled && c.Auth.BootstrapAdmin != "" && !domain.ValidUsername(c.Auth.BootstrapAdmin) {
+		return fmt.Errorf("auth.bootstrap_admin must match ^[a-z0-9_-]{1,32}$")
+	}
 	if c.Catalog.AlbumTrackURLMode != "song" && c.Catalog.AlbumTrackURLMode != "album" {
 		return fmt.Errorf("catalog.album_track_url_mode must be song or album")
 	}

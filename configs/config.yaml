@@ -6,6 +6,26 @@ database:
   # string: SQLite database file path. Relative paths are resolved from the backend working directory.
   path: "data/amdl.db"
 
+auth:
+  # bool: true or false. true enables multi-user trusted-header mode: the backend trusts the
+  # X-User / X-Email headers injected by a fronting Nginx + OAuth2-Proxy, resolves them against
+  # the users table, and rejects unknown or disabled users with 403. false degrades to
+  # single-user mode: every request is treated as a built-in admin, jobs carry no owner, and
+  # download paths stay unchanged. Default: false.
+  enabled: false
+  # string: shared secret agreed with the fronting proxy. When non-empty, every authenticated
+  # request must carry a matching X-Internal-Secret header or it is rejected with 401; this
+  # blocks other local processes from forging X-User. Empty string disables the check. Default: "".
+  internal_secret: ""
+  # string: bootstrap admin username, must match ^[a-z0-9_-]{1,32}$ (also used as the per-user
+  # download directory name). On the first start with auth.enabled true and an empty users table,
+  # this account is created with role admin and any pre-existing jobs without an owner are
+  # assigned to it; afterwards the value is ignored. Required (non-empty) when enabled is true.
+  bootstrap_admin: "lyjw"
+  # string: bootstrap admin email, stored as an email identity so X-Email can match this account.
+  # May be empty. Default: "".
+  bootstrap_admin_email: ""
+
 wrapper:
   # string: wrapper-manager gRPC address in "host:port" form.
   address: "192.168.3.42:8080"

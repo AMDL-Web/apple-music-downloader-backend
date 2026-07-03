@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"amdl/internal/auth"
 	"amdl/internal/config"
 	"amdl/internal/db"
 	"amdl/internal/domain"
@@ -52,15 +53,21 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/openapi.yaml", openAPI)
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/capabilities", s.capabilities)
-	mux.HandleFunc("GET /api/v1/wrapper/status", s.wrapperStatus)
-	mux.HandleFunc("POST /api/v1/wrapper/login", s.wrapperLogin)
-	mux.HandleFunc("POST /api/v1/wrapper/login/{login_id}/2fa", s.wrapperTwoStep)
-	mux.HandleFunc("POST /api/v1/wrapper/logout", s.wrapperLogout)
+	mux.HandleFunc("GET /api/v1/me", s.me)
+	mux.HandleFunc("GET /api/v1/users", auth.RequireAdmin(s.listUsers))
+	mux.HandleFunc("POST /api/v1/users", auth.RequireAdmin(s.createUser))
+	mux.HandleFunc("GET /api/v1/users/{id}", auth.RequireAdmin(s.getUser))
+	mux.HandleFunc("PATCH /api/v1/users/{id}", auth.RequireAdmin(s.updateUser))
+	mux.HandleFunc("DELETE /api/v1/users/{id}", auth.RequireAdmin(s.deleteUser))
+	mux.HandleFunc("GET /api/v1/wrapper/status", auth.RequireAdmin(s.wrapperStatus))
+	mux.HandleFunc("POST /api/v1/wrapper/login", auth.RequireAdmin(s.wrapperLogin))
+	mux.HandleFunc("POST /api/v1/wrapper/login/{login_id}/2fa", auth.RequireAdmin(s.wrapperTwoStep))
+	mux.HandleFunc("POST /api/v1/wrapper/logout", auth.RequireAdmin(s.wrapperLogout))
 	mux.HandleFunc("POST /api/v1/quality", s.queryQuality)
 	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
 	mux.HandleFunc("GET /api/v1/downloads", s.listDownloads)
 	mux.HandleFunc("/api/v1/downloads/", s.downloadByID)
-	return cors(mux)
+	return cors(auth.Middleware(s.store, s.cfg.Auth)(mux))
 }
 
 func (s *Server) queryQuality(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +174,7 @@ func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -218,7 +225,8 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("url is required"))
 		return
 	}
-	job, err := s.manager.Submit(r.Context(), req)
+	identity, _ := auth.FromContext(r.Context())
+	job, err := s.manager.Submit(r.Context(), req, identity.UserID)
 	if err != nil {
 		writeSubmitError(w, err)
 		return
@@ -227,13 +235,41 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listDownloads(w http.ResponseWriter, r *http.Request) {
+	identity, _ := auth.FromContext(r.Context())
+	userFilter := ""
+	if !identity.IsAdmin() {
+		userFilter = identity.UserID
+	} else if username := strings.TrimSpace(r.URL.Query().Get("user")); username != "" {
+		user, err := s.store.GetUserByUsername(r.Context(), username)
+		if err != nil {
+			writeJSON(w, http.StatusOK, []domain.Job{})
+			return
+		}
+		userFilter = user.ID
+	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	jobs, err := s.store.ListJobs(r.Context(), limit)
+	jobs, err := s.store.ListJobs(r.Context(), limit, userFilter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, jobs)
+}
+
+// authorizeJob loads a job and enforces ownership: non-admin callers get 404
+// for jobs they do not own, hiding their existence.
+func (s *Server) authorizeJob(w http.ResponseWriter, r *http.Request, id string) (domain.Job, bool) {
+	job, err := s.store.GetJob(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, fmt.Errorf("not found"))
+		return domain.Job{}, false
+	}
+	identity, _ := auth.FromContext(r.Context())
+	if !identity.IsAdmin() && job.UserID != identity.UserID {
+		writeError(w, http.StatusNotFound, fmt.Errorf("not found"))
+		return domain.Job{}, false
+	}
+	return job, true
 }
 
 func (s *Server) downloadByID(w http.ResponseWriter, r *http.Request) {
@@ -249,6 +285,9 @@ func (s *Server) downloadByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 2 && parts[1] == "cancel" && r.Method == http.MethodPost {
+		if _, ok := s.authorizeJob(w, r, id); !ok {
+			return
+		}
 		if err := s.manager.Cancel(r.Context(), id); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -257,6 +296,9 @@ func (s *Server) downloadByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet {
+		if _, ok := s.authorizeJob(w, r, id); !ok {
+			return
+		}
 		s.events(w, r, id)
 		return
 	}
@@ -264,9 +306,8 @@ func (s *Server) downloadByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getDownload(w http.ResponseWriter, r *http.Request, id string) {
-	job, err := s.store.GetJob(r.Context(), id)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err)
+	job, ok := s.authorizeJob(w, r, id)
+	if !ok {
 		return
 	}
 	items, err := s.store.ListItems(r.Context(), id)

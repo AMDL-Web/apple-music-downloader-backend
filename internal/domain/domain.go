@@ -1,6 +1,34 @@
 package domain
 
-import "time"
+import (
+	"regexp"
+	"time"
+)
+
+type Role string
+
+const (
+	RoleAdmin Role = "admin"
+	RoleUser  Role = "user"
+)
+
+var usernamePattern = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
+
+// ValidUsername reports whether v is safe to use as a username and as a
+// per-user download directory name.
+func ValidUsername(v string) bool { return usernamePattern.MatchString(v) }
+
+type User struct {
+	ID        string    `json:"id"`
+	Username  string    `json:"username"`
+	Role      Role      `json:"role"`
+	AvatarURL string    `json:"avatar_url"`
+	Enabled   bool      `json:"enabled"`
+	Aliases   []string  `json:"aliases"`
+	Emails    []string  `json:"emails"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
 
 type JobStatus string
 
@@ -30,6 +58,8 @@ const (
 
 type Job struct {
 	ID          string    `json:"id"`
+	UserID      string    `json:"user_id,omitempty"`
+	Username    string    `json:"username,omitempty"`
 	Input       string    `json:"input"`
 	Type        string    `json:"type"`
 	Storefront  string    `json:"storefront,omitempty"`

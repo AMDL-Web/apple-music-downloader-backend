@@ -52,6 +52,22 @@ func main() {
 	}
 	defer store.Close()
 
+	if cfg.Auth.Enabled {
+		admin, err := store.EnsureBootstrapAdmin(context.Background(), cfg.Auth.BootstrapAdmin, cfg.Auth.BootstrapAdminEmail)
+		if err != nil {
+			logger.Error("bootstrap admin", "error", err)
+			os.Exit(1)
+		}
+		if admin.ID != "" {
+			if assigned, err := store.AssignJobsWithoutUser(context.Background(), admin.ID); err != nil {
+				logger.Error("assign legacy jobs", "error", err)
+				os.Exit(1)
+			} else if assigned > 0 {
+				logger.Info("assigned legacy jobs to bootstrap admin", "count", assigned, "admin", admin.Username)
+			}
+		}
+	}
+
 	hub := events.NewHub()
 	wrapperClient, err := wrapper.NewClient(cfg.Wrapper)
 	if err != nil {
