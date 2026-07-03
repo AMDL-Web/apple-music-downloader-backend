@@ -412,6 +412,7 @@ func TestOpenAPISpecification(t *testing.T) {
 		"/api/v1/health":                       {"get"},
 		"/api/v1/capabilities":                 {"get"},
 		"/api/v1/me":                           {"get"},
+		"/api/v1/me/config":                    {"get", "put"},
 		"/api/v1/users":                        {"get", "post"},
 		"/api/v1/users/{user_id}":              {"get", "patch", "delete"},
 		"/api/v1/wrapper/status":               {"get"},
@@ -434,6 +435,40 @@ func TestOpenAPISpecification(t *testing.T) {
 			if _, ok := operations[method]; !ok {
 				t.Errorf("OpenAPI operation %s %s is missing", method, path)
 			}
+		}
+	}
+}
+
+// TestOpenAPIDownloadOverridesSchemaMatchesStruct keeps the documented
+// DownloadOverrides properties in lockstep with the Go struct, so adding an
+// override field without documenting it (or vice versa) fails the build.
+func TestOpenAPIDownloadOverridesSchemaMatchesStruct(t *testing.T) {
+	server := &Server{}
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/openapi.yaml", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	var spec struct {
+		Components struct {
+			Schemas map[string]struct {
+				Properties map[string]any `yaml:"properties"`
+			} `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(recorder.Body.Bytes(), &spec); err != nil {
+		t.Fatal(err)
+	}
+	schema, ok := spec.Components.Schemas["DownloadOverrides"]
+	if !ok {
+		t.Fatal("DownloadOverrides schema missing from openapi.yaml")
+	}
+	want := domain.DownloadOverrideKeys()
+	if len(schema.Properties) != len(want) {
+		t.Errorf("schema has %d properties, struct has %d fields", len(schema.Properties), len(want))
+	}
+	for _, key := range want {
+		if _, ok := schema.Properties[key]; !ok {
+			t.Errorf("openapi.yaml DownloadOverrides is missing property %q", key)
 		}
 	}
 }

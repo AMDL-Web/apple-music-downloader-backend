@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -74,6 +75,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 			storefront TEXT,
 			canonical_key TEXT NOT NULL,
 			force INTEGER NOT NULL DEFAULT 0,
+			overrides_json TEXT NOT NULL DEFAULT '{}',
 			status TEXT NOT NULL,
 			total_items INTEGER NOT NULL DEFAULT 0,
 			done_items INTEGER NOT NULL DEFAULT 0,
@@ -125,20 +127,57 @@ func (s *Store) initSchema(ctx context.Context) error {
 			return err
 		}
 	}
-	// Databases created before multi-user support lack jobs.user_id.
-	var hasUserID int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name='user_id'`).Scan(&hasUserID); err != nil {
-		return err
-	}
-	if hasUserID == 0 {
-		if _, err := s.db.ExecContext(ctx, `ALTER TABLE jobs ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`); err != nil {
+	// Databases created before multi-user support lack jobs.user_id, and ones
+	// created before config overrides lack jobs.overrides_json.
+	for column, alter := range map[string]string{
+		"user_id":        `ALTER TABLE jobs ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`,
+		"overrides_json": `ALTER TABLE jobs ADD COLUMN overrides_json TEXT NOT NULL DEFAULT '{}'`,
+	} {
+		var present int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name=?`, column).Scan(&present); err != nil {
 			return err
+		}
+		if present == 0 {
+			if _, err := s.db.ExecContext(ctx, alter); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id)`); err != nil {
 		return err
 	}
 	return nil
+}
+
+// marshalOverrides serializes a config overlay for storage; nil stores as the
+// column default '{}' so absent and empty overlays are indistinguishable.
+func marshalOverrides(o *domain.DownloadOverrides) string {
+	if o == nil {
+		return "{}"
+	}
+	raw, err := json.Marshal(o)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
+}
+
+// unmarshalOverrides decodes a stored overlay. Unlike the strict API-boundary
+// parser it tolerates unknown keys, so a row written by a newer (or older)
+// binary still scans after the overlay struct evolves — an unreadable row
+// here would lock the owner out of auth and abort job recovery at startup.
+func unmarshalOverrides(raw string) (*domain.DownloadOverrides, error) {
+	if raw == "" || raw == "{}" || raw == "null" {
+		return nil, nil
+	}
+	var o domain.DownloadOverrides
+	if err := json.Unmarshal([]byte(raw), &o); err != nil {
+		return nil, err
+	}
+	if o.IsZero() {
+		return nil, nil
+	}
+	return &o, nil
 }
 
 func now() time.Time { return time.Now().UTC().Truncate(time.Millisecond) }
@@ -150,12 +189,12 @@ func parseTime(v string) time.Time {
 	return t
 }
 
-const jobSelect = `SELECT j.id,j.user_id,COALESCE(u.username,''),j.input,j.type,j.storefront,j.canonical_key,j.force,j.status,j.total_items,j.done_items,j.failed_items,j.error,j.created_at,j.updated_at
+const jobSelect = `SELECT j.id,j.user_id,COALESCE(u.username,''),j.input,j.type,j.storefront,j.canonical_key,j.force,j.overrides_json,j.status,j.total_items,j.done_items,j.failed_items,j.error,j.created_at,j.updated_at
 	FROM jobs j LEFT JOIN users u ON u.id=j.user_id`
 
 func (s *Store) CreateJob(ctx context.Context, job domain.Job) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO jobs(id,user_id,input,type,storefront,canonical_key,force,status,total_items,done_items,failed_items,error,created_at,updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, job.ID, job.UserID, job.Input, job.Type, job.Storefront, job.CanonicalKey, job.Force, string(job.Status), job.TotalItems,
+	_, err := s.db.ExecContext(ctx, `INSERT INTO jobs(id,user_id,input,type,storefront,canonical_key,force,overrides_json,status,total_items,done_items,failed_items,error,created_at,updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, job.ID, job.UserID, job.Input, job.Type, job.Storefront, job.CanonicalKey, job.Force, marshalOverrides(job.Overrides), string(job.Status), job.TotalItems,
 		job.DoneItems, job.FailedItems, job.Error, formatTime(job.CreatedAt), formatTime(job.UpdatedAt))
 	if err != nil && isUniqueConstraintErr(err) {
 		return ErrDuplicateActive
@@ -244,11 +283,15 @@ type jobScanner interface {
 
 func scanJob(row jobScanner) (domain.Job, error) {
 	var job domain.Job
-	var status, created, updated string
-	err := row.Scan(&job.ID, &job.UserID, &job.Username, &job.Input, &job.Type, &job.Storefront, &job.CanonicalKey, &job.Force, &status, &job.TotalItems, &job.DoneItems, &job.FailedItems, &job.Error, &created, &updated)
+	var status, created, updated, overrides string
+	err := row.Scan(&job.ID, &job.UserID, &job.Username, &job.Input, &job.Type, &job.Storefront, &job.CanonicalKey, &job.Force, &overrides, &status, &job.TotalItems, &job.DoneItems, &job.FailedItems, &job.Error, &created, &updated)
+	if err != nil {
+		return job, err
+	}
 	job.Status = domain.JobStatus(status)
 	job.CreatedAt = parseTime(created)
 	job.UpdatedAt = parseTime(updated)
+	job.Overrides, err = unmarshalOverrides(overrides)
 	return job, err
 }
 

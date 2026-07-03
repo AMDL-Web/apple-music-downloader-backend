@@ -16,7 +16,7 @@ func IsConflict(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
 
-const userSelect = `SELECT id,username,role,avatar_url,enabled,created_at,updated_at FROM users`
+const userSelect = `SELECT id,username,role,avatar_url,enabled,overrides_json,created_at,updated_at FROM users`
 
 type userScanner interface {
 	Scan(dest ...any) error
@@ -24,13 +24,17 @@ type userScanner interface {
 
 func scanUser(row userScanner) (domain.User, error) {
 	var user domain.User
-	var role, created, updated string
+	var role, created, updated, overrides string
 	var enabled int
-	err := row.Scan(&user.ID, &user.Username, &role, &user.AvatarURL, &enabled, &created, &updated)
+	err := row.Scan(&user.ID, &user.Username, &role, &user.AvatarURL, &enabled, &overrides, &created, &updated)
+	if err != nil {
+		return user, err
+	}
 	user.Role = domain.Role(role)
 	user.Enabled = enabled != 0
 	user.CreatedAt = parseTime(created)
 	user.UpdatedAt = parseTime(updated)
+	user.Overrides, err = unmarshalOverrides(overrides)
 	return user, err
 }
 
@@ -75,8 +79,8 @@ func (s *Store) CreateUser(ctx context.Context, user domain.User) (domain.User, 
 		return user, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO users(id,username,role,avatar_url,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`,
-		user.ID, user.Username, string(user.Role), user.AvatarURL, boolToInt(user.Enabled), formatTime(user.CreatedAt), formatTime(user.UpdatedAt)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO users(id,username,role,avatar_url,enabled,overrides_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`,
+		user.ID, user.Username, string(user.Role), user.AvatarURL, boolToInt(user.Enabled), marshalOverrides(user.Overrides), formatTime(user.CreatedAt), formatTime(user.UpdatedAt)); err != nil {
 		return user, err
 	}
 	if err := insertIdentities(ctx, tx, user.ID, user.Aliases, user.Emails); err != nil {
@@ -86,6 +90,9 @@ func (s *Store) CreateUser(ctx context.Context, user domain.User) (domain.User, 
 }
 
 // UpdateUser rewrites the mutable user fields and replaces all identities.
+// The config overlay is deliberately NOT written here: it is only ever
+// replaced through UpdateUserOverrides, so a read-modify-write update of
+// role/avatar/identities cannot revert a concurrent config save.
 func (s *Store) UpdateUser(ctx context.Context, user domain.User) error {
 	user.UpdatedAt = now()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -122,6 +129,22 @@ func insertIdentities(ctx context.Context, tx *sql.Tx, userID string, aliases, e
 		if _, err := tx.ExecContext(ctx, `INSERT INTO user_identities(user_id,kind,value) VALUES(?,?,?)`, userID, "email", email); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// UpdateUserOverrides replaces only the user's config overlay, leaving role,
+// identities, and the enabled flag untouched.
+func (s *Store) UpdateUserOverrides(ctx context.Context, userID string, overrides *domain.DownloadOverrides) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET overrides_json=?, updated_at=? WHERE id=?`,
+		marshalOverrides(overrides), formatTime(now()), userID)
+	if err != nil {
+		return err
+	}
+	if affected, err := res.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return sql.ErrNoRows
 	}
 	return nil
 }

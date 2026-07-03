@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -110,8 +111,28 @@ func (m *Manager) RecoverUnfinished(ctx context.Context) (int, error) {
 // userID attributes accepted jobs to their owner; empty means unowned
 // (single-user mode). The canonical key is scoped per user so different users
 // can download the same content into their own directories concurrently.
-func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool, userID string) domain.BatchSubmitResponse {
+//
+// requestOverrides is the request-level config layer. It is merged over the
+// submitting user's stored overrides and the result is snapshotted onto every
+// accepted job, so later user-config edits or a backend restart never change
+// how an already-submitted job downloads. The global config stays the live
+// fallback: it is applied underneath the snapshot at execution time.
+//
+// A non-nil error means the batch was not processed at all (infrastructure
+// failure, e.g. the user-config lookup failed) — distinct from per-URL
+// rejections, which are reported inside the response.
+func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool, userID string, requestOverrides *domain.DownloadOverrides) (domain.BatchSubmitResponse, error) {
 	results := make([]domain.SubmitResult, len(urls))
+
+	var userOverrides *domain.DownloadOverrides
+	if userID != "" {
+		user, err := m.store.GetUser(ctx, userID)
+		if err != nil {
+			return domain.BatchSubmitResponse{}, fmt.Errorf("load user config: %w", err)
+		}
+		userOverrides = user.Overrides
+	}
+	overrides := domain.MergeDownloadOverrides(userOverrides, requestOverrides)
 
 	type candidate struct {
 		index int
@@ -169,7 +190,7 @@ func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool, us
 
 		job := domain.Job{
 			ID: storage.NewID("job"), UserID: userID, Input: c.url, Type: c.valid.Type, Storefront: c.valid.Storefront, CanonicalKey: c.key,
-			Force: force, Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now,
+			Force: force, Overrides: overrides, Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now,
 		}
 		if err := m.store.CreateJob(ctx, job); err != nil {
 			if errors.Is(err, db.ErrDuplicateActive) {
@@ -193,7 +214,7 @@ func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool, us
 			resp.Rejected++
 		}
 	}
-	return resp
+	return resp, nil
 }
 
 func requestErrorMessage(err error) string {

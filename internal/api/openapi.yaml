@@ -63,6 +63,52 @@ paths:
                 $ref: '#/components/schemas/MeResponse'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v1/me/config:
+    get:
+      tags: [Users]
+      summary: 查询当前用户的配置覆盖
+      description: |
+        返回当前用户存储的配置覆盖层（config）及其套用到全局配置后的生效下载配置（effective）。
+        配置解析顺序为：请求级 config > 用户级配置 > config.yaml 全局保底；
+        本接口不含请求级覆盖，请求级仅在提交下载时逐次生效。
+      operationId: getMyConfig
+      responses:
+        '200':
+          description: 用户配置覆盖与生效配置。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MyConfigResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      tags: [Users]
+      summary: 替换当前用户的配置覆盖
+      description: 整体替换当前用户的覆盖层；提交 {} 清空。未知字段或非法取值返回 400。单用户模式（auth 关闭）无用户档案，返回 409。
+      operationId: putMyConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DownloadOverrides'
+      responses:
+        '200':
+          description: 更新后的用户配置覆盖与生效配置。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MyConfigResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 单用户模式下不支持按用户配置。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/users:
     get:
       tags: [Users]
@@ -374,6 +420,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BatchSubmitResponse'
+        '500':
+          description: 批次未被处理（基础设施故障，如用户配置加载失败）；与逐条 invalid 拒绝不同，可安全重试。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/downloads/{job_id}:
     get:
       tags: [Downloads]
@@ -680,6 +732,89 @@ components:
         force:
           type: boolean
           default: false
+        config:
+          allOf:
+            - $ref: '#/components/schemas/DownloadOverrides'
+          description: 请求级配置覆盖，仅对本次提交的任务生效，优先级高于用户级配置。
+    DownloadOverrides:
+      type: object
+      description: |
+        下载配置覆盖层：所有字段可选，未提交的字段继承下层配置
+        （请求级 > 用户级 > config.yaml 全局保底）。各字段含义与
+        config.yaml 的 download 段一致；downloads_dir / temp_dir /
+        max_running_jobs 为系统字段，不可覆盖。未知字段返回 400。
+      properties:
+        quality_priority:
+          type: array
+          items:
+            type: string
+            enum: [alac, aac, aac-binaural, aac-downmix, ec3, ac3]
+          description: 音质优先级，按顺序尝试；至少一项。
+        codec_alternative:
+          type: boolean
+          description: 首选编码不可用时是否顺延尝试后续编码。
+        max_parallel_tracks:
+          type: integer
+          minimum: 1
+          maximum: 16
+          description: 单任务内并行下载曲目数。
+        retries:
+          type: integer
+          minimum: 0
+          maximum: 10
+          description: 各阶段操作重试次数。
+        songs_folder_name: {type: string}
+        albums_folder_name: {type: string}
+        playlists_folder_name: {type: string}
+        artists_folder_name: {type: string}
+        cover_size:
+          type: string
+          pattern: '^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$'
+          example: 5000x5000
+        cover_format:
+          type: string
+          enum: [jpg, jpeg, png]
+        embed_cover: {type: boolean}
+        save_album_cover: {type: boolean}
+        save_artist_cover: {type: boolean}
+        save_playlist_cover: {type: boolean}
+        embed_lyrics: {type: boolean}
+        save_lyrics_file: {type: boolean}
+        lyrics_format:
+          type: string
+          enum: [lrc, ttml]
+        lyrics_type:
+          type: string
+          enum: [lyrics, syllable-lyrics]
+        lyrics_extras:
+          type: array
+          items:
+            type: string
+            enum: [translation, pronunciation]
+        artist_folder_format: {type: string}
+        album_folder_format: {type: string}
+        song_file_format: {type: string}
+        playlist_folder_format: {type: string}
+        playlist_song_file_format: {type: string}
+        alac_max_sample_rate:
+          type: integer
+          minimum: 1
+          description: Hz。
+        alac_max_bit_depth:
+          type: integer
+          minimum: 1
+        check_integrity: {type: boolean}
+    MyConfigResponse:
+      type: object
+      required: [config, effective]
+      properties:
+        config:
+          allOf:
+            - $ref: '#/components/schemas/DownloadOverrides'
+          description: 当前用户存储的覆盖层；未设置时为 {}。
+        effective:
+          type: object
+          description: 覆盖层套用到全局配置后的生效下载配置；不含系统字段（downloads_dir、temp_dir、max_running_jobs）。
     SubmitResult:
       type: object
       required: [url, status]
@@ -793,6 +928,10 @@ components:
         emails:
           type: array
           items: {type: string}
+        config:
+          allOf:
+            - $ref: '#/components/schemas/DownloadOverrides'
+          description: 用户级配置覆盖；未设置时省略。
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
     CreateUserRequest:
@@ -813,6 +952,10 @@ components:
         emails:
           type: array
           items: {type: string}
+        config:
+          allOf:
+            - $ref: '#/components/schemas/DownloadOverrides'
+          description: 用户级配置覆盖的初始值。
     UpdateUserRequest:
       type: object
       description: 所有字段可选，仅提交的字段生效。
@@ -828,6 +971,10 @@ components:
         emails:
           type: array
           items: {type: string}
+        config:
+          allOf:
+            - $ref: '#/components/schemas/DownloadOverrides'
+          description: 提交时整体替换用户的配置覆盖层；提交 {} 或 null 清空；缺省保持不变。
     Job:
       type: object
       required: [id, input, type, force, status, total_items, done_items, failed_items, created_at, updated_at]
@@ -849,6 +996,10 @@ components:
           type: string
         force:
           type: boolean
+        config:
+          allOf:
+            - $ref: '#/components/schemas/DownloadOverrides'
+          description: 提交时快照的配置覆盖层（用户级与请求级合并结果）；后续修改用户配置或重启不影响本任务。省略表示完全使用全局配置。
         status:
           type: string
           enum: [queued, running, completed, failed, cancelled]

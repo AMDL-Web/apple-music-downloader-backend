@@ -52,6 +52,14 @@ catalog:
   album_track_url_mode: "song"
 
 download:
+  # This section is the base layer of the config override chain:
+  # request-level "config" (POST /api/v1/downloads) > per-user config
+  # (users.overrides_json, managed via PUT /api/v1/me/config or the admin
+  # users API) > this file. Every key below can be overridden per user and
+  # per request EXCEPT the system-owned keys downloads_dir, temp_dir, and
+  # max_running_jobs, which only this file controls. The user+request
+  # overlay is snapshotted onto each job at submit time, so editing a
+  # user's config never changes already-queued jobs.
   # list enum: alac, aac, aac-binaural, aac-downmix, ec3, ac3.
   # - alac: Apple Lossless Audio Codec
   # - aac: standard Enhanced HLS AAC

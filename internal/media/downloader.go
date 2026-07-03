@@ -100,19 +100,26 @@ func (d *Downloader) validateStorefront(ctx context.Context, storefront string) 
 	}
 }
 
-// forUser returns a copy of the downloader whose download root is scoped to
-// the user's directory, leaving the shared temp dir untouched.
-func (d *Downloader) forUser(username string) *Downloader {
-	if username == "" {
+// forJob returns a copy of the downloader with the job's effective config:
+// the overrides snapshot (user + request layers, merged at submit) applied on
+// top of the global config, and the download root scoped to the owner's
+// directory. The shared temp dir and system paths stay untouched — overrides
+// cannot reach them.
+func (d *Downloader) forJob(job domain.Job) *Downloader {
+	if job.Username == "" && job.Overrides == nil {
 		return d
 	}
 	scoped := *d
-	scoped.cfg.Download.DownloadsDir = filepath.Join(d.cfg.Download.DownloadsDir, username)
+	scoped.cfg.Download = config.ApplyDownloadOverrides(d.cfg.Download, job.Overrides)
+	if job.Username != "" {
+		scoped.cfg.Download.DownloadsDir = filepath.Join(d.cfg.Download.DownloadsDir, job.Username)
+	}
+	scoped.mp4 = newMP4Processor(scoped.cfg)
 	return &scoped
 }
 
 func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jobs.Reporter) error {
-	d = d.forUser(job.Username)
+	d = d.forJob(job)
 	parsed, err := applemusic.ParseWithAlbumTrackMode(job.Input, d.cfg.Catalog.AlbumTrackURLMode)
 	if err != nil {
 		return err

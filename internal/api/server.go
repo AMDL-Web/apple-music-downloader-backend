@@ -63,6 +63,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/capabilities", s.capabilities)
 	mux.HandleFunc("GET /api/v1/me", s.me)
+	mux.HandleFunc("GET /api/v1/me/config", s.getMyConfig)
+	mux.HandleFunc("PUT /api/v1/me/config", s.putMyConfig)
 	mux.HandleFunc("GET /api/v1/users", auth.RequireAdmin(s.listUsers))
 	mux.HandleFunc("POST /api/v1/users", auth.RequireAdmin(s.createUser))
 	mux.HandleFunc("GET /api/v1/users/{id}", auth.RequireAdmin(s.getUser))
@@ -185,7 +187,7 @@ func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -248,8 +250,17 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("too many urls: max %d per request", maxBatchSubmitURLs))
 		return
 	}
+	overrides, err := parseValidatedOverrides(req.Config)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	identity, _ := auth.FromContext(r.Context())
-	resp := s.manager.SubmitBatch(r.Context(), urls, req.Force, identity.UserID)
+	resp, err := s.manager.SubmitBatch(r.Context(), urls, req.Force, identity.UserID, overrides)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	status := http.StatusUnprocessableEntity
 	if resp.Accepted > 0 {
 		status = http.StatusAccepted
@@ -318,11 +329,16 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	// Report the retry policy this job actually runs with: the downloader
+	// applies the job's override snapshot over the global config at execution
+	// time, so a job submitted with config.retries=N must not display the
+	// global value here.
+	retries := config.ApplyDownloadOverrides(s.cfg.Download, job.Overrides).Retries
 	writeJSON(w, http.StatusOK, map[string]any{
 		"job": job, "items": items,
 		"retry_policy": map[string]int{
-			"operation_retries":      s.cfg.Download.Retries,
-			"first_codec_retries":    s.cfg.Download.Retries,
+			"operation_retries":      retries,
+			"first_codec_retries":    retries,
 			"fallback_codec_retries": 0,
 		},
 	})

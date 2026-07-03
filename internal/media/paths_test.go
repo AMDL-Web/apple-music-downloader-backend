@@ -6,6 +6,7 @@ import (
 
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
+	"amdl/internal/domain"
 )
 
 func TestOutputPathUsesAlbumFolderArtistWithoutChangingTrackMetadata(t *testing.T) {
@@ -202,19 +203,45 @@ func TestQualityLabelFormatsSelectedMedia(t *testing.T) {
 	}
 }
 
-func TestForUserScopesDownloadsDir(t *testing.T) {
+func TestForJobScopesDownloadsDir(t *testing.T) {
 	cfg := config.Default()
 	cfg.Download.DownloadsDir = "data/downloads"
 	base := &Downloader{cfg: cfg}
 
-	scoped := base.forUser("lyjw")
+	scoped := base.forJob(domain.Job{Username: "lyjw"})
 	if scoped.cfg.Download.DownloadsDir != filepath.Join("data/downloads", "lyjw") {
 		t.Fatalf("scoped dir = %q", scoped.cfg.Download.DownloadsDir)
 	}
 	if base.cfg.Download.DownloadsDir != "data/downloads" {
 		t.Fatalf("base dir mutated to %q", base.cfg.Download.DownloadsDir)
 	}
-	if same := base.forUser(""); same != base {
-		t.Fatal("empty username should return the shared downloader")
+	if same := base.forJob(domain.Job{}); same != base {
+		t.Fatal("job without owner or overrides should return the shared downloader")
+	}
+}
+
+func TestForJobAppliesOverridesOverGlobalConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.Download.DownloadsDir = "data/downloads"
+	cfg.Download.EmbedLyrics = true
+	base := &Downloader{cfg: cfg}
+
+	embed := false
+	format := "{SongName}"
+	scoped := base.forJob(domain.Job{
+		Username:  "lyjw",
+		Overrides: &domain.DownloadOverrides{EmbedLyrics: &embed, SongFileFormat: &format},
+	})
+	if scoped.cfg.Download.EmbedLyrics {
+		t.Fatal("override should disable EmbedLyrics")
+	}
+	if scoped.cfg.Download.SongFileFormat != format {
+		t.Fatalf("song file format = %q, want %q", scoped.cfg.Download.SongFileFormat, format)
+	}
+	if scoped.cfg.Download.DownloadsDir != filepath.Join("data/downloads", "lyjw") {
+		t.Fatalf("scoped dir = %q", scoped.cfg.Download.DownloadsDir)
+	}
+	if !base.cfg.Download.EmbedLyrics {
+		t.Fatal("base config mutated by override")
 	}
 }

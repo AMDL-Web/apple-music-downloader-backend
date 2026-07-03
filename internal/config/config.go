@@ -167,49 +167,55 @@ func (c Config) validate() error {
 	if c.Catalog.AlbumTrackURLMode != "song" && c.Catalog.AlbumTrackURLMode != "album" {
 		return fmt.Errorf("catalog.album_track_url_mode must be song or album")
 	}
+	return validateDownload(c.Download)
+}
+
+// validateDownload checks the download section; it is shared between global
+// config validation and per-user/per-request override validation.
+func validateDownload(d DownloadConfig) error {
 	for name, value := range map[string]string{
-		"download.songs_folder_name":         c.Download.SongsFolderName,
-		"download.albums_folder_name":        c.Download.AlbumsFolderName,
-		"download.playlists_folder_name":     c.Download.PlaylistsFolderName,
-		"download.artists_folder_name":       c.Download.ArtistsFolderName,
-		"download.artist_folder_format":      c.Download.ArtistFolderFormat,
-		"download.album_folder_format":       c.Download.AlbumFolderFormat,
-		"download.song_file_format":          c.Download.SongFileFormat,
-		"download.playlist_folder_format":    c.Download.PlaylistFolderFormat,
-		"download.playlist_song_file_format": c.Download.PlaylistSongFileFormat,
+		"download.songs_folder_name":         d.SongsFolderName,
+		"download.albums_folder_name":        d.AlbumsFolderName,
+		"download.playlists_folder_name":     d.PlaylistsFolderName,
+		"download.artists_folder_name":       d.ArtistsFolderName,
+		"download.artist_folder_format":      d.ArtistFolderFormat,
+		"download.album_folder_format":       d.AlbumFolderFormat,
+		"download.song_file_format":          d.SongFileFormat,
+		"download.playlist_folder_format":    d.PlaylistFolderFormat,
+		"download.playlist_song_file_format": d.PlaylistSongFileFormat,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s cannot be empty", name)
 		}
 	}
-	switch c.Download.CoverFormat {
+	switch d.CoverFormat {
 	case "jpg", "jpeg", "png":
 	default:
 		return fmt.Errorf("download.cover_format must be jpg, jpeg, or png")
 	}
-	switch c.Download.LyricsFormat {
+	switch d.LyricsFormat {
 	case "lrc", "ttml":
 	default:
 		return fmt.Errorf("download.lyrics_format must be lrc or ttml")
 	}
-	switch c.Download.LyricsType {
+	switch d.LyricsType {
 	case "lyrics", "syllable-lyrics":
 	default:
 		return fmt.Errorf("download.lyrics_type must be lyrics or syllable-lyrics")
 	}
 	allowedLyricsExtras := map[string]struct{}{"translation": {}, "pronunciation": {}}
-	for _, extra := range c.Download.LyricsExtras {
+	for _, extra := range d.LyricsExtras {
 		if _, ok := allowedLyricsExtras[extra]; !ok {
 			return fmt.Errorf("download.lyrics_extras contains unsupported value %q", extra)
 		}
 	}
-	if len(c.Download.QualityPriority) == 0 {
+	if len(d.QualityPriority) == 0 {
 		return fmt.Errorf("download.quality_priority must contain at least one codec")
 	}
 	allowedCodecs := map[string]struct{}{
 		"alac": {}, "aac": {}, "aac-binaural": {}, "aac-downmix": {}, "ec3": {}, "ac3": {},
 	}
-	for _, codec := range c.Download.QualityPriority {
+	for _, codec := range d.QualityPriority {
 		if _, ok := allowedCodecs[codec]; !ok {
 			return fmt.Errorf("unsupported codec %q in download.quality_priority", codec)
 		}

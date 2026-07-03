@@ -109,6 +109,218 @@ func TestPermissionMatrix(t *testing.T) {
 	}
 }
 
+func TestMyConfigRoundTrip(t *testing.T) {
+	fx := newMultiUserFixture(t)
+	routes := fx.server.Routes()
+
+	// Initially empty overrides; effective mirrors the global config and
+	// hides system-owned fields.
+	recorder := authedRequest(t, routes, http.MethodGet, "/api/v1/me/config", "", "alice")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Config    map[string]any `json:"config"`
+		Effective map[string]any `json:"effective"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Config) != 0 {
+		t.Fatalf("config = %#v, want empty", body.Config)
+	}
+	if body.Effective["embed_lyrics"] != true {
+		t.Fatalf("effective embed_lyrics = %v, want global default true", body.Effective["embed_lyrics"])
+	}
+	for _, hidden := range []string{"downloads_dir", "temp_dir", "max_running_jobs"} {
+		if _, ok := body.Effective[hidden]; ok {
+			t.Fatalf("effective config leaks system field %s", hidden)
+		}
+	}
+
+	recorder = authedRequest(t, routes, http.MethodPut, "/api/v1/me/config", `{"embed_lyrics": false, "retries": 5}`, "alice")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Config["embed_lyrics"] != false || body.Effective["embed_lyrics"] != false {
+		t.Fatalf("override not reflected: config=%v effective=%v", body.Config["embed_lyrics"], body.Effective["embed_lyrics"])
+	}
+
+	stored, err := fx.store.GetUser(context.Background(), fx.user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Overrides == nil || stored.Overrides.Retries == nil || *stored.Overrides.Retries != 5 {
+		t.Fatalf("stored overrides = %+v, want retries 5", stored.Overrides)
+	}
+
+	// PUT {} clears the layer.
+	recorder = authedRequest(t, routes, http.MethodPut, "/api/v1/me/config", `{}`, "alice")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	stored, err = fx.store.GetUser(context.Background(), fx.user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Overrides != nil {
+		t.Fatalf("stored overrides = %+v, want nil after clear", stored.Overrides)
+	}
+}
+
+func TestMyConfigRejectsInvalidOverrides(t *testing.T) {
+	fx := newMultiUserFixture(t)
+	routes := fx.server.Routes()
+	for name, body := range map[string]string{
+		"unknown field": `{"embed_lyric": false}`,
+		"bad codec":     `{"quality_priority": ["flac"]}`,
+		"bad retries":   `{"retries": 99}`,
+	} {
+		recorder := authedRequest(t, routes, http.MethodPut, "/api/v1/me/config", body, "alice")
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400, body = %s", name, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+func TestMyConfigSingleUserModePutRejected(t *testing.T) {
+	server := &Server{cfg: config.Default()}
+	recorder := requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/me/config", `{"retries": 5}`)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, body = %s", recorder.Code, recorder.Body.String())
+	}
+	// GET still works and reports the global effective config.
+	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/me/config", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCreateDownloadWithConfigOverrides(t *testing.T) {
+	fx := newMultiUserFixture(t)
+	routes := fx.server.Routes()
+
+	// Store a user layer, then submit with a request layer overriding part of it.
+	recorder := authedRequest(t, routes, http.MethodPut, "/api/v1/me/config", `{"embed_lyrics": false, "retries": 5}`, "alice")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	recorder = authedRequest(t, routes, http.MethodPost, "/api/v1/downloads",
+		`{"urls":["https://music.apple.com/cn/song/a/1"],"config":{"retries":9}}`, "alice")
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var resp domain.BatchSubmitResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Accepted != 1 || resp.Results[0].Job == nil {
+		t.Fatalf("resp = %+v", resp)
+	}
+	job, err := fx.store.GetJob(context.Background(), resp.Results[0].Job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Overrides == nil || job.Overrides.Retries == nil || *job.Overrides.Retries != 9 {
+		t.Fatalf("job overrides = %+v, want request retries 9", job.Overrides)
+	}
+	if job.Overrides.EmbedLyrics == nil || *job.Overrides.EmbedLyrics {
+		t.Fatalf("job overrides = %+v, want user embed_lyrics false", job.Overrides)
+	}
+
+	// The detail endpoint's retry_policy must reflect the job's effective
+	// retries (9), not the global config default, since the downloader runs
+	// the job with the override applied.
+	recorder = authedRequest(t, routes, http.MethodGet, "/api/v1/downloads/"+job.ID, "", "alice")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var detail struct {
+		RetryPolicy struct {
+			OperationRetries   int `json:"operation_retries"`
+			FirstCodecRetries  int `json:"first_codec_retries"`
+			FallbackCodecRetry int `json:"fallback_codec_retries"`
+		} `json:"retry_policy"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.RetryPolicy.OperationRetries != 9 || detail.RetryPolicy.FirstCodecRetries != 9 {
+		t.Fatalf("retry_policy = %+v, want operation/first_codec 9", detail.RetryPolicy)
+	}
+}
+
+func TestCreateDownloadRejectsInvalidConfig(t *testing.T) {
+	fx := newMultiUserFixture(t)
+	routes := fx.server.Routes()
+	for name, body := range map[string]string{
+		"unknown field": `{"urls":["https://music.apple.com/cn/song/a/1"],"config":{"nope":1}}`,
+		"bad codec":     `{"urls":["https://music.apple.com/cn/song/a/1"],"config":{"quality_priority":["flac"]}}`,
+	} {
+		recorder := authedRequest(t, routes, http.MethodPost, "/api/v1/downloads", body, "alice")
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400, body = %s", name, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+func TestAdminManagesUserConfig(t *testing.T) {
+	fx := newMultiUserFixture(t)
+	routes := fx.server.Routes()
+
+	recorder := authedRequest(t, routes, http.MethodPatch, "/api/v1/users/"+fx.user.ID, `{"config":{"embed_cover":false}}`, "boss")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	stored, err := fx.store.GetUser(context.Background(), fx.user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Overrides == nil || stored.Overrides.EmbedCover == nil || *stored.Overrides.EmbedCover {
+		t.Fatalf("stored overrides = %+v, want embed_cover false", stored.Overrides)
+	}
+
+	// Absent config field leaves the layer unchanged.
+	recorder = authedRequest(t, routes, http.MethodPatch, "/api/v1/users/"+fx.user.ID, `{"avatar_url":"x"}`, "boss")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	stored, _ = fx.store.GetUser(context.Background(), fx.user.ID)
+	if stored.Overrides == nil {
+		t.Fatal("overrides cleared by unrelated update")
+	}
+
+	// config: {} clears the layer; invalid config is rejected.
+	recorder = authedRequest(t, routes, http.MethodPatch, "/api/v1/users/"+fx.user.ID, `{"config":{}}`, "boss")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	stored, _ = fx.store.GetUser(context.Background(), fx.user.ID)
+	if stored.Overrides != nil {
+		t.Fatalf("overrides = %+v, want nil after clear", stored.Overrides)
+	}
+	recorder = authedRequest(t, routes, http.MethodPatch, "/api/v1/users/"+fx.user.ID, `{"config":{"retries":99}}`, "boss")
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	// createUser accepts an initial config layer.
+	recorder = authedRequest(t, routes, http.MethodPost, "/api/v1/users", `{"username":"dave","config":{"retries":3}}`, "boss")
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var created domain.User
+	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Overrides == nil || created.Overrides.Retries == nil || *created.Overrides.Retries != 3 {
+		t.Fatalf("created overrides = %+v, want retries 3", created.Overrides)
+	}
+}
+
 func TestMeReturnsProfile(t *testing.T) {
 	fx := newMultiUserFixture(t)
 	recorder := authedRequest(t, fx.server.Routes(), http.MethodGet, "/api/v1/me", "", "alice")

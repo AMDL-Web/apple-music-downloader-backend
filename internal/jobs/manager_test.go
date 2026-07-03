@@ -117,7 +117,10 @@ func TestCancelledJobPreservesProcessorUpdatedTotalItems(t *testing.T) {
 	processor := &cancelAfterTotalProcessor{started: make(chan struct{})}
 	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
 	manager.Start(ctx)
-	resp := manager.SubmitBatch(ctx, []string{"https://music.apple.com/cn/artist/example/1495777901"}, false, "")
+	resp, err := manager.SubmitBatch(ctx, []string{"https://music.apple.com/cn/artist/example/1495777901"}, false, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resp.Accepted != 1 || len(resp.Results) != 1 || resp.Results[0].Status != domain.SubmitAccepted || resp.Results[0].Job == nil {
 		t.Fatalf("unexpected submit result: %+v", resp)
 	}
@@ -184,11 +187,14 @@ func newTestManager(t *testing.T) *Manager {
 func TestSubmitBatchDedupesWithinRequest(t *testing.T) {
 	manager := newTestManager(t)
 	ctx := context.Background()
-	resp := manager.SubmitBatch(ctx, []string{
+	resp, err := manager.SubmitBatch(ctx, []string{
 		"album|us|111",
 		"song|us|222",
 		"album|us|111", // same canonical key as the first entry
-	}, false, "")
+	}, false, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(resp.Results) != 3 {
 		t.Fatalf("results = %+v, want 3", resp.Results)
 	}
@@ -207,13 +213,19 @@ func TestSubmitBatchRejectsActiveDuplicateButAllowsAfterCompletion(t *testing.T)
 	manager := newTestManager(t)
 	ctx := context.Background()
 
-	first := manager.SubmitBatch(ctx, []string{"song|us|222"}, false, "")
+	first, err := manager.SubmitBatch(ctx, []string{"song|us|222"}, false, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if first.Accepted != 1 {
 		t.Fatalf("first submit = %+v, want 1 accepted", first)
 	}
 	jobID := first.Results[0].Job.ID
 
-	second := manager.SubmitBatch(ctx, []string{"song|us|222"}, false, "")
+	second, err := manager.SubmitBatch(ctx, []string{"song|us|222"}, false, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if second.Results[0].Status != domain.SubmitDuplicateActive || second.Results[0].ExistingJobID != jobID {
 		t.Fatalf("second submit = %+v, want duplicate_active for %s", second.Results[0], jobID)
 	}
@@ -222,7 +234,10 @@ func TestSubmitBatchRejectsActiveDuplicateButAllowsAfterCompletion(t *testing.T)
 		t.Fatal(err)
 	}
 
-	third := manager.SubmitBatch(ctx, []string{"song|us|222"}, false, "")
+	third, err := manager.SubmitBatch(ctx, []string{"song|us|222"}, false, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if third.Results[0].Status != domain.SubmitAccepted {
 		t.Fatalf("third submit = %+v, want accepted after completion", third.Results[0])
 	}
@@ -233,7 +248,10 @@ func TestSubmitBatchQueueFullMarksRemainingWithoutRollback(t *testing.T) {
 	manager.queue = make(chan string, 1)
 	ctx := context.Background()
 
-	resp := manager.SubmitBatch(ctx, []string{"song|us|1", "song|us|2", "song|us|3"}, false, "")
+	resp, err := manager.SubmitBatch(ctx, []string{"song|us|1", "song|us|2", "song|us|3"}, false, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resp.Results[0].Status != domain.SubmitAccepted {
 		t.Fatalf("first = %+v, want accepted", resp.Results[0])
 	}
@@ -245,9 +263,67 @@ func TestSubmitBatchQueueFullMarksRemainingWithoutRollback(t *testing.T) {
 	}
 }
 
+func TestSubmitBatchSnapshotsMergedOverrides(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	embed := true
+	userRetries := 2
+	user, err := store.CreateUser(ctx, domain.User{
+		Username: "alice", Enabled: true,
+		Overrides: &domain.DownloadOverrides{EmbedLyrics: &embed, Retries: &userRetries},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(store, events.NewHub(), keyedProcessor{}, 1, slog.Default())
+	requestRetries := 9
+	resp, err := manager.SubmitBatch(ctx, []string{"song|us|1"}, false, user.ID, &domain.DownloadOverrides{Retries: &requestRetries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Accepted != 1 {
+		t.Fatalf("resp = %+v, want 1 accepted", resp)
+	}
+
+	job, err := store.GetJob(ctx, resp.Results[0].Job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Overrides == nil {
+		t.Fatal("job overrides = nil, want merged snapshot")
+	}
+	if job.Overrides.Retries == nil || *job.Overrides.Retries != 9 {
+		t.Fatalf("retries = %+v, want request layer value 9", job.Overrides.Retries)
+	}
+	if job.Overrides.EmbedLyrics == nil || !*job.Overrides.EmbedLyrics {
+		t.Fatalf("embed_lyrics = %+v, want user layer value true", job.Overrides.EmbedLyrics)
+	}
+
+	// A later change to the user's stored config must not affect the snapshot.
+	if err := store.UpdateUserOverrides(ctx, user.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	job, err = store.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Overrides == nil || job.Overrides.Retries == nil || *job.Overrides.Retries != 9 {
+		t.Fatalf("snapshot changed after user config edit: %+v", job.Overrides)
+	}
+}
+
 func TestSubmitBatchInvalidURLReportsError(t *testing.T) {
 	manager := newTestManager(t)
-	resp := manager.SubmitBatch(context.Background(), []string{"bad:not-a-url"}, false, "")
+	resp, err := manager.SubmitBatch(context.Background(), []string{"bad:not-a-url"}, false, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resp.Results[0].Status != domain.SubmitInvalid || resp.Results[0].Error == "" {
 		t.Fatalf("result = %+v, want invalid with error message", resp.Results[0])
 	}

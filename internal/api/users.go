@@ -4,10 +4,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
 	"amdl/internal/auth"
+	"amdl/internal/config"
 	"amdl/internal/db"
 	"amdl/internal/domain"
 )
@@ -27,6 +29,85 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"user_id": user.ID, "username": user.Username, "role": user.Role, "avatar_url": user.AvatarURL})
 }
 
+// getMyConfig returns the caller's stored override layer plus the effective
+// download config (global config with those overrides applied). Request-level
+// overrides stack on top per submission and are not reflected here.
+func (s *Server) getMyConfig(w http.ResponseWriter, r *http.Request) {
+	identity, _ := auth.FromContext(r.Context())
+	var overrides *domain.DownloadOverrides
+	if identity.UserID != "" {
+		user, err := s.store.GetUser(r.Context(), identity.UserID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		overrides = user.Overrides
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"config":    overridesOrEmpty(overrides),
+		"effective": effectiveDownloadConfig(s.cfg.Download, overrides),
+	})
+}
+
+// putMyConfig replaces the caller's override layer with the request body; an
+// empty object clears it. Any user may edit their own layer.
+func (s *Server) putMyConfig(w http.ResponseWriter, r *http.Request) {
+	identity, _ := auth.FromContext(r.Context())
+	if identity.UserID == "" {
+		writeError(w, http.StatusConflict, fmt.Errorf("per-user config requires auth mode; edit configs/config.yaml in single-user mode"))
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	overrides, err := parseValidatedOverrides(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.store.UpdateUserOverrides(r.Context(), identity.UserID, overrides); err != nil {
+		if err == sql.ErrNoRows {
+			writeError(w, http.StatusNotFound, fmt.Errorf("user not found"))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"config":    overridesOrEmpty(overrides),
+		"effective": effectiveDownloadConfig(s.cfg.Download, overrides),
+	})
+}
+
+// overridesOrEmpty keeps API responses shaped as an object ({} instead of
+// null) when no override is set.
+func overridesOrEmpty(o *domain.DownloadOverrides) *domain.DownloadOverrides {
+	if o == nil {
+		return &domain.DownloadOverrides{}
+	}
+	return o
+}
+
+// effectiveDownloadConfig resolves the download section a user's jobs would
+// run with, projected through the overridable field set so system-owned
+// fields (host paths, worker count) — including any added later — stay
+// hidden by default.
+func effectiveDownloadConfig(base config.DownloadConfig, o *domain.DownloadOverrides) map[string]any {
+	merged := config.ApplyDownloadOverrides(base, o)
+	raw, _ := json.Marshal(merged)
+	full := map[string]any{}
+	_ = json.Unmarshal(raw, &full)
+	out := map[string]any{}
+	for _, key := range domain.DownloadOverrideKeys() {
+		if v, ok := full[key]; ok {
+			out[key] = v
+		}
+	}
+	return out
+}
+
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := s.store.ListUsers(r.Context())
 	if err != nil {
@@ -37,11 +118,12 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 type createUserRequest struct {
-	Username  string   `json:"username"`
-	Role      string   `json:"role"`
-	AvatarURL string   `json:"avatar_url"`
-	Aliases   []string `json:"aliases"`
-	Emails    []string `json:"emails"`
+	Username  string          `json:"username"`
+	Role      string          `json:"role"`
+	AvatarURL string          `json:"avatar_url"`
+	Aliases   []string        `json:"aliases"`
+	Emails    []string        `json:"emails"`
+	Config    json.RawMessage `json:"config"`
 }
 
 func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
@@ -68,9 +150,14 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	overrides, err := parseValidatedOverrides(req.Config)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	user := domain.User{
 		Username: req.Username, Role: role, AvatarURL: req.AvatarURL, Enabled: true,
-		Aliases: aliases, Emails: emails,
+		Aliases: aliases, Emails: emails, Overrides: overrides,
 	}
 	created, err := s.store.CreateUser(r.Context(), user)
 	if err != nil {
@@ -99,6 +186,9 @@ type updateUserRequest struct {
 	AvatarURL *string   `json:"avatar_url"`
 	Aliases   *[]string `json:"aliases"`
 	Emails    *[]string `json:"emails"`
+	// Config replaces the user's whole override layer when present; send {}
+	// (or null) to clear it. Absent leaves the layer unchanged.
+	Config json.RawMessage `json:"config"`
 }
 
 func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
@@ -134,6 +224,19 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 	if req.AvatarURL != nil {
 		user.AvatarURL = *req.AvatarURL
 	}
+	// The config overlay is validated up front but written separately through
+	// UpdateUserOverrides after the general update: UpdateUser never touches
+	// overrides_json, so a PATCH without a config field cannot revert a
+	// concurrent PUT /me/config save by the user.
+	configProvided := len(req.Config) > 0
+	var overrides *domain.DownloadOverrides
+	if configProvided {
+		overrides, err = parseValidatedOverrides(req.Config)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
 	aliases := user.Aliases
 	if req.Aliases != nil {
 		aliases = *req.Aliases
@@ -158,6 +261,12 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	if configProvided {
+		if err := s.store.UpdateUserOverrides(r.Context(), user.ID, overrides); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	updated, err := s.store.GetUser(r.Context(), user.ID)
 	if err != nil {
@@ -210,6 +319,19 @@ func (s *Server) guardAdminRemoval(w http.ResponseWriter, r *http.Request, targe
 		return false
 	}
 	return true
+}
+
+// parseValidatedOverrides decodes and validates a config overlay from a
+// request body field, wrapping errors for a 400 response.
+func parseValidatedOverrides(raw json.RawMessage) (*domain.DownloadOverrides, error) {
+	overrides, err := domain.ParseDownloadOverrides(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	if err := config.ValidateDownloadOverrides(overrides); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	return overrides, nil
 }
 
 func normalizeIdentities(aliases, emails []string) ([]string, []string, error) {
