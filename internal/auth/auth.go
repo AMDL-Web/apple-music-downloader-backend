@@ -57,12 +57,19 @@ func Middleware(store *db.Store, cfg config.AuthConfig) func(http.Handler) http.
 				next.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), Identity{Role: domain.RoleAdmin})))
 				return
 			}
-			if cfg.InternalSecret != "" {
-				secret := r.Header.Get("X-Internal-Secret")
-				if subtle.ConstantTimeCompare([]byte(secret), []byte(cfg.InternalSecret)) != 1 {
-					writeAuthError(w, http.StatusUnauthorized, "invalid internal secret")
-					return
-				}
+			// Fail closed: an enabled auth mode with no configured secret means
+			// the trust boundary is forgeable, so refuse every request rather
+			// than fall through to header-derived identity. Config validation
+			// already rejects this at startup; this guards against any path
+			// that constructs the middleware without validation.
+			if cfg.InternalSecret == "" {
+				writeAuthError(w, http.StatusInternalServerError, "auth is enabled but no internal secret is configured")
+				return
+			}
+			secret := r.Header.Get("X-Internal-Secret")
+			if subtle.ConstantTimeCompare([]byte(secret), []byte(cfg.InternalSecret)) != 1 {
+				writeAuthError(w, http.StatusUnauthorized, "invalid internal secret")
+				return
 			}
 			xUser := strings.TrimSpace(r.Header.Get("X-User"))
 			xEmail := strings.TrimSpace(r.Header.Get("X-Email"))

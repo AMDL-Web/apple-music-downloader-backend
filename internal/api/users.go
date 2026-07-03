@@ -112,6 +112,7 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	wasEnabledAdmin := user.Role == domain.RoleAdmin && user.Enabled
 	if req.Role != nil {
 		if *req.Role != string(domain.RoleAdmin) && *req.Role != string(domain.RoleUser) {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("role must be admin or user"))
@@ -121,6 +122,14 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Enabled != nil {
 		user.Enabled = *req.Enabled
+	}
+	// Guard against locking the system out of all admin operations: an update
+	// that demotes or disables an enabled admin must not remove the last one,
+	// and admins may not demote/disable their own account.
+	if willBeEnabledAdmin := user.Role == domain.RoleAdmin && user.Enabled; wasEnabledAdmin && !willBeEnabledAdmin {
+		if !s.guardAdminRemoval(w, r, user.ID) {
+			return
+		}
 	}
 	if req.AvatarURL != nil {
 		user.AvatarURL = *req.AvatarURL
@@ -165,12 +174,42 @@ func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("user not found"))
 		return
 	}
+	// Disabling an enabled admin must not remove the last one, and admins may
+	// not disable their own account.
+	if user.Role == domain.RoleAdmin && user.Enabled {
+		if !s.guardAdminRemoval(w, r, user.ID) {
+			return
+		}
+	}
 	user.Enabled = false
 	if err := s.store.UpdateUser(r.Context(), user); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "disabled", "id": user.ID})
+}
+
+// guardAdminRemoval enforces the two invariants that keep admin access
+// recoverable when an operation would demote or disable the enabled admin
+// identified by targetID: the caller may not remove their own admin access, and
+// at least one enabled admin must remain afterwards. It writes the appropriate
+// error and returns false when the operation must be blocked.
+func (s *Server) guardAdminRemoval(w http.ResponseWriter, r *http.Request, targetID string) bool {
+	identity, _ := auth.FromContext(r.Context())
+	if identity.UserID != "" && identity.UserID == targetID {
+		writeError(w, http.StatusForbidden, fmt.Errorf("administrators cannot disable or demote their own account; ask another administrator"))
+		return false
+	}
+	admins, err := s.store.CountEnabledAdmins(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return false
+	}
+	if admins <= 1 {
+		writeError(w, http.StatusConflict, fmt.Errorf("cannot disable or demote the last enabled administrator"))
+		return false
+	}
+	return true
 }
 
 func normalizeIdentities(aliases, emails []string) ([]string, []string, error) {

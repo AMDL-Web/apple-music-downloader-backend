@@ -54,6 +54,32 @@ func writeConfig(t *testing.T, body string) string {
 	return path
 }
 
+func TestValidateRejectsEnabledAuthWithoutInternalSecret(t *testing.T) {
+	c := Default()
+	c.Auth = AuthConfig{Enabled: true, BootstrapAdmin: "boss", InternalSecret: ""}
+	if err := c.validate(); err == nil || !strings.Contains(err.Error(), "internal_secret") {
+		t.Fatalf("validate() error = %v, want internal_secret requirement", err)
+	}
+
+	// Whitespace-only secret is treated as empty and rejected.
+	c.Auth.InternalSecret = "   "
+	if err := c.validate(); err == nil || !strings.Contains(err.Error(), "internal_secret") {
+		t.Fatalf("validate() with blank secret error = %v, want internal_secret requirement", err)
+	}
+
+	// A configured secret satisfies the requirement.
+	c.Auth.InternalSecret = "s3cret"
+	if err := c.validate(); err != nil {
+		t.Fatalf("validate() with secret error = %v, want nil", err)
+	}
+
+	// Disabled auth never requires a secret.
+	c.Auth = AuthConfig{Enabled: false, InternalSecret: ""}
+	if err := c.validate(); err != nil {
+		t.Fatalf("validate() disabled auth error = %v, want nil", err)
+	}
+}
+
 func TestLoadRejectsUnknownFields(t *testing.T) {
 	path := writeConfig(t, "download:\n  codec: alac\n")
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "field codec not found") {

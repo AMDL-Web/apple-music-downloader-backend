@@ -12,6 +12,11 @@ import (
 	"amdl/internal/domain"
 )
 
+// authTestSecret is the internal secret used by tests that exercise identity
+// resolution behind an enabled auth mode, which now requires a configured
+// secret and a matching X-Internal-Secret header.
+const authTestSecret = "s3cret"
+
 func openStore(t *testing.T) *db.Store {
 	t.Helper()
 	store, err := db.Open(filepath.Join(t.TempDir(), "auth.db"))
@@ -85,8 +90,9 @@ func TestMiddlewareResolvesUserAliasAndEmail(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var got Identity
-			handler := Middleware(store, config.AuthConfig{Enabled: true})(identityEcho(t, &got))
+			handler := Middleware(store, config.AuthConfig{Enabled: true, InternalSecret: authTestSecret})(identityEcho(t, &got))
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/downloads", nil)
+			req.Header.Set("X-Internal-Secret", authTestSecret)
 			if tt.xUser != "" {
 				req.Header.Set("X-User", tt.xUser)
 			}
@@ -111,7 +117,7 @@ func TestMiddlewareRejectsUnknownMissingAndDisabled(t *testing.T) {
 	if _, err := store.CreateUser(ctx, domain.User{Username: "gone", Role: domain.RoleUser, Enabled: false}); err != nil {
 		t.Fatal(err)
 	}
-	handler := Middleware(store, config.AuthConfig{Enabled: true})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := Middleware(store, config.AuthConfig{Enabled: true, InternalSecret: authTestSecret})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("handler should not be reached")
 	}))
 
@@ -126,6 +132,7 @@ func TestMiddlewareRejectsUnknownMissingAndDisabled(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/downloads", nil)
+			req.Header.Set("X-Internal-Secret", authTestSecret)
 			if tt.xUser != "" {
 				req.Header.Set("X-User", tt.xUser)
 			}
@@ -167,6 +174,23 @@ func TestMiddlewareInternalSecret(t *testing.T) {
 	handler.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("correct secret status = %d, want 200", recorder.Code)
+	}
+}
+
+func TestMiddlewareEnabledWithoutSecretFailsClosed(t *testing.T) {
+	store := openStore(t)
+	if _, err := store.CreateUser(context.Background(), domain.User{Username: "boss", Role: domain.RoleAdmin, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	handler := Middleware(store, config.AuthConfig{Enabled: true})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("handler should not be reached when no secret is configured")
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/downloads", nil)
+	req.Header.Set("X-User", "boss")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (fail closed), body = %s", recorder.Code, recorder.Body.String())
 	}
 }
 

@@ -51,16 +51,19 @@ func newMultiUserFixture(t *testing.T) multiUserFixture {
 		t.Fatal(err)
 	}
 	cfg := config.Default()
-	cfg.Auth = config.AuthConfig{Enabled: true, BootstrapAdmin: "boss"}
+	cfg.Auth = config.AuthConfig{Enabled: true, InternalSecret: testInternalSecret, BootstrapAdmin: "boss"}
 	manager := jobs.NewManager(store, events.NewHub(), acceptAllProcessor{}, 1, slog.Default())
 	server := &Server{cfg: cfg, store: store, manager: manager, wrapper: &fakeWrapperService{}}
 	return multiUserFixture{server: server, store: store, admin: admin, user: user}
 }
 
+const testInternalSecret = "test-internal-secret"
+
 func authedRequest(t *testing.T, handler http.Handler, method, path, body, xUser string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Secret", testInternalSecret)
 	if xUser != "" {
 		req.Header.Set("X-User", xUser)
 	}
@@ -299,5 +302,51 @@ func TestUserManagementAPI(t *testing.T) {
 	// Unknown user id.
 	if recorder := authedRequest(t, routes, http.MethodGet, "/api/v1/users/nope", "", "boss"); recorder.Code != http.StatusNotFound {
 		t.Fatalf("unknown user status = %d", recorder.Code)
+	}
+}
+
+func TestAdminLockoutGuards(t *testing.T) {
+	fx := newMultiUserFixture(t)
+	routes := fx.server.Routes()
+
+	// boss is the only admin. Self-demotion and self-disable are refused so an
+	// admin cannot lock themselves out.
+	if r := authedRequest(t, routes, http.MethodPatch, "/api/v1/users/"+fx.admin.ID, `{"role":"user"}`, "boss"); r.Code != http.StatusForbidden {
+		t.Fatalf("self-demote status = %d, want 403, body = %s", r.Code, r.Body.String())
+	}
+	if r := authedRequest(t, routes, http.MethodPatch, "/api/v1/users/"+fx.admin.ID, `{"enabled":false}`, "boss"); r.Code != http.StatusForbidden {
+		t.Fatalf("self-disable via patch status = %d, want 403", r.Code)
+	}
+	if r := authedRequest(t, routes, http.MethodDelete, "/api/v1/users/"+fx.admin.ID, "", "boss"); r.Code != http.StatusForbidden {
+		t.Fatalf("self-delete status = %d, want 403", r.Code)
+	}
+	// boss is still an enabled admin and can still act.
+	if r := authedRequest(t, routes, http.MethodGet, "/api/v1/users", "", "boss"); r.Code != http.StatusOK {
+		t.Fatalf("boss still admin status = %d, want 200", r.Code)
+	}
+
+	// Promote alice: with two admins, demoting the non-self one is allowed.
+	if r := authedRequest(t, routes, http.MethodPatch, "/api/v1/users/"+fx.user.ID, `{"role":"admin"}`, "boss"); r.Code != http.StatusOK {
+		t.Fatalf("promote alice status = %d, body = %s", r.Code, r.Body.String())
+	}
+	if r := authedRequest(t, routes, http.MethodPatch, "/api/v1/users/"+fx.user.ID, `{"role":"user"}`, "boss"); r.Code != http.StatusOK {
+		t.Fatalf("demote alice (two admins) status = %d, body = %s", r.Code, r.Body.String())
+	}
+}
+
+// TestLastAdminInvariantSingleUserMode exercises the non-self last-admin guard,
+// reachable when the caller is the built-in admin (auth disabled, empty UserID):
+// the sole enabled admin account cannot be disabled, which also prevents a
+// lockout if auth is later enabled.
+func TestLastAdminInvariantSingleUserMode(t *testing.T) {
+	fx := newMultiUserFixture(t)
+	fx.server.cfg.Auth.Enabled = false
+	routes := fx.server.Routes()
+
+	if r := authedRequest(t, routes, http.MethodDelete, "/api/v1/users/"+fx.admin.ID, "", ""); r.Code != http.StatusConflict {
+		t.Fatalf("delete last admin status = %d, want 409, body = %s", r.Code, r.Body.String())
+	}
+	if r := authedRequest(t, routes, http.MethodPatch, "/api/v1/users/"+fx.admin.ID, `{"role":"user"}`, ""); r.Code != http.StatusConflict {
+		t.Fatalf("demote last admin status = %d, want 409", r.Code)
 	}
 }

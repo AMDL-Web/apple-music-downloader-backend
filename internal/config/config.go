@@ -155,6 +155,9 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) validate() error {
+	if c.Auth.Enabled && strings.TrimSpace(c.Auth.InternalSecret) == "" {
+		return fmt.Errorf("auth.internal_secret must not be empty when auth.enabled is true: without it any client that can reach the backend directly can forge X-User/X-Email identity headers and impersonate an administrator")
+	}
 	if c.Auth.Enabled && !domain.ValidUsername(c.Auth.BootstrapAdmin) {
 		return fmt.Errorf("auth.bootstrap_admin must match ^[a-z0-9_-]{1,32}$ when auth.enabled is true")
 	}

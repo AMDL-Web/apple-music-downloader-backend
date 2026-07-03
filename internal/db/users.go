@@ -173,6 +173,15 @@ func (s *Store) CountUsers(ctx context.Context) (int, error) {
 	return count, err
 }
 
+// CountEnabledAdmins returns the number of users who can currently reach
+// admin-only endpoints (role admin and enabled). Used to prevent removing the
+// last administrator, which would lock the system out of user management.
+func (s *Store) CountEnabledAdmins(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role=? AND enabled=1`, string(domain.RoleAdmin)).Scan(&count)
+	return count, err
+}
+
 // ResolveIdentity maps trusted proxy headers to a user, mirroring reference A's
 // normalize_username: X-User against username and alias identities first, then
 // X-Email against email identities. All matches are case-insensitive.
