@@ -10,3 +10,6 @@ data/
 /amdl-api
 
 test/
+
+*.p8
+keys/
