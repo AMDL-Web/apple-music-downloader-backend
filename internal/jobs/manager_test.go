@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -607,5 +608,130 @@ func TestFinalizeJobSkipsHookWhenPersistenceFails(t *testing.T) {
 	dispatcher.Shutdown(context.Background())
 	if got := atomic.LoadInt32(&calls); got != 0 {
 		t.Fatalf("webhook calls = %d, want 0 when persistence failed", got)
+	}
+}
+
+// raceProcessor either completes quickly or, if cancelled during its short
+// work window, returns the context error. This maximizes the variety of
+// interleavings between run()'s startup claim and a concurrent Cancel.
+type raceProcessor struct{}
+
+func (raceProcessor) ValidateRequest(_ context.Context, url string) (ValidationResult, error) {
+	parts := strings.SplitN(url, "|", 3)
+	return ValidationResult{Type: parts[0], Storefront: parts[1], ID: parts[2]}, nil
+}
+
+func (raceProcessor) ProcessJob(ctx context.Context, _ domain.Job, _ Reporter) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(2 * time.Millisecond):
+		return nil
+	}
+}
+
+// TestCancelRacingStartupDispatchesExactlyOneConsistentHook stresses the exact
+// interface race between a worker claiming a queued job (run() marking it
+// running) and a concurrent Cancel(). For every job — however the two
+// interleave — exactly one terminal hook must fire, and it must match the
+// persisted final status. Before the startup claim was serialized under m.mu,
+// this window could produce both a job_cancelled hook (from Cancel) and a
+// job_finished hook (from a resurrected worker), with the job downloaded
+// despite the cancel. Run with -race.
+func TestCancelRacingStartupDispatchesExactlyOneConsistentHook(t *testing.T) {
+	const jobs = 150
+
+	var mu sync.Mutex
+	hookEvents := map[string][]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Event string `json:"event"`
+			Job   struct {
+				ID string `json:"id"`
+			} `json:"job"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		mu.Lock()
+		hookEvents[payload.Job.ID] = append(hookEvents[payload.Job.ID], payload.Event)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	hooksCfg := hooks.Config{Enabled: true, MaxConcurrent: 8, Entries: []hooks.Entry{
+		{Name: "terminal", Type: "webhook", Events: []string{"job_finished", "job_failed", "job_cancelled"}, URL: server.URL},
+	}}
+	manager := NewManager(store, events.NewHub(), raceProcessor{}, 4, slog.Default())
+	dispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, slog.Default())
+	manager.SetHooks(dispatcher)
+
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	manager.Start(ctx)
+
+	jobIDs := make([]string, 0, jobs)
+	var wg sync.WaitGroup
+	for i := 0; i < jobs; i++ {
+		url := "song|us|" + strconv.Itoa(i)
+		resp := manager.SubmitBatch(ctx, []string{url}, false)
+		if resp.Accepted != 1 || resp.Results[0].Job == nil {
+			t.Fatalf("submit %d = %+v, want 1 accepted", i, resp)
+		}
+		jobID := resp.Results[0].Job.ID
+		jobIDs = append(jobIDs, jobID)
+		// Fire the cancel concurrently with the worker picking the job up.
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			_ = manager.Cancel(context.Background(), id)
+		}(jobID)
+	}
+	wg.Wait()
+
+	// Wait for every job to reach a terminal status.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		pending := 0
+		for _, id := range jobIDs {
+			job, err := store.GetJob(context.Background(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !isTerminalStatus(job.Status) {
+				pending++
+			}
+		}
+		if pending == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d jobs did not reach a terminal status in time", pending)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	dispatcher.Shutdown(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, id := range jobIDs {
+		job, err := store.GetJob(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := hookEvents[id]
+		if len(got) != 1 {
+			t.Fatalf("job %s (final status %s): terminal hooks = %v, want exactly one", id, job.Status, got)
+		}
+		want := hookEventForStatus(job.Status)
+		if got[0] != want {
+			t.Fatalf("job %s: hook = %q but final status %s maps to %q", id, got[0], job.Status, want)
+		}
 	}
 }

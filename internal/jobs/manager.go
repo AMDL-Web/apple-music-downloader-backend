@@ -209,9 +209,8 @@ func requestErrorMessage(err error) string {
 
 func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 	m.mu.Lock()
-	cancel := m.cancels[jobID]
-	m.mu.Unlock()
-	if cancel != nil {
+	if cancel := m.cancels[jobID]; cancel != nil {
+		m.mu.Unlock()
 		// The job is actively running under a worker. Cancelling its context
 		// is enough: run() observes ctx.Err() once ProcessJob returns and
 		// finalizes the job (status, event, hook dispatch) exactly once.
@@ -221,23 +220,35 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 		return nil
 	}
 
+	// The job is not running under a worker. Read and write its terminal
+	// status while still holding m.mu: run()'s startup claim takes the same
+	// lock and performs its status-check + mark-running under it, so this
+	// critical section is mutually exclusive with a worker claiming the job.
+	// Without this, a worker could observe "queued" and mark the job running
+	// in the window between our map read and status write, resurrecting a
+	// job we just cancelled.
 	job, err := m.store.GetJob(ctx, jobID)
 	if err != nil {
+		m.mu.Unlock()
 		return err
 	}
-	if job.Status == domain.JobCompleted || job.Status == domain.JobFailed || job.Status == domain.JobCancelled {
+	if isTerminalStatus(job.Status) {
+		m.mu.Unlock()
 		return nil
 	}
-
-	// The job has not started running yet (still queued, or its worker
-	// hasn't reached run() to register a cancel func). Finalize it directly
-	// so the job_cancelled hook fires now instead of never firing; run()
-	// checks for this and skips execution if this job is later dequeued.
-	// Propagate a persistence failure so the caller doesn't report a
-	// successful cancel that wasn't actually recorded.
 	job.Status = domain.JobCancelled
 	job.Error = "cancelled"
-	return m.finalizeJob(ctx, job, "job_cancelled", "job cancelled")
+	job.UpdatedAt = time.Now().UTC()
+	updateErr := m.store.UpdateJob(ctx, job)
+	m.mu.Unlock()
+
+	// Only report success, emit the event, and dispatch hooks once the
+	// terminal status is durably persisted.
+	if updateErr != nil {
+		return updateErr
+	}
+	m.dispatchTerminal(ctx, job, "job_cancelled", "job cancelled")
+	return nil
 }
 
 func (m *Manager) worker(ctx context.Context, index int) {
@@ -252,21 +263,40 @@ func (m *Manager) worker(ctx context.Context, index int) {
 }
 
 func (m *Manager) run(parent context.Context, jobID string) {
+	ctx, cancel := context.WithCancel(parent)
+
+	// Claim the job atomically under m.mu: read its current status, and only
+	// if it is still startable, mark it running and register the cancel func.
+	// Cancel() takes the same lock for its queued-cancel transition, so the
+	// two cannot interleave — either we mark running first (and a concurrent
+	// Cancel then finds the cancel func and cancels our context) or Cancel
+	// marks cancelled first (and we observe the terminal status here and bail).
+	m.mu.Lock()
 	job, err := m.store.GetJob(parent, jobID)
 	if err != nil {
+		m.mu.Unlock()
+		cancel()
 		m.logger.Error("load job", "job_id", jobID, "error", err)
 		return
 	}
-	if job.Status == domain.JobCancelled {
-		// Cancel() finalized this job while it was still queued (before this
-		// worker dequeued it). Do not resurrect it into JobRunning; the
-		// job_cancelled hook was already dispatched by Cancel().
+	if isTerminalStatus(job.Status) {
+		// Cancel() (or another path) already finalized this job while it was
+		// queued. Do not resurrect it; its terminal hook was already dispatched.
+		m.mu.Unlock()
+		cancel()
 		return
 	}
-	ctx, cancel := context.WithCancel(parent)
-	m.mu.Lock()
+	job.Status = domain.JobRunning
+	job.UpdatedAt = time.Now().UTC()
+	if err := m.store.UpdateJob(ctx, job); err != nil {
+		m.mu.Unlock()
+		cancel()
+		m.logger.Error("mark job running", "job_id", jobID, "error", err)
+		return
+	}
 	m.cancels[jobID] = cancel
 	m.mu.Unlock()
+
 	defer func() {
 		cancel()
 		m.mu.Lock()
@@ -274,9 +304,6 @@ func (m *Manager) run(parent context.Context, jobID string) {
 		m.mu.Unlock()
 	}()
 
-	job.Status = domain.JobRunning
-	job.UpdatedAt = time.Now().UTC()
-	_ = m.store.UpdateJob(ctx, job)
 	_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_started", Message: "job started"})
 
 	err = m.processor.ProcessJob(ctx, job, m)
@@ -322,13 +349,25 @@ func (m *Manager) finalizeJob(ctx context.Context, job domain.Job, eventType, me
 	if err := m.store.UpdateJob(ctx, job); err != nil {
 		return err
 	}
-	_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: eventType, Message: message})
+	m.dispatchTerminal(ctx, job, eventType, message)
+	return nil
+}
 
+// dispatchTerminal emits the terminal domain event and any subscribed
+// post-download hooks for a job whose terminal status has already been
+// persisted. It must be called only after a successful status write and never
+// while holding m.mu (Dispatch is non-blocking, but the store reads here
+// should not extend the lock).
+func (m *Manager) dispatchTerminal(ctx context.Context, job domain.Job, eventType, message string) {
+	_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: eventType, Message: message})
 	if hookEvent := hookEventForStatus(job.Status); hookEvent != "" {
 		items, _ := m.store.ListItems(ctx, job.ID)
 		m.hooks.Dispatch(hookEvent, job, items)
 	}
-	return nil
+}
+
+func isTerminalStatus(status domain.JobStatus) bool {
+	return status == domain.JobCompleted || status == domain.JobFailed || status == domain.JobCancelled
 }
 
 // finalizeLogged is the worker-path wrapper around finalizeJob: there is no
