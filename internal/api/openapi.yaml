@@ -199,7 +199,8 @@ paths:
           $ref: '#/components/responses/InternalError'
     post:
       tags: [Downloads]
-      summary: 创建下载任务
+      summary: 批量创建下载任务
+      description: 提交一批 URL，逐条返回入队结果；重复、不支持或队列已满的 URL 在 results 中单独标记，不影响其他 URL 入队。
       operationId: createDownload
       requestBody:
         required: true
@@ -209,21 +210,23 @@ paths:
               $ref: '#/components/schemas/DownloadRequest'
       responses:
         '202':
-          description: 任务已入队。
+          description: 至少一条 URL 已入队；逐条结果见 results。
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Job'
+                $ref: '#/components/schemas/BatchSubmitResponse'
         '400':
-          $ref: '#/components/responses/BadRequest'
-        '422':
-          description: URL 对应的内容或 storefront 不受支持。
+          description: 请求体无法解析、urls 为空或超过单次上限（100 条）。
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '503':
-          $ref: '#/components/responses/ServiceUnavailable'
+        '422':
+          description: 所有 URL 均被拒绝；逐条原因见 results。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchSubmitResponse'
   /api/v1/downloads/{job_id}:
     get:
       tags: [Downloads]
@@ -427,10 +430,12 @@ components:
           type: array
           items:
             type: string
+          example: [song_url, album_url, playlist_url, artist_url]
         unsupported_inputs:
           type: array
           items:
             type: string
+          example: [music_video, station, search]
         quality_priority:
           type: array
           items:
@@ -501,15 +506,55 @@ components:
           type: string
     DownloadRequest:
       type: object
-      required: [url]
+      required: [urls]
       properties:
-        url:
-          type: string
-          format: uri
-          example: https://music.apple.com/cn/album/example/123456789?i=987654321
+        urls:
+          type: array
+          description: Apple Music 链接列表（单曲/专辑/歌单/艺人）。每个元素内允许包含换行或空白分隔的多个 URL，服务端会自动拆分；拆分后单次最多 100 条。
+          minItems: 1
+          items:
+            type: string
+          example:
+            - https://music.apple.com/cn/album/example/123456789?i=987654321
+            - https://music.apple.com/cn/album/example/123456789
         force:
           type: boolean
           default: false
+          description: 是否强制重新下载已存在的文件。
+    SubmitResult:
+      type: object
+      required: [url, status]
+      properties:
+        url:
+          type: string
+          description: 拆分归一化后的单条输入 URL。
+        status:
+          type: string
+          enum: [accepted, invalid, duplicate_in_request, duplicate_active, queue_full]
+        job:
+          $ref: '#/components/schemas/Job'
+          description: status 为 accepted 时返回新建的任务。
+        existing_job_id:
+          type: string
+          description: status 为 duplicate_active 时指向已在进行中的同内容任务。
+        error:
+          type: string
+          description: 被拒绝时的原因说明。
+    BatchSubmitResponse:
+      type: object
+      required: [accepted, rejected, results]
+      properties:
+        accepted:
+          type: integer
+          description: 成功入队的 URL 数。
+        rejected:
+          type: integer
+          description: 被拒绝的 URL 数。
+        results:
+          type: array
+          description: 与请求内 URL 一一对应的逐条结果。
+          items:
+            $ref: '#/components/schemas/SubmitResult'
     QualityRequest:
       type: object
       required: [url]
@@ -572,7 +617,7 @@ components:
           type: string
         type:
           type: string
-          enum: [song, album, playlist]
+          enum: [song, album, playlist, artist]
         storefront:
           type: string
         force:

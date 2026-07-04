@@ -370,31 +370,3 @@ func writeWrapperError(w http.ResponseWriter, err error) {
 	}
 	writeError(w, status, err)
 }
-
-func writeSubmitError(w http.ResponseWriter, err error) {
-	var requestErr *jobs.RequestError
-	if errors.As(err, &requestErr) {
-		status := http.StatusUnprocessableEntity
-		if requestErr.Code == "invalid_url" {
-			status = http.StatusBadRequest
-		} else if requestErr.Code == "decryptor_unavailable" {
-			status = http.StatusServiceUnavailable
-		} else if requestErr.Code == "invalid_configuration" {
-			status = http.StatusInternalServerError
-		}
-		body := map[string]any{"error": requestErr.Code, "message": requestErr.Message}
-		if requestErr.Storefront != "" {
-			body["storefront"] = requestErr.Storefront
-		}
-		if requestErr.SupportedStorefronts != nil {
-			body["supported_storefronts"] = requestErr.SupportedStorefronts
-		}
-		writeJSON(w, status, body)
-		return
-	}
-	if errors.Is(err, jobs.ErrQueueFull) {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "queue_full", "message": err.Error()})
-		return
-	}
-	writeError(w, http.StatusInternalServerError, err)
-}
