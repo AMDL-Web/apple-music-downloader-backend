@@ -11,5 +11,7 @@ data/
 
 test/
 
+/docs/
+
 *.p8
 keys/
