@@ -233,10 +233,11 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 	// hasn't reached run() to register a cancel func). Finalize it directly
 	// so the job_cancelled hook fires now instead of never firing; run()
 	// checks for this and skips execution if this job is later dequeued.
+	// Propagate a persistence failure so the caller doesn't report a
+	// successful cancel that wasn't actually recorded.
 	job.Status = domain.JobCancelled
 	job.Error = "cancelled"
-	m.finalizeJob(ctx, job, "job_cancelled", "job cancelled")
-	return nil
+	return m.finalizeJob(ctx, job, "job_cancelled", "job cancelled")
 }
 
 func (m *Manager) worker(ctx context.Context, index int) {
@@ -282,25 +283,28 @@ func (m *Manager) run(parent context.Context, jobID string) {
 	if latest, loadErr := m.store.GetJob(context.Background(), job.ID); loadErr == nil {
 		job = latest
 	}
-	if err != nil {
-		m.refreshCounts(&job)
-		if errors.Is(ctx.Err(), context.Canceled) {
-			job.Status = domain.JobCancelled
-			job.Error = "cancelled"
-			m.finalizeJob(context.Background(), job, "job_cancelled", "job cancelled")
-		} else {
-			job.Status = domain.JobFailed
-			job.Error = err.Error()
-			m.finalizeJob(context.Background(), job, "job_failed", err.Error())
-		}
-	} else {
-		m.refreshCounts(&job)
+	m.refreshCounts(&job)
+
+	switch {
+	case errors.Is(ctx.Err(), context.Canceled):
+		// Cancellation takes priority over ProcessJob's return value: a job
+		// cancelled mid-flight must never be reported as completed, even if
+		// ProcessJob happened to return nil (e.g. it finished its last item
+		// just as the cancel arrived, or it doesn't surface ctx errors).
+		job.Status = domain.JobCancelled
+		job.Error = "cancelled"
+		m.finalizeLogged(job, "job_cancelled", "job cancelled")
+	case err != nil:
+		job.Status = domain.JobFailed
+		job.Error = err.Error()
+		m.finalizeLogged(job, "job_failed", err.Error())
+	default:
 		if job.FailedItems > 0 {
 			job.Status = domain.JobFailed
 		} else {
 			job.Status = domain.JobCompleted
 		}
-		m.finalizeJob(context.Background(), job, "job_finished", string(job.Status))
+		m.finalizeLogged(job, "job_finished", string(job.Status))
 	}
 }
 
@@ -308,14 +312,31 @@ func (m *Manager) run(parent context.Context, jobID string) {
 // domain event, and dispatches any post-download hooks subscribed to that
 // status. Shared by run() and Cancel() so every path that reaches a terminal
 // status goes through hook dispatch exactly once.
-func (m *Manager) finalizeJob(ctx context.Context, job domain.Job, eventType, message string) {
+//
+// The hook is dispatched only after the terminal status is durably persisted:
+// an external system must not be told a job completed/cancelled when the
+// backend could not even record that fact. A persistence failure is returned
+// so callers can propagate or log it, and no hook fires.
+func (m *Manager) finalizeJob(ctx context.Context, job domain.Job, eventType, message string) error {
 	job.UpdatedAt = time.Now().UTC()
-	_ = m.store.UpdateJob(ctx, job)
+	if err := m.store.UpdateJob(ctx, job); err != nil {
+		return err
+	}
 	_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: eventType, Message: message})
 
 	if hookEvent := hookEventForStatus(job.Status); hookEvent != "" {
 		items, _ := m.store.ListItems(ctx, job.ID)
 		m.hooks.Dispatch(hookEvent, job, items)
+	}
+	return nil
+}
+
+// finalizeLogged is the worker-path wrapper around finalizeJob: there is no
+// caller to return an error to, so a persistence failure is logged (and the
+// hook is correctly skipped by finalizeJob).
+func (m *Manager) finalizeLogged(job domain.Job, eventType, message string) {
+	if err := m.finalizeJob(context.Background(), job, eventType, message); err != nil {
+		m.logger.Error("finalize job", "job_id", job.ID, "status", string(job.Status), "error", err)
 	}
 }
 

@@ -142,3 +142,19 @@ func TestLoadConfigRejectsUnknownField(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v, want unknown field error", err)
 	}
 }
+
+// TestShippedHooksConfigLoads guards the shipped configs/hooks.yaml: with every
+// example commented out, `entries:` must parse as an empty list (not error),
+// and hooks must default to disabled.
+func TestShippedHooksConfigLoads(t *testing.T) {
+	cfg, err := LoadConfig(filepath.Join("..", "..", "configs", "hooks.yaml"))
+	if err != nil {
+		t.Fatalf("shipped configs/hooks.yaml failed to load: %v", err)
+	}
+	if cfg.Enabled {
+		t.Fatalf("shipped config enabled = true, want false by default")
+	}
+	if len(cfg.Entries) != 0 {
+		t.Fatalf("shipped config entries = %d, want 0 (all examples commented out)", len(cfg.Entries))
+	}
+}

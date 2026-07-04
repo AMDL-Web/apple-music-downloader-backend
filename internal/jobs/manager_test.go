@@ -478,3 +478,134 @@ func TestNilHooksDispatcherIsNoop(t *testing.T) {
 		t.Fatalf("job status = %s, want completed (manager.hooks is nil until SetHooks is called)", job.Status)
 	}
 }
+
+// cancelThenReturnNilProcessor blocks until its context is cancelled and then
+// returns nil, simulating a processor that finishes "successfully" right as a
+// cancel arrives (or one that doesn't surface ctx errors).
+type cancelThenReturnNilProcessor struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (p *cancelThenReturnNilProcessor) ValidateRequest(context.Context, string) (ValidationResult, error) {
+	return ValidationResult{Type: "song", Storefront: "us", ID: "1"}, nil
+}
+
+func (p *cancelThenReturnNilProcessor) ProcessJob(ctx context.Context, _ domain.Job, _ Reporter) error {
+	p.once.Do(func() { close(p.started) })
+	<-ctx.Done()
+	return nil
+}
+
+func TestCancelRunningJobWinsOverNilProcessorReturn(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Event string `json:"event"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		mu.Lock()
+		seen = append(seen, payload.Event)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	hooksCfg := hooks.Config{Enabled: true, Entries: []hooks.Entry{
+		{Name: "terminal", Type: "webhook", Events: []string{"job_finished", "job_cancelled"}, URL: server.URL},
+	}}
+	processor := &cancelThenReturnNilProcessor{started: make(chan struct{})}
+	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
+	dispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, slog.Default())
+	manager.SetHooks(dispatcher)
+
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	manager.Start(ctx)
+
+	resp := manager.SubmitBatch(ctx, []string{"song|us|1"}, false)
+	if resp.Accepted != 1 {
+		t.Fatalf("submit = %+v, want 1 accepted", resp)
+	}
+	jobID := resp.Results[0].Job.ID
+
+	select {
+	case <-processor.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("processor did not start")
+	}
+	if err := manager.Cancel(ctx, jobID); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got domain.Job
+	for time.Now().Before(deadline) {
+		got, err = store.GetJob(ctx, jobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == domain.JobCancelled {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Even though ProcessJob returned nil, cancellation must win: the job is
+	// cancelled and the hook is job_cancelled, never job_finished.
+	if got.Status != domain.JobCancelled {
+		t.Fatalf("status = %s, want cancelled even though ProcessJob returned nil", got.Status)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	dispatcher.Shutdown(context.Background())
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 1 || seen[0] != "job_cancelled" {
+		t.Fatalf("hook events = %v, want exactly [job_cancelled]", seen)
+	}
+}
+
+func TestFinalizeJobSkipsHookWhenPersistenceFails(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hooksCfg := hooks.Config{Enabled: true, Entries: []hooks.Entry{
+		{Name: "on-cancel", Type: "webhook", Events: []string{"job_cancelled"}, URL: server.URL},
+	}}
+	manager := NewManager(store, events.NewHub(), keyedProcessor{}, 1, slog.Default())
+	dispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, slog.Default())
+	manager.SetHooks(dispatcher)
+
+	// Close the store so the terminal-status write inside finalizeJob fails.
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	job := domain.Job{ID: "job-x", Type: "song", Status: domain.JobCancelled, Error: "cancelled"}
+	if err := manager.finalizeJob(context.Background(), job, "job_cancelled", "job cancelled"); err == nil {
+		t.Fatal("finalizeJob returned nil, want a persistence error when the store is closed")
+	}
+
+	// The hook must not fire when the terminal status could not be persisted.
+	time.Sleep(200 * time.Millisecond)
+	dispatcher.Shutdown(context.Background())
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("webhook calls = %d, want 0 when persistence failed", got)
+	}
+}

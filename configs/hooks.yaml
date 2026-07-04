@@ -24,7 +24,11 @@ max_concurrent: 2
 # runs concurrently (bounded by max_concurrent above). Add a list item to
 # create a new hook, delete one to remove it, or flip `enabled` to pause it
 # without losing its configuration.
-entries: []
+#
+# To enable a hook, uncomment one of the example list items below (remove the
+# leading "# " from each of its lines) and edit the values. With every item
+# commented out, `entries` is empty and no hooks run.
+entries:
   # --- webhook example: trigger a media server library refresh ---
   # - # string, required, unique: hook name. Shown in hook_started/hook_succeeded/
   #   # hook_failed events and in logs.

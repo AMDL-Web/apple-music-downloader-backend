@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func init() {
@@ -27,6 +28,12 @@ func (r *execRunner) Run(ctx context.Context, entry Entry, payload Payload) erro
 	cmd.Dir = entry.Workdir
 	cmd.Stdin = bytes.NewReader(raw)
 	cmd.Env = append(os.Environ(), buildEnv(payload)...)
+	// On cancel/timeout, force-close after this grace period so Wait can't
+	// block indefinitely on grandchildren that inherited the pipes.
+	cmd.WaitDelay = 5 * time.Second
+	// Put the command in its own process group and kill the whole group on
+	// timeout, so a shell script's child processes don't outlive the hook.
+	setupProcessGroup(cmd)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
