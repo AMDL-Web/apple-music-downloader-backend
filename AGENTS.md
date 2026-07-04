@@ -58,7 +58,19 @@ Python-based system (WorldObservationLog)
 
 ---
 
-# 4. Implementation Constraints
+# 4. Commit Attribution
+
+When Codex creates a commit in this repository, Codex MUST append the following commit-message footer:
+
+```
+Co-authored-by: Codex <noreply@openai.com>
+```
+
+This footer instruction applies only to Codex. Claude Code and other agents/tools may read this file, but they should use their own commit attribution behavior and MUST NOT add the Codex footer unless they are Codex.
+
+---
+
+# 5. Implementation Constraints
 
 - The root Go module is the only writable production codebase
 - Reference repositories are read-only
