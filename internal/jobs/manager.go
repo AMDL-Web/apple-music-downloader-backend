@@ -396,18 +396,7 @@ func hookEventForStatus(status domain.JobStatus) string {
 
 func (m *Manager) refreshCounts(job *domain.Job) {
 	items, _ := m.store.ListItems(context.Background(), job.ID)
-	failed := 0
-	done := 0
-	for _, item := range items {
-		switch item.Status {
-		case domain.ItemFailed:
-			failed++
-		case domain.ItemCompleted, domain.ItemSkipped:
-			done++
-		}
-	}
-	job.DoneItems = done
-	job.FailedItems = failed
+	job.DoneItems, job.FailedItems = domain.CountItemProgress(items)
 }
 
 func (m *Manager) SetJob(ctx context.Context, job domain.Job) error {

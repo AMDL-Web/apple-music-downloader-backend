@@ -279,6 +279,11 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	// Derive the progress counters from the live item list rather than trusting
+	// the job row's stored counters, which are only refreshed when the job
+	// reaches a terminal status. Without this a running job reports done_items=0
+	// while the items array already shows completed items in the same response.
+	job.DoneItems, job.FailedItems = domain.CountItemProgress(items)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"job": job, "items": items,
 		"retry_policy": map[string]int{

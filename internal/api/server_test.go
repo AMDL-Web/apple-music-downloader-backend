@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -450,6 +451,41 @@ func TestCreateDownloadSplitsBatchAndDedupes(t *testing.T) {
 	}
 	if resp.Results[2].Status != domain.SubmitDuplicateInRequest {
 		t.Fatalf("third result = %+v, want duplicate_in_request", resp.Results[2])
+	}
+}
+
+func TestGetDownloadDerivesProgressFromItems(t *testing.T) {
+	server := newTestServerWithManager(t)
+	ctx := context.Background()
+	job := domain.Job{ID: "job1", Input: "song|us|1", Type: "song", Status: domain.JobRunning, TotalItems: 4}
+	if err := server.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	statuses := []domain.ItemStatus{domain.ItemCompleted, domain.ItemSkipped, domain.ItemFailed, domain.ItemDownloading}
+	for i, st := range statuses {
+		item := domain.JobItem{ID: "item" + strconv.Itoa(i), JobID: job.ID, Index: i, Status: st}
+		if err := server.store.CreateItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads/"+job.ID, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var resp struct {
+		Job domain.Job `json:"job"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	// completed + skipped = 2 done, 1 failed — must match the returned items even
+	// though the persisted job row still has DoneItems=0 (never finalized).
+	if resp.Job.DoneItems != 2 {
+		t.Fatalf("done_items = %d, want 2", resp.Job.DoneItems)
+	}
+	if resp.Job.FailedItems != 1 {
+		t.Fatalf("failed_items = %d, want 1", resp.Job.FailedItems)
 	}
 }
 

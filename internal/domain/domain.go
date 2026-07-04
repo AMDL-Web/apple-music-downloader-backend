@@ -66,6 +66,23 @@ type JobItem struct {
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
+// CountItemProgress reports how many items in the slice are finished (completed
+// or skipped) versus failed, using the same done/failed accounting applied when
+// a job's DoneItems/FailedItems counters are refreshed. Deriving the counters
+// from the live item list keeps a job's reported progress consistent with the
+// items returned alongside it, even before the job reaches a terminal status.
+func CountItemProgress(items []JobItem) (done, failed int) {
+	for _, item := range items {
+		switch item.Status {
+		case ItemFailed:
+			failed++
+		case ItemCompleted, ItemSkipped:
+			done++
+		}
+	}
+	return done, failed
+}
+
 type Event struct {
 	ID        int64     `json:"id"`
 	JobID     string    `json:"job_id"`
