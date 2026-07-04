@@ -16,6 +16,7 @@ import (
 	"amdl/internal/config"
 	"amdl/internal/db"
 	"amdl/internal/events"
+	"amdl/internal/hooks"
 	"amdl/internal/jobs"
 	"amdl/internal/media"
 	"amdl/internal/wrapper"
@@ -30,6 +31,15 @@ func main() {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		logger.Error("load config", "error", err)
+		os.Exit(1)
+	}
+	hooksCfgPath := os.Getenv("AMDL_HOOKS_CONFIG")
+	if hooksCfgPath == "" {
+		hooksCfgPath = "configs/hooks.yaml"
+	}
+	hooksCfg, err := hooks.LoadConfig(hooksCfgPath)
+	if err != nil {
+		logger.Error("load hooks config", "error", err)
 		os.Exit(1)
 	}
 	if err := os.MkdirAll(cfg.Download.DownloadsDir, 0o755); err != nil {
@@ -65,6 +75,8 @@ func main() {
 	downloader := media.NewDownloader(cfg, catalog, wrapperClient, toolChecker, logger)
 	qualityService := media.NewQualityService(cfg, catalog)
 	manager := jobs.NewManager(store, hub, downloader, cfg.Download.MaxRunningJobs, logger)
+	hookDispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, logger)
+	manager.SetHooks(hookDispatcher)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -94,4 +106,5 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(shutdownCtx)
+	hookDispatcher.Shutdown(shutdownCtx)
 }

@@ -11,6 +11,7 @@ import (
 	"amdl/internal/db"
 	"amdl/internal/domain"
 	"amdl/internal/events"
+	"amdl/internal/hooks"
 	"amdl/internal/storage"
 )
 
@@ -56,6 +57,7 @@ type Manager struct {
 	submitMu  sync.Mutex
 	cancels   map[string]context.CancelFunc
 	workers   int
+	hooks     *hooks.Dispatcher
 }
 
 func NewManager(store *db.Store, hub *events.Hub, processor Processor, workers int, logger *slog.Logger) *Manager {
@@ -66,6 +68,14 @@ func NewManager(store *db.Store, hub *events.Hub, processor Processor, workers i
 		store: store, hub: hub, processor: processor, queue: make(chan string, 256),
 		logger: logger, cancels: map[string]context.CancelFunc{}, workers: workers,
 	}
+}
+
+// SetHooks wires the post-download hook dispatcher. Called after
+// construction because the dispatcher's event recorder is Manager.Event
+// itself. A nil dispatcher (the zero value, since hooks is unset until this
+// is called) is a safe no-op — Dispatcher.Dispatch handles a nil receiver.
+func (m *Manager) SetHooks(d *hooks.Dispatcher) {
+	m.hooks = d
 }
 
 func (m *Manager) Start(ctx context.Context) {
@@ -202,19 +212,31 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 	cancel := m.cancels[jobID]
 	m.mu.Unlock()
 	if cancel != nil {
+		// The job is actively running under a worker. Cancelling its context
+		// is enough: run() observes ctx.Err() once ProcessJob returns and
+		// finalizes the job (status, event, hook dispatch) exactly once.
+		// Writing the terminal state here too would race with that write
+		// and double-fire the job_cancelled hook.
 		cancel()
+		return nil
 	}
+
 	job, err := m.store.GetJob(ctx, jobID)
 	if err != nil {
 		return err
 	}
-	if job.Status == domain.JobCompleted || job.Status == domain.JobFailed {
+	if job.Status == domain.JobCompleted || job.Status == domain.JobFailed || job.Status == domain.JobCancelled {
 		return nil
 	}
-	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobCancelled, time.Now().UTC()); err != nil {
-		return err
-	}
-	return m.Event(ctx, domain.Event{JobID: jobID, Type: "job_cancelled", Message: "job cancelled"})
+
+	// The job has not started running yet (still queued, or its worker
+	// hasn't reached run() to register a cancel func). Finalize it directly
+	// so the job_cancelled hook fires now instead of never firing; run()
+	// checks for this and skips execution if this job is later dequeued.
+	job.Status = domain.JobCancelled
+	job.Error = "cancelled"
+	m.finalizeJob(ctx, job, "job_cancelled", "job cancelled")
+	return nil
 }
 
 func (m *Manager) worker(ctx context.Context, index int) {
@@ -232,6 +254,12 @@ func (m *Manager) run(parent context.Context, jobID string) {
 	job, err := m.store.GetJob(parent, jobID)
 	if err != nil {
 		m.logger.Error("load job", "job_id", jobID, "error", err)
+		return
+	}
+	if job.Status == domain.JobCancelled {
+		// Cancel() finalized this job while it was still queued (before this
+		// worker dequeued it). Do not resurrect it into JobRunning; the
+		// job_cancelled hook was already dispatched by Cancel().
 		return
 	}
 	ctx, cancel := context.WithCancel(parent)
@@ -259,11 +287,11 @@ func (m *Manager) run(parent context.Context, jobID string) {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			job.Status = domain.JobCancelled
 			job.Error = "cancelled"
-			_ = m.Event(context.Background(), domain.Event{JobID: job.ID, Type: "job_cancelled", Message: "job cancelled"})
+			m.finalizeJob(context.Background(), job, "job_cancelled", "job cancelled")
 		} else {
 			job.Status = domain.JobFailed
 			job.Error = err.Error()
-			_ = m.Event(context.Background(), domain.Event{JobID: job.ID, Type: "job_failed", Message: err.Error()})
+			m.finalizeJob(context.Background(), job, "job_failed", err.Error())
 		}
 	} else {
 		m.refreshCounts(&job)
@@ -272,10 +300,38 @@ func (m *Manager) run(parent context.Context, jobID string) {
 		} else {
 			job.Status = domain.JobCompleted
 		}
-		_ = m.Event(context.Background(), domain.Event{JobID: job.ID, Type: "job_finished", Message: string(job.Status)})
+		m.finalizeJob(context.Background(), job, "job_finished", string(job.Status))
 	}
+}
+
+// finalizeJob persists a job's terminal status, emits the corresponding
+// domain event, and dispatches any post-download hooks subscribed to that
+// status. Shared by run() and Cancel() so every path that reaches a terminal
+// status goes through hook dispatch exactly once.
+func (m *Manager) finalizeJob(ctx context.Context, job domain.Job, eventType, message string) {
 	job.UpdatedAt = time.Now().UTC()
-	_ = m.store.UpdateJob(context.Background(), job)
+	_ = m.store.UpdateJob(ctx, job)
+	_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: eventType, Message: message})
+
+	if hookEvent := hookEventForStatus(job.Status); hookEvent != "" {
+		items, _ := m.store.ListItems(ctx, job.ID)
+		m.hooks.Dispatch(hookEvent, job, items)
+	}
+}
+
+// hookEventForStatus maps a job's final status to the hook event name hook
+// entries subscribe to in hooks.yaml. Returns "" for non-terminal statuses.
+func hookEventForStatus(status domain.JobStatus) string {
+	switch status {
+	case domain.JobCompleted:
+		return "job_finished"
+	case domain.JobFailed:
+		return "job_failed"
+	case domain.JobCancelled:
+		return "job_cancelled"
+	default:
+		return ""
+	}
 }
 
 func (m *Manager) refreshCounts(job *domain.Job) {

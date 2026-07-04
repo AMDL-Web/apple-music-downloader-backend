@@ -2,16 +2,21 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"amdl/internal/db"
 	"amdl/internal/domain"
 	"amdl/internal/events"
+	"amdl/internal/hooks"
 )
 
 type recoveryProcessor struct{}
@@ -250,5 +255,226 @@ func TestSubmitBatchInvalidURLReportsError(t *testing.T) {
 	resp := manager.SubmitBatch(context.Background(), []string{"bad:not-a-url"}, false)
 	if resp.Results[0].Status != domain.SubmitInvalid || resp.Results[0].Error == "" {
 		t.Fatalf("result = %+v, want invalid with error message", resp.Results[0])
+	}
+}
+
+func TestJobCompletionDispatchesHook(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	hooksCfg := hooks.Config{Enabled: true, Entries: []hooks.Entry{
+		{Name: "on-finish", Type: "webhook", Events: []string{"job_finished"}, URL: server.URL},
+	}}
+	manager := NewManager(store, events.NewHub(), keyedProcessor{}, 1, slog.Default())
+	dispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, slog.Default())
+	manager.SetHooks(dispatcher)
+
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	manager.Start(ctx)
+
+	resp := manager.SubmitBatch(ctx, []string{"song|us|1"}, false)
+	if resp.Accepted != 1 {
+		t.Fatalf("submit = %+v, want 1 accepted", resp)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && atomic.LoadInt32(&calls) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Drain the dispatcher before asserting so the hook goroutine has fully
+	// recorded its result and doesn't outlive the test.
+	dispatcher.Shutdown(context.Background())
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("webhook calls = %d, want 1 after job completion", got)
+	}
+}
+
+func TestCancelQueuedJobDispatchesCancelledHookAndNeverRuns(t *testing.T) {
+	var calls int32
+	var lastEvent string
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Event string `json:"event"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		mu.Lock()
+		lastEvent = payload.Event
+		mu.Unlock()
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	hooksCfg := hooks.Config{Enabled: true, Entries: []hooks.Entry{
+		{Name: "on-cancel", Type: "webhook", Events: []string{"job_cancelled"}, URL: server.URL},
+	}}
+	// A processor that fails the test if ProcessJob is ever invoked: a
+	// cancelled-while-queued job must never actually run.
+	processor := &neverRunProcessor{t: t}
+	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
+	dispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, slog.Default())
+	manager.SetHooks(dispatcher)
+
+	// Deliberately do not call manager.Start(ctx): the submitted job stays in
+	// the in-memory queue channel, never dequeued, so Cancel() must take the
+	// "not yet running" path.
+	ctx := context.Background()
+	resp := manager.SubmitBatch(ctx, []string{"song|us|1"}, false)
+	if resp.Accepted != 1 {
+		t.Fatalf("submit = %+v, want 1 accepted", resp)
+	}
+	jobID := resp.Results[0].Job.ID
+
+	if err := manager.Cancel(ctx, jobID); err != nil {
+		t.Fatalf("Cancel() error = %v", err)
+	}
+
+	got, err := store.GetJob(ctx, jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.JobCancelled {
+		t.Fatalf("status = %s, want cancelled", got.Status)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && atomic.LoadInt32(&calls) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	dispatcher.Shutdown(context.Background())
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("webhook calls = %d, want exactly 1 for the queued-cancel path", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if lastEvent != "job_cancelled" {
+		t.Fatalf("event = %q, want job_cancelled", lastEvent)
+	}
+
+	// Simulate a worker eventually dequeuing this already-cancelled job: it
+	// must not resurrect the job into JobRunning or invoke the processor.
+	manager.run(ctx, jobID)
+	got, err = store.GetJob(ctx, jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.JobCancelled {
+		t.Fatalf("status after late run() = %s, want cancelled (must not resurrect)", got.Status)
+	}
+}
+
+func TestCancelRunningJobDispatchesCancelledHookExactlyOnce(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	hooksCfg := hooks.Config{Enabled: true, Entries: []hooks.Entry{
+		{Name: "on-cancel", Type: "webhook", Events: []string{"job_cancelled"}, URL: server.URL},
+	}}
+	processor := &cancelAfterTotalProcessor{started: make(chan struct{})}
+	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
+	dispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, slog.Default())
+	manager.SetHooks(dispatcher)
+
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	manager.Start(ctx)
+
+	resp := manager.SubmitBatch(ctx, []string{"song|us|1"}, false)
+	if resp.Accepted != 1 {
+		t.Fatalf("submit = %+v, want 1 accepted", resp)
+	}
+	jobID := resp.Results[0].Job.ID
+
+	select {
+	case <-processor.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("processor did not start")
+	}
+	if err := manager.Cancel(ctx, jobID); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got domain.Job
+	for time.Now().Before(deadline) {
+		got, err = store.GetJob(ctx, jobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == domain.JobCancelled {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got.Status != domain.JobCancelled {
+		t.Fatalf("status = %s, want cancelled", got.Status)
+	}
+
+	// Give any (incorrect) duplicate dispatch a chance to land before asserting.
+	time.Sleep(200 * time.Millisecond)
+	dispatcher.Shutdown(context.Background())
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("webhook calls = %d, want exactly 1 (no duplicate dispatch between Cancel and run)", got)
+	}
+}
+
+// neverRunProcessor fails the test if ProcessJob is ever called.
+type neverRunProcessor struct{ t *testing.T }
+
+func (p *neverRunProcessor) ValidateRequest(context.Context, string) (ValidationResult, error) {
+	return ValidationResult{Type: "song", Storefront: "us", ID: "1"}, nil
+}
+
+func (p *neverRunProcessor) ProcessJob(context.Context, domain.Job, Reporter) error {
+	p.t.Fatal("ProcessJob must not run for a job cancelled while queued")
+	return nil
+}
+
+func TestNilHooksDispatcherIsNoop(t *testing.T) {
+	manager := newTestManager(t)
+	manager.Start(context.Background())
+	resp := manager.SubmitBatch(context.Background(), []string{"song|us|1"}, false)
+	if resp.Accepted != 1 {
+		t.Fatalf("submit = %+v, want 1 accepted", resp)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var job domain.Job
+	for time.Now().Before(deadline) {
+		job, _ = manager.store.GetJob(context.Background(), resp.Results[0].Job.ID)
+		if job.Status == domain.JobCompleted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if job.Status != domain.JobCompleted {
+		t.Fatalf("job status = %s, want completed (manager.hooks is nil until SetHooks is called)", job.Status)
 	}
 }
