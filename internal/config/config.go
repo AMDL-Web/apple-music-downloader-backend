@@ -49,10 +49,10 @@ func (c WrapperConfig) Timeout() time.Duration {
 }
 
 type CatalogConfig struct {
-	DefaultStorefront        string `yaml:"default_storefront" json:"default_storefront"`
-	Language                 string `yaml:"language" json:"language"`
-	AppleMusicPrivateKeyPath string `yaml:"apple_music_private_key_path" json:"apple_music_private_key_path"`
-	AppleMusicKeyID          string `yaml:"apple_music_key_id" json:"apple_music_key_id"`
+	DefaultStorefront        string   `yaml:"default_storefront" json:"default_storefront"`
+	Language                 string   `yaml:"language" json:"language"`
+	AppleMusicPrivateKeyPath string   `yaml:"apple_music_private_key_path" json:"apple_music_private_key_path"`
+	AppleMusicKeyID          string   `yaml:"apple_music_key_id" json:"apple_music_key_id"`
 	AppleMusicTeamID         string   `yaml:"apple_music_team_id" json:"apple_music_team_id"`
 	DeveloperTokenTTLHours   int      `yaml:"developer_token_ttl_hours" json:"developer_token_ttl_hours"`
 	AllowedOrigins           []string `yaml:"allowed_origins" json:"allowed_origins"`
