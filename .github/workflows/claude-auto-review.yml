@@ -43,6 +43,7 @@ jobs:
             - 配置项改动是否同步更新了 configs/config.yaml 的注释
             - API 改动是否同步更新了 internal/api/openapi.yaml
             - 测试覆盖是否充分
+            - 提交的代码与配置文件中是否包含如本地开发测试ip、本地绝对路径等不适合在开源仓库中提交的内容
 
             审查结论会自动显示在 track_progress 生成的追踪评论中，
             不要再用 `gh pr comment` 单独发一条顶层评论（会造成重复）。
