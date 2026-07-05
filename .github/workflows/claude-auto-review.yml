@@ -30,7 +30,9 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          use_sticky_comment: true
+          # track_progress 会创建一条追踪评论，展示审查进度与最终结论，
+          # 并在重复运行时复用同一条评论（取代旧的 use_sticky_comment）。
+          track_progress: true
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
@@ -42,5 +44,13 @@ jobs:
             - API 改动是否同步更新了 internal/api/openapi.yaml
             - 测试覆盖是否充分
 
-            用 gh pr comment 发布审查结论（use_sticky_comment 会复用同一条评论）。
+            用 `gh pr comment` 发布顶层审查结论；
+            用 `mcp__github_inline_comment__create_inline_comment`（并带上 `confirmed: true`）
+            对具体代码行给出行内评论。
             只报告值得处理的问题，不要泛泛的赞美或吹毛求疵；没有问题就简短说明审查通过。
+            只通过 GitHub 评论输出审查内容，不要仅把审查文本作为运行消息/日志输出。
+
+          # 必须显式授权这些工具，否则 Claude 无法发布评论，
+          # 会导致检查通过（绿勾）但看不到任何评论。
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
