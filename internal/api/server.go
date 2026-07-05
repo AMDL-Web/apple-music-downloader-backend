@@ -75,6 +75,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
 	mux.HandleFunc("GET /api/v1/downloads", s.listDownloads)
 	mux.HandleFunc("GET /api/v1/downloads/{id}", s.getDownload)
+	mux.HandleFunc("DELETE /api/v1/downloads/{id}", s.deleteDownload)
 	mux.HandleFunc("POST /api/v1/downloads/{id}/cancel", s.cancelDownload)
 	mux.HandleFunc("GET /api/v1/downloads/{id}/events", s.events)
 	return cors(mux)
@@ -184,7 +185,7 @@ func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -314,6 +315,24 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 			"fallback_codec_retries": 0,
 		},
 	})
+}
+
+func (s *Server) deleteDownload(w http.ResponseWriter, r *http.Request) {
+	// Deletion goes through the manager, not the store, so a job whose
+	// finalize sequence (terminal event + hook dispatch) is still in flight
+	// is refused even though its status row already reads terminal.
+	if err := s.manager.Delete(r.Context(), r.PathValue("id")); err != nil {
+		switch {
+		case errors.Is(err, db.ErrJobNotFound):
+			writeError(w, http.StatusNotFound, err)
+		case errors.Is(err, db.ErrJobNotTerminal):
+			writeError(w, http.StatusConflict, err)
+		default:
+			writeError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {

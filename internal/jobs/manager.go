@@ -56,8 +56,14 @@ type Manager struct {
 	mu        sync.Mutex
 	submitMu  sync.Mutex
 	cancels   map[string]context.CancelFunc
-	workers   int
-	hooks     *hooks.Dispatcher
+	// finalizing marks jobs whose terminal status is already persisted but
+	// whose finalize sequence (terminal event + hook dispatch) has not finished
+	// yet via Cancel's queued path. run()'s finalize window needs no entry here
+	// because m.cancels holds the job until finalizeLogged returns. Delete
+	// refuses jobs present in either map.
+	finalizing map[string]bool
+	workers    int
+	hooks      *hooks.Dispatcher
 }
 
 func NewManager(store *db.Store, hub *events.Hub, processor Processor, workers int, logger *slog.Logger) *Manager {
@@ -66,7 +72,7 @@ func NewManager(store *db.Store, hub *events.Hub, processor Processor, workers i
 	}
 	return &Manager{
 		store: store, hub: hub, processor: processor, queue: make(chan string, 256),
-		logger: logger, cancels: map[string]context.CancelFunc{}, workers: workers,
+		logger: logger, cancels: map[string]context.CancelFunc{}, finalizing: map[string]bool{}, workers: workers,
 	}
 }
 
@@ -240,6 +246,13 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 	job.Error = "cancelled"
 	job.UpdatedAt = time.Now().UTC()
 	updateErr := m.store.UpdateJob(ctx, job)
+	if updateErr == nil {
+		// Mark the finalize sequence in flight before releasing m.mu: the
+		// status row now says cancelled, but the terminal event insert and
+		// hook dispatch below still read the job's rows. Delete must not
+		// remove them in that window.
+		m.finalizing[jobID] = true
+	}
 	m.mu.Unlock()
 
 	// Only report success, emit the event, and dispatch hooks once the
@@ -248,7 +261,27 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 		return updateErr
 	}
 	m.dispatchTerminal(ctx, job, "job_cancelled", "job cancelled")
+	m.mu.Lock()
+	delete(m.finalizing, jobID)
+	m.mu.Unlock()
 	return nil
+}
+
+// Delete removes a terminal job and its items/events from the store. It
+// refuses while the job is running or while a finalize sequence is still in
+// flight: the jobs row already says completed/failed/cancelled before the
+// terminal event is inserted and the hook dispatcher reads the items, so
+// deleting on the row status alone would orphan the late event insert and
+// hand hooks an empty item list. The check and the delete both happen under
+// m.mu, which run()'s claim and Cancel's queued path also hold, so a job
+// cannot start (or finish) finalizing between the check and the delete.
+func (m *Manager) Delete(ctx context.Context, jobID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cancels[jobID] != nil || m.finalizing[jobID] {
+		return db.ErrJobNotTerminal
+	}
+	return m.store.DeleteJob(ctx, jobID)
 }
 
 func (m *Manager) worker(ctx context.Context, index int) {

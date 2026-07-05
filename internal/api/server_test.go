@@ -391,7 +391,7 @@ func TestOpenAPISpecification(t *testing.T) {
 		"/api/v1/wrapper/logout":               {"post"},
 		"/api/v1/quality":                      {"post"},
 		"/api/v1/downloads":                    {"get", "post"},
-		"/api/v1/downloads/{job_id}":           {"get"},
+		"/api/v1/downloads/{job_id}":           {"get", "delete"},
 		"/api/v1/downloads/{job_id}/cancel":    {"post"},
 		"/api/v1/downloads/{job_id}/events":    {"get"},
 	}
@@ -486,6 +486,86 @@ func TestGetDownloadDerivesProgressFromItems(t *testing.T) {
 	}
 	if resp.Job.FailedItems != 1 {
 		t.Fatalf("failed_items = %d, want 1", resp.Job.FailedItems)
+	}
+}
+
+func TestListDownloadsDerivesProgressFromItems(t *testing.T) {
+	server := newTestServerWithManager(t)
+	ctx := context.Background()
+	job := domain.Job{ID: "job1", Input: "song|us|1", Type: "song", Status: domain.JobRunning, TotalItems: 4}
+	if err := server.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	statuses := []domain.ItemStatus{domain.ItemCompleted, domain.ItemSkipped, domain.ItemFailed, domain.ItemDownloading}
+	for i, st := range statuses {
+		item := domain.JobItem{ID: "item" + strconv.Itoa(i), JobID: job.ID, Index: i, Status: st}
+		if err := server.store.CreateItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var jobs []domain.Job
+	if err := json.Unmarshal(recorder.Body.Bytes(), &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("len(jobs) = %d, want 1", len(jobs))
+	}
+	// completed + skipped = 2 done, 1 failed — the persisted job row still has
+	// DoneItems=0 (never finalized), so the list must count from job_items.
+	if jobs[0].DoneItems != 2 {
+		t.Fatalf("done_items = %d, want 2", jobs[0].DoneItems)
+	}
+	if jobs[0].FailedItems != 1 {
+		t.Fatalf("failed_items = %d, want 1", jobs[0].FailedItems)
+	}
+}
+
+func TestDeleteDownload(t *testing.T) {
+	server := newTestServerWithManager(t)
+	ctx := context.Background()
+	terminal := domain.Job{ID: "job_done", Input: "song|us|1", Type: "song", CanonicalKey: "song:1", Status: domain.JobCompleted}
+	running := domain.Job{ID: "job_run", Input: "song|us|2", Type: "song", CanonicalKey: "song:2", Status: domain.JobRunning}
+	for _, job := range []domain.Job{terminal, running} {
+		if err := server.store.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := server.store.CreateItem(ctx, domain.JobItem{ID: "item1", JobID: terminal.ID, Status: domain.ItemCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.store.AddEvent(ctx, domain.Event{JobID: terminal.ID, Type: "job_finished"}); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodDelete, "/api/v1/downloads/"+terminal.ID, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("delete terminal: status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := server.store.GetJob(ctx, terminal.ID); err == nil {
+		t.Fatal("job row still exists after delete")
+	}
+	items, err := server.store.ListItems(ctx, terminal.ID)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("items after delete = %v (err %v), want none", items, err)
+	}
+	events, err := server.store.ListEventsAfter(ctx, terminal.ID, 0)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("events after delete = %v (err %v), want none", events, err)
+	}
+
+	recorder = requestJSON(t, server.Routes(), http.MethodDelete, "/api/v1/downloads/"+running.ID, "")
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("delete running: status = %d, want %d", recorder.Code, http.StatusConflict)
+	}
+
+	recorder = requestJSON(t, server.Routes(), http.MethodDelete, "/api/v1/downloads/missing", "")
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("delete missing: status = %d, want %d", recorder.Code, http.StatusNotFound)
 	}
 }
 

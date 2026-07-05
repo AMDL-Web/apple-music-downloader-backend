@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -379,6 +380,64 @@ func TestCancelQueuedJobDispatchesCancelledHookAndNeverRuns(t *testing.T) {
 	}
 	if got.Status != domain.JobCancelled {
 		t.Fatalf("status after late run() = %s, want cancelled (must not resurrect)", got.Status)
+	}
+}
+
+func TestDeleteRefusesActiveAndFinalizingJobs(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	processor := &cancelAfterTotalProcessor{started: make(chan struct{})}
+	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
+
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	manager.Start(ctx)
+
+	resp := manager.SubmitBatch(ctx, []string{"artist|cn|1495777901"}, false)
+	if resp.Accepted != 1 {
+		t.Fatalf("submit = %+v, want 1 accepted", resp)
+	}
+	jobID := resp.Results[0].Job.ID
+	<-processor.started
+
+	// Running: the job sits in m.cancels until finalize completes.
+	if err := manager.Delete(ctx, jobID); !errors.Is(err, db.ErrJobNotTerminal) {
+		t.Fatalf("Delete(running) error = %v, want ErrJobNotTerminal", err)
+	}
+
+	// Finalize-in-flight (Cancel's queued path): status row already reads
+	// terminal but the marker must still refuse deletion.
+	manager.mu.Lock()
+	manager.finalizing["job_finalizing"] = true
+	manager.mu.Unlock()
+	if err := manager.Delete(ctx, "job_finalizing"); !errors.Is(err, db.ErrJobNotTerminal) {
+		t.Fatalf("Delete(finalizing) error = %v, want ErrJobNotTerminal", err)
+	}
+
+	if err := manager.Cancel(ctx, jobID); err != nil {
+		t.Fatalf("Cancel() error = %v", err)
+	}
+	// Delete keeps refusing until run()'s finalize fully completes and clears
+	// the m.cancels entry, then succeeds exactly on the row it guarded.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := manager.Delete(ctx, jobID)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, db.ErrJobNotTerminal) {
+			t.Fatalf("Delete() error = %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Delete() still refused 2s after Cancel")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := store.GetJob(ctx, jobID); err == nil {
+		t.Fatal("job row still exists after successful Delete")
 	}
 }
 
