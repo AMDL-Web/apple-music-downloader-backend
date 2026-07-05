@@ -1,0 +1,46 @@
+name: Claude Auto Review
+
+# 自动 PR 审查开关：仓库变量 CLAUDE_AUTO_REVIEW
+# - 未设置或设为其他值：开启（默认开）
+# - 设为 "false"：关闭
+# 修改方式：Settings → Secrets and variables → Actions → Variables，
+# 或命令行：gh variable set CLAUDE_AUTO_REVIEW --body false
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+jobs:
+  auto-review:
+    if: vars.CLAUDE_AUTO_REVIEW != 'false' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_sticky_comment: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            请审查这个 pull request，重点关注：
+            - 正确性问题和潜在 bug（并发、错误处理、边界条件）
+            - 与仓库现有架构和模式的一致性（参考 CLAUDE.md）
+            - 配置项改动是否同步更新了 configs/config.yaml 的注释
+            - API 改动是否同步更新了 internal/api/openapi.yaml
+            - 测试覆盖是否充分
+
+            用 gh pr comment 发布审查结论（use_sticky_comment 会复用同一条评论）。
+            只报告值得处理的问题，不要泛泛的赞美或吹毛求疵；没有问题就简短说明审查通过。
