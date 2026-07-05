@@ -15,3 +15,11 @@ test/
 
 *.p8
 keys/
+
+# Editor / IDE settings.
+.idea/
+.vscode/
+
+# Go test & coverage artifacts.
+*.out
+coverage.txt

@@ -44,13 +44,14 @@ jobs:
             - API 改动是否同步更新了 internal/api/openapi.yaml
             - 测试覆盖是否充分
 
-            用 `gh pr comment` 发布顶层审查结论；
-            用 `mcp__github_inline_comment__create_inline_comment`（并带上 `confirmed: true`）
-            对具体代码行给出行内评论。
+            审查结论会自动显示在 track_progress 生成的追踪评论中，
+            不要再用 `gh pr comment` 单独发一条顶层评论（会造成重复）。
+            如需对具体代码行给出行内评论，
+            用 `mcp__github_inline_comment__create_inline_comment`（并带上 `confirmed: true`）。
             只报告值得处理的问题，不要泛泛的赞美或吹毛求疵；没有问题就简短说明审查通过。
-            只通过 GitHub 评论输出审查内容，不要仅把审查文本作为运行消息/日志输出。
 
-          # 必须显式授权这些工具，否则 Claude 无法发布评论，
-          # 会导致检查通过（绿勾）但看不到任何评论。
+          # 授权行内评论工具，以及只读的 diff/view 用于收集上下文。
+          # 不授权 gh pr comment：结论由 track_progress 的追踪评论承载，
+          # 额外的 gh pr comment 会产生重复评论。
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*)"
