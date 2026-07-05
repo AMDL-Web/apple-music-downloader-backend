@@ -30,14 +30,15 @@ const maxBatchSubmitURLs = 100
 var urlSplitPattern = regexp.MustCompile(`[\r\n\s,;，；]+`)
 
 type Server struct {
-	cfg     config.Config
-	store   *db.Store
-	hub     *events.Hub
-	manager *jobs.Manager
-	wrapper wrapperService
-	quality qualityService
-	tools   *media.ToolChecker
-	logger  *slog.Logger
+	cfg      config.Config
+	store    *db.Store
+	hub      *events.Hub
+	manager  *jobs.Manager
+	wrapper  wrapperService
+	quality  qualityService
+	devToken developerTokenService
+	tools    *media.ToolChecker
+	logger   *slog.Logger
 }
 
 type wrapperService interface {
@@ -51,8 +52,12 @@ type qualityService interface {
 	QueryQuality(context.Context, media.QualityRequest) (media.QualityResult, error)
 }
 
-func NewServer(cfg config.Config, store *db.Store, hub *events.Hub, manager *jobs.Manager, wrapperClient wrapperService, qualityClient qualityService, tools *media.ToolChecker, logger *slog.Logger) *Server {
-	return &Server{cfg: cfg, store: store, hub: hub, manager: manager, wrapper: wrapperClient, quality: qualityClient, tools: tools, logger: logger}
+type developerTokenService interface {
+	MintDeveloperToken() (string, time.Time, error)
+}
+
+func NewServer(cfg config.Config, store *db.Store, hub *events.Hub, manager *jobs.Manager, wrapperClient wrapperService, qualityClient qualityService, devToken developerTokenService, tools *media.ToolChecker, logger *slog.Logger) *Server {
+	return &Server{cfg: cfg, store: store, hub: hub, manager: manager, wrapper: wrapperClient, quality: qualityClient, devToken: devToken, tools: tools, logger: logger}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -61,6 +66,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/openapi.yaml", openAPI)
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/capabilities", s.capabilities)
+	mux.HandleFunc("GET /api/v1/developer-token", s.developerToken)
 	mux.HandleFunc("GET /api/v1/wrapper/status", s.wrapperStatus)
 	mux.HandleFunc("POST /api/v1/wrapper/login", s.wrapperLogin)
 	mux.HandleFunc("POST /api/v1/wrapper/login/{login_id}/2fa", s.wrapperTwoStep)
@@ -215,6 +221,25 @@ func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 			"fallback_codec_retries": 0,
 		},
 		"tools": s.tools.Check(r.Context()),
+	})
+}
+
+// developerToken hands out a freshly signed Apple Music developer token. Only
+// local signing mode can serve it: the legacy web-discovered token is
+// origin-locked to music.apple.com and would be rejected anywhere else.
+func (s *Server) developerToken(w http.ResponseWriter, r *http.Request) {
+	if s.devToken == nil || !s.cfg.Catalog.DeveloperTokenSigningEnabled() {
+		writeError(w, http.StatusConflict, fmt.Errorf("developer token endpoint requires local signing mode (catalog.apple_music_* keys); the web-discovered token is origin-restricted and cannot be shared"))
+		return
+	}
+	token, exp, err := s.devToken.MintDeveloperToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token":      token,
+		"expires_at": exp.UTC().Format(time.RFC3339),
 	})
 }
 

@@ -41,6 +41,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CapabilitiesResponse'
+  /api/v1/developer-token:
+    get:
+      tags: [System]
+      summary: 获取本地签名的 Apple Music developer token
+      description: >-
+        仅本地签名模式可用：用配置的 .p8 私钥现签一个 JWT，有效期由
+        catalog.developer_token_ttl_hours 控制（默认 1 小时）；配置了
+        catalog.allowed_origins 时会附加 origin claim。传统抓取模式下返回
+        409（抓取的 token 有 origin 限制，无法外发）。
+      operationId: getDeveloperToken
+      responses:
+        '200':
+          description: 新签发的 developer token。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeveloperTokenResponse'
+        '409':
+          description: 当前为传统抓取模式，不支持签发 developer token。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/v1/wrapper/status:
     get:
       tags: [Wrapper]
@@ -366,6 +391,17 @@ components:
           type: array
           items:
             type: string
+    DeveloperTokenResponse:
+      type: object
+      required: [token, expires_at]
+      properties:
+        token:
+          type: string
+          description: ES256 签名的 Apple Music developer token (JWT)。
+        expires_at:
+          type: string
+          format: date-time
+          description: token 过期时间（UTC, RFC 3339）。
     WrapperStatus:
       type: object
       required: [ready, status, regions, client_count, accounts_supported]

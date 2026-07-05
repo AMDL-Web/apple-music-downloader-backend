@@ -89,6 +89,39 @@ func TestDeveloperTokenSigningEnabled(t *testing.T) {
 	}
 }
 
+func TestDeveloperTokenTTL(t *testing.T) {
+	if got := Default().Catalog.DeveloperTokenTTL(); got != time.Hour {
+		t.Fatalf("default developer token TTL = %s, want 1h", got)
+	}
+	if got := (CatalogConfig{DeveloperTokenTTLHours: 0}).DeveloperTokenTTL(); got != time.Hour {
+		t.Fatalf("zero-value developer token TTL = %s, want 1h fallback", got)
+	}
+	if got := (CatalogConfig{DeveloperTokenTTLHours: 6}).DeveloperTokenTTL(); got != 6*time.Hour {
+		t.Fatalf("configured developer token TTL = %s, want 6h", got)
+	}
+}
+
+func TestLoadRejectsBlankAllowedOrigin(t *testing.T) {
+	path := writeConfig(t, "catalog:\n  allowed_origins: [\"https://example.com\", \"  \"]\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "allowed_origins") {
+		t.Fatalf("Load() error = %v, want allowed_origins validation error", err)
+	}
+}
+
+func TestLoadAcceptsAllowedOrigins(t *testing.T) {
+	path := writeConfig(t, "catalog:\n  allowed_origins: [\"https://example.com\"]\n  developer_token_ttl_hours: 2\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(cfg.Catalog.AllowedOrigins) != 1 || cfg.Catalog.AllowedOrigins[0] != "https://example.com" {
+		t.Fatalf("allowed origins = %#v", cfg.Catalog.AllowedOrigins)
+	}
+	if got := cfg.Catalog.DeveloperTokenTTL(); got != 2*time.Hour {
+		t.Fatalf("developer token TTL = %s, want 2h", got)
+	}
+}
+
 func TestLoadRejectsUnknownCoverFormat(t *testing.T) {
 	path := writeConfig(t, "download:\n  cover_format: webp\n")
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "cover_format") {

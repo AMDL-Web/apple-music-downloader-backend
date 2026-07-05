@@ -42,15 +42,24 @@ func newDeveloperTokenSigner(keyPath, keyID, teamID string) (*developerTokenSign
 	return &developerTokenSigner{key: key, keyID: keyID, teamID: teamID}, nil
 }
 
-// sign returns a signed developer token valid for 24 hours from now and the
-// token's expiry time.
-func (s *developerTokenSigner) sign(now time.Time) (string, time.Time, error) {
-	exp := now.Add(24 * time.Hour)
+// internalDeveloperTokenTTL is the validity of the token the backend signs for
+// its own catalog requests, independent of the endpoint-facing TTL config.
+const internalDeveloperTokenTTL = 24 * time.Hour
+
+// sign returns a signed developer token valid for ttl from now and the token's
+// expiry time. A non-empty origins list is embedded as the "origin" claim,
+// which makes Apple reject requests whose Origin header is not in the list.
+func (s *developerTokenSigner) sign(now time.Time, ttl time.Duration, origins []string) (string, time.Time, error) {
+	exp := now.Add(ttl)
 	header, err := json.Marshal(map[string]string{"alg": "ES256", "kid": s.keyID, "typ": "JWT"})
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	payload, err := json.Marshal(map[string]any{"iss": s.teamID, "iat": now.Unix(), "exp": exp.Unix()})
+	claims := map[string]any{"iss": s.teamID, "iat": now.Unix(), "exp": exp.Unix()}
+	if len(origins) > 0 {
+		claims["origin"] = origins
+	}
+	payload, err := json.Marshal(claims)
 	if err != nil {
 		return "", time.Time{}, err
 	}

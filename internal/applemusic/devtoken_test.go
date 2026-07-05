@@ -43,7 +43,7 @@ func TestDeveloperTokenSignerSignsValidES256(t *testing.T) {
 		t.Fatalf("new signer: %v", err)
 	}
 	now := time.Unix(1_700_000_000, 0)
-	token, exp, err := signer.sign(now)
+	token, exp, err := signer.sign(now, 24*time.Hour, nil)
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
@@ -73,6 +73,9 @@ func TestDeveloperTokenSignerSignsValidES256(t *testing.T) {
 	if int64(payload["exp"].(float64)) != now.Add(24*time.Hour).Unix() {
 		t.Fatalf("exp claim = %v", payload["exp"])
 	}
+	if _, ok := payload["origin"]; ok {
+		t.Fatalf("origin claim should be absent when no origins are given, payload %#v", payload)
+	}
 
 	// Verify the ES256 signature against the public key.
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
@@ -84,6 +87,45 @@ func TestDeveloperTokenSignerSignsValidES256(t *testing.T) {
 	s := new(big.Int).SetBytes(sig[32:])
 	if !ecdsa.Verify(&key.PublicKey, digest[:], r, s) {
 		t.Fatal("signature verification failed")
+	}
+}
+
+func TestDeveloperTokenSignerCustomTTLAndOrigins(t *testing.T) {
+	path, _ := writeP8Key(t)
+	signer, err := newDeveloperTokenSigner(path, "KID1234567", "TEAM123456")
+	if err != nil {
+		t.Fatalf("new signer: %v", err)
+	}
+	now := time.Unix(1_700_000_000, 0)
+	origins := []string{"https://player.example.com", "https://beta.example.com"}
+	token, exp, err := signer.sign(now, time.Hour, origins)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if want := now.Add(time.Hour); !exp.Equal(want) {
+		t.Fatalf("exp = %v, want %v", exp, want)
+	}
+
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token has %d parts, want 3", len(parts))
+	}
+	var payload map[string]any
+	decodeSegment(t, parts[1], &payload)
+	if int64(payload["exp"].(float64)) != now.Add(time.Hour).Unix() {
+		t.Fatalf("exp claim = %v", payload["exp"])
+	}
+	claim, ok := payload["origin"].([]any)
+	if !ok {
+		t.Fatalf("origin claim missing or not a list: %#v", payload["origin"])
+	}
+	if len(claim) != len(origins) {
+		t.Fatalf("origin claim has %d entries, want %d", len(claim), len(origins))
+	}
+	for i, origin := range origins {
+		if claim[i] != origin {
+			t.Fatalf("origin[%d] = %v, want %s", i, claim[i], origin)
+		}
 	}
 }
 
