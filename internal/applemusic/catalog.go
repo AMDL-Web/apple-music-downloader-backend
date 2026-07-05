@@ -46,7 +46,7 @@ func (c *CatalogClient) InitDeveloperToken() error {
 		return err
 	}
 	c.signer = signer
-	token, exp, err := signer.sign(time.Now())
+	token, exp, err := signer.sign(time.Now(), internalDeveloperTokenTTL, nil)
 	if err != nil {
 		return err
 	}
@@ -55,6 +55,16 @@ func (c *CatalogClient) InitDeveloperToken() error {
 	c.tokenUntil = exp.Add(-5 * time.Minute)
 	c.mu.Unlock()
 	return nil
+}
+
+// MintDeveloperToken signs a fresh developer token for external clients using
+// the configured endpoint TTL and allowed-origins list. It fails when
+// developer-token signing is disabled (legacy web-token mode).
+func (c *CatalogClient) MintDeveloperToken() (string, time.Time, error) {
+	if c.signer == nil {
+		return "", time.Time{}, fmt.Errorf("developer token signing is not configured")
+	}
+	return c.signer.sign(time.Now(), c.cfg.DeveloperTokenTTL(), c.cfg.AllowedOrigins)
 }
 
 // apiBase returns the catalog host. A self-signed developer token uses the
@@ -392,7 +402,7 @@ func (c *CatalogClient) Token(ctx context.Context) (string, error) {
 	c.mu.Unlock()
 
 	if c.signer != nil {
-		token, exp, err := c.signer.sign(time.Now())
+		token, exp, err := c.signer.sign(time.Now(), internalDeveloperTokenTTL, nil)
 		if err != nil {
 			return "", err
 		}

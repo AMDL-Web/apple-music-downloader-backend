@@ -34,6 +34,15 @@ catalog:
   apple_music_key_id: ""
   # string: the 10-character Apple developer Team ID used as the token issuer (iss). Empty disables signing.
   apple_music_team_id: ""
+  # integer hours: validity of developer tokens minted for external clients via GET /api/v1/developer-token.
+  # Values <= 0 fall back to 1 hour. Only meaningful when signing is enabled (the endpoint returns 409 in legacy mode);
+  # the backend's internal token always lasts 24h regardless of this value.
+  developer_token_ttl_hours: 1
+  # list of strings: web origins embedded as the JWT "origin" claim in tokens minted via GET /api/v1/developer-token,
+  # for example ["https://player.example.com"]. With one or more entries, Apple rejects API requests whose Origin
+  # header is not in the list. Empty list: no origin claim (token usable from any origin). Entries must be non-empty;
+  # ignored in legacy mode and never applied to the backend's internal token.
+  allowed_origins: []
   # integer hours: cached auto-discovered bearer-token TTL (legacy mode only). Values <= 0 fall back to 12 hours.
   # Ignored when developer-token signing is enabled (the signed token always expires 24h after issuance).
   token_cache_ttl_hours: 12

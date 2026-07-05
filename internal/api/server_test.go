@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"amdl/internal/config"
 	"amdl/internal/db"
@@ -518,5 +519,72 @@ func TestCreateDownloadAllRejectedReturns422(t *testing.T) {
 	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads", `{"urls":["bad-url"]}`)
 	if recorder.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+type fakeDevTokenService struct {
+	token string
+	exp   time.Time
+	err   error
+	calls int
+}
+
+func (f *fakeDevTokenService) MintDeveloperToken() (string, time.Time, error) {
+	f.calls++
+	return f.token, f.exp, f.err
+}
+
+func TestDeveloperTokenLegacyModeConflict(t *testing.T) {
+	server := &Server{cfg: config.Default(), devToken: &fakeDevTokenService{}}
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/developer-token", "")
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusConflict)
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if resp["error"] == "" {
+		t.Fatal("expected error message in response body")
+	}
+}
+
+func signingEnabledConfig() config.Config {
+	cfg := config.Default()
+	cfg.Catalog.AppleMusicPrivateKeyPath = "keys/AuthKey.p8"
+	cfg.Catalog.AppleMusicKeyID = "88KBJL3CKU"
+	cfg.Catalog.AppleMusicTeamID = "2VTXNMR2GL"
+	return cfg
+}
+
+func TestDeveloperTokenSigningMode(t *testing.T) {
+	exp := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	fake := &fakeDevTokenService{token: "signed.jwt.value", exp: exp}
+	server := &Server{cfg: signingEnabledConfig(), devToken: fake}
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/developer-token", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if resp["token"] != "signed.jwt.value" {
+		t.Fatalf("token = %q", resp["token"])
+	}
+	if resp["expires_at"] != "2026-07-05T12:00:00Z" {
+		t.Fatalf("expires_at = %q", resp["expires_at"])
+	}
+	if fake.calls != 1 {
+		t.Fatalf("mint calls = %d, want 1", fake.calls)
+	}
+}
+
+func TestDeveloperTokenSigningError(t *testing.T) {
+	fake := &fakeDevTokenService{err: errors.New("boom")}
+	server := &Server{cfg: signingEnabledConfig(), devToken: fake}
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/developer-token", "")
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
 	}
 }
