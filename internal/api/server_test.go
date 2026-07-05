@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"amdl/internal/config"
 	"amdl/internal/db"
@@ -524,14 +523,13 @@ func TestCreateDownloadAllRejectedReturns422(t *testing.T) {
 
 type fakeDevTokenService struct {
 	token string
-	exp   time.Time
 	err   error
 	calls int
 }
 
-func (f *fakeDevTokenService) MintDeveloperToken() (string, time.Time, error) {
+func (f *fakeDevTokenService) MintDeveloperToken() (string, error) {
 	f.calls++
-	return f.token, f.exp, f.err
+	return f.token, f.err
 }
 
 func TestDeveloperTokenLegacyModeConflict(t *testing.T) {
@@ -558,8 +556,7 @@ func signingEnabledConfig() config.Config {
 }
 
 func TestDeveloperTokenSigningMode(t *testing.T) {
-	exp := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
-	fake := &fakeDevTokenService{token: "signed.jwt.value", exp: exp}
+	fake := &fakeDevTokenService{token: "signed.jwt.value"}
 	server := &Server{cfg: signingEnabledConfig(), devToken: fake}
 	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/developer-token", "")
 	if recorder.Code != http.StatusOK {
@@ -572,8 +569,8 @@ func TestDeveloperTokenSigningMode(t *testing.T) {
 	if resp["token"] != "signed.jwt.value" {
 		t.Fatalf("token = %q", resp["token"])
 	}
-	if resp["expires_at"] != "2026-07-05T12:00:00Z" {
-		t.Fatalf("expires_at = %q", resp["expires_at"])
+	if _, ok := resp["expires_at"]; ok {
+		t.Fatal("expires_at should not be in the response; clients read exp from the JWT")
 	}
 	if fake.calls != 1 {
 		t.Fatalf("mint calls = %d, want 1", fake.calls)

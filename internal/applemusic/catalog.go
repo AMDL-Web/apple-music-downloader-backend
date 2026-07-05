@@ -59,12 +59,14 @@ func (c *CatalogClient) InitDeveloperToken() error {
 
 // MintDeveloperToken signs a fresh developer token for external clients using
 // the configured endpoint TTL and allowed-origins list. It fails when
-// developer-token signing is disabled (legacy web-token mode).
-func (c *CatalogClient) MintDeveloperToken() (string, time.Time, error) {
+// developer-token signing is disabled (legacy web-token mode). Expiry is not
+// returned: clients read the exp claim from the JWT payload.
+func (c *CatalogClient) MintDeveloperToken() (string, error) {
 	if c.signer == nil {
-		return "", time.Time{}, fmt.Errorf("developer token signing is not configured")
+		return "", fmt.Errorf("developer token signing is not configured")
 	}
-	return c.signer.sign(time.Now(), c.cfg.DeveloperTokenTTL(), c.cfg.AllowedOrigins)
+	token, _, err := c.signer.sign(time.Now(), c.cfg.DeveloperTokenTTL(), c.cfg.AllowedOrigins)
+	return token, err
 }
 
 // apiBase returns the catalog host. A self-signed developer token uses the
