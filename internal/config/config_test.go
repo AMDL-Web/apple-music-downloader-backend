@@ -68,6 +68,27 @@ func TestLoadRejectsExplicitEmptyValues(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsPartialDeveloperTokenConfig(t *testing.T) {
+	path := writeConfig(t, "catalog:\n  apple_music_key_id: \"88KBJL3CKU\"\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "apple_music_") {
+		t.Fatalf("Load() error = %v, want partial signing config error", err)
+	}
+}
+
+func TestDeveloperTokenSigningEnabled(t *testing.T) {
+	if Default().Catalog.DeveloperTokenSigningEnabled() {
+		t.Fatal("default config should have signing disabled")
+	}
+	complete := CatalogConfig{
+		AppleMusicPrivateKeyPath: "keys/AuthKey.p8",
+		AppleMusicKeyID:          "88KBJL3CKU",
+		AppleMusicTeamID:         "2VTXNMR2GL",
+	}
+	if !complete.DeveloperTokenSigningEnabled() {
+		t.Fatal("complete config should have signing enabled")
+	}
+}
+
 func TestLoadRejectsUnknownCoverFormat(t *testing.T) {
 	path := writeConfig(t, "download:\n  cover_format: webp\n")
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "cover_format") {

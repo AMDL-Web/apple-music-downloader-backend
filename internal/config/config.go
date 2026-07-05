@@ -49,11 +49,13 @@ func (c WrapperConfig) Timeout() time.Duration {
 }
 
 type CatalogConfig struct {
-	DefaultStorefront  string `yaml:"default_storefront" json:"default_storefront"`
-	Language           string `yaml:"language" json:"language"`
-	AuthorizationToken string `yaml:"authorization_token" json:"-"`
-	TokenCacheTTLHours int    `yaml:"token_cache_ttl_hours" json:"token_cache_ttl_hours"`
-	AlbumTrackURLMode  string `yaml:"album_track_url_mode" json:"album_track_url_mode"`
+	DefaultStorefront        string `yaml:"default_storefront" json:"default_storefront"`
+	Language                 string `yaml:"language" json:"language"`
+	AppleMusicPrivateKeyPath string `yaml:"apple_music_private_key_path" json:"apple_music_private_key_path"`
+	AppleMusicKeyID          string `yaml:"apple_music_key_id" json:"apple_music_key_id"`
+	AppleMusicTeamID         string `yaml:"apple_music_team_id" json:"apple_music_team_id"`
+	TokenCacheTTLHours       int    `yaml:"token_cache_ttl_hours" json:"token_cache_ttl_hours"`
+	AlbumTrackURLMode        string `yaml:"album_track_url_mode" json:"album_track_url_mode"`
 }
 
 func (c CatalogConfig) TokenTTL() time.Duration {
@@ -61,6 +63,15 @@ func (c CatalogConfig) TokenTTL() time.Duration {
 		return 12 * time.Hour
 	}
 	return time.Duration(c.TokenCacheTTLHours) * time.Hour
+}
+
+// DeveloperTokenSigningEnabled reports whether all three Apple Music
+// developer-token signing fields are configured. Partial configuration is
+// rejected by validate(), so a true result implies a usable signing setup.
+func (c CatalogConfig) DeveloperTokenSigningEnabled() bool {
+	return strings.TrimSpace(c.AppleMusicPrivateKeyPath) != "" &&
+		strings.TrimSpace(c.AppleMusicKeyID) != "" &&
+		strings.TrimSpace(c.AppleMusicTeamID) != ""
 }
 
 type DownloadConfig struct {
@@ -148,6 +159,15 @@ func Load(path string) (Config, error) {
 func (c Config) validate() error {
 	if c.Catalog.AlbumTrackURLMode != "song" && c.Catalog.AlbumTrackURLMode != "album" {
 		return fmt.Errorf("catalog.album_track_url_mode must be song or album")
+	}
+	signingFields := 0
+	for _, v := range []string{c.Catalog.AppleMusicPrivateKeyPath, c.Catalog.AppleMusicKeyID, c.Catalog.AppleMusicTeamID} {
+		if strings.TrimSpace(v) != "" {
+			signingFields++
+		}
+	}
+	if signingFields != 0 && signingFields != 3 {
+		return fmt.Errorf("catalog.apple_music_private_key_path, catalog.apple_music_key_id, and catalog.apple_music_team_id must all be set together or all left empty")
 	}
 	for name, value := range map[string]string{
 		"download.songs_folder_name":         c.Download.SongsFolderName,
