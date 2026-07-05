@@ -270,6 +270,35 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Downloads]
+      summary: 删除下载任务
+      description: 删除处于终态（completed/failed/cancelled）的任务及其任务项与事件记录。排队中或进行中的任务需先取消。
+      operationId: deleteDownload
+      parameters:
+        - $ref: '#/components/parameters/JobID'
+      responses:
+        '200':
+          description: 任务已删除。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 任务未处于终态，需先取消。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/v1/downloads/{job_id}/cancel:
     post:
       tags: [Downloads]

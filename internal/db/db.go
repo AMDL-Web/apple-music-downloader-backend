@@ -15,6 +15,13 @@ import (
 // collides with another queued/running job (partial unique index backstop).
 var ErrDuplicateActive = errors.New("duplicate active job")
 
+// ErrJobNotFound is returned by DeleteJob when no job has the given id.
+var ErrJobNotFound = errors.New("job not found")
+
+// ErrJobNotTerminal is returned by DeleteJob when the job is still queued or
+// running; active jobs must be cancelled before they can be deleted.
+var ErrJobNotTerminal = errors.New("job is not in a terminal status")
+
 func isUniqueConstraintErr(err error) bool {
 	var sqliteErr *sqlite.Error
 	if errors.As(err, &sqliteErr) {
@@ -163,7 +170,15 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,input,type,storefront,canonical_key,force,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
+	// done_items/failed_items are derived live from job_items instead of the
+	// stored jobs columns: the stored counters are only written back when a job
+	// finalizes, so running jobs (or jobs interrupted before finalize) would
+	// report stale counts. Status buckets must mirror domain.CountItemProgress.
+	rows, err := s.db.QueryContext(ctx, `SELECT j.id,j.input,j.type,j.storefront,j.canonical_key,j.force,j.status,j.total_items,
+			(SELECT COUNT(*) FROM job_items i WHERE i.job_id=j.id AND i.status IN (?,?)) AS done_items,
+			(SELECT COUNT(*) FROM job_items i WHERE i.job_id=j.id AND i.status=?) AS failed_items,
+			j.error,j.created_at,j.updated_at FROM jobs j ORDER BY j.created_at DESC LIMIT ?`,
+		string(domain.ItemCompleted), string(domain.ItemSkipped), string(domain.ItemFailed), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +192,41 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
 		out = append(out, job)
 	}
 	return out, rows.Err()
+}
+
+// DeleteJob removes a terminal (completed/failed/cancelled) job together with
+// its items and events. Queued/running jobs are refused with ErrJobNotTerminal
+// so an in-flight worker never loses the rows it is still updating; cancel the
+// job first. The status check and the three deletes run in one transaction.
+func (s *Store) DeleteJob(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var status string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id=?`, id).Scan(&status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrJobNotFound
+		}
+		return err
+	}
+	switch domain.JobStatus(status) {
+	case domain.JobCompleted, domain.JobFailed, domain.JobCancelled:
+	default:
+		return ErrJobNotTerminal
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM job_events WHERE job_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM job_items WHERE job_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE id=?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ListRecoverableJobs(ctx context.Context) ([]domain.Job, error) {
