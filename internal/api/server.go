@@ -53,7 +53,7 @@ type qualityService interface {
 }
 
 type developerTokenService interface {
-	MintDeveloperToken() (string, time.Time, error)
+	MintDeveloperToken() (string, error)
 }
 
 func NewServer(cfg config.Config, store *db.Store, hub *events.Hub, manager *jobs.Manager, wrapperClient wrapperService, qualityClient qualityService, devToken developerTokenService, tools *media.ToolChecker, logger *slog.Logger) *Server {
@@ -232,15 +232,12 @@ func (s *Server) developerToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, fmt.Errorf("developer token endpoint requires local signing mode (catalog.apple_music_* keys); the web-discovered token is origin-restricted and cannot be shared"))
 		return
 	}
-	token, exp, err := s.devToken.MintDeveloperToken()
+	token, err := s.devToken.MintDeveloperToken()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"token":      token,
-		"expires_at": exp.UTC().Format(time.RFC3339),
-	})
+	writeJSON(w, http.StatusOK, map[string]string{"token": token})
 }
 
 func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
