@@ -23,3 +23,5 @@ keys/
 # Go test & coverage artifacts.
 *.out
 coverage.txt
+
+*.local.yaml
