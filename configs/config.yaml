@@ -21,9 +21,21 @@ catalog:
   default_storefront: "cn"
   # string: Apple Music catalog language tag passed as the "l" query parameter, for example "en-US", "zh-Hans_CN", "ja-JP".
   language: "zh-Hans_CN"
-  # string: optional Apple Music bearer token override. Empty string means auto-discover from music.apple.com.
-  authorization_token: ""
-  # integer hours: cached Apple Music bearer-token TTL. Values <= 0 fall back to 12 hours.
+  # Apple Music developer-token signing (all three keys form one unit):
+  # - all three empty: signing disabled; the bearer token is auto-discovered from music.apple.com (legacy behavior)
+  #     and catalog metadata is read from amp-api.music.apple.com with enhancedHls manifests.
+  # - all three set: the backend signs its own 24h ES256 developer token at startup (fails to start on any signing error),
+  #     reads catalog metadata from the official api.music.apple.com, and sources every audio manifest from wrapper.M3U8
+  #     (enhancedHls is not accessible with a self-signed token).
+  # - only some set: startup fails with a configuration error.
+  # string: filesystem path to the Apple Media Services .p8 private key (PKCS#8 ECDSA). Empty disables signing.
+  apple_music_private_key_path: ""
+  # string: the 10-character Key ID (kid) for the .p8 key. Empty disables signing.
+  apple_music_key_id: ""
+  # string: the 10-character Apple developer Team ID used as the token issuer (iss). Empty disables signing.
+  apple_music_team_id: ""
+  # integer hours: cached auto-discovered bearer-token TTL (legacy mode only). Values <= 0 fall back to 12 hours.
+  # Ignored when developer-token signing is enabled (the signed token always expires 24h after issuance).
   token_cache_ttl_hours: 12
   # enum: song, album. song means album URLs containing ?i= are single-song tasks; album downloads the full album.
   album_track_url_mode: "song"

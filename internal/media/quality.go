@@ -48,6 +48,7 @@ type QualityResult struct {
 type QualityService struct {
 	cfg     config.Config
 	catalog qualityCatalog
+	wrapper qualityWrapper
 	http    *http.Client
 }
 
@@ -55,8 +56,12 @@ type qualityCatalog interface {
 	Song(context.Context, string, string) (applemusic.Song, error)
 }
 
-func NewQualityService(cfg config.Config, catalog *applemusic.CatalogClient) *QualityService {
-	return NewQualityServiceWithCatalog(cfg, catalog)
+type qualityWrapper interface {
+	M3U8(context.Context, string) (string, error)
+}
+
+func NewQualityService(cfg config.Config, catalog *applemusic.CatalogClient, wrapperClient qualityWrapper) *QualityService {
+	return &QualityService{cfg: cfg, catalog: catalog, wrapper: wrapperClient, http: newHTTPClient()}
 }
 
 func NewQualityServiceWithCatalog(cfg config.Config, catalog qualityCatalog) *QualityService {
@@ -76,6 +81,18 @@ func (s *QualityService) QueryQuality(ctx context.Context, req QualityRequest) (
 		return QualityResult{}, err
 	}
 	master := song.EnhancedHLS
+	if s.cfg.Catalog.DeveloperTokenSigningEnabled() {
+		// A self-signed developer token cannot read enhancedHls, so quality is
+		// analyzed from the authorized device manifest instead.
+		if s.wrapper == nil {
+			return QualityResult{}, fmt.Errorf("developer-token signing enabled but wrapper is not configured")
+		}
+		m3u8, err := s.wrapper.M3U8(ctx, song.ID)
+		if err != nil {
+			return QualityResult{}, fmt.Errorf("request device m3u8: %w", err)
+		}
+		master = m3u8
+	}
 	if strings.TrimSpace(master) == "" {
 		return QualityResult{}, fmt.Errorf("song %s has no enhanced hls manifest", song.ID)
 	}

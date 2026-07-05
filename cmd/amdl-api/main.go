@@ -71,9 +71,13 @@ func main() {
 	defer wrapperClient.Close()
 
 	catalog := applemusic.NewCatalogClient(cfg.Catalog, logger)
+	if err := catalog.InitDeveloperToken(); err != nil {
+		logger.Error("sign apple music developer token", "error", err)
+		os.Exit(1)
+	}
 	toolChecker := media.NewToolChecker(cfg.Tools)
 	downloader := media.NewDownloader(cfg, catalog, wrapperClient, toolChecker, logger)
-	qualityService := media.NewQualityService(cfg, catalog)
+	qualityService := media.NewQualityService(cfg, catalog, wrapperClient)
 	manager := jobs.NewManager(store, hub, downloader, cfg.Download.MaxRunningJobs, logger)
 	hookDispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, logger)
 	manager.SetHooks(hookDispatcher)

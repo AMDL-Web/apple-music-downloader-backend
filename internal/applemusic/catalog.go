@@ -21,6 +21,7 @@ type CatalogClient struct {
 	http       *http.Client
 	logger     *slog.Logger
 	mu         sync.Mutex
+	signer     *developerTokenSigner
 	token      string
 	tokenUntil time.Time
 }
@@ -33,13 +34,50 @@ func NewCatalogClient(cfg config.CatalogConfig, logger *slog.Logger) *CatalogCli
 	}
 }
 
+// InitDeveloperToken loads the signing key and mints the first developer token
+// when signing is configured. It must be called once at startup; any error
+// should stop the process from starting. It is a no-op in legacy mode.
+func (c *CatalogClient) InitDeveloperToken() error {
+	if !c.cfg.DeveloperTokenSigningEnabled() {
+		return nil
+	}
+	signer, err := newDeveloperTokenSigner(c.cfg.AppleMusicPrivateKeyPath, c.cfg.AppleMusicKeyID, c.cfg.AppleMusicTeamID)
+	if err != nil {
+		return err
+	}
+	c.signer = signer
+	token, exp, err := signer.sign(time.Now())
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.token = token
+	c.tokenUntil = exp.Add(-5 * time.Minute)
+	c.mu.Unlock()
+	return nil
+}
+
+// apiBase returns the catalog host. A self-signed developer token uses the
+// official api.music.apple.com; legacy web tokens use the amp-api host.
+func (c *CatalogClient) apiBase() string {
+	if c.cfg.DeveloperTokenSigningEnabled() {
+		return "https://api.music.apple.com"
+	}
+	return "https://amp-api.music.apple.com"
+}
+
 func (c *CatalogClient) Song(ctx context.Context, storefront, id string) (Song, error) {
 	var resp catalogSongResponse
-	if err := c.get(ctx, fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s", storefront, id), url.Values{
+	params := url.Values{
 		"include": []string{"albums,artists"},
-		"extend":  []string{"extendedAssetUrls"},
 		"l":       []string{c.cfg.Language},
-	}, &resp); err != nil {
+	}
+	if !c.cfg.DeveloperTokenSigningEnabled() {
+		// extendedAssetUrls carries enhancedHls, which a self-signed developer
+		// token cannot access; only request it in legacy mode.
+		params.Set("extend", "extendedAssetUrls")
+	}
+	if err := c.get(ctx, fmt.Sprintf("%s/v1/catalog/%s/songs/%s", c.apiBase(), storefront, id), params, &resp); err != nil {
 		return Song{}, err
 	}
 	if len(resp.Data) == 0 {
@@ -72,7 +110,7 @@ func (c *CatalogClient) Song(ctx context.Context, storefront, id string) (Song, 
 
 func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Collection, error) {
 	var resp catalogAlbumResponse
-	if err := c.get(ctx, fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/albums/%s", storefront, id), url.Values{
+	if err := c.get(ctx, fmt.Sprintf("%s/v1/catalog/%s/albums/%s", c.apiBase(), storefront, id), url.Values{
 		"include":        []string{"tracks,artists,record-labels"},
 		"include[songs]": []string{"artists"},
 		"l":              []string{c.cfg.Language},
@@ -128,7 +166,7 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 
 func (c *CatalogClient) Playlist(ctx context.Context, storefront, id string) (Collection, error) {
 	var resp catalogPlaylistResponse
-	if err := c.get(ctx, fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/playlists/%s", storefront, id), url.Values{
+	if err := c.get(ctx, fmt.Sprintf("%s/v1/catalog/%s/playlists/%s", c.apiBase(), storefront, id), url.Values{
 		"l": []string{c.cfg.Language},
 	}, &resp); err != nil {
 		return Collection{}, err
@@ -153,7 +191,7 @@ func (c *CatalogClient) Playlist(ctx context.Context, storefront, id string) (Co
 
 func (c *CatalogClient) ArtistAlbums(ctx context.Context, storefront, id string) (ArtistAlbums, error) {
 	var resp catalogArtistResponse
-	if err := c.get(ctx, fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/artists/%s", storefront, id), url.Values{
+	if err := c.get(ctx, fmt.Sprintf("%s/v1/catalog/%s/artists/%s", c.apiBase(), storefront, id), url.Values{
 		"include": []string{"albums"},
 		"l":       []string{c.cfg.Language},
 	}, &resp); err != nil {
@@ -189,7 +227,7 @@ func (c *CatalogClient) allTrackPages(ctx context.Context, first relationshipSon
 	tracks := append([]catalogSongData(nil), first.Data...)
 	for next := strings.TrimSpace(first.Next); next != ""; {
 		var page relationshipSongs
-		if err := c.get(ctx, catalogNextURL(next), nil, &page); err != nil {
+		if err := c.get(ctx, c.catalogNextURL(next), nil, &page); err != nil {
 			return nil, err
 		}
 		tracks = append(tracks, page.Data...)
@@ -202,7 +240,7 @@ func (c *CatalogClient) allAlbumPages(ctx context.Context, first relationshipAlb
 	albums := append([]catalogAlbumData(nil), first.Data...)
 	for next := strings.TrimSpace(first.Next); next != ""; {
 		var page relationshipAlbums
-		if err := c.get(ctx, catalogNextURL(next), nil, &page); err != nil {
+		if err := c.get(ctx, c.catalogNextURL(next), nil, &page); err != nil {
 			return nil, err
 		}
 		albums = append(albums, page.Data...)
@@ -211,19 +249,19 @@ func (c *CatalogClient) allAlbumPages(ctx context.Context, first relationshipAlb
 	return albums, nil
 }
 
-func catalogNextURL(next string) string {
+func (c *CatalogClient) catalogNextURL(next string) string {
 	if strings.HasPrefix(next, "http://") || strings.HasPrefix(next, "https://") {
 		return next
 	}
 	if strings.HasPrefix(next, "/") {
-		return "https://amp-api.music.apple.com" + next
+		return c.apiBase() + next
 	}
-	return "https://amp-api.music.apple.com/" + next
+	return c.apiBase() + "/" + next
 }
 
 func (c *CatalogClient) Artist(ctx context.Context, storefront, id string) (Artist, error) {
 	var resp catalogArtistResponse
-	if err := c.get(ctx, fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/artists/%s", storefront, id), url.Values{
+	if err := c.get(ctx, fmt.Sprintf("%s/v1/catalog/%s/artists/%s", c.apiBase(), storefront, id), url.Values{
 		"l": []string{c.cfg.Language},
 	}, &resp); err != nil {
 		return Artist{}, err
@@ -321,7 +359,11 @@ func (c *CatalogClient) get(ctx context.Context, endpoint string, params url.Val
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Origin", "https://music.apple.com")
+	if !c.cfg.DeveloperTokenSigningEnabled() {
+		// The web player token is scoped to music.apple.com; a self-signed
+		// developer token carries no origin claim, so no Origin header is sent.
+		req.Header.Set("Origin", "https://music.apple.com")
+	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -349,11 +391,19 @@ func (c *CatalogClient) Token(ctx context.Context) (string, error) {
 	}
 	c.mu.Unlock()
 
-	token, err := c.fetchToken(ctx)
-	if err != nil && c.cfg.AuthorizationToken != "" {
-		token = strings.TrimPrefix(c.cfg.AuthorizationToken, "Bearer ")
-		err = nil
+	if c.signer != nil {
+		token, exp, err := c.signer.sign(time.Now())
+		if err != nil {
+			return "", err
+		}
+		c.mu.Lock()
+		c.token = token
+		c.tokenUntil = exp.Add(-5 * time.Minute)
+		c.mu.Unlock()
+		return token, nil
 	}
+
+	token, err := c.fetchToken(ctx)
 	if err != nil {
 		return "", err
 	}

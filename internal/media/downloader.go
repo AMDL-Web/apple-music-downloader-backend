@@ -548,7 +548,9 @@ func (d *Downloader) handleExistingOutput(ctx context.Context, reporter jobs.Rep
 func (d *Downloader) selectEnhancedMedia(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, codec string, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) (selectedDownloadMedia, error) {
 	set(domain.ItemDownloading, 0.03, "selecting manifest")
 	master := song.EnhancedHLS
-	if codec == "alac" {
+	if d.cfg.Catalog.DeveloperTokenSigningEnabled() {
+		// A self-signed developer token cannot read enhancedHls, so the master
+		// playlist comes from the authorized device manifest instead.
 		m3u8, err := d.wrapper.M3U8(ctx, song.ID)
 		if err != nil {
 			return selectedDownloadMedia{}, fmt.Errorf("request device m3u8: %w", err)
