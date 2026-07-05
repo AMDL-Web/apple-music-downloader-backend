@@ -198,6 +198,11 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
 // its items and events. Queued/running jobs are refused with ErrJobNotTerminal
 // so an in-flight worker never loses the rows it is still updating; cancel the
 // job first. The status check and the three deletes run in one transaction.
+//
+// The row status alone cannot tell whether the manager's finalize sequence
+// (terminal event insert + hook dispatch) has finished — callers must go
+// through jobs.Manager.Delete, which additionally refuses while a finalize is
+// still in flight.
 func (s *Store) DeleteJob(ctx context.Context, id string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

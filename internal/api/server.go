@@ -318,7 +318,10 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteDownload(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteJob(r.Context(), r.PathValue("id")); err != nil {
+	// Deletion goes through the manager, not the store, so a job whose
+	// finalize sequence (terminal event + hook dispatch) is still in flight
+	// is refused even though its status row already reads terminal.
+	if err := s.manager.Delete(r.Context(), r.PathValue("id")); err != nil {
 		switch {
 		case errors.Is(err, db.ErrJobNotFound):
 			writeError(w, http.StatusNotFound, err)
