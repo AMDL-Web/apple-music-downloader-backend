@@ -2,8 +2,10 @@ package media
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -42,14 +44,20 @@ func (f fakeDownloaderWrapper) License(context.Context, string, string, string) 
 }
 
 type fakeDownloaderCatalog struct {
+	song         applemusic.Song
+	songErr      error
+	album        applemusic.Collection
 	artistAlbums applemusic.ArtistAlbums
 }
 
 func (f fakeDownloaderCatalog) Song(context.Context, string, string) (applemusic.Song, error) {
-	return applemusic.Song{}, nil
+	return f.song, f.songErr
 }
 
 func (f fakeDownloaderCatalog) Album(_ context.Context, _, id string) (applemusic.Collection, error) {
+	if f.album.ID == id {
+		return f.album, nil
+	}
 	for _, album := range f.artistAlbums.Albums {
 		if album.ID == id {
 			return album, nil
@@ -81,6 +89,20 @@ func (noopReporter) AddItem(context.Context, domain.JobItem) error    { return n
 func (noopReporter) UpdateItem(context.Context, domain.JobItem) error { return nil }
 func (noopReporter) Event(context.Context, domain.Event) error        { return nil }
 
+type recordingReporter struct {
+	events []domain.Event
+}
+
+func (*recordingReporter) SetJob(context.Context, domain.Job) error      { return nil }
+func (*recordingReporter) AddItem(context.Context, domain.JobItem) error { return nil }
+func (*recordingReporter) UpdateItem(context.Context, domain.JobItem) error {
+	return nil
+}
+func (r *recordingReporter) Event(_ context.Context, ev domain.Event) error {
+	r.events = append(r.events, ev)
+	return nil
+}
+
 func TestValidateRequestAcceptsArtistURL(t *testing.T) {
 	downloader := &Downloader{
 		cfg:     config.Default(),
@@ -99,7 +121,7 @@ func TestResolveCollectionArtistFlattensAlbumTracksAndDedupesSongs(t *testing.T)
 	downloader := &Downloader{
 		cfg: config.Default(),
 		catalog: fakeDownloaderCatalog{artistAlbums: applemusic.ArtistAlbums{
-			Artist: applemusic.Artist{ID: "artist-1", Name: "Artist"},
+			Artist: applemusic.Artist{ID: "artist-1", Name: "Artist", ArtworkURL: "https://example.com/artist/{w}x{h}bb.jpg"},
 			Albums: []applemusic.Collection{
 				{ID: "album-1", Name: "First", Artist: "Artist", Tracks: []applemusic.Song{
 					{ID: "song-1", Name: "One", AlbumName: "First", AlbumArtist: "Artist"},
@@ -124,6 +146,86 @@ func TestResolveCollectionArtistFlattensAlbumTracksAndDedupesSongs(t *testing.T)
 	}
 	if resolved.Name != "Artist" {
 		t.Fatalf("collection name = %q, want Artist", resolved.Name)
+	}
+	if resolved.ArtworkURL != "https://example.com/artist/{w}x{h}bb.jpg" {
+		t.Fatalf("artwork url = %q, want artist artwork template", resolved.ArtworkURL)
+	}
+}
+
+func TestResolveCollectionPropagatesArtwork(t *testing.T) {
+	tests := []struct {
+		name    string
+		catalog fakeDownloaderCatalog
+		parsed  applemusic.ParsedURL
+		want    string
+	}{
+		{
+			name: "song uses its own artwork",
+			catalog: fakeDownloaderCatalog{song: applemusic.Song{
+				ID: "song-1", ArtworkURL: "https://example.com/song/{w}x{h}bb.jpg", AlbumArtworkURL: "https://example.com/album/{w}x{h}bb.jpg",
+			}},
+			parsed: applemusic.ParsedURL{Storefront: "cn", Type: applemusic.TypeSong, ID: "song-1"},
+			want:   "https://example.com/song/{w}x{h}bb.jpg",
+		},
+		{
+			name: "song falls back to album artwork",
+			catalog: fakeDownloaderCatalog{song: applemusic.Song{
+				ID: "song-1", AlbumArtworkURL: "https://example.com/album/{w}x{h}bb.jpg",
+			}},
+			parsed: applemusic.ParsedURL{Storefront: "cn", Type: applemusic.TypeSong, ID: "song-1"},
+			want:   "https://example.com/album/{w}x{h}bb.jpg",
+		},
+		{
+			name: "album propagates collection artwork",
+			catalog: fakeDownloaderCatalog{album: applemusic.Collection{
+				ID: "album-1", Name: "First", ArtworkURL: "https://example.com/album/{w}x{h}bb.jpg",
+				Tracks: []applemusic.Song{{ID: "song-1"}},
+			}},
+			parsed: applemusic.ParsedURL{Storefront: "cn", Type: applemusic.TypeAlbum, ID: "album-1"},
+			want:   "https://example.com/album/{w}x{h}bb.jpg",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			downloader := &Downloader{cfg: config.Default(), catalog: tt.catalog}
+			resolved, err := downloader.resolveCollection(context.Background(), tt.parsed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolved.ArtworkURL != tt.want {
+				t.Fatalf("artwork url = %q, want %q", resolved.ArtworkURL, tt.want)
+			}
+		})
+	}
+}
+
+func TestProcessTrackItemProgressEventOmitsArtworkURL(t *testing.T) {
+	cfg := config.Default()
+	cfg.Download.Retries = 0 // avoid retry backoff delays; the fetch failure is the point of this test
+	downloader := &Downloader{
+		cfg:     cfg,
+		catalog: fakeDownloaderCatalog{songErr: errors.New("boom")},
+	}
+	reporter := &recordingReporter{}
+	item := domain.JobItem{ID: "item-1", ArtworkURL: "https://example.com/track/{w}x{h}bb.jpg"}
+	job := domain.Job{ID: "job-1"}
+
+	if err := downloader.processTrack(context.Background(), job, item, applemusic.Song{ID: "song-1"}, "cn", applemusic.TypeAlbum, "Album", "album-1", 1, "", reporter); err == nil {
+		t.Fatal("expected error from failing metadata fetch")
+	}
+
+	var progressEvents int
+	for _, ev := range reporter.events {
+		if ev.Type != "item_progress" {
+			continue
+		}
+		progressEvents++
+		if strings.Contains(ev.Payload, "artwork_url") {
+			t.Fatalf("item_progress payload leaked artwork_url: %s", ev.Payload)
+		}
+	}
+	if progressEvents == 0 {
+		t.Fatal("expected at least one item_progress event before the fetch failed")
 	}
 }
 

@@ -528,6 +528,51 @@ func TestListDownloadsDerivesProgressFromItems(t *testing.T) {
 	}
 }
 
+func TestDownloadResponsesIncludeArtworkURLTemplate(t *testing.T) {
+	server := newTestServerWithManager(t)
+	ctx := context.Background()
+	jobArt := "https://is1-ssl.mzstatic.com/image/thumb/Music/album/{w}x{h}bb.jpg"
+	itemArt := "https://is1-ssl.mzstatic.com/image/thumb/Music/track/{w}x{h}bb.jpg"
+	job := domain.Job{ID: "job1", Input: "album|us|1", Type: "album", ArtworkURL: jobArt, Status: domain.JobRunning, TotalItems: 1}
+	if err := server.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	item := domain.JobItem{ID: "item1", JobID: job.ID, Index: 1, ArtworkURL: itemArt, Status: domain.ItemQueued}
+	if err := server.store.CreateItem(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads/"+job.ID, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var detail struct {
+		Job   domain.Job       `json:"job"`
+		Items []domain.JobItem `json:"items"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Job.ArtworkURL != jobArt {
+		t.Fatalf("job artwork_url = %q, want %q", detail.Job.ArtworkURL, jobArt)
+	}
+	if len(detail.Items) != 1 || detail.Items[0].ArtworkURL != itemArt {
+		t.Fatalf("items = %+v, want one item with artwork_url %q", detail.Items, itemArt)
+	}
+
+	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var jobs []domain.Job
+	if err := json.Unmarshal(recorder.Body.Bytes(), &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].ArtworkURL != jobArt {
+		t.Fatalf("listed jobs = %+v, want one job with artwork_url %q", jobs, jobArt)
+	}
+}
+
 func TestDeleteDownload(t *testing.T) {
 	server := newTestServerWithManager(t)
 	ctx := context.Background()

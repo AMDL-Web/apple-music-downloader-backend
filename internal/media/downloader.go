@@ -141,6 +141,7 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 		}
 	}
 	job.TotalItems = len(tracks)
+	job.ArtworkURL = resolved.ArtworkURL
 	if err := reporter.SetJob(ctx, job); err != nil {
 		return err
 	}
@@ -153,7 +154,8 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	for i, track := range tracks {
 		items[i] = domain.JobItem{
 			ID: storage.NewID("item"), JobID: job.ID, AdamID: track.ID, Kind: "song", Index: i + 1,
-			Title: track.Name, Artist: track.ArtistName, Album: track.AlbumName, Status: domain.ItemQueued,
+			Title: track.Name, Artist: track.ArtistName, Album: track.AlbumName,
+			ArtworkURL: firstNonEmpty(track.ArtworkURL, track.AlbumArtworkURL), Status: domain.ItemQueued,
 		}
 		if err := reporter.AddItem(ctx, items[i]); err != nil {
 			return err
@@ -224,13 +226,13 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 		if err != nil {
 			return resolvedCollection{}, err
 		}
-		return resolvedCollection{Tracks: []applemusic.Song{song}}, nil
+		return resolvedCollection{Tracks: []applemusic.Song{song}, ArtworkURL: firstNonEmpty(song.ArtworkURL, song.AlbumArtworkURL)}, nil
 	case applemusic.TypeAlbum:
 		album, err := d.catalog.Album(ctx, parsed.Storefront, parsed.ID)
 		if err != nil {
 			return resolvedCollection{}, err
 		}
-		return resolvedCollection{Tracks: album.Tracks, ID: album.ID, Name: album.Name}, nil
+		return resolvedCollection{Tracks: album.Tracks, ID: album.ID, Name: album.Name, ArtworkURL: album.ArtworkURL}, nil
 	case applemusic.TypePlaylist:
 		playlist, err := d.catalog.Playlist(ctx, parsed.Storefront, parsed.ID)
 		if err != nil {
@@ -274,7 +276,10 @@ func (d *Downloader) artistTracks(ctx context.Context, storefront string, albums
 func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item domain.JobItem, initial applemusic.Song, storefront string, collectionType applemusic.URLType, collectionName, collectionID string, playlistIndex int, folderArtist string, reporter jobs.Reporter) error {
 	// set updates item state and emits an item_progress SSE event.
 	// The full JobItem is embedded in the event Payload so the frontend can
-	// update the UI directly from SSE without any additional HTTP round-trips.
+	// update the UI directly from SSE without any additional HTTP round-trips,
+	// except artwork_url: cover art doesn't change during a download, so it's
+	// stripped from the event to keep progress/status pushes lightweight — the
+	// frontend already has it from the initial REST response.
 	// To avoid flooding the stream, we only emit when status changes or
 	// progress moves by at least 1 percentage point.
 	var lastEmittedStatus domain.ItemStatus
@@ -289,13 +294,15 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 		if status != lastEmittedStatus || progPct != lastPct {
 			lastEmittedStatus = status
 			lastEmittedProgress = progress
+			eventItem := item
+			eventItem.ArtworkURL = ""
 			_ = reporter.Event(ctx, domain.Event{
 				JobID:   job.ID,
 				ItemID:  item.ID,
 				Type:    "item_progress",
 				Phase:   string(status),
 				Message: message,
-				Payload: marshalPayload(item), // full item state for frontend
+				Payload: marshalPayload(eventItem), // full item state for frontend, minus cover art
 			})
 		}
 	}
@@ -318,6 +325,7 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	item.Title = song.Name
 	item.Artist = song.ArtistName
 	item.Album = song.AlbumName
+	item.ArtworkURL = firstNonEmpty(song.ArtworkURL, song.AlbumArtworkURL, item.ArtworkURL)
 	_ = reporter.UpdateItem(ctx, item)
 
 	coverAnchorPath := outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, "", "")

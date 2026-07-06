@@ -707,6 +707,13 @@ components:
           enum: [song, album, playlist, artist]
         storefront:
           type: string
+        artwork_url:
+          type: string
+          description: >-
+            Cover artwork URL template with {w}x{h} (and optionally {f})
+            placeholders; substitute the desired pixel size client-side,
+            e.g. 600x600. Populated once the job's input is resolved;
+            absent for jobs created before this field existed.
         force:
           type: boolean
         status:
@@ -738,6 +745,12 @@ components:
         title: {type: string}
         artist: {type: string}
         album: {type: string}
+        artwork_url:
+          type: string
+          description: >-
+            Track cover artwork URL template with {w}x{h} (and optionally {f})
+            placeholders; substitute the desired pixel size client-side,
+            e.g. 600x600. Absent for items created before this field existed.
         status:
           type: string
           enum: [queued, resolving, downloading, decrypting, remuxing, tagging, saving, completed, failed, skipped_existing, cancelled]
