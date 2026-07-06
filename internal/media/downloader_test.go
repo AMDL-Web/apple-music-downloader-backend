@@ -2,10 +2,14 @@ package media
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
+	"amdl/internal/domain"
 	"amdl/internal/wrapper"
 )
 
@@ -70,6 +74,13 @@ func (f fakeDownloaderCatalog) FetchCover(context.Context, []string, string, str
 	return nil, nil
 }
 
+type noopReporter struct{}
+
+func (noopReporter) SetJob(context.Context, domain.Job) error         { return nil }
+func (noopReporter) AddItem(context.Context, domain.JobItem) error    { return nil }
+func (noopReporter) UpdateItem(context.Context, domain.JobItem) error { return nil }
+func (noopReporter) Event(context.Context, domain.Event) error        { return nil }
+
 func TestValidateRequestAcceptsArtistURL(t *testing.T) {
 	downloader := &Downloader{
 		cfg:     config.Default(),
@@ -113,6 +124,66 @@ func TestResolveCollectionArtistFlattensAlbumTracksAndDedupesSongs(t *testing.T)
 	}
 	if resolved.Name != "Artist" {
 		t.Fatalf("collection name = %q, want Artist", resolved.Name)
+	}
+}
+
+func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
+	var encryptedMediaHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/master.m3u8":
+			_, _ = w.Write([]byte("#EXTM3U\n" +
+				"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio-alac-stereo-96000-24\",NAME=\"Lossless\",BIT-DEPTH=24,SAMPLE-RATE=96000\n" +
+				"#EXT-X-STREAM-INF:BANDWIDTH=3000000,AVERAGE-BANDWIDTH=2500000,AUDIO=\"audio-alac-stereo-96000-24\",CODECS=\"alac\"\n" +
+				"media.m3u8\n"))
+		case "/media.m3u8":
+			_, _ = w.Write([]byte("#EXTM3U\n" +
+				"#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://itunes.apple.com/P000000000/s1/e1/c23\"\n" +
+				"#EXT-X-MAP:URI=\"encrypted.mp4\"\n"))
+		case "/encrypted.mp4":
+			encryptedMediaHits.Add(1)
+			_, _ = w.Write([]byte("encrypted media bytes"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	downloader := &Downloader{
+		cfg:  config.Default(),
+		http: server.Client(),
+	}
+	selected, err := downloader.selectEnhancedMedia(
+		context.Background(),
+		domain.Job{ID: "job-1"},
+		&domain.JobItem{ID: "item-1"},
+		applemusic.Song{ID: "song-1", EnhancedHLS: server.URL + "/master.m3u8"},
+		"alac",
+		noopReporter{},
+		func(domain.ItemStatus, float64, string) {},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encryptedMediaHits.Load() != 0 {
+		t.Fatalf("selectEnhancedMedia downloaded encrypted media %d time(s), want 0", encryptedMediaHits.Load())
+	}
+	if len(selected.raw) != 0 {
+		t.Fatalf("selected.raw length = %d, want 0 before download step", len(selected.raw))
+	}
+	if got, want := qualityLabel(selected.info), "24-bit/96 kHz"; got != want {
+		t.Fatalf("qualityLabel = %q, want %q", got, want)
+	}
+
+	selected, err = downloader.downloadSelectedEnhancedMedia(context.Background(), selected, "alac", func(domain.ItemStatus, float64, string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encryptedMediaHits.Load() != 1 {
+		t.Fatalf("downloadSelectedEnhancedMedia downloaded encrypted media %d time(s), want 1", encryptedMediaHits.Load())
+	}
+	if string(selected.raw) != "encrypted media bytes" {
+		t.Fatalf("selected.raw = %q, want encrypted media bytes", string(selected.raw))
 	}
 }
 
