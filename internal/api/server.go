@@ -19,6 +19,8 @@ import (
 	"amdl/internal/jobs"
 	"amdl/internal/media"
 	"amdl/internal/wrapper"
+
+	"github.com/coder/websocket"
 )
 
 // maxBatchSubmitURLs caps the number of URLs accepted in a single batch
@@ -78,6 +80,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/downloads/{id}", s.deleteDownload)
 	mux.HandleFunc("POST /api/v1/downloads/{id}/cancel", s.cancelDownload)
 	mux.HandleFunc("GET /api/v1/downloads/{id}/events", s.events)
+	mux.HandleFunc("GET /api/v1/downloads/{id}/events/ws", s.eventsWS)
 	return cors(mux)
 }
 
@@ -315,6 +318,79 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 			"fallback_codec_retries": 0,
 		},
 	})
+}
+
+// eventsWS is the WebSocket twin of events: it streams the same persisted job
+// events — one domain.Event encoded as a JSON text message, identical to the
+// SSE data payload — over a WebSocket connection. Resume works via the
+// ?last_event_id= query parameter (WebSocket has no Last-Event-ID header
+// convention); clients pass the id of the last event they saw. Delivery uses
+// the same store-drain pattern as events: the hub only wakes the drain sooner,
+// and the ticker bounds tail latency for events dropped by a full hub buffer.
+// The ticker also pings the peer so half-open mobile connections are detected
+// and torn down instead of holding the goroutine forever.
+func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	lastID, _ := strconv.ParseInt(r.URL.Query().Get("last_event_id"), 10, 64)
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+	if err != nil {
+		return // Accept already wrote the handshake failure response
+	}
+	defer conn.CloseNow()
+
+	// CloseRead answers control frames (ping/pong/close) in the background and
+	// cancels the returned context when the client goes away. The protocol is
+	// server-push only, so a client data frame also terminates the connection.
+	ctx := conn.CloseRead(r.Context())
+
+	drain := func() error {
+		events, err := s.store.ListEventsAfter(ctx, id, lastID)
+		if err != nil {
+			// Keep the connection on a store read error; the next hub wake or
+			// tick retries, mirroring the SSE drain.
+			return nil
+		}
+		for _, ev := range events {
+			raw, _ := json.Marshal(ev)
+			if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
+				return err
+			}
+			lastID = ev.ID
+		}
+		return nil
+	}
+
+	// Subscribe before the first drain so an event published between reading
+	// the backlog and registering for live updates still wakes a subsequent
+	// drain instead of being lost in the gap.
+	ch, cancel := s.hub.Subscribe(id)
+	defer cancel()
+	if err := drain(); err != nil {
+		return
+	}
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ch:
+			if err := drain(); err != nil {
+				return
+			}
+		case <-ticker.C:
+			if err := drain(); err != nil {
+				return
+			}
+			pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+			err := conn.Ping(pingCtx)
+			pingCancel()
+			if err != nil {
+				return
+			}
+		}
+	}
 }
 
 func (s *Server) deleteDownload(w http.ResponseWriter, r *http.Request) {
