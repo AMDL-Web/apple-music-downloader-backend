@@ -8,7 +8,7 @@ database:
 
 wrapper:
   # string: wrapper-manager gRPC address in "host:port" form.
-  address: "192.168.3.42:8080"
+  address: "127.0.0.1:8080"
   # bool: true uses insecure gRPC transport; false requires transport credentials support in code/config.
   insecure: true
   # integer seconds: wrapper RPC timeout. Values <= 0 fall back to 30 seconds.
@@ -58,7 +58,7 @@ download:
   # - ec3: Dolby Digital Plus / Dolby Atmos
   # - ac3: Dolby Digital
   # AAC-LC does not need to be listed; it is always appended as the final fallback.
-  quality_priority: ["alac", "aac"]
+  quality_priority: ["alac"]
   # bool: true tries the next codec in quality_priority after failure; false only tries the first codec.
   codec_alternative: true
   # integer: maximum concurrently running jobs. Values <= 0 currently behave as the downloader manager default.

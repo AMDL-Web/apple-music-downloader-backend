@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -11,6 +12,15 @@ type retryFailure struct {
 	Delay       time.Duration
 	WillRetry   bool
 	Err         error
+}
+
+type nonRetryable interface {
+	NonRetryable() bool
+}
+
+func isNonRetryableError(err error) bool {
+	var marker nonRetryable
+	return errors.As(err, &marker) && marker.NonRetryable()
 }
 
 func maxAttempts(retries int) int {
@@ -48,13 +58,18 @@ func retryValue[T any](
 		if ctx.Err() != nil {
 			return zero, attempt, err
 		}
-		willRetry := attempt < maximum
+		nonRetryable := isNonRetryableError(err)
+		willRetry := attempt < maximum && !nonRetryable
+		reportedMaximum := maximum
+		if nonRetryable {
+			reportedMaximum = attempt
+		}
 		delay := time.Duration(0)
 		if willRetry {
 			delay = delayFor(attempt)
 		}
 		if onFailure != nil {
-			onFailure(retryFailure{Attempt: attempt, MaxAttempts: maximum, Delay: delay, WillRetry: willRetry, Err: err})
+			onFailure(retryFailure{Attempt: attempt, MaxAttempts: reportedMaximum, Delay: delay, WillRetry: willRetry, Err: err})
 		}
 		if !willRetry {
 			return zero, attempt, err

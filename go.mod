@@ -11,6 +11,8 @@ require (
 	modernc.org/sqlite v1.53.0
 )
 
+require github.com/coder/websocket v1.8.15
+
 require (
 	github.com/AMDL-Web/wrapper-manager/proto v0.1.0
 	github.com/Eyevinn/mp4ff v0.48.0 // indirect

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"amdl/internal/config"
 	"amdl/internal/db"
@@ -20,6 +21,7 @@ import (
 	"amdl/internal/jobs"
 	"amdl/internal/media"
 	"amdl/internal/wrapper"
+	"github.com/coder/websocket"
 	"gopkg.in/yaml.v3"
 )
 
@@ -394,6 +396,7 @@ func TestOpenAPISpecification(t *testing.T) {
 		"/api/v1/downloads/{job_id}":           {"get", "delete"},
 		"/api/v1/downloads/{job_id}/cancel":    {"post"},
 		"/api/v1/downloads/{job_id}/events":    {"get"},
+		"/api/v1/downloads/{job_id}/events/ws": {"get"},
 	}
 	for path, methods := range wantOperations {
 		operations, ok := spec.Paths[path]
@@ -525,6 +528,51 @@ func TestListDownloadsDerivesProgressFromItems(t *testing.T) {
 	}
 }
 
+func TestDownloadResponsesIncludeArtworkURLTemplate(t *testing.T) {
+	server := newTestServerWithManager(t)
+	ctx := context.Background()
+	jobArt := "https://is1-ssl.mzstatic.com/image/thumb/Music/album/{w}x{h}bb.jpg"
+	itemArt := "https://is1-ssl.mzstatic.com/image/thumb/Music/track/{w}x{h}bb.jpg"
+	job := domain.Job{ID: "job1", Input: "album|us|1", Type: "album", ArtworkURL: jobArt, Status: domain.JobRunning, TotalItems: 1}
+	if err := server.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	item := domain.JobItem{ID: "item1", JobID: job.ID, Index: 1, ArtworkURL: itemArt, Status: domain.ItemQueued}
+	if err := server.store.CreateItem(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads/"+job.ID, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var detail struct {
+		Job   domain.Job       `json:"job"`
+		Items []domain.JobItem `json:"items"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Job.ArtworkURL != jobArt {
+		t.Fatalf("job artwork_url = %q, want %q", detail.Job.ArtworkURL, jobArt)
+	}
+	if len(detail.Items) != 1 || detail.Items[0].ArtworkURL != itemArt {
+		t.Fatalf("items = %+v, want one item with artwork_url %q", detail.Items, itemArt)
+	}
+
+	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var jobs []domain.Job
+	if err := json.Unmarshal(recorder.Body.Bytes(), &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].ArtworkURL != jobArt {
+		t.Fatalf("listed jobs = %+v, want one job with artwork_url %q", jobs, jobArt)
+	}
+}
+
 func TestDeleteDownload(t *testing.T) {
 	server := newTestServerWithManager(t)
 	ctx := context.Background()
@@ -567,6 +615,82 @@ func TestDeleteDownload(t *testing.T) {
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("delete missing: status = %d, want %d", recorder.Code, http.StatusNotFound)
 	}
+}
+
+func TestEventsWebSocketStreamsBacklogLiveAndResume(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	hub := events.NewHub()
+	manager := jobs.NewManager(store, hub, stubProcessor{}, 1, slog.Default())
+	server := &Server{store: store, hub: hub, manager: manager}
+
+	ctx := context.Background()
+	job := domain.Job{ID: "job1", Input: "song|us|1", Type: "song", Status: domain.JobRunning}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Event(ctx, domain.Event{JobID: job.ID, Type: "job_started", Message: "job started"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(server.Routes())
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/v1/downloads/job1/events/ws"
+
+	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(dialCtx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+
+	readEvent := func(c *websocket.Conn) domain.Event {
+		t.Helper()
+		msgType, raw, err := c.Read(dialCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if msgType != websocket.MessageText {
+			t.Fatalf("message type = %v, want text", msgType)
+		}
+		var ev domain.Event
+		if err := json.Unmarshal(raw, &ev); err != nil {
+			t.Fatalf("invalid event JSON %q: %v", raw, err)
+		}
+		return ev
+	}
+
+	// Backlog: the event persisted before the connection must be replayed.
+	first := readEvent(conn)
+	if first.Type != "job_started" || first.JobID != job.ID {
+		t.Fatalf("first event = %+v, want job_started for job1", first)
+	}
+
+	// Live: a hub publish must wake the drain without waiting for the ticker.
+	if err := manager.Event(ctx, domain.Event{JobID: job.ID, Type: "item_progress", Message: "halfway"}); err != nil {
+		t.Fatal(err)
+	}
+	second := readEvent(conn)
+	if second.Type != "item_progress" || second.ID <= first.ID {
+		t.Fatalf("second event = %+v, want item_progress with id > %d", second, first.ID)
+	}
+	_ = conn.Close(websocket.StatusNormalClosure, "")
+
+	// Resume: reconnecting with last_event_id must skip already-seen events.
+	resume, _, err := websocket.Dial(dialCtx, wsURL+"?last_event_id="+strconv.FormatInt(first.ID, 10), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resume.CloseNow()
+	got := readEvent(resume)
+	if got.ID != second.ID {
+		t.Fatalf("resumed event id = %d, want %d (events at or before last_event_id must be skipped)", got.ID, second.ID)
+	}
+	_ = resume.Close(websocket.StatusNormalClosure, "")
 }
 
 func TestCreateDownloadRejectsEmptyURLs(t *testing.T) {

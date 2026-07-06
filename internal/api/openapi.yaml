@@ -340,6 +340,32 @@ paths:
             text/event-stream:
               schema:
                 type: string
+  /api/v1/downloads/{job_id}/events/ws:
+    get:
+      tags: [Downloads]
+      summary: 订阅下载任务事件（WebSocket）
+      description: |
+        SSE 端点的 WebSocket 版本，面向移动端（如 iOS URLSessionWebSocketTask）。
+        握手成功后，服务端将每条事件作为一条 JSON 文本消息推送，内容与 SSE 端点
+        data 字段完全一致（Event 对象；payload 字段本身是 JSON 字符串，需二次解析）。
+        断线重连时通过 last_event_id 查询参数续接，只接收更新的事件。
+        服务端每 10 秒发送一次 WebSocket ping 探测半开连接；连接为服务端单向推送，
+        客户端发送的数据帧会导致连接被关闭。
+      operationId: streamDownloadEventsWebSocket
+      parameters:
+        - $ref: '#/components/parameters/JobID'
+        - name: last_event_id
+          in: query
+          description: 已收到的最后一条事件 id，续接时只推送更新的事件。默认 0（从头推送）。
+          schema:
+            type: integer
+            format: int64
+            default: 0
+      responses:
+        '101':
+          description: 协议切换成功，开始推送事件流。
+        '400':
+          description: WebSocket 握手失败（缺少升级头等）。
 components:
   parameters:
     LoginID:
@@ -681,6 +707,13 @@ components:
           enum: [song, album, playlist, artist]
         storefront:
           type: string
+        artwork_url:
+          type: string
+          description: >-
+            Cover artwork URL template with {w}x{h} (and optionally {f})
+            placeholders; substitute the desired pixel size client-side,
+            e.g. 600x600. Populated once the job's input is resolved;
+            absent for jobs created before this field existed.
         force:
           type: boolean
         status:
@@ -712,6 +745,12 @@ components:
         title: {type: string}
         artist: {type: string}
         album: {type: string}
+        artwork_url:
+          type: string
+          description: >-
+            Track cover artwork URL template with {w}x{h} (and optionally {f})
+            placeholders; substitute the desired pixel size client-side,
+            e.g. 600x600. Absent for items created before this field existed.
         status:
           type: string
           enum: [queued, resolving, downloading, decrypting, remuxing, tagging, saving, completed, failed, skipped_existing, cancelled]

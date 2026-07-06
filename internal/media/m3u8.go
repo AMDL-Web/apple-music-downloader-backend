@@ -37,6 +37,18 @@ type PlaylistVariant struct {
 	SampleRate int    `json:"sample_rate,omitempty"`
 }
 
+type codecNotFoundError struct {
+	Codec string
+}
+
+func (e codecNotFoundError) Error() string {
+	return fmt.Sprintf("codec %s not found in manifest", e.Codec)
+}
+
+func (e codecNotFoundError) NonRetryable() bool {
+	return true
+}
+
 var codecPatterns = map[string]*regexp.Regexp{
 	"alac":         regexp.MustCompile(`audio-alac-stereo-\d{5,6}-\d{2}$`),
 	"aac":          regexp.MustCompile(`audio-stereo-\d{3}$`),
@@ -69,7 +81,7 @@ func extractMedia(ctx context.Context, httpClient *http.Client, masterURL, codec
 		filtered = append(filtered, v)
 	}
 	if len(filtered) == 0 {
-		return m3u8Info{}, fmt.Errorf("codec %s not found in manifest", codec)
+		return m3u8Info{}, codecNotFoundError{Codec: codec}
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].Bandwidth > filtered[j].Bandwidth })
 	selected := filtered[0]

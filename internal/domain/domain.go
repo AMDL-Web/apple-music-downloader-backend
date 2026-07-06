@@ -33,6 +33,7 @@ type Job struct {
 	Input        string    `json:"input"`
 	Type         string    `json:"type"`
 	Storefront   string    `json:"storefront,omitempty"`
+	ArtworkURL   string    `json:"artwork_url,omitempty"`
 	CanonicalKey string    `json:"-"`
 	Force        bool      `json:"force"`
 	Status       JobStatus `json:"status"`
@@ -53,6 +54,7 @@ type JobItem struct {
 	Title         string     `json:"title,omitempty"`
 	Artist        string     `json:"artist,omitempty"`
 	Album         string     `json:"album,omitempty"`
+	ArtworkURL    string     `json:"artwork_url,omitempty"`
 	Status        ItemStatus `json:"status"`
 	Progress      float64    `json:"progress"`
 	Codec         string     `json:"codec,omitempty"`

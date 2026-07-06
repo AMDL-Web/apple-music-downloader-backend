@@ -41,3 +41,21 @@ func TestRetryValueReportsExhaustion(t *testing.T) {
 		t.Fatalf("unexpected exhaustion state: %+v", last)
 	}
 }
+
+func TestRetryValueStopsOnNonRetryableError(t *testing.T) {
+	wantErr := codecNotFoundError{Codec: "alac"}
+	var calls int
+	var last retryFailure
+	_, attempts, err := retryValue(context.Background(), 2, func(int) time.Duration { return 0 }, func(int) (struct{}, error) {
+		calls++
+		return struct{}{}, wantErr
+	}, func(failure retryFailure) {
+		last = failure
+	})
+	if !errors.As(err, &wantErr) || attempts != 1 || calls != 1 {
+		t.Fatalf("attempts=%d calls=%d err=%v", attempts, calls, err)
+	}
+	if last.WillRetry || last.Attempt != 1 || last.MaxAttempts != 1 {
+		t.Fatalf("unexpected non-retryable state: %+v", last)
+	}
+}
