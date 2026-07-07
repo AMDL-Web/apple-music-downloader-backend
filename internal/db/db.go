@@ -209,7 +209,7 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []domain.Job
+	out := make([]domain.Job, 0)
 	for rows.Next() {
 		job, err := scanJob(rows)
 		if err != nil {
@@ -267,7 +267,7 @@ func (s *Store) ListRecoverableJobs(ctx context.Context) ([]domain.Job, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []domain.Job
+	out := make([]domain.Job, 0)
 	for rows.Next() {
 		job, err := scanJob(rows)
 		if err != nil {
@@ -311,7 +311,7 @@ func (s *Store) ListItems(ctx context.Context, jobID string) ([]domain.JobItem, 
 		return nil, err
 	}
 	defer rows.Close()
-	var out []domain.JobItem
+	out := make([]domain.JobItem, 0)
 	for rows.Next() {
 		item, err := scanItem(rows)
 		if err != nil {
@@ -362,7 +362,7 @@ func (s *Store) ListEventsAfter(ctx context.Context, jobID string, afterID int64
 		return nil, err
 	}
 	defer rows.Close()
-	var out []domain.Event
+	out := make([]domain.Event, 0)
 	for rows.Next() {
 		var ev domain.Event
 		var created string
