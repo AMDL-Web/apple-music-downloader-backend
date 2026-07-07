@@ -58,9 +58,9 @@ entries:
   #   # body with Content-Type: application/json; false sends an empty body,
   #   # useful for refresh-style endpoints that ignore the body.
   #   send_payload: false
-  #   # integer: retry attempts after the first failed attempt. 0 = no retry.
-  #   # Default 0. Retries wait 1 second between attempts.
-  #   retries: 1
+  #   # integer: maximum total attempts including the first. Values <= 0 behave
+  #   # as 1 (single attempt, no retry). Retries wait 1 second between attempts.
+  #   max_attempts: 2
   #   # integer seconds: per-hook timeout override. Values <= 0 use the
   #   # top-level timeout_seconds above.
   #   timeout_seconds: 15

@@ -33,6 +33,7 @@ type Job struct {
 	Input        string    `json:"input"`
 	Type         string    `json:"type"`
 	Storefront   string    `json:"storefront,omitempty"`
+	Title        string    `json:"title,omitempty"`
 	ArtworkURL   string    `json:"artwork_url,omitempty"`
 	CanonicalKey string    `json:"-"`
 	Force        bool      `json:"force"`

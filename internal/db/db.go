@@ -61,6 +61,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 			input TEXT NOT NULL,
 			type TEXT NOT NULL,
 			storefront TEXT,
+			title TEXT NOT NULL DEFAULT '',
 			artwork_url TEXT NOT NULL DEFAULT '',
 			canonical_key TEXT NOT NULL,
 			force INTEGER NOT NULL DEFAULT 0,
@@ -120,6 +121,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 	// CREATE TABLE IF NOT EXISTS leaves pre-existing tables untouched.
 	for _, col := range []struct{ table, column, decl string }{
 		{"jobs", "artwork_url", "TEXT NOT NULL DEFAULT ''"},
+		{"jobs", "title", "TEXT NOT NULL DEFAULT ''"},
 		{"job_items", "artwork_url", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := s.ensureColumn(ctx, col.table, col.column, col.decl); err != nil {
@@ -151,8 +153,8 @@ func parseTime(v string) time.Time {
 }
 
 func (s *Store) CreateJob(ctx context.Context, job domain.Job) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO jobs(id,input,type,storefront,artwork_url,canonical_key,force,status,total_items,done_items,failed_items,error,created_at,updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, job.ID, job.Input, job.Type, job.Storefront, job.ArtworkURL, job.CanonicalKey, job.Force, string(job.Status), job.TotalItems,
+	_, err := s.db.ExecContext(ctx, `INSERT INTO jobs(id,input,type,storefront,title,artwork_url,canonical_key,force,status,total_items,done_items,failed_items,error,created_at,updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, job.ID, job.Input, job.Type, job.Storefront, job.Title, job.ArtworkURL, job.CanonicalKey, job.Force, string(job.Status), job.TotalItems,
 		job.DoneItems, job.FailedItems, job.Error, formatTime(job.CreatedAt), formatTime(job.UpdatedAt))
 	if err != nil && isUniqueConstraintErr(err) {
 		return ErrDuplicateActive
@@ -162,7 +164,7 @@ func (s *Store) CreateJob(ctx context.Context, job domain.Job) error {
 
 // FindActiveJobByKey returns the queued/running job matching canonicalKey, if any.
 func (s *Store) FindActiveJobByKey(ctx context.Context, canonicalKey string) (domain.Job, bool, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,artwork_url,canonical_key,force,status,total_items,done_items,failed_items,error,created_at,updated_at
+	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,canonical_key,force,status,total_items,done_items,failed_items,error,created_at,updated_at
 		FROM jobs WHERE canonical_key=? AND status IN (?,?)`, canonicalKey, string(domain.JobQueued), string(domain.JobRunning))
 	job, err := scanJob(row)
 	if err != nil {
@@ -175,8 +177,8 @@ func (s *Store) FindActiveJobByKey(ctx context.Context, canonicalKey string) (do
 }
 
 func (s *Store) UpdateJob(ctx context.Context, job domain.Job) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, artwork_url=?, force=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
-		job.Type, job.Storefront, job.ArtworkURL, job.Force, string(job.Status), job.TotalItems, job.DoneItems, job.FailedItems, job.Error, formatTime(job.UpdatedAt), job.ID)
+	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, title=?, artwork_url=?, force=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
+		job.Type, job.Storefront, job.Title, job.ArtworkURL, job.Force, string(job.Status), job.TotalItems, job.DoneItems, job.FailedItems, job.Error, formatTime(job.UpdatedAt), job.ID)
 	return err
 }
 
@@ -186,7 +188,7 @@ func (s *Store) UpdateJobStatus(ctx context.Context, id string, status domain.Jo
 }
 
 func (s *Store) GetJob(ctx context.Context, id string) (domain.Job, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,artwork_url,canonical_key,force,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,canonical_key,force,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE id=?`, id)
 	return scanJob(row)
 }
 
@@ -198,7 +200,7 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
 	// stored jobs columns: the stored counters are only written back when a job
 	// finalizes, so running jobs (or jobs interrupted before finalize) would
 	// report stale counts. Status buckets must mirror domain.CountItemProgress.
-	rows, err := s.db.QueryContext(ctx, `SELECT j.id,j.input,j.type,j.storefront,j.artwork_url,j.canonical_key,j.force,j.status,j.total_items,
+	rows, err := s.db.QueryContext(ctx, `SELECT j.id,j.input,j.type,j.storefront,j.title,j.artwork_url,j.canonical_key,j.force,j.status,j.total_items,
 			(SELECT COUNT(*) FROM job_items i WHERE i.job_id=j.id AND i.status IN (?,?)) AS done_items,
 			(SELECT COUNT(*) FROM job_items i WHERE i.job_id=j.id AND i.status=?) AS failed_items,
 			j.error,j.created_at,j.updated_at FROM jobs j ORDER BY j.created_at DESC LIMIT ?`,
@@ -207,7 +209,7 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []domain.Job
+	out := make([]domain.Job, 0)
 	for rows.Next() {
 		job, err := scanJob(rows)
 		if err != nil {
@@ -259,13 +261,13 @@ func (s *Store) DeleteJob(ctx context.Context, id string) error {
 }
 
 func (s *Store) ListRecoverableJobs(ctx context.Context) ([]domain.Job, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,input,type,storefront,artwork_url,canonical_key,force,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE status IN (?,?) ORDER BY created_at ASC`,
+	rows, err := s.db.QueryContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,canonical_key,force,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE status IN (?,?) ORDER BY created_at ASC`,
 		string(domain.JobQueued), string(domain.JobRunning))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []domain.Job
+	out := make([]domain.Job, 0)
 	for rows.Next() {
 		job, err := scanJob(rows)
 		if err != nil {
@@ -283,7 +285,7 @@ type jobScanner interface {
 func scanJob(row jobScanner) (domain.Job, error) {
 	var job domain.Job
 	var status, created, updated string
-	err := row.Scan(&job.ID, &job.Input, &job.Type, &job.Storefront, &job.ArtworkURL, &job.CanonicalKey, &job.Force, &status, &job.TotalItems, &job.DoneItems, &job.FailedItems, &job.Error, &created, &updated)
+	err := row.Scan(&job.ID, &job.Input, &job.Type, &job.Storefront, &job.Title, &job.ArtworkURL, &job.CanonicalKey, &job.Force, &status, &job.TotalItems, &job.DoneItems, &job.FailedItems, &job.Error, &created, &updated)
 	job.Status = domain.JobStatus(status)
 	job.CreatedAt = parseTime(created)
 	job.UpdatedAt = parseTime(updated)
@@ -309,7 +311,7 @@ func (s *Store) ListItems(ctx context.Context, jobID string) ([]domain.JobItem, 
 		return nil, err
 	}
 	defer rows.Close()
-	var out []domain.JobItem
+	out := make([]domain.JobItem, 0)
 	for rows.Next() {
 		item, err := scanItem(rows)
 		if err != nil {
@@ -360,7 +362,7 @@ func (s *Store) ListEventsAfter(ctx context.Context, jobID string, afterID int64
 		return nil, err
 	}
 	defer rows.Close()
-	var out []domain.Event
+	out := make([]domain.Event, 0)
 	for rows.Next() {
 		var ev domain.Event
 		var created string

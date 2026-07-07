@@ -201,7 +201,7 @@ func TestResolveCollectionPropagatesArtwork(t *testing.T) {
 
 func TestProcessTrackItemProgressEventOmitsArtworkURL(t *testing.T) {
 	cfg := config.Default()
-	cfg.Download.Retries = 0 // avoid retry backoff delays; the fetch failure is the point of this test
+	cfg.Download.MaxAttempts = 1 // avoid retry backoff delays; the fetch failure is the point of this test
 	downloader := &Downloader{
 		cfg:     cfg,
 		catalog: fakeDownloaderCatalog{songErr: errors.New("boom")},

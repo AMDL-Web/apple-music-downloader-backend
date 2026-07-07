@@ -189,7 +189,7 @@ func TestDispatchWebhookFailureRetriesAndRecordsFailure(t *testing.T) {
 	defer server.Close()
 
 	cfg := Config{Enabled: true, Entries: []Entry{
-		{Name: "flaky", Type: "webhook", Events: []string{"job_finished"}, URL: server.URL, Retries: 2},
+		{Name: "flaky", Type: "webhook", Events: []string{"job_finished"}, URL: server.URL, MaxAttempts: 3},
 	}}
 	collector := newEventCollector(2) // hook_started + hook_failed
 	d := NewDispatcher(cfg, collector.record, discardLogger())
@@ -198,7 +198,7 @@ func TestDispatchWebhookFailureRetriesAndRecordsFailure(t *testing.T) {
 	d.Shutdown(context.Background())
 
 	if got := atomic.LoadInt32(&attempts); got != 3 {
-		t.Fatalf("attempts = %d, want 3 (1 initial + 2 retries)", got)
+		t.Fatalf("attempts = %d, want 3 (max_attempts = 3)", got)
 	}
 	var sawFailed bool
 	for _, ev := range evs {

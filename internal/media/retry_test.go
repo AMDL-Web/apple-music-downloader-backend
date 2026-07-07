@@ -29,7 +29,7 @@ func TestRetryValueRetriesThenSucceeds(t *testing.T) {
 func TestRetryValueReportsExhaustion(t *testing.T) {
 	wantErr := errors.New("permanent")
 	var last retryFailure
-	_, attempts, err := retryValue(context.Background(), 2, func(int) time.Duration { return 0 }, func(int) (struct{}, error) {
+	_, attempts, err := retryValue(context.Background(), 3, func(int) time.Duration { return 0 }, func(int) (struct{}, error) {
 		return struct{}{}, wantErr
 	}, func(failure retryFailure) {
 		last = failure

@@ -33,7 +33,7 @@ type Entry struct {
 	URL            string            `yaml:"url"`
 	Headers        map[string]string `yaml:"headers"`
 	SendPayload    *bool             `yaml:"send_payload"`
-	Retries        int               `yaml:"retries"`
+	MaxAttempts    int               `yaml:"max_attempts"`
 	TimeoutSeconds int               `yaml:"timeout_seconds"`
 	Command        string            `yaml:"command"`
 	Workdir        string            `yaml:"workdir"`
@@ -165,9 +165,9 @@ func (c Config) validate() error {
 				return fmt.Errorf("%s: command is required for type exec", label)
 			}
 		}
-		if e.Retries < 0 {
-			return fmt.Errorf("%s: retries cannot be negative", label)
-		}
+		// max_attempts is not validated here: values <= 0 (including
+		// negatives) behave as a single attempt, matching the documented
+		// semantics and download.max_attempts.
 	}
 	return nil
 }

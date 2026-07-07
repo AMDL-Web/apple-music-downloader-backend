@@ -23,11 +23,13 @@ func isNonRetryableError(err error) bool {
 	return errors.As(err, &marker) && marker.NonRetryable()
 }
 
-func maxAttempts(retries int) int {
-	if retries < 0 {
-		retries = 0
+// clampAttempts normalizes a configured max-attempt count: values below 1
+// behave as a single attempt (no retry).
+func clampAttempts(maxAttempts int) int {
+	if maxAttempts < 1 {
+		return 1
 	}
-	return retries + 1
+	return maxAttempts
 }
 
 func retryBackoff(attempt int) time.Duration {
@@ -41,15 +43,17 @@ func retryBackoff(attempt int) time.Duration {
 	return time.Second * time.Duration(1<<shift)
 }
 
+// retryValue runs op up to maxAttempts times (attempt counting starts at 1)
+// and returns the number of attempts actually spent.
 func retryValue[T any](
 	ctx context.Context,
-	retries int,
+	maxAttempts int,
 	delayFor func(int) time.Duration,
 	op func(attempt int) (T, error),
 	onFailure func(retryFailure),
 ) (T, int, error) {
 	var zero T
-	maximum := maxAttempts(retries)
+	maximum := clampAttempts(maxAttempts)
 	for attempt := 1; attempt <= maximum; attempt++ {
 		value, err := op(attempt)
 		if err == nil {
