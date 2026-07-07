@@ -219,12 +219,7 @@ func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 		"codec_alternative":    s.cfg.Download.CodecAlternative,
 		"fallback_codec":       "aac-lc",
 		"album_track_url_mode": s.cfg.Catalog.AlbumTrackURLMode,
-		"retry_policy": map[string]int{
-			"operation_retries":      s.cfg.Download.Retries,
-			"first_codec_retries":    s.cfg.Download.Retries,
-			"fallback_codec_retries": 0,
-		},
-		"tools": s.tools.Check(r.Context()),
+		"tools":                s.tools.Check(r.Context()),
 	})
 }
 
@@ -295,6 +290,19 @@ func (s *Server) cancelDownload(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	// Read the event cursor before the job/items snapshot below. If an event
+	// commits concurrently between this read and the snapshot reads, its
+	// effect is guaranteed to already be visible in the snapshot — so the
+	// cursor never races ahead of what the response actually reflects.
+	// Reading it after the snapshot instead would let a concurrent event land
+	// in between: the cursor would include it, but the snapshot wouldn't,
+	// and events/ws?last_event_id= filters strictly by id, so a client would
+	// skip that event and never see its effect until a later one arrives.
+	lastEventID, err := s.store.LatestEventID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	job, err := s.store.GetJob(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err)
@@ -311,12 +319,7 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 	// while the items array already shows completed items in the same response.
 	job.DoneItems, job.FailedItems = domain.CountItemProgress(items)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"job": job, "items": items,
-		"retry_policy": map[string]int{
-			"operation_retries":      s.cfg.Download.Retries,
-			"first_codec_retries":    s.cfg.Download.Retries,
-			"fallback_codec_retries": 0,
-		},
+		"job": job, "items": items, "last_event_id": lastEventID,
 	})
 }
 
