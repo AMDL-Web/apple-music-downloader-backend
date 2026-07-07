@@ -290,6 +290,19 @@ func (s *Server) cancelDownload(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	// Read the event cursor before the job/items snapshot below. If an event
+	// commits concurrently between this read and the snapshot reads, its
+	// effect is guaranteed to already be visible in the snapshot — so the
+	// cursor never races ahead of what the response actually reflects.
+	// Reading it after the snapshot instead would let a concurrent event land
+	// in between: the cursor would include it, but the snapshot wouldn't,
+	// and events/ws?last_event_id= filters strictly by id, so a client would
+	// skip that event and never see its effect until a later one arrives.
+	lastEventID, err := s.store.LatestEventID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	job, err := s.store.GetJob(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err)
@@ -305,16 +318,6 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 	// reaches a terminal status. Without this a running job reports done_items=0
 	// while the items array already shows completed items in the same response.
 	job.DoneItems, job.FailedItems = domain.CountItemProgress(items)
-	// Read the event cursor after the job/items snapshot above, so it can only
-	// lag behind (never ahead of) the state just returned. A client that opens
-	// events/ws with this as last_event_id is then guaranteed to see every
-	// event not yet reflected in this response, without replaying history it
-	// already has.
-	lastEventID, err := s.store.LatestEventID(r.Context(), id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"job": job, "items": items, "last_event_id": lastEventID,
 	})
