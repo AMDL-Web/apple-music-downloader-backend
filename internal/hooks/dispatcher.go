@@ -87,7 +87,12 @@ func (d *Dispatcher) execute(entry Entry, payload Payload) {
 
 	d.record(ctx, entry, payload.Job.ID, "hook_started", "", nil)
 
-	attempts := entry.Retries + 1
+	// max_attempts counts total attempts including the first; 0 (unset)
+	// behaves as a single attempt.
+	attempts := entry.MaxAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
 		runCtx, cancel := context.WithTimeout(ctx, timeout)

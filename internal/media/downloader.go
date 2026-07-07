@@ -123,7 +123,7 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 		return err
 	}
 
-	resolved, _, err := retryValue(ctx, d.cfg.Download.Retries, retryBackoff, func(int) (resolvedCollection, error) {
+	resolved, _, err := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(int) (resolvedCollection, error) {
 		return d.resolveCollection(ctx, parsed)
 	}, func(failure retryFailure) {
 		d.emitRetryEvent(ctx, reporter, job.ID, "", "resolve_tracks", "", failure)
@@ -310,8 +310,8 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 
 	set(domain.ItemResolving, 0.01, "resolving metadata")
 
-	song, metadataAttempts, err := retryValue(ctx, d.cfg.Download.Retries, retryBackoff, func(attempt int) (applemusic.Song, error) {
-		d.setItemAttempt(ctx, reporter, &item, "metadata", attempt, maxAttempts(d.cfg.Download.Retries), fmt.Sprintf("Fetching track metadata (%d/%d)", attempt, maxAttempts(d.cfg.Download.Retries)))
+	song, metadataAttempts, err := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(attempt int) (applemusic.Song, error) {
+		d.setItemAttempt(ctx, reporter, &item, "metadata", attempt, clampAttempts(d.cfg.Download.MaxAttempts), fmt.Sprintf("Fetching track metadata (%d/%d)", attempt, clampAttempts(d.cfg.Download.MaxAttempts)))
 		return d.catalog.Song(ctx, storefront, initial.ID)
 	}, func(failure retryFailure) {
 		d.setRetryFailure(ctx, reporter, &item, "metadata", "metadata", failure)
@@ -341,8 +341,8 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	if d.cfg.Download.EmbedCover {
 		coverURLs := trackCoverURLs(song, collectionType)
 		var coverAttempts int
-		cover, coverAttempts, err = retryValue(ctx, d.cfg.Download.Retries, retryBackoff, func(attempt int) ([]byte, error) {
-			d.setItemAttempt(ctx, reporter, &item, "cover", attempt, maxAttempts(d.cfg.Download.Retries), fmt.Sprintf("Fetching cover (%d/%d)", attempt, maxAttempts(d.cfg.Download.Retries)))
+		cover, coverAttempts, err = retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(attempt int) ([]byte, error) {
+			d.setItemAttempt(ctx, reporter, &item, "cover", attempt, clampAttempts(d.cfg.Download.MaxAttempts), fmt.Sprintf("Fetching cover (%d/%d)", attempt, clampAttempts(d.cfg.Download.MaxAttempts)))
 			return d.catalog.FetchCover(ctx, coverURLs, d.cfg.Download.CoverFormat, d.cfg.Download.CoverSize)
 		}, func(failure retryFailure) {
 			d.setRetryFailure(ctx, reporter, &item, "cover", "cover", failure)
@@ -360,8 +360,8 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	}
 	lyrics := ""
 	if (d.cfg.Download.EmbedLyrics || d.cfg.Download.SaveLyricsFile) && song.HasLyrics {
-		raw, lyricsAttempts, lyricsErr := retryValue(ctx, d.cfg.Download.Retries, retryBackoff, func(attempt int) (string, error) {
-			d.setItemAttempt(ctx, reporter, &item, "lyrics", attempt, maxAttempts(d.cfg.Download.Retries), fmt.Sprintf("Fetching lyrics (%d/%d)", attempt, maxAttempts(d.cfg.Download.Retries)))
+		raw, lyricsAttempts, lyricsErr := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(attempt int) (string, error) {
+			d.setItemAttempt(ctx, reporter, &item, "lyrics", attempt, clampAttempts(d.cfg.Download.MaxAttempts), fmt.Sprintf("Fetching lyrics (%d/%d)", attempt, clampAttempts(d.cfg.Download.MaxAttempts)))
 			return d.wrapper.Lyrics(ctx, song.ID, wrapper.LyricsRequestOptions{
 				Region:                  storefront,
 				Language:                d.cfg.Catalog.Language,
@@ -401,7 +401,7 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	}
 	var lastErr error
 	for codecIndex, codec := range codecs {
-		codecRetries := retriesForCodec(d.cfg.Download.Retries, codecIndex)
+		codecMaxAttempts := attemptsForCodec(d.cfg.Download.MaxAttempts, codecIndex)
 		if codecIndex > 0 {
 			item.StatusMessage = fmt.Sprintf("Codec %s failed; falling back to %s", strings.ToUpper(codecs[codecIndex-1]), strings.ToUpper(codec))
 			_ = reporter.UpdateItem(ctx, item)
@@ -419,9 +419,9 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 		var aacMedia aacLCMedia
 		var enhanced selectedDownloadMedia
 		var rawAACLC []byte
-		_, fetchAttempts, fetchErr := retryValue(ctx, codecRetries, retryBackoff, func(attempt int) (struct{}, error) {
+		_, fetchAttempts, fetchErr := retryValue(ctx, codecMaxAttempts, retryBackoff, func(attempt int) (struct{}, error) {
 			if codec == "aac-lc" {
-				d.setItemAttempt(ctx, reporter, &item, "download", attempt, maxAttempts(codecRetries), fmt.Sprintf("Downloading %s (%d/%d)", strings.ToUpper(codec), attempt, maxAttempts(codecRetries)))
+				d.setItemAttempt(ctx, reporter, &item, "download", attempt, clampAttempts(codecMaxAttempts), fmt.Sprintf("Downloading %s (%d/%d)", strings.ToUpper(codec), attempt, clampAttempts(codecMaxAttempts)))
 				attemptOutPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, "256Kbps")
 				if skip, err := d.handleExistingOutput(ctx, reporter, job, &item, attemptOutPath); skip || err != nil {
 					skipped = skip
@@ -434,7 +434,7 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 				aacMedia, rawAACLC = media, raw
 				return struct{}{}, nil
 			}
-			d.setItemAttempt(ctx, reporter, &item, "download", attempt, maxAttempts(codecRetries), fmt.Sprintf("Selecting %s (%d/%d)", strings.ToUpper(codec), attempt, maxAttempts(codecRetries)))
+			d.setItemAttempt(ctx, reporter, &item, "download", attempt, clampAttempts(codecMaxAttempts), fmt.Sprintf("Selecting %s (%d/%d)", strings.ToUpper(codec), attempt, clampAttempts(codecMaxAttempts)))
 			selected, selectErr := d.selectEnhancedMedia(ctx, job, &item, song, codec, reporter, set)
 			if selectErr != nil {
 				return struct{}{}, selectErr
@@ -466,7 +466,7 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 		}
 		if fetchErr != nil {
 			lastErr = fetchErr
-			d.reportCodecFailed(ctx, reporter, job, item, codec, codecRetries, fetchAttempts, fetchErr)
+			d.reportCodecFailed(ctx, reporter, job, item, codec, "download", codecMaxAttempts, fetchAttempts, fetchErr)
 			continue
 		}
 		if fetchAttempts > 1 {
@@ -477,8 +477,8 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 		// Retried independently of the fetch phase — a decrypt failure re-runs
 		// only this closure, reusing the encrypted bytes fetched above instead
 		// of hitting Apple's CDN again.
-		_, decryptAttempts, decryptErr := retryValue(ctx, codecRetries, retryBackoff, func(attempt int) (struct{}, error) {
-			d.setItemAttempt(ctx, reporter, &item, "decrypt", attempt, maxAttempts(codecRetries), fmt.Sprintf("Decrypting %s (%d/%d)", strings.ToUpper(codec), attempt, maxAttempts(codecRetries)))
+		_, decryptAttempts, decryptErr := retryValue(ctx, codecMaxAttempts, retryBackoff, func(attempt int) (struct{}, error) {
+			d.setItemAttempt(ctx, reporter, &item, "decrypt", attempt, clampAttempts(codecMaxAttempts), fmt.Sprintf("Decrypting %s (%d/%d)", strings.ToUpper(codec), attempt, clampAttempts(codecMaxAttempts)))
 			if codec == "aac-lc" {
 				return struct{}{}, d.decryptAACLC(ctx, &item, song, aacMedia, rawAACLC, lyrics, cover, attemptOutPath, set)
 			}
@@ -490,27 +490,32 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 			d.setRetryFailure(ctx, reporter, &item, "decrypt", strings.ToUpper(codec), failure)
 			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "decrypt", codec, failure)
 		})
-		attempts := fetchAttempts + decryptAttempts
 		if decryptErr != nil {
 			lastErr = decryptErr
-			d.reportCodecFailed(ctx, reporter, job, item, codec, codecRetries, attempts, decryptErr)
+			d.reportCodecFailed(ctx, reporter, job, item, codec, "decrypt", codecMaxAttempts, decryptAttempts, decryptErr)
 			continue
 		}
 		if decryptAttempts > 1 {
 			d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "decrypt", codec, decryptAttempts)
 		}
 
-		item.Attempt = attempts
-		if codecIndex > 0 {
-			item.StatusMessage = fmt.Sprintf("Completed after fallback to %s", strings.ToUpper(codec))
-		} else if attempts > 1 {
-			item.StatusMessage = fmt.Sprintf("%s succeeded on attempt %d", strings.ToUpper(codec), attempts)
-		} else {
-			item.StatusMessage = fmt.Sprintf("%s download completed", strings.ToUpper(codec))
+		codecName := strings.ToUpper(codec)
+		switch {
+		case codecIndex > 0:
+			item.StatusMessage = fmt.Sprintf("Completed after fallback to %s", codecName)
+		case fetchAttempts > 1 && decryptAttempts > 1:
+			item.StatusMessage = fmt.Sprintf("%s completed (download took %d attempts, decrypt took %d attempts)", codecName, fetchAttempts, decryptAttempts)
+		case fetchAttempts > 1:
+			item.StatusMessage = fmt.Sprintf("%s completed (download took %d attempts)", codecName, fetchAttempts)
+		case decryptAttempts > 1:
+			item.StatusMessage = fmt.Sprintf("%s completed (decrypt took %d attempts)", codecName, decryptAttempts)
+		default:
+			item.StatusMessage = fmt.Sprintf("%s download completed", codecName)
 		}
 		_ = reporter.UpdateItem(ctx, item)
 		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_completed", Message: item.OutputPath, Payload: marshalPayload(map[string]any{
-			"codec": codec, "attempt": attempts, "max_attempts": maxAttempts(codecRetries), "fallback_from": fallbackCodec(codecs, codecIndex),
+			"codec": codec, "download_attempts": fetchAttempts, "decrypt_attempts": decryptAttempts,
+			"max_attempts": clampAttempts(codecMaxAttempts), "fallback_from": fallbackCodec(codecs, codecIndex),
 		})})
 		return nil
 	}
@@ -520,15 +525,15 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	return d.failItem(ctx, reporter, job, item, lastErr)
 }
 
-// reportCodecFailed emits the codec_failed event for either the fetch or the
-// decrypt phase, using the attempts actually spent so far for this codec.
-func (d *Downloader) reportCodecFailed(ctx context.Context, reporter jobs.Reporter, job domain.Job, item domain.JobItem, codec string, codecRetries, attempts int, err error) {
-	attemptMaximum := maxAttempts(codecRetries)
+// reportCodecFailed emits the codec_failed event for either the download or
+// the decrypt phase, using the attempts actually spent in that phase.
+func (d *Downloader) reportCodecFailed(ctx context.Context, reporter jobs.Reporter, job domain.Job, item domain.JobItem, codec, phase string, codecMaxAttempts, attempts int, err error) {
+	attemptMaximum := clampAttempts(codecMaxAttempts)
 	if isNonRetryableError(err) {
 		attemptMaximum = attempts
 	}
 	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_failed", Phase: codec, Message: err.Error(), Payload: marshalPayload(map[string]any{
-		"codec": codec, "attempts": attempts, "max_attempts": attemptMaximum, "error": err.Error(),
+		"codec": codec, "phase": phase, "attempts": attempts, "max_attempts": attemptMaximum, "error": err.Error(),
 	})})
 }
 
@@ -589,8 +594,8 @@ func codecFailureReason(err error) string {
 	return err.Error()
 }
 
-func retriesForCodec(configuredRetries, _ int) int {
-	return configuredRetries
+func attemptsForCodec(configuredMaxAttempts, _ int) int {
+	return configuredMaxAttempts
 }
 
 func (d *Downloader) handleExistingOutput(ctx context.Context, reporter jobs.Reporter, job domain.Job, item *domain.JobItem, outPath string) (bool, error) {

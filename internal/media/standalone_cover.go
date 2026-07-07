@@ -89,7 +89,7 @@ func (d *Downloader) ensureStandaloneCover(ctx context.Context, path string, res
 	if artworkURL == "" {
 		return nil
 	}
-	data, _, err := retryValue(ctx, d.cfg.Download.Retries, retryBackoff, func(int) ([]byte, error) {
+	data, _, err := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(int) ([]byte, error) {
 		return d.catalog.FetchCover(ctx, []string{artworkURL}, d.cfg.Download.CoverFormat, d.cfg.Download.CoverSize)
 	}, nil)
 	if err != nil {

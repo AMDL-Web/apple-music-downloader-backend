@@ -65,8 +65,9 @@ download:
   max_running_jobs: 3
   # integer: maximum tracks downloaded in parallel per collection. Values <= 0 fall back to 1.
   max_parallel_tracks: 5
-  # integer: retry count after the first attempt for metadata, cover, lyrics, and the first codec. 0 means one attempt.
-  retries: 2
+  # integer: maximum total attempts (including the first) for metadata, cover, lyrics,
+  # and each codec's download/decrypt phase. Values <= 0 behave as 1 (single attempt, no retry).
+  max_attempts: 3
   # string path: root download directory. Relative paths are resolved from the backend working directory.
   downloads_dir: "data/downloads"
   # string folder name: directory under downloads_dir for single-song tasks. Must be non-empty.

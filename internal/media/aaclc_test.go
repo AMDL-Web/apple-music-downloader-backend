@@ -71,14 +71,14 @@ func TestConfiguredCodecsCanDisableFallback(t *testing.T) {
 	}
 }
 
-func TestRetriesForCodecAppliesToEveryCodec(t *testing.T) {
-	if got := retriesForCodec(3, 0); got != 3 {
-		t.Fatalf("first codec retries = %d, want 3", got)
+func TestAttemptsForCodecAppliesToEveryCodec(t *testing.T) {
+	if got := attemptsForCodec(3, 0); got != 3 {
+		t.Fatalf("first codec attempts = %d, want 3", got)
 	}
-	if got := retriesForCodec(3, 1); got != 3 {
-		t.Fatalf("fallback codec retries = %d, want 3", got)
+	if got := attemptsForCodec(3, 1); got != 3 {
+		t.Fatalf("fallback codec attempts = %d, want 3", got)
 	}
-	if got := retriesForCodec(3, 2); got != 3 {
-		t.Fatalf("final fallback retries = %d, want 3", got)
+	if got := attemptsForCodec(3, 2); got != 3 {
+		t.Fatalf("final fallback attempts = %d, want 3", got)
 	}
 }

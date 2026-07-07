@@ -91,7 +91,7 @@ type DownloadConfig struct {
 	CodecAlternative       bool     `yaml:"codec_alternative" json:"codec_alternative"`
 	MaxRunningJobs         int      `yaml:"max_running_jobs" json:"max_running_jobs"`
 	MaxParallelTracks      int      `yaml:"max_parallel_tracks" json:"max_parallel_tracks"`
-	Retries                int      `yaml:"retries" json:"retries"`
+	MaxAttempts            int      `yaml:"max_attempts" json:"max_attempts"`
 	DownloadsDir           string   `yaml:"downloads_dir" json:"downloads_dir"`
 	SongsFolderName        string   `yaml:"songs_folder_name" json:"songs_folder_name"`
 	AlbumsFolderName       string   `yaml:"albums_folder_name" json:"albums_folder_name"`
@@ -139,7 +139,7 @@ func Default() Config {
 		},
 		Download: DownloadConfig{
 			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true,
-			MaxRunningJobs: 2, MaxParallelTracks: 3, Retries: 3,
+			MaxRunningJobs: 2, MaxParallelTracks: 3, MaxAttempts: 4,
 			DownloadsDir: "data/downloads", SongsFolderName: "songs", AlbumsFolderName: "albums", PlaylistsFolderName: "playlists", ArtistsFolderName: "artists",
 			TempDir: "data/tmp", CoverSize: "5000x5000", CoverFormat: "jpg",
 			EmbedCover: true, EmbedLyrics: true, LyricsFormat: "lrc", LyricsType: "lyrics", LyricsExtras: []string{},
