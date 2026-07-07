@@ -165,9 +165,9 @@ func (c Config) validate() error {
 				return fmt.Errorf("%s: command is required for type exec", label)
 			}
 		}
-		if e.MaxAttempts < 0 {
-			return fmt.Errorf("%s: max_attempts cannot be negative", label)
-		}
+		// max_attempts is not validated here: values <= 0 (including
+		// negatives) behave as a single attempt, matching the documented
+		// semantics and download.max_attempts.
 	}
 	return nil
 }
