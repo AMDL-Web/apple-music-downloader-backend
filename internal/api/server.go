@@ -219,12 +219,7 @@ func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 		"codec_alternative":    s.cfg.Download.CodecAlternative,
 		"fallback_codec":       "aac-lc",
 		"album_track_url_mode": s.cfg.Catalog.AlbumTrackURLMode,
-		"retry_policy": map[string]int{
-			"operation_retries":      s.cfg.Download.Retries,
-			"first_codec_retries":    s.cfg.Download.Retries,
-			"fallback_codec_retries": 0,
-		},
-		"tools": s.tools.Check(r.Context()),
+		"tools":                s.tools.Check(r.Context()),
 	})
 }
 
@@ -310,13 +305,18 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 	// reaches a terminal status. Without this a running job reports done_items=0
 	// while the items array already shows completed items in the same response.
 	job.DoneItems, job.FailedItems = domain.CountItemProgress(items)
+	// Read the event cursor after the job/items snapshot above, so it can only
+	// lag behind (never ahead of) the state just returned. A client that opens
+	// events/ws with this as last_event_id is then guaranteed to see every
+	// event not yet reflected in this response, without replaying history it
+	// already has.
+	lastEventID, err := s.store.LatestEventID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"job": job, "items": items,
-		"retry_policy": map[string]int{
-			"operation_retries":      s.cfg.Download.Retries,
-			"first_codec_retries":    s.cfg.Download.Retries,
-			"fallback_codec_retries": 0,
-		},
+		"job": job, "items": items, "last_event_id": lastEventID,
 	})
 }
 

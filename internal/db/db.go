@@ -344,6 +344,16 @@ func (s *Store) AddEvent(ctx context.Context, event domain.Event) (domain.Event,
 	return event, nil
 }
 
+// LatestEventID returns the id of the most recent event recorded for jobID, or
+// 0 if none exist yet. Callers use this as the last_event_id to hand a client
+// alongside a job/items snapshot, so a subsequent events/ws connection skips
+// replaying history already reflected in that snapshot.
+func (s *Store) LatestEventID(ctx context.Context, jobID string) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id),0) FROM job_events WHERE job_id=?`, jobID).Scan(&id)
+	return id, err
+}
+
 func (s *Store) ListEventsAfter(ctx context.Context, jobID string, afterID int64) ([]domain.Event, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,job_id,item_id,type,phase,message,payload,created_at FROM job_events WHERE job_id=? AND id>? ORDER BY id ASC`, jobID, afterID)
 	if err != nil {

@@ -497,19 +497,9 @@ components:
           type: string
         error:
           type: string
-    RetryPolicy:
-      type: object
-      required: [operation_retries, first_codec_retries, fallback_codec_retries]
-      properties:
-        operation_retries:
-          type: integer
-        first_codec_retries:
-          type: integer
-        fallback_codec_retries:
-          type: integer
     CapabilitiesResponse:
       type: object
-      required: [api, supported_inputs, unsupported_inputs, quality_priority, codec_alternative, fallback_codec, album_track_url_mode, retry_policy, tools]
+      required: [api, supported_inputs, unsupported_inputs, quality_priority, codec_alternative, fallback_codec, album_track_url_mode, tools]
       properties:
         api:
           type: string
@@ -533,8 +523,6 @@ components:
           type: string
         album_track_url_mode:
           type: string
-        retry_policy:
-          $ref: '#/components/schemas/RetryPolicy'
         tools:
           type: array
           items:
@@ -766,7 +754,7 @@ components:
         updated_at: {type: string, format: date-time}
     DownloadDetail:
       type: object
-      required: [job, items, retry_policy]
+      required: [job, items, last_event_id]
       properties:
         job:
           $ref: '#/components/schemas/Job'
@@ -774,5 +762,10 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/JobItem'
-        retry_policy:
-          $ref: '#/components/schemas/RetryPolicy'
+        last_event_id:
+          type: integer
+          format: int64
+          description: >-
+            该任务当前已持久化的最新事件 id（尚无事件时为 0）。客户端可将此值作为
+            events/ws（或 SSE 的 Last-Event-ID）的续接起点，从而跳过本响应已经
+            体现过的历史事件，只接收此后的增量更新。
