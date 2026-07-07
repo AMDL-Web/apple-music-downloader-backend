@@ -141,6 +141,7 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 		}
 	}
 	job.TotalItems = len(tracks)
+	job.Title = resolved.Name
 	job.ArtworkURL = resolved.ArtworkURL
 	if err := reporter.SetJob(ctx, job); err != nil {
 		return err
@@ -226,7 +227,7 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 		if err != nil {
 			return resolvedCollection{}, err
 		}
-		return resolvedCollection{Tracks: []applemusic.Song{song}, ArtworkURL: firstNonEmpty(song.ArtworkURL, song.AlbumArtworkURL)}, nil
+		return resolvedCollection{Tracks: []applemusic.Song{song}, Name: song.Name, ArtworkURL: firstNonEmpty(song.ArtworkURL, song.AlbumArtworkURL)}, nil
 	case applemusic.TypeAlbum:
 		album, err := d.catalog.Album(ctx, parsed.Storefront, parsed.ID)
 		if err != nil {
@@ -410,14 +411,28 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 		}
 		item.Codec = codec
 		attemptOutPath := ""
-		_, attempts, downloadErr := retryValue(ctx, codecRetries, retryBackoff, func(attempt int) (struct{}, error) {
+		skipped := false
+
+		// Fetch phase: acquire the still-encrypted media into memory. Retried on
+		// its own so a later decrypt failure doesn't force a redundant re-download
+		// of bytes that were already fetched successfully.
+		var aacMedia aacLCMedia
+		var enhanced selectedDownloadMedia
+		var rawAACLC []byte
+		_, fetchAttempts, fetchErr := retryValue(ctx, codecRetries, retryBackoff, func(attempt int) (struct{}, error) {
 			if codec == "aac-lc" {
 				d.setItemAttempt(ctx, reporter, &item, "download", attempt, maxAttempts(codecRetries), fmt.Sprintf("Downloading %s (%d/%d)", strings.ToUpper(codec), attempt, maxAttempts(codecRetries)))
 				attemptOutPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, "256Kbps")
 				if skip, err := d.handleExistingOutput(ctx, reporter, job, &item, attemptOutPath); skip || err != nil {
+					skipped = skip
 					return struct{}{}, err
 				}
-				return struct{}{}, d.downloadAACLC(ctx, job, &item, song, lyrics, cover, attemptOutPath, reporter, set)
+				media, raw, err := d.fetchAACLCMedia(ctx, job, &item, song, reporter, set)
+				if err != nil {
+					return struct{}{}, err
+				}
+				aacMedia, rawAACLC = media, raw
+				return struct{}{}, nil
 			}
 			d.setItemAttempt(ctx, reporter, &item, "download", attempt, maxAttempts(codecRetries), fmt.Sprintf("Selecting %s (%d/%d)", strings.ToUpper(codec), attempt, maxAttempts(codecRetries)))
 			selected, selectErr := d.selectEnhancedMedia(ctx, job, &item, song, codec, reporter, set)
@@ -426,13 +441,15 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 			}
 			attemptOutPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, qualityLabel(selected.info))
 			if skip, err := d.handleExistingOutput(ctx, reporter, job, &item, attemptOutPath); skip || err != nil {
+				skipped = skip
 				return struct{}{}, err
 			}
 			selected, downloadErr := d.downloadSelectedEnhancedMedia(ctx, selected, codec, set)
 			if downloadErr != nil {
 				return struct{}{}, downloadErr
 			}
-			return struct{}{}, d.downloadEnhancedCodec(ctx, job, &item, song, codec, lyrics, cover, attemptOutPath, selected, reporter, set)
+			enhanced = selected
+			return struct{}{}, nil
 		}, func(failure retryFailure) {
 			if attemptOutPath != "" {
 				cleanupFailedOutput(attemptOutPath)
@@ -444,19 +461,43 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 			d.setRetryFailure(ctx, reporter, &item, "download", operation, failure)
 			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "download", codec, failure)
 		})
-		if item.Status == domain.ItemSkipped && downloadErr == nil {
+		if skipped && fetchErr == nil {
 			return nil
 		}
-		if downloadErr != nil {
-			lastErr = downloadErr
-			attemptMaximum := maxAttempts(codecRetries)
-			if isNonRetryableError(downloadErr) {
-				attemptMaximum = attempts
-			}
-			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_failed", Phase: codec, Message: downloadErr.Error(), Payload: marshalPayload(map[string]any{
-				"codec": codec, "attempts": attempts, "max_attempts": attemptMaximum, "error": downloadErr.Error(),
-			})})
+		if fetchErr != nil {
+			lastErr = fetchErr
+			d.reportCodecFailed(ctx, reporter, job, item, codec, codecRetries, fetchAttempts, fetchErr)
 			continue
+		}
+		if fetchAttempts > 1 {
+			d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "download", codec, fetchAttempts)
+		}
+
+		// Decrypt phase: extract/decrypt/remux/tag the already-downloaded bytes.
+		// Retried independently of the fetch phase — a decrypt failure re-runs
+		// only this closure, reusing the encrypted bytes fetched above instead
+		// of hitting Apple's CDN again.
+		_, decryptAttempts, decryptErr := retryValue(ctx, codecRetries, retryBackoff, func(attempt int) (struct{}, error) {
+			d.setItemAttempt(ctx, reporter, &item, "decrypt", attempt, maxAttempts(codecRetries), fmt.Sprintf("Decrypting %s (%d/%d)", strings.ToUpper(codec), attempt, maxAttempts(codecRetries)))
+			if codec == "aac-lc" {
+				return struct{}{}, d.decryptAACLC(ctx, &item, song, aacMedia, rawAACLC, lyrics, cover, attemptOutPath, set)
+			}
+			return struct{}{}, d.downloadEnhancedCodec(ctx, job, &item, song, codec, lyrics, cover, attemptOutPath, enhanced, reporter, set)
+		}, func(failure retryFailure) {
+			if attemptOutPath != "" {
+				cleanupFailedOutput(attemptOutPath)
+			}
+			d.setRetryFailure(ctx, reporter, &item, "decrypt", strings.ToUpper(codec), failure)
+			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "decrypt", codec, failure)
+		})
+		attempts := fetchAttempts + decryptAttempts
+		if decryptErr != nil {
+			lastErr = decryptErr
+			d.reportCodecFailed(ctx, reporter, job, item, codec, codecRetries, attempts, decryptErr)
+			continue
+		}
+		if decryptAttempts > 1 {
+			d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "decrypt", codec, decryptAttempts)
 		}
 
 		item.Attempt = attempts
@@ -471,15 +512,24 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_completed", Message: item.OutputPath, Payload: marshalPayload(map[string]any{
 			"codec": codec, "attempt": attempts, "max_attempts": maxAttempts(codecRetries), "fallback_from": fallbackCodec(codecs, codecIndex),
 		})})
-		if attempts > 1 {
-			d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "download", codec, attempts)
-		}
 		return nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no configured codec succeeded")
 	}
 	return d.failItem(ctx, reporter, job, item, lastErr)
+}
+
+// reportCodecFailed emits the codec_failed event for either the fetch or the
+// decrypt phase, using the attempts actually spent so far for this codec.
+func (d *Downloader) reportCodecFailed(ctx context.Context, reporter jobs.Reporter, job domain.Job, item domain.JobItem, codec string, codecRetries, attempts int, err error) {
+	attemptMaximum := maxAttempts(codecRetries)
+	if isNonRetryableError(err) {
+		attemptMaximum = attempts
+	}
+	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_failed", Phase: codec, Message: err.Error(), Payload: marshalPayload(map[string]any{
+		"codec": codec, "attempts": attempts, "max_attempts": attemptMaximum, "error": err.Error(),
+	})})
 }
 
 func configuredCodec(value string) (string, error) {
@@ -702,15 +752,18 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	return nil
 }
 
-func (d *Downloader) downloadAACLC(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, lyrics string, cover []byte, outPath string, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) error {
+// fetchAACLCMedia resolves the AAC-LC media playlist and downloads the
+// still-encrypted stream into memory. Kept separate from decryptAACLC so a
+// decrypt-phase retry can reuse these bytes instead of re-hitting the CDN.
+func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) (aacLCMedia, []byte, error) {
 	set(domain.ItemDownloading, 0.03, "requesting AAC-LC WebPlayback asset")
 	playlistURL, err := d.wrapper.WebPlayback(ctx, song.ID)
 	if err != nil {
-		return fmt.Errorf("request AAC-LC WebPlayback: %w", err)
+		return aacLCMedia{}, nil, fmt.Errorf("request AAC-LC WebPlayback: %w", err)
 	}
 	media, err := extractAACLCMedia(ctx, d.http, playlistURL)
 	if err != nil {
-		return fmt.Errorf("parse AAC-LC media playlist: %w", err)
+		return aacLCMedia{}, nil, fmt.Errorf("parse AAC-LC media playlist: %w", err)
 	}
 	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_selected", Phase: "aac-lc", Payload: marshalPayload(map[string]any{
 		"codec_id": "aac-lc", "attempt": item.Attempt, "max_attempts": item.MaxAttempts,
@@ -726,8 +779,15 @@ func (d *Downloader) downloadAACLC(ctx context.Context, job domain.Job, item *do
 		set(domain.ItemDownloading, 0.05+p*0.50, fmt.Sprintf("downloading %.0f%%", p*100))
 	})
 	if err != nil {
-		return fmt.Errorf("download encrypted AAC-LC media: %w", err)
+		return aacLCMedia{}, nil, fmt.Errorf("download encrypted AAC-LC media: %w", err)
 	}
+	return media, raw, nil
+}
+
+// decryptAACLC takes the already-downloaded encrypted bytes from
+// fetchAACLCMedia and acquires the license, decrypts, and writes the final
+// file. On retry this re-runs without downloading media again.
+func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, song applemusic.Song, media aacLCMedia, raw []byte, lyrics string, cover []byte, outPath string, set func(domain.ItemStatus, float64, string)) error {
 	set(domain.ItemDecrypting, 0.55, "acquiring Widevine license")
 	challenge, parseLicense, err := newWidevineSession(media.KID)
 	if err != nil {

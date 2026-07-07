@@ -695,6 +695,14 @@ components:
           enum: [song, album, playlist, artist]
         storefront:
           type: string
+        title:
+          type: string
+          description: >-
+            Display name resolved from Apple Music metadata (track/album/
+            playlist/artist name). Populated once the job's input is
+            resolved; absent before that or for jobs created before this
+            field existed — clients should fall back to deriving a name
+            from `input` in that case.
         artwork_url:
           type: string
           description: >-
