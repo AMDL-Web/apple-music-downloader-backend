@@ -339,14 +339,34 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
-	if job.Status.IsTerminal() {
-		// A terminal job will never emit another event, so a live subscription
-		// would just hold a socket open forever for nothing; the client already
-		// has the final state via GET .../downloads/{id}.
+	lastID, _ := strconv.ParseInt(r.URL.Query().Get("last_event_id"), 10, 64)
+
+	// Subscribe before the first backlog read so an event published between
+	// that read and registering for live updates still wakes a subsequent
+	// drain instead of being lost in the gap. Skipped for an already-terminal
+	// job: no worker is running and none will be scheduled, so nothing will
+	// ever be published for it (job.Status and its terminal event are written
+	// atomically — see Store.FinalizeJob — so observing it here guarantees
+	// the terminal event is already visible to the ListEventsAfter call below).
+	var ch <-chan domain.Event
+	if !job.Status.IsTerminal() {
+		var cancel func()
+		ch, cancel = s.hub.Subscribe(id)
+		defer cancel()
+	}
+
+	pending, err := s.store.ListEventsAfter(r.Context(), id, lastID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if len(pending) == 0 && job.Status.IsTerminal() {
+		// Nothing left to replay and the job will never emit another event:
+		// refuse the subscription instead of holding a socket open forever.
 		writeError(w, http.StatusConflict, fmt.Errorf("job %s is already %s: no further events will be emitted", id, job.Status))
 		return
 	}
-	lastID, _ := strconv.ParseInt(r.URL.Query().Get("last_event_id"), 10, 64)
+
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
 	if err != nil {
 		return // Accept already wrote the handshake failure response
@@ -375,12 +395,16 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}
 
-	// Subscribe before the first drain so an event published between reading
-	// the backlog and registering for live updates still wakes a subsequent
-	// drain instead of being lost in the gap.
-	ch, cancel := s.hub.Subscribe(id)
-	defer cancel()
-	if err := drain(); err != nil {
+	for _, ev := range pending {
+		raw, _ := json.Marshal(ev)
+		if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
+			return
+		}
+		lastID = ev.ID
+	}
+	if job.Status.IsTerminal() {
+		// Backlog (including the terminal event) has been delivered in full;
+		// nothing more will ever arrive, so close instead of idling forever.
 		return
 	}
 
@@ -433,13 +457,34 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
-	if job.Status.IsTerminal() {
-		// A terminal job will never emit another event, so a live subscription
-		// would just hold a connection open forever for nothing; the client
-		// already has the final state via GET .../downloads/{id}.
+	lastID, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
+
+	// Subscribe before the first backlog read so an event published between
+	// that read and registering for live updates still wakes a subsequent
+	// drain instead of being lost in the gap. Skipped for an already-terminal
+	// job: no worker is running and none will be scheduled, so nothing will
+	// ever be published for it (job.Status and its terminal event are written
+	// atomically — see Store.FinalizeJob — so observing it here guarantees
+	// the terminal event is already visible to the ListEventsAfter call below).
+	var ch <-chan domain.Event
+	if !job.Status.IsTerminal() {
+		var cancel func()
+		ch, cancel = s.hub.Subscribe(id)
+		defer cancel()
+	}
+
+	pending, err := s.store.ListEventsAfter(r.Context(), id, lastID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if len(pending) == 0 && job.Status.IsTerminal() {
+		// Nothing left to replay and the job will never emit another event:
+		// refuse the subscription instead of holding a connection open forever.
 		writeError(w, http.StatusConflict, fmt.Errorf("job %s is already %s: no further events will be emitted", id, job.Status))
 		return
 	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -448,7 +493,6 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("streaming unsupported"))
 		return
 	}
-	lastID, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
 
 	// drain streams every persisted event newer than lastID directly from the
 	// store, so delivery never depends on the in-memory hub channel. The hub
@@ -467,12 +511,16 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	// Subscribe before the first drain so an event published between reading the
-	// backlog and registering for live updates still wakes a subsequent drain
-	// instead of being lost in the gap.
-	ch, cancel := s.hub.Subscribe(id)
-	defer cancel()
-	drain()
+	for _, ev := range pending {
+		writeSSE(w, ev)
+		lastID = ev.ID
+	}
+	flusher.Flush()
+	if job.Status.IsTerminal() {
+		// Backlog (including the terminal event) has been delivered in full;
+		// nothing more will ever arrive, so close instead of idling forever.
+		return
+	}
 
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()

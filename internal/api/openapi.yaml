@@ -326,8 +326,10 @@ paths:
       summary: 订阅下载任务事件
       description: |
         Server-Sent Events 流，支持 Last-Event-ID 断点续接。
-        任务已处于终态（completed/failed/cancelled）时拒绝订阅（409），
-        因为该任务不会再产生新事件；最终状态请改用 GET .../downloads/{job_id}。
+        任务已处于终态（completed/failed/cancelled）时：若还有未推送给该客户端
+        的历史事件（含终态事件本身），会先原样回放这些事件再关闭连接；只有当
+        客户端已经追上全部事件时才直接拒绝订阅（409），因为该任务不会再产生
+        新事件——这种情况下最终状态请改用 GET .../downloads/{job_id}。
       operationId: streamDownloadEvents
       parameters:
         - $ref: '#/components/parameters/JobID'
@@ -346,7 +348,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: 任务已处于终态（completed/failed/cancelled），不再产生新事件，拒绝订阅。
+          description: 任务已处于终态且客户端已追上全部历史事件，不再产生新事件，拒绝订阅。
           content:
             application/json:
               schema:
@@ -362,8 +364,10 @@ paths:
         断线重连时通过 last_event_id 查询参数续接，只接收更新的事件。
         服务端每 10 秒发送一次 WebSocket ping 探测半开连接；连接为服务端单向推送，
         客户端发送的数据帧会导致连接被关闭。
-        任务已处于终态（completed/failed/cancelled）时拒绝握手（409），
-        因为该任务不会再产生新事件；最终状态请改用 GET .../downloads/{job_id}。
+        任务已处于终态（completed/failed/cancelled）时：若还有未推送给该客户端
+        的历史事件（含终态事件本身），握手仍会成功，回放完这些事件后立即关闭
+        连接；只有当客户端已经追上全部事件时才拒绝握手（409）——这种情况下
+        最终状态请改用 GET .../downloads/{job_id}。
       operationId: streamDownloadEventsWebSocket
       parameters:
         - $ref: '#/components/parameters/JobID'
@@ -382,7 +386,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: 任务已处于终态（completed/failed/cancelled），不再产生新事件，拒绝订阅。
+          description: 任务已处于终态且客户端已追上全部历史事件，不再产生新事件，拒绝握手。
           content:
             application/json:
               schema:

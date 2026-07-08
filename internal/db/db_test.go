@@ -61,6 +61,46 @@ func TestJobForceRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFinalizeJobPersistsStatusAndEventTogether(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	job := domain.Job{ID: "job-finalize", Input: "song|us|1", Type: "song", Status: domain.JobRunning, CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	job.Status = domain.JobCompleted
+	job.UpdatedAt = now.Add(time.Second)
+	ev := domain.Event{JobID: job.ID, Type: "job_finished", Message: string(job.Status)}
+	stored, err := store.FinalizeJob(ctx, job, ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ID == 0 {
+		t.Fatal("FinalizeJob did not assign an event id")
+	}
+
+	got, err := store.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.JobCompleted {
+		t.Fatalf("job status = %s, want %s", got.Status, domain.JobCompleted)
+	}
+	events, err := store.ListEventsAfter(ctx, job.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Type != "job_finished" {
+		t.Fatalf("events after FinalizeJob = %+v, want a single job_finished event", events)
+	}
+}
+
 func TestUpdateJobStatusPreservesCountsAndError(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "amdl.db"))
 	if err != nil {
