@@ -756,7 +756,6 @@ components:
         attempt: {type: integer}
         max_attempts: {type: integer}
         status_message: {type: string}
-        output_path: {type: string}
         error: {type: string}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}

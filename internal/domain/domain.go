@@ -63,7 +63,7 @@ type JobItem struct {
 	Attempt       int        `json:"attempt,omitempty"`
 	MaxAttempts   int        `json:"max_attempts,omitempty"`
 	StatusMessage string     `json:"status_message,omitempty"`
-	OutputPath    string     `json:"output_path,omitempty"`
+	OutputPath    string     `json:"-"`
 	Error         string     `json:"error,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
