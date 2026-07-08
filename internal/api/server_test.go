@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"amdl/internal/db"
 	"amdl/internal/domain"
 	"amdl/internal/events"
+	"amdl/internal/hooks"
 	"amdl/internal/jobs"
 	"amdl/internal/media"
 	"amdl/internal/wrapper"
@@ -492,6 +494,65 @@ func TestGetDownloadDerivesProgressFromItems(t *testing.T) {
 	}
 }
 
+// TestGetDownloadReportsHookStates verifies the snapshot endpoint carries the
+// same hook information the SSE/WS stream pushes as hook_* events — the two
+// are access modes of one state, so a client that never subscribes must still
+// see hook outcomes.
+func TestGetDownloadReportsHookStates(t *testing.T) {
+	server := newTestServerWithManager(t)
+	ctx := context.Background()
+	job := domain.Job{ID: "job1", Input: "song|us|1", Type: "song", Status: domain.JobCompleted}
+	if err := server.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range []domain.Event{
+		{JobID: job.ID, Type: "hook_started", Phase: "emby-refresh"},
+		{JobID: job.ID, Type: "hook_succeeded", Phase: "emby-refresh"},
+		{JobID: job.ID, Type: "hook_started", Phase: "notify"},
+		{JobID: job.ID, Type: "hook_failed", Phase: "notify", Message: "connect: refused"},
+	} {
+		if _, err := server.store.AddEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads/"+job.ID, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var resp struct {
+		Hooks []domain.HookState `json:"hooks"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	want := []domain.HookState{
+		{Name: "emby-refresh", Status: "succeeded"},
+		{Name: "notify", Status: "failed", Error: "connect: refused"},
+	}
+	if len(resp.Hooks) != len(want) {
+		t.Fatalf("hooks = %+v, want %+v", resp.Hooks, want)
+	}
+	for i := range want {
+		if resp.Hooks[i] != want[i] {
+			t.Fatalf("hooks[%d] = %+v, want %+v", i, resp.Hooks[i], want[i])
+		}
+	}
+
+	// A job with no hook events must report an empty array, not null.
+	plain := domain.Job{ID: "job2", Input: "song|us|2", Type: "song", Status: domain.JobRunning}
+	if err := server.store.CreateJob(ctx, plain); err != nil {
+		t.Fatal(err)
+	}
+	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads/"+plain.ID, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"hooks":[]`) {
+		t.Fatalf("body = %s, want a \"hooks\":[] field", recorder.Body.String())
+	}
+}
+
 func TestListDownloadsDerivesProgressFromItems(t *testing.T) {
 	server := newTestServerWithManager(t)
 	ctx := context.Background()
@@ -807,6 +868,132 @@ func TestEventsReplaysBacklogForTerminalJobInsteadOfRejecting(t *testing.T) {
 	server.Routes().ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("SSE fully caught up on terminal job: status = %d, want %d", recorder.Code, http.StatusConflict)
+	}
+}
+
+// TestEventsWaitsForPendingHookBeforeClosingTerminalJob guards against the
+// gap a PR reviewer caught: a job's own terminal event is not the last event
+// its stream will ever see, because post-download hook dispatch is
+// fire-and-forget and can keep recording hook_started/hook_succeeded well
+// after the job itself reached a terminal status. Connecting while a hook is
+// still in flight must not be rejected — the stream must stay open and
+// deliver the hook's own events. Once the hook finishes, a fresh connection
+// (fully caught up) must go back to being rejected outright, proving
+// eventsExhausted picks up the hook's completion rather than staying stuck
+// on the stale "pending" state forever.
+func TestEventsWaitsForPendingHookBeforeClosingTerminalJob(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	hub := events.NewHub()
+	manager := jobs.NewManager(store, hub, stubProcessor{}, 1, slog.Default())
+
+	release := make(chan struct{})
+	hookServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer hookServer.Close()
+	dispatcher := hooks.NewDispatcher(hooks.Config{Enabled: true, TimeoutSeconds: 5, Entries: []hooks.Entry{
+		{Name: "notify", Type: "webhook", Events: []string{"job_finished"}, URL: hookServer.URL},
+	}}, manager.Event, slog.Default())
+	manager.SetHooks(dispatcher)
+	defer dispatcher.Shutdown(context.Background())
+
+	server := &Server{store: store, hub: hub, manager: manager}
+
+	ctx := context.Background()
+	job := domain.Job{ID: "done3", Input: "song|us|1", Type: "song", Status: domain.JobCompleted}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Event(ctx, domain.Event{JobID: job.ID, Type: "job_finished", Message: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the hook that finalizeJob would have fired for this terminal job.
+	dispatcher.Dispatch("job_finished", job, nil)
+	deadline := time.After(2 * time.Second)
+	for !dispatcher.Pending(job.ID) {
+		select {
+		case <-deadline:
+			t.Fatal("hook never became pending")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	ts := httptest.NewServer(server.Routes())
+	defer ts.Close()
+	getCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(getCtx, http.MethodGet, ts.URL+"/api/v1/downloads/done3/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d (a pending hook must not be rejected as if the job's stream were exhausted)", resp.StatusCode, http.StatusOK)
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	readEventType := func() string {
+		t.Helper()
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				t.Fatalf("read SSE stream: %v", err)
+			}
+			if after, ok := strings.CutPrefix(line, "event: "); ok {
+				return strings.TrimSpace(after)
+			}
+		}
+	}
+	if got := readEventType(); got != "job_finished" {
+		t.Fatalf("first event = %q, want job_finished", got)
+	}
+	if got := readEventType(); got != "hook_started" {
+		t.Fatalf("second event = %q, want hook_started (hook is pending, stream must not have closed)", got)
+	}
+
+	close(release) // let the blocked webhook call, and hook_succeeded, proceed
+	if got := readEventType(); got != "hook_succeeded" {
+		t.Fatalf("third event = %q, want hook_succeeded", got)
+	}
+	resp.Body.Close()
+
+	deadline = time.After(2 * time.Second)
+	for dispatcher.Pending(job.ID) {
+		select {
+		case <-deadline:
+			t.Fatal("hook never stopped being pending after completing")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	// The hook is done and the job was already terminal: a fresh, fully
+	// caught-up connection must now be rejected outright, same as any other
+	// exhausted terminal job.
+	latestID, err := store.LatestEventID(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err = http.NewRequestWithContext(getCtx, http.MethodGet, ts.URL+"/api/v1/downloads/done3/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Last-Event-ID", strconv.FormatInt(latestID, 10))
+	resp, err = ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status after hook completion = %d, want %d (nothing left to deliver)", resp.StatusCode, http.StatusConflict)
 	}
 }
 

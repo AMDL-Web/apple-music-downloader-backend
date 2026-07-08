@@ -84,6 +84,19 @@ func (m *Manager) SetHooks(d *hooks.Dispatcher) {
 	m.hooks = d
 }
 
+// HooksPending reports whether jobID has a post-download hook still running.
+// A job's own terminal event is not the last event it will ever emit: hook
+// dispatch is fire-and-forget and can keep recording hook_started/
+// hook_succeeded/hook_failed events well after the job itself reached a
+// terminal status, so callers deciding whether an event stream has anything
+// left to deliver must check this too. Nil-safe (nil *Manager, unset hooks).
+func (m *Manager) HooksPending(jobID string) bool {
+	if m == nil {
+		return false
+	}
+	return m.hooks.Pending(jobID)
+}
+
 func (m *Manager) Start(ctx context.Context) {
 	for i := 0; i < m.workers; i++ {
 		go m.worker(ctx, i)

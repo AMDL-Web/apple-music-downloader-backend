@@ -19,7 +19,8 @@ func TestJobItemRetryStateRoundTrip(t *testing.T) {
 	now := time.Now().UTC()
 	want := domain.JobItem{
 		ID: "item-1", JobID: "job-1", AdamID: "123", Kind: "song", Index: 1,
-		Status: domain.ItemDownloading, RetryKind: "codec", Attempt: 2, MaxAttempts: 4,
+		Status: domain.ItemDownloading, Codec: "alac", BitDepth: 24, SampleRate: 96000, Bitrate: 2500000,
+		RetryKind: "codec", Attempt: 2, MaxAttempts: 4,
 		StatusMessage: "ALAC 第 2/4 次尝试", CreatedAt: now, UpdatedAt: now,
 	}
 	if err := store.CreateItem(context.Background(), want); err != nil {
@@ -35,6 +36,25 @@ func TestJobItemRetryStateRoundTrip(t *testing.T) {
 	got := items[0]
 	if got.RetryKind != want.RetryKind || got.Attempt != want.Attempt || got.MaxAttempts != want.MaxAttempts || got.StatusMessage != want.StatusMessage {
 		t.Fatalf("retry state = %+v, want %+v", got, want)
+	}
+	if got.Codec != want.Codec || got.BitDepth != want.BitDepth || got.SampleRate != want.SampleRate || got.Bitrate != want.Bitrate {
+		t.Fatalf("quality = %+v, want %+v", got, want)
+	}
+
+	// Falling back to aac-lc, which has no per-track manifest to read quality
+	// from, must clear the previous codec's quality rather than carry it over.
+	updated := got
+	updated.Codec, updated.BitDepth, updated.SampleRate, updated.Bitrate = "aac-lc", 0, 0, 0
+	if err := store.UpdateItem(context.Background(), updated); err != nil {
+		t.Fatal(err)
+	}
+	items, err = store.ListItems(context.Background(), want.JobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = items[0]
+	if got.Codec != "aac-lc" || got.BitDepth != 0 || got.SampleRate != 0 || got.Bitrate != 0 {
+		t.Fatalf("quality after UpdateItem = %+v, want codec=aac-lc bit_depth=0 sample_rate=0 bitrate=0", got)
 	}
 }
 
