@@ -45,6 +45,31 @@ configs/config.yaml
 - `download.downloads_dir`：下载文件保存目录。
 - `tools.*`：外部媒体工具命令路径或命令名。
 
+
+## Mock 测试工具
+
+无需连接真实 `wrapper-manager` 或 Apple Music Catalog 时，可启动内置 mock 后端：
+
+```bash
+go run ./cmd/amdl-mock
+```
+
+Mock 服务复用正式 HTTP API、SQLite 存储、任务队列、SSE/WebSocket 事件和 hook 分发，但下载处理器会生成可预测的模拟任务进度，不写入真实媒体文件。可用环境变量：
+
+- `AMDL_CONFIG`：配置文件路径，默认 `configs/config.yaml`。
+- `AMDL_HOOKS_CONFIG`：hook 配置文件路径，默认 `configs/hooks.yaml`。
+- `AMDL_MOCK_LISTEN`：覆盖监听地址，例如 `127.0.0.1:18081`。
+- `AMDL_MOCK_DB`：覆盖 mock SQLite 数据库路径，便于与正式数据隔离。
+
+示例：
+
+```bash
+AMDL_MOCK_LISTEN=127.0.0.1:18081 AMDL_MOCK_DB=data/amdl-mock.db go run ./cmd/amdl-mock
+curl -X POST http://127.0.0.1:18081/api/v1/downloads \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://music.apple.com/us/album/example/123456789?i=987654321"}'
+```
+
 ## API
 
 以下示例假设服务监听在 `http://localhost:18080`。
