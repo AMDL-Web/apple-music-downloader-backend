@@ -76,6 +76,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/quality", s.queryQuality)
 	mux.HandleFunc("POST /api/v1/downloads", s.createDownload)
 	mux.HandleFunc("GET /api/v1/downloads", s.listDownloads)
+	// The literal "events" segment is more specific than "{id}", so these two
+	// overview-feed routes take precedence over GET /api/v1/downloads/{id} for
+	// that exact path (a real job id is never "events").
+	mux.HandleFunc("GET /api/v1/downloads/events", s.downloadsFeed)
+	mux.HandleFunc("GET /api/v1/downloads/events/ws", s.downloadsFeedWS)
 	mux.HandleFunc("GET /api/v1/downloads/{id}", s.getDownload)
 	mux.HandleFunc("DELETE /api/v1/downloads/{id}", s.deleteDownload)
 	mux.HandleFunc("POST /api/v1/downloads/{id}/cancel", s.cancelDownload)
@@ -272,12 +277,53 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listDownloads(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	// Read the global cursor before the job snapshot, for the same reason
+	// getDownload reads its per-job cursor first: an event committing between
+	// this read and the snapshot is already reflected in the snapshot, so the
+	// cursor a client resumes the overview feed from never runs ahead of what
+	// this response shows.
+	lastEventID, err := s.store.LatestGlobalEventID(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	jobs, err := s.store.ListJobs(r.Context(), limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, jobs)
+	// Derive each job's progress counters from its live items, matching
+	// getDownload and the overview feed's pushed snapshots — the stored job-row
+	// counters are only refreshed at terminal status, so a running job would
+	// otherwise report done_items=0 here.
+	for i := range jobs {
+		items, err := s.store.ListItems(r.Context(), jobs[i].ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		jobs[i].DoneItems, jobs[i].FailedItems = domain.CountItemProgress(items)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"downloads": jobs, "last_event_id": lastEventID,
+	})
+}
+
+// jobSnapshot returns a job with progress counters derived from its live
+// items, the same shape the GET /downloads list and getDownload return. ok is
+// false if the job no longer exists (e.g. deleted between a milestone event
+// and this read), so the overview feed simply skips pushing it.
+func (s *Server) jobSnapshot(ctx context.Context, id string) (*domain.Job, bool) {
+	job, err := s.store.GetJob(ctx, id)
+	if err != nil {
+		return nil, false
+	}
+	items, err := s.store.ListItems(ctx, id)
+	if err != nil {
+		return nil, false
+	}
+	job.DoneItems, job.FailedItems = domain.CountItemProgress(items)
+	return &job, true
 }
 
 func (s *Server) cancelDownload(w http.ResponseWriter, r *http.Request) {
@@ -318,9 +364,27 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 	// reaches a terminal status. Without this a running job reports done_items=0
 	// while the items array already shows completed items in the same response.
 	job.DoneItems, job.FailedItems = domain.CountItemProgress(items)
+	// The snapshot and the SSE/WS stream are two access modes of one state, so
+	// hook outcomes — which the stream pushes as hook_* events — must be
+	// visible here too, derived from those same persisted events.
+	hookEvents, err := s.store.ListHookEvents(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	hooks := domain.SummarizeHooks(hookEvents, s.manager.HooksPending(id))
 	writeJSON(w, http.StatusOK, map[string]any{
-		"job": job, "items": items, "last_event_id": lastEventID,
+		"job": job, "items": items, "hooks": hooks, "last_event_id": lastEventID,
 	})
+}
+
+// eventsExhausted reports whether job's event stream will never deliver
+// another event. A terminal job.Status alone is not enough: post-download
+// hook dispatch is fire-and-forget and can keep recording hook_started/
+// hook_succeeded/hook_failed events well after the job itself reached a
+// terminal status (see jobs.Manager.HooksPending), so both must hold.
+func (s *Server) eventsExhausted(job domain.Job) bool {
+	return job.Status.IsTerminal() && !s.manager.HooksPending(job.ID)
 }
 
 // eventsWS is the WebSocket twin of events: it streams the same persisted job
@@ -343,13 +407,13 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 
 	// Subscribe before the first backlog read so an event published between
 	// that read and registering for live updates still wakes a subsequent
-	// drain instead of being lost in the gap. Skipped for an already-terminal
-	// job: no worker is running and none will be scheduled, so nothing will
-	// ever be published for it (job.Status and its terminal event are written
-	// atomically — see Store.FinalizeJob — so observing it here guarantees
-	// the terminal event is already visible to the ListEventsAfter call below).
+	// drain instead of being lost in the gap. Skipped only once eventsExhausted
+	// confirms nothing (job event or hook event) will ever be published for
+	// this job again (job.Status and its terminal event are written atomically
+	// — see Store.FinalizeJob — so observing it here guarantees the terminal
+	// event is already visible to the ListEventsAfter call below).
 	var ch <-chan domain.Event
-	if !job.Status.IsTerminal() {
+	if !s.eventsExhausted(job) {
 		var cancel func()
 		ch, cancel = s.hub.Subscribe(id)
 		defer cancel()
@@ -360,7 +424,7 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if len(pending) == 0 && job.Status.IsTerminal() {
+	if len(pending) == 0 && s.eventsExhausted(job) {
 		// Nothing left to replay and the job will never emit another event:
 		// refuse the subscription instead of holding a socket open forever.
 		writeError(w, http.StatusConflict, fmt.Errorf("job %s is already %s: no further events will be emitted", id, job.Status))
@@ -402,9 +466,10 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		}
 		lastID = ev.ID
 	}
-	if job.Status.IsTerminal() {
-		// Backlog (including the terminal event) has been delivered in full;
-		// nothing more will ever arrive, so close instead of idling forever.
+	if s.eventsExhausted(job) {
+		// Backlog has been delivered in full and nothing more will ever
+		// arrive (job event or hook event), so close instead of idling
+		// forever.
 		return
 	}
 
@@ -418,8 +483,17 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 			if err := drain(); err != nil {
 				return
 			}
+			if s.eventsExhausted(job) {
+				// A pending hook (the reason this loop was entered instead of
+				// closing right after the initial backlog) has now recorded
+				// its terminal event: nothing more will ever arrive.
+				return
+			}
 		case <-ticker.C:
 			if err := drain(); err != nil {
+				return
+			}
+			if s.eventsExhausted(job) {
 				return
 			}
 			pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -461,13 +535,13 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 	// Subscribe before the first backlog read so an event published between
 	// that read and registering for live updates still wakes a subsequent
-	// drain instead of being lost in the gap. Skipped for an already-terminal
-	// job: no worker is running and none will be scheduled, so nothing will
-	// ever be published for it (job.Status and its terminal event are written
-	// atomically — see Store.FinalizeJob — so observing it here guarantees
-	// the terminal event is already visible to the ListEventsAfter call below).
+	// drain instead of being lost in the gap. Skipped only once eventsExhausted
+	// confirms nothing (job event or hook event) will ever be published for
+	// this job again (job.Status and its terminal event are written atomically
+	// — see Store.FinalizeJob — so observing it here guarantees the terminal
+	// event is already visible to the ListEventsAfter call below).
 	var ch <-chan domain.Event
-	if !job.Status.IsTerminal() {
+	if !s.eventsExhausted(job) {
 		var cancel func()
 		ch, cancel = s.hub.Subscribe(id)
 		defer cancel()
@@ -478,7 +552,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if len(pending) == 0 && job.Status.IsTerminal() {
+	if len(pending) == 0 && s.eventsExhausted(job) {
 		// Nothing left to replay and the job will never emit another event:
 		// refuse the subscription instead of holding a connection open forever.
 		writeError(w, http.StatusConflict, fmt.Errorf("job %s is already %s: no further events will be emitted", id, job.Status))
@@ -516,9 +590,10 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		lastID = ev.ID
 	}
 	flusher.Flush()
-	if job.Status.IsTerminal() {
-		// Backlog (including the terminal event) has been delivered in full;
-		// nothing more will ever arrive, so close instead of idling forever.
+	if s.eventsExhausted(job) {
+		// Backlog has been delivered in full and nothing more will ever
+		// arrive (job event or hook event), so close instead of idling
+		// forever.
 		return
 	}
 
@@ -530,8 +605,17 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-ch:
 			drain()
+			if s.eventsExhausted(job) {
+				// A pending hook (the reason this loop was entered instead of
+				// closing right after the initial backlog) has now recorded
+				// its terminal event: nothing more will ever arrive.
+				return
+			}
 		case <-ticker.C:
 			drain()
+			if s.eventsExhausted(job) {
+				return
+			}
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
 		}
@@ -541,6 +625,151 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 func writeSSE(w http.ResponseWriter, ev domain.Event) {
 	raw, _ := json.Marshal(ev)
 	fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.ID, ev.Type, raw)
+}
+
+// downloadsFeed is the SSE overview feed: it pushes one DownloadFeedMessage
+// per change to the GET /downloads list — download_upserted (the affected
+// job's latest snapshot) as jobs are queued/started/progress/finish, and
+// download_deleted as jobs are removed. Resume via the Last-Event-ID header
+// (the event_id of the last upsert seen); the client should first GET
+// /downloads for the full list and use that response's last_event_id here.
+func (s *Server) downloadsFeed(w http.ResponseWriter, r *http.Request) {
+	lastID, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("streaming unsupported"))
+		return
+	}
+
+	// Subscribe before the first drain so a milestone published between the
+	// backlog read and registration still wakes a subsequent drain.
+	ch, cancel := s.hub.SubscribeAll()
+	defer cancel()
+
+	write := func(msg domain.DownloadFeedMessage) error {
+		raw, _ := json.Marshal(msg)
+		// download_deleted carries no event_id, so it omits the SSE id line and
+		// leaves the client's Last-Event-ID (the last upsert cursor) untouched.
+		if msg.EventID > 0 {
+			fmt.Fprintf(w, "id: %d\n", msg.EventID)
+		}
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", msg.Type, raw)
+		flusher.Flush()
+		return nil
+	}
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	keepalive := func() error {
+		fmt.Fprint(w, ": keepalive\n\n")
+		flusher.Flush()
+		return nil
+	}
+	s.runDownloadsFeed(r.Context(), lastID, ch, ticker.C, write, keepalive)
+}
+
+// downloadsFeedWS is the WebSocket twin of downloadsFeed. Resume via the
+// last_event_id query parameter (WebSocket has no Last-Event-ID header). Each
+// DownloadFeedMessage is one JSON text message; download_deleted messages omit
+// event_id, so a client tracking its resume cursor must not advance it on those.
+func (s *Server) downloadsFeedWS(w http.ResponseWriter, r *http.Request) {
+	lastID, _ := strconv.ParseInt(r.URL.Query().Get("last_event_id"), 10, 64)
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+	if err != nil {
+		return
+	}
+	defer conn.CloseNow()
+	ctx := conn.CloseRead(r.Context())
+
+	ch, cancel := s.hub.SubscribeAll()
+	defer cancel()
+
+	write := func(msg domain.DownloadFeedMessage) error {
+		raw, _ := json.Marshal(msg)
+		return conn.Write(ctx, websocket.MessageText, raw)
+	}
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	keepalive := func() error {
+		pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer pingCancel()
+		return conn.Ping(pingCtx)
+	}
+	s.runDownloadsFeed(ctx, lastID, ch, ticker.C, write, keepalive)
+}
+
+// runDownloadsFeed drives the overview feed loop shared by the SSE and WS
+// endpoints. It drains milestone events newer than the cursor into one
+// download_upserted per affected job (deduped, latest snapshot), forwards
+// download_deleted notifications as they arrive live, and calls keepalive on
+// each tick. write returning an error (client gone) ends the loop.
+func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, ch <-chan domain.Event, tick <-chan time.Time, write func(domain.DownloadFeedMessage) error, keepalive func() error) {
+	drain := func() error {
+		events, err := s.store.ListMilestoneEventsAfter(ctx, lastID)
+		if err != nil {
+			return nil // keep the connection; the next wake or tick retries
+		}
+		seen := map[string]bool{}
+		var order []string
+		maxID := lastID
+		for _, ev := range events {
+			if ev.ID > maxID {
+				maxID = ev.ID
+			}
+			if !seen[ev.JobID] {
+				seen[ev.JobID] = true
+				order = append(order, ev.JobID)
+			}
+		}
+		for _, jobID := range order {
+			snap, ok := s.jobSnapshot(ctx, jobID)
+			if !ok {
+				continue // job deleted between the milestone and this read
+			}
+			if err := write(domain.DownloadFeedMessage{Type: "download_upserted", Job: snap, EventID: maxID}); err != nil {
+				return err
+			}
+		}
+		lastID = maxID
+		return nil
+	}
+
+	if err := drain(); err != nil {
+		return
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
+			if ev.Type == domain.EventDeleted {
+				// Deletion isn't persisted, so it can't be drained from the
+				// store — forward it directly. jobSnapshot would fail for the
+				// now-gone job, so this is the only push for it.
+				if err := write(domain.DownloadFeedMessage{Type: "download_deleted", JobID: ev.JobID}); err != nil {
+					return
+				}
+				continue
+			}
+			if err := drain(); err != nil {
+				return
+			}
+		case <-tick:
+			if err := drain(); err != nil {
+				return
+			}
+			if keepalive != nil {
+				if err := keepalive(); err != nil {
+					return
+				}
+			}
+		}
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
