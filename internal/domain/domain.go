@@ -165,6 +165,53 @@ func SummarizeHooks(events []Event, stillRunning bool) []HookState {
 	return out
 }
 
+// EventDeleted is the type of the in-memory-only event the manager broadcasts
+// when a job is deleted. Unlike every other event type it is never persisted
+// (DeleteJob removes the job's rows, including its events), so it exists purely
+// to wake the overview feed; a client that misses it recovers on reconnect via
+// the GET /downloads snapshot.
+const EventDeleted = "job_deleted"
+
+// overviewMilestones is the set of event types that change how a job appears
+// in the GET /downloads list — its status, resolved title/total_items, or
+// done/failed progress counters. The overview feed reacts only to these and
+// ignores the higher-frequency per-item detail events (item_progress,
+// codec_selected, retries, …) that don't alter the list-level view.
+var overviewMilestones = map[string]struct{}{
+	"job_queued":     {},
+	"job_recovered":  {},
+	"job_started":    {},
+	"resolved_input": {}, // title/total_items are populated by now
+	"item_completed": {},
+	"item_skipped":   {},
+	"item_failed":    {},
+	"job_finished":   {},
+	"job_failed":     {},
+	"job_cancelled":  {},
+	EventDeleted:     {},
+}
+
+// IsOverviewMilestone reports whether an event of this type should wake the
+// GET /downloads overview feed. Used both to filter the persisted event log
+// when replaying a cursor and to decide which live events reach overview
+// subscribers at all.
+func IsOverviewMilestone(eventType string) bool {
+	_, ok := overviewMilestones[eventType]
+	return ok
+}
+
+// DownloadFeedMessage is one push on the overview (GET /downloads) SSE/WS
+// feed. Type is download_upserted (Job carries the affected job's latest
+// snapshot, with live-derived progress counters) or download_deleted (only
+// JobID is set). EventID is the persisted-event cursor a client hands back to
+// resume; it is 0 for download_deleted, which is an unpersisted notification.
+type DownloadFeedMessage struct {
+	Type    string `json:"type"`
+	Job     *Job   `json:"job,omitempty"`
+	JobID   string `json:"job_id,omitempty"`
+	EventID int64  `json:"event_id,omitempty"`
+}
+
 type DownloadRequest struct {
 	URLs  []string `json:"urls"`
 	Force bool     `json:"force"`

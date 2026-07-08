@@ -213,13 +213,11 @@ paths:
             default: 50
       responses:
         '200':
-          description: 下载任务列表。
+          description: 下载任务列表快照。
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Job'
+                $ref: '#/components/schemas/DownloadList'
         '500':
           $ref: '#/components/responses/InternalError'
     post:
@@ -252,6 +250,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BatchSubmitResponse'
+  /api/v1/downloads/events:
+    get:
+      tags: [Downloads]
+      summary: 订阅下载列表变化（SSE）
+      description: |
+        总览事件流：GET /downloads 是列表的一次性快照，本端点则在列表发生变化时
+        实时推送增量，二者是同一份状态的两种获取方式。每条推送是一个
+        DownloadFeedMessage：
+        - download_upserted：某个任务被新建或发生变化（排队、开始、每完成一首歌
+          的进度、终态），data.job 为该任务的最新快照（done_items/failed_items
+          按实时进度计算）；
+        - download_deleted：某个任务被删除，data.job_id 为被删任务 id。
+        只有影响列表展示的「里程碑」事件才会触发推送（新建/恢复/开始/解析完成/
+        单曲完成或跳过或失败/终态/删除），逐曲下载进度等高频细节不会推送。
+        断线续接：先 GET /downloads 取得 last_event_id，再用 Last-Event-ID 头
+        续接，只接收此后新增的变化。download_deleted 不带 event_id、不推进游标
+        （删除未持久化，断线期间发生的删除靠重连时的 GET /downloads 全量自愈）。
+      operationId: streamDownloadsFeed
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          description: 已处理到的最新 event_id（取自 GET /downloads 的 last_event_id 或上一条 upsert 的 event_id）。
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: SSE 事件流，每条 data 为一个 DownloadFeedMessage。
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v1/downloads/events/ws:
+    get:
+      tags: [Downloads]
+      summary: 订阅下载列表变化（WebSocket）
+      description: |
+        /api/v1/downloads/events 的 WebSocket 版本，语义一致。握手成功后服务端将
+        每条 DownloadFeedMessage 作为一条 JSON 文本消息推送。断线重连时通过
+        last_event_id 查询参数续接；download_deleted 消息不含 event_id，客户端在
+        维护续接游标时不应因它推进游标。
+      operationId: streamDownloadsFeedWebSocket
+      parameters:
+        - name: last_event_id
+          in: query
+          description: 已处理到的最新 event_id，续接时只推送此后新增的变化。默认 0（从头推送当前所有任务的最新快照）。
+          schema:
+            type: integer
+            format: int64
+            default: 0
+      responses:
+        '101':
+          description: 协议切换成功，开始推送列表变化。
+        '400':
+          description: WebSocket 握手失败（缺少升级头等）。
   /api/v1/downloads/{job_id}:
     get:
       tags: [Downloads]
@@ -810,6 +865,46 @@ components:
         error: {type: string}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+    DownloadList:
+      type: object
+      required: [downloads, last_event_id]
+      properties:
+        downloads:
+          type: array
+          description: >-
+            下载任务列表；每个任务的 done_items/failed_items 按其 job_items 的
+            实时进度计算（而非仅在终态刷新的存储计数）。
+          items:
+            $ref: '#/components/schemas/Job'
+        last_event_id:
+          type: integer
+          format: int64
+          description: >-
+            当前全局已持久化的最新事件 id（跨所有任务，尚无事件时为 0）。客户端可
+            将此值作为总览事件流 GET /downloads/events(/ws) 的续接起点，只接收本
+            快照之后的列表变化。
+    DownloadFeedMessage:
+      type: object
+      required: [type]
+      description: 总览事件流（GET /downloads/events(/ws)）的一条推送。
+      properties:
+        type:
+          type: string
+          enum: [download_upserted, download_deleted]
+          description: >-
+            download_upserted：某任务被新建或发生变化，job 为其最新快照；
+            download_deleted：某任务被删除，job_id 为被删任务 id。
+        job:
+          $ref: '#/components/schemas/Job'
+        job_id:
+          type: string
+          description: 仅 download_deleted 时存在，为被删除任务的 id。
+        event_id:
+          type: integer
+          format: int64
+          description: >-
+            续接游标；download_upserted 带此值，客户端处理后作为下次续接起点。
+            download_deleted 不带（删除未持久化），客户端不应因它推进游标。
     DownloadDetail:
       type: object
       required: [job, items, hooks, last_event_id]

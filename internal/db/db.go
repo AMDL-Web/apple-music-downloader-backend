@@ -406,6 +406,26 @@ func (s *Store) ListEventsAfter(ctx context.Context, jobID string, afterID int64
 	return s.queryEvents(ctx, `SELECT id,job_id,item_id,type,phase,message,payload,created_at FROM job_events WHERE job_id=? AND id>? ORDER BY id ASC`, jobID, afterID)
 }
 
+// LatestGlobalEventID returns the id of the most recent event across all jobs
+// (0 if none). The overview feed hands this to a client alongside the
+// GET /downloads snapshot as the cursor to resume from, mirroring how
+// LatestEventID pairs with a single job's snapshot.
+func (s *Store) LatestGlobalEventID(ctx context.Context) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id),0) FROM job_events`).Scan(&id)
+	return id, err
+}
+
+// ListMilestoneEventsAfter returns, across all jobs, the events newer than
+// afterID whose type changes the GET /downloads list-level view (the same set
+// as domain.IsOverviewMilestone, minus job_deleted which is never persisted).
+// The overview feed uses this to learn which jobs changed since a cursor.
+func (s *Store) ListMilestoneEventsAfter(ctx context.Context, afterID int64) ([]domain.Event, error) {
+	return s.queryEvents(ctx, `SELECT id,job_id,item_id,type,phase,message,payload,created_at FROM job_events
+		WHERE id>? AND type IN ('job_queued','job_recovered','job_started','resolved_input','item_completed','item_skipped','item_failed','job_finished','job_failed','job_cancelled')
+		ORDER BY id ASC`, afterID)
+}
+
 // ListHookEvents returns only jobID's hook lifecycle events, so callers
 // summarizing hook status (GET /downloads/{id}) don't have to scan the far
 // more numerous progress events sharing the table.

@@ -43,3 +43,22 @@ func TestSummarizeHooksEmpty(t *testing.T) {
 		t.Fatalf("SummarizeHooks(nil) = %+v, want empty", got)
 	}
 }
+
+func TestIsOverviewMilestone(t *testing.T) {
+	milestones := []string{
+		"job_queued", "job_recovered", "job_started", "resolved_input",
+		"item_completed", "item_skipped", "item_failed",
+		"job_finished", "job_failed", "job_cancelled", EventDeleted,
+	}
+	for _, ty := range milestones {
+		if !IsOverviewMilestone(ty) {
+			t.Errorf("IsOverviewMilestone(%q) = false, want true", ty)
+		}
+	}
+	// Per-item detail / intermediate events must not wake the overview feed.
+	for _, ty := range []string{"item_progress", "codec_selected", "codec_fallback", "codec_failed", "item_overwrite", "hook_started", ""} {
+		if IsOverviewMilestone(ty) {
+			t.Errorf("IsOverviewMilestone(%q) = true, want false", ty)
+		}
+	}
+}

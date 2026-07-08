@@ -395,6 +395,8 @@ func TestOpenAPISpecification(t *testing.T) {
 		"/api/v1/wrapper/logout":               {"post"},
 		"/api/v1/quality":                      {"post"},
 		"/api/v1/downloads":                    {"get", "post"},
+		"/api/v1/downloads/events":             {"get"},
+		"/api/v1/downloads/events/ws":          {"get"},
 		"/api/v1/downloads/{job_id}":           {"get", "delete"},
 		"/api/v1/downloads/{job_id}/cancel":    {"post"},
 		"/api/v1/downloads/{job_id}/events":    {"get"},
@@ -572,20 +574,23 @@ func TestListDownloadsDerivesProgressFromItems(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	var jobs []domain.Job
-	if err := json.Unmarshal(recorder.Body.Bytes(), &jobs); err != nil {
+	var resp struct {
+		Downloads   []domain.Job `json:"downloads"`
+		LastEventID int64        `json:"last_event_id"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if len(jobs) != 1 {
-		t.Fatalf("len(jobs) = %d, want 1", len(jobs))
+	if len(resp.Downloads) != 1 {
+		t.Fatalf("len(downloads) = %d, want 1", len(resp.Downloads))
 	}
 	// completed + skipped = 2 done, 1 failed — the persisted job row still has
 	// DoneItems=0 (never finalized), so the list must count from job_items.
-	if jobs[0].DoneItems != 2 {
-		t.Fatalf("done_items = %d, want 2", jobs[0].DoneItems)
+	if resp.Downloads[0].DoneItems != 2 {
+		t.Fatalf("done_items = %d, want 2", resp.Downloads[0].DoneItems)
 	}
-	if jobs[0].FailedItems != 1 {
-		t.Fatalf("failed_items = %d, want 1", jobs[0].FailedItems)
+	if resp.Downloads[0].FailedItems != 1 {
+		t.Fatalf("failed_items = %d, want 1", resp.Downloads[0].FailedItems)
 	}
 }
 
@@ -625,12 +630,165 @@ func TestDownloadResponsesIncludeArtworkURLTemplate(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	var jobs []domain.Job
-	if err := json.Unmarshal(recorder.Body.Bytes(), &jobs); err != nil {
+	var resp struct {
+		Downloads []domain.Job `json:"downloads"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if len(jobs) != 1 || jobs[0].ArtworkURL != jobArt {
-		t.Fatalf("listed jobs = %+v, want one job with artwork_url %q", jobs, jobArt)
+	if len(resp.Downloads) != 1 || resp.Downloads[0].ArtworkURL != jobArt {
+		t.Fatalf("listed downloads = %+v, want one job with artwork_url %q", resp.Downloads, jobArt)
+	}
+}
+
+// TestDownloadsFeedPushesUpsertsAndDeletes exercises the overview SSE feed:
+// initial backlog upsert from a cursor, live upsert on a new milestone, and a
+// live delete notification. Deletes carry no event_id so they must not
+// advance the client's resume cursor.
+func TestDownloadsFeedPushesUpsertsAndDeletes(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	hub := events.NewHub()
+	manager := jobs.NewManager(store, hub, stubProcessor{}, 1, slog.Default())
+	server := &Server{store: store, hub: hub, manager: manager}
+
+	ctx := context.Background()
+	job1 := domain.Job{ID: "job1", Input: "song|us|1", Type: "song", CanonicalKey: "song:1", Status: domain.JobCompleted}
+	if err := store.CreateJob(ctx, job1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddEvent(ctx, domain.Event{JobID: job1.ID, Type: "job_finished", Message: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(server.Routes())
+	defer ts.Close()
+	getCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(getCtx, http.MethodGet, ts.URL+"/api/v1/downloads/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	reader := bufio.NewReader(resp.Body)
+
+	readMessage := func() (string, domain.DownloadFeedMessage) {
+		t.Helper()
+		var eventType string
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				t.Fatalf("read feed: %v", err)
+			}
+			if after, ok := strings.CutPrefix(line, "event: "); ok {
+				eventType = strings.TrimSpace(after)
+			}
+			if after, ok := strings.CutPrefix(line, "data: "); ok {
+				var msg domain.DownloadFeedMessage
+				if err := json.Unmarshal([]byte(strings.TrimSpace(after)), &msg); err != nil {
+					t.Fatalf("bad feed JSON %q: %v", after, err)
+				}
+				return eventType, msg
+			}
+		}
+	}
+
+	// Backlog: the persisted job_finished milestone yields an upsert for job1.
+	et, msg := readMessage()
+	if et != "download_upserted" || msg.Job == nil || msg.Job.ID != "job1" {
+		t.Fatalf("first message = %s %+v, want download_upserted for job1", et, msg)
+	}
+	if msg.EventID == 0 {
+		t.Fatal("upsert event_id = 0, want the milestone's cursor")
+	}
+
+	// Live upsert: a new job's milestone wakes the feed.
+	job2 := domain.Job{ID: "job2", Input: "song|us|2", Type: "song", CanonicalKey: "song:2", Status: domain.JobRunning}
+	if err := store.CreateJob(ctx, job2); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Event(ctx, domain.Event{JobID: job2.ID, Type: "job_started", Message: "job started"}); err != nil {
+		t.Fatal(err)
+	}
+	et, msg = readMessage()
+	if et != "download_upserted" || msg.Job == nil || msg.Job.ID != "job2" {
+		t.Fatalf("live message = %s %+v, want download_upserted for job2", et, msg)
+	}
+
+	// Live delete: removing a terminal job pushes download_deleted with no
+	// event_id (an unpersisted notification).
+	if err := manager.Delete(ctx, job1.ID); err != nil {
+		t.Fatal(err)
+	}
+	et, msg = readMessage()
+	if et != "download_deleted" || msg.JobID != "job1" {
+		t.Fatalf("delete message = %s %+v, want download_deleted for job1", et, msg)
+	}
+	if msg.EventID != 0 {
+		t.Fatalf("delete event_id = %d, want 0 (deletes must not advance the cursor)", msg.EventID)
+	}
+}
+
+// TestDownloadsFeedWSResumesFromCursor verifies the WebSocket overview feed
+// replays only milestones after the last_event_id cursor, so a client that
+// already has an up-to-date GET /downloads snapshot receives just the delta.
+func TestDownloadsFeedWSResumesFromCursor(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	hub := events.NewHub()
+	manager := jobs.NewManager(store, hub, stubProcessor{}, 1, slog.Default())
+	server := &Server{store: store, hub: hub, manager: manager}
+
+	ctx := context.Background()
+	for _, id := range []string{"job1", "job2"} {
+		if err := store.CreateJob(ctx, domain.Job{ID: id, Input: "song|us|" + id, Type: "song", CanonicalKey: "song:" + id, Status: domain.JobRunning}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e1, err := store.AddEvent(ctx, domain.Event{JobID: "job1", Type: "job_started"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// job2's milestone lands after the cursor the client will resume from.
+	if _, err := store.AddEvent(ctx, domain.Event{JobID: "job2", Type: "job_started"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(server.Routes())
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/v1/downloads/events/ws?last_event_id=" + strconv.FormatInt(e1.ID, 10)
+	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(dialCtx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+
+	_, raw, err := conn.Read(dialCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg domain.DownloadFeedMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("bad feed JSON %q: %v", raw, err)
+	}
+	// Only job2 is newer than the cursor; job1 must not be replayed.
+	if msg.Type != "download_upserted" || msg.Job == nil || msg.Job.ID != "job2" {
+		t.Fatalf("first WS message = %+v, want download_upserted for job2 only", msg)
 	}
 }
 

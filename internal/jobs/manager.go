@@ -290,11 +290,21 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 // cannot start (or finish) finalizing between the check and the delete.
 func (m *Manager) Delete(ctx context.Context, jobID string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.cancels[jobID] != nil || m.finalizing[jobID] {
+		m.mu.Unlock()
 		return db.ErrJobNotTerminal
 	}
-	return m.store.DeleteJob(ctx, jobID)
+	err := m.store.DeleteJob(ctx, jobID)
+	m.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	// Broadcast an unpersisted deletion so the overview feed can drop the job.
+	// DeleteJob has already removed the job's persisted events, so this live
+	// signal is the only way overview subscribers learn of the deletion; a
+	// missed one is recovered on reconnect via GET /downloads.
+	m.hub.Publish(domain.Event{JobID: jobID, Type: domain.EventDeleted})
+	return nil
 }
 
 func (m *Manager) worker(ctx context.Context, index int) {
