@@ -294,16 +294,14 @@ func (m *Manager) Delete(ctx context.Context, jobID string) error {
 		m.mu.Unlock()
 		return db.ErrJobNotTerminal
 	}
-	err := m.store.DeleteJob(ctx, jobID)
+	deleted, err := m.store.DeleteJob(ctx, jobID)
 	m.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	// Broadcast an unpersisted deletion so the overview feed can drop the job.
-	// DeleteJob has already removed the job's persisted events, so this live
-	// signal is the only way overview subscribers learn of the deletion; a
-	// missed one is recovered on reconnect via GET /downloads.
-	m.hub.Publish(domain.Event{JobID: jobID, Type: domain.EventDeleted})
+	// Broadcast the persisted tombstone so live overview subscribers can drop the
+	// job immediately; missed broadcasts are replayed from job_events by cursor.
+	m.hub.Publish(deleted)
 	return nil
 }
 

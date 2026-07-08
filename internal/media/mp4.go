@@ -272,25 +272,27 @@ func (p *MP4Processor) writeMetadata(_ context.Context, path string, song applem
 	return mp4.Write(tags, []string{})
 }
 
-// readInitSegment reads the leading ftyp and moov boxes that make up the
+// readInitSegment reads top-level boxes through the moov box that completes the
 // initialization segment, tracking the running byte offset so subsequent
 // fragment boxes report the correct absolute positions (required for mdat
 // sample extraction).
 func readInitSegment(r io.Reader, offset uint64) (*mp4.InitSegment, uint64, error) {
 	init := mp4.NewMP4Init()
-	for i := 0; i < 2; i++ {
+	for {
 		box, err := mp4.DecodeBox(offset, r)
 		if err != nil {
 			return nil, offset, err
 		}
 		boxType := box.Type()
-		if boxType != "ftyp" && boxType != "moov" {
-			return nil, offset, fmt.Errorf("unexpected box type %s, expected ftyp or moov", boxType)
+		if init.Ftyp == nil && boxType != "ftyp" {
+			return nil, offset, fmt.Errorf("unexpected box type %s, expected ftyp", boxType)
 		}
 		init.AddChild(box)
 		offset += box.Size()
+		if boxType == "moov" {
+			return init, offset, nil
+		}
 	}
-	return init, offset, nil
 }
 
 // readNextFragment reads the next moof+mdat fragment. It returns (nil, offset,
@@ -357,6 +359,13 @@ func collapseSampleEntries(init *mp4.InitSegment) {
 		}
 		stsd.Children = stsd.Children[:1]
 		stsd.SampleCount = 1
+		if init.Moov.Mvex != nil && trak.Tkhd != nil {
+			for _, trex := range init.Moov.Mvex.Trexs {
+				if trex.TrackID == trak.Tkhd.TrackID {
+					trex.DefaultSampleDescriptionIndex = 1
+				}
+			}
+		}
 	}
 }
 

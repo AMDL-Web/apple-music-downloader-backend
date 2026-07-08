@@ -643,8 +643,8 @@ func TestDownloadResponsesIncludeArtworkURLTemplate(t *testing.T) {
 
 // TestDownloadsFeedPushesUpsertsAndDeletes exercises the overview SSE feed:
 // initial backlog upsert from a cursor, live upsert on a new milestone, and a
-// live delete notification. Deletes carry no event_id so they must not
-// advance the client's resume cursor.
+// live delete notification. Deletes carry a persisted tombstone cursor so a
+// client can resume past them.
 func TestDownloadsFeedPushesUpsertsAndDeletes(t *testing.T) {
 	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
 	if err != nil {
@@ -725,8 +725,8 @@ func TestDownloadsFeedPushesUpsertsAndDeletes(t *testing.T) {
 		t.Fatalf("live message = %s %+v, want download_upserted for job2", et, msg)
 	}
 
-	// Live delete: removing a terminal job pushes download_deleted with no
-	// event_id (an unpersisted notification).
+	// Live delete: removing a terminal job pushes download_deleted with the
+	// persisted tombstone event_id.
 	if err := manager.Delete(ctx, job1.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -734,8 +734,72 @@ func TestDownloadsFeedPushesUpsertsAndDeletes(t *testing.T) {
 	if et != "download_deleted" || msg.JobID != "job1" {
 		t.Fatalf("delete message = %s %+v, want download_deleted for job1", et, msg)
 	}
-	if msg.EventID != 0 {
-		t.Fatalf("delete event_id = %d, want 0 (deletes must not advance the cursor)", msg.EventID)
+	if msg.EventID == 0 {
+		t.Fatal("delete event_id = 0, want persisted tombstone cursor")
+	}
+}
+
+func TestDownloadsFeedReplaysDeleteAfterSnapshotCursor(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	hub := events.NewHub()
+	manager := jobs.NewManager(store, hub, stubProcessor{}, 1, slog.Default())
+	server := &Server{store: store, hub: hub, manager: manager}
+
+	ctx := context.Background()
+	job := domain.Job{ID: "job1", Input: "song|us|1", Type: "song", CanonicalKey: "song:1", Status: domain.JobCompleted}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := store.AddEvent(ctx, domain.Event{JobID: job.ID, Type: "job_finished"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Delete(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(server.Routes())
+	defer ts.Close()
+	getCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(getCtx, http.MethodGet, ts.URL+"/api/v1/downloads/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Last-Event-ID", strconv.FormatInt(finished.ID, 10))
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	reader := bufio.NewReader(resp.Body)
+
+	var sseID int64
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read feed: %v", err)
+		}
+		if after, ok := strings.CutPrefix(line, "id: "); ok {
+			sseID, _ = strconv.ParseInt(strings.TrimSpace(after), 10, 64)
+		}
+		if after, ok := strings.CutPrefix(line, "data: "); ok {
+			var msg domain.DownloadFeedMessage
+			if err := json.Unmarshal([]byte(strings.TrimSpace(after)), &msg); err != nil {
+				t.Fatalf("bad feed JSON %q: %v", after, err)
+			}
+			if msg.Type != "download_deleted" || msg.JobID != job.ID {
+				t.Fatalf("message = %+v, want replayed delete for %s", msg, job.ID)
+			}
+			if msg.EventID <= finished.ID || sseID != msg.EventID {
+				t.Fatalf("delete cursor = event_id %d / id: %d, want tombstone after %d", msg.EventID, sseID, finished.ID)
+			}
+			return
+		}
 	}
 }
 
@@ -946,8 +1010,8 @@ func TestDeleteDownload(t *testing.T) {
 		t.Fatalf("items after delete = %v (err %v), want none", items, err)
 	}
 	events, err := server.store.ListEventsAfter(ctx, terminal.ID, 0)
-	if err != nil || len(events) != 0 {
-		t.Fatalf("events after delete = %v (err %v), want none", events, err)
+	if err != nil || len(events) != 1 || events[0].Type != domain.EventDeleted {
+		t.Fatalf("events after delete = %v (err %v), want one delete tombstone", events, err)
 	}
 
 	recorder = requestJSON(t, server.Routes(), http.MethodDelete, "/api/v1/downloads/"+running.ID, "")
