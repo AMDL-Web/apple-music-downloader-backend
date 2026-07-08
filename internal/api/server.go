@@ -649,6 +649,12 @@ func (s *Server) downloadsFeed(w http.ResponseWriter, r *http.Request) {
 	ch, cancel := s.hub.SubscribeAll()
 	defer cancel()
 
+	// Flush the response head right away so the client's EventSource opens even
+	// when there's no backlog to send (mirrors the single-job events handler);
+	// otherwise the 200 would wait for the first change or the 10s keepalive,
+	// and intermediary proxies could time the idle connection out first.
+	flusher.Flush()
+
 	write := func(msg domain.DownloadFeedMessage) error {
 		raw, _ := json.Marshal(msg)
 		// download_deleted carries no event_id, so it omits the SSE id line and

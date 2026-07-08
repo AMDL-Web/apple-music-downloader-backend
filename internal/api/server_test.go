@@ -792,6 +792,39 @@ func TestDownloadsFeedWSResumesFromCursor(t *testing.T) {
 	}
 }
 
+// TestDownloadsFeedFlushesHeadWithoutBacklog guards against the SSE feed
+// withholding its 200 response head until the first change or the 10s
+// keepalive: a client connecting when nothing is pending must still open
+// promptly. The 3s deadline is below the keepalive interval, so it fails if
+// the head isn't flushed up front.
+func TestDownloadsFeedFlushesHeadWithoutBacklog(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	hub := events.NewHub()
+	manager := jobs.NewManager(store, hub, stubProcessor{}, 1, slog.Default())
+	server := &Server{store: store, hub: hub, manager: manager}
+
+	ts := httptest.NewServer(server.Routes())
+	defer ts.Close()
+	getCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(getCtx, http.MethodGet, ts.URL+"/api/v1/downloads/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("feed did not return its response head before the deadline: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
 func TestDeleteDownload(t *testing.T) {
 	server := newTestServerWithManager(t)
 	ctx := context.Background()
