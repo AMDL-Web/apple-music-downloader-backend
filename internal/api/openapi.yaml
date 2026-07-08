@@ -903,8 +903,10 @@ components:
           type: integer
           format: int64
           description: >-
-            续接游标；download_upserted 带此值，客户端处理后作为下次续接起点。
-            download_deleted 不带（删除未持久化），客户端不应因它推进游标。
+            续接游标；download_upserted 带此值（为触发该任务快照的里程碑事件自身
+            的 id，而非同批推送的最大 id），客户端处理后作为下次续接起点，逐条严格
+            递增。断线重连时未送达的更新只会被重发（幂等 upsert），不会被跳过。
+            download_deleted 不带此字段（删除未持久化），客户端不应因它推进游标。
     DownloadDetail:
       type: object
       required: [job, items, hooks, last_event_id]

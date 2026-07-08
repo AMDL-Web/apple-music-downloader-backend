@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -717,28 +718,36 @@ func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, ch <-chan d
 		if err != nil {
 			return nil // keep the connection; the next wake or tick retries
 		}
-		seen := map[string]bool{}
+		// One upsert per job, carrying that job's own highest milestone id in
+		// this batch — never the batch-wide max. Emitting a job's message with
+		// the batch max would advance the client's resume cursor past other
+		// jobs' still-undelivered messages, so a mid-batch disconnect would skip
+		// them permanently (ListMilestoneEventsAfter is strict id>afterID).
+		jobMaxID := map[string]int64{}
 		var order []string
-		maxID := lastID
 		for _, ev := range events {
-			if ev.ID > maxID {
-				maxID = ev.ID
-			}
-			if !seen[ev.JobID] {
-				seen[ev.JobID] = true
+			if _, seen := jobMaxID[ev.JobID]; !seen {
 				order = append(order, ev.JobID)
 			}
+			if ev.ID > jobMaxID[ev.JobID] {
+				jobMaxID[ev.JobID] = ev.ID
+			}
 		}
+		// Send in ascending per-job cursor order so the client's Last-Event-ID
+		// only ever moves forward: a disconnect after message k leaves the
+		// cursor at k's id, and every later message (higher id) is simply
+		// redelivered on reconnect — an idempotent upsert, never a skip.
+		sort.Slice(order, func(i, j int) bool { return jobMaxID[order[i]] < jobMaxID[order[j]] })
 		for _, jobID := range order {
 			snap, ok := s.jobSnapshot(ctx, jobID)
 			if !ok {
 				continue // job deleted between the milestone and this read
 			}
-			if err := write(domain.DownloadFeedMessage{Type: "download_upserted", Job: snap, EventID: maxID}); err != nil {
+			if err := write(domain.DownloadFeedMessage{Type: "download_upserted", Job: snap, EventID: jobMaxID[jobID]}); err != nil {
 				return err
 			}
+			lastID = jobMaxID[jobID]
 		}
-		lastID = maxID
 		return nil
 	}
 

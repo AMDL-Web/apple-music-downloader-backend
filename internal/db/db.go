@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"amdl/internal/domain"
@@ -416,14 +417,29 @@ func (s *Store) LatestGlobalEventID(ctx context.Context) (int64, error) {
 	return id, err
 }
 
+// milestoneTypePlaceholders is the "?,?,…" fragment and matching args for the
+// persisted overview-milestone types, built once from the single source of
+// truth (domain.PersistedOverviewMilestones) so the SQL filter can never drift
+// from IsOverviewMilestone.
+var milestoneTypePlaceholders, milestoneTypeArgs = func() (string, []any) {
+	marks := make([]string, len(domain.PersistedOverviewMilestones))
+	args := make([]any, len(domain.PersistedOverviewMilestones))
+	for i, t := range domain.PersistedOverviewMilestones {
+		marks[i] = "?"
+		args[i] = t
+	}
+	return strings.Join(marks, ","), args
+}()
+
 // ListMilestoneEventsAfter returns, across all jobs, the events newer than
-// afterID whose type changes the GET /downloads list-level view (the same set
-// as domain.IsOverviewMilestone, minus job_deleted which is never persisted).
-// The overview feed uses this to learn which jobs changed since a cursor.
+// afterID whose type changes the GET /downloads list-level view (the persisted
+// members of domain.IsOverviewMilestone; job_deleted is never persisted). The
+// overview feed uses this to learn which jobs changed since a cursor.
 func (s *Store) ListMilestoneEventsAfter(ctx context.Context, afterID int64) ([]domain.Event, error) {
+	args := append([]any{afterID}, milestoneTypeArgs...)
 	return s.queryEvents(ctx, `SELECT id,job_id,item_id,type,phase,message,payload,created_at FROM job_events
-		WHERE id>? AND type IN ('job_queued','job_recovered','job_started','resolved_input','item_completed','item_skipped','item_failed','job_finished','job_failed','job_cancelled')
-		ORDER BY id ASC`, afterID)
+		WHERE id>? AND type IN (`+milestoneTypePlaceholders+`)
+		ORDER BY id ASC`, args...)
 }
 
 // ListHookEvents returns only jobID's hook lifecycle events, so callers

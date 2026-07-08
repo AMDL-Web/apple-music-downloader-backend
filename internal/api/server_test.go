@@ -792,6 +792,98 @@ func TestDownloadsFeedWSResumesFromCursor(t *testing.T) {
 	}
 }
 
+// TestDownloadsFeedBatchUsesPerJobCursor guards the resume-cursor bug two
+// reviewers caught: when one drain batch contains milestones for several jobs,
+// each download_upserted must carry that job's own milestone id, not the
+// batch-wide max. Otherwise a client that disconnects after an earlier message
+// resumes past the later jobs' ids and skips them permanently (the query is
+// strict id>afterID). Events are seeded before the connection so they all land
+// in a single initial drain batch.
+func TestDownloadsFeedBatchUsesPerJobCursor(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	hub := events.NewHub()
+	manager := jobs.NewManager(store, hub, stubProcessor{}, 1, slog.Default())
+	server := &Server{store: store, hub: hub, manager: manager}
+
+	ctx := context.Background()
+	for _, id := range []string{"jobA", "jobB"} {
+		if err := store.CreateJob(ctx, domain.Job{ID: id, Input: "song|us|" + id, Type: "song", CanonicalKey: "song:" + id, Status: domain.JobRunning}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	evA, err := store.AddEvent(ctx, domain.Event{JobID: "jobA", Type: "job_started"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evB, err := store.AddEvent(ctx, domain.Event{JobID: "jobB", Type: "job_started"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evA.ID >= evB.ID {
+		t.Fatalf("expected evA.ID < evB.ID, got %d, %d", evA.ID, evB.ID)
+	}
+
+	ts := httptest.NewServer(server.Routes())
+	defer ts.Close()
+	getCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(getCtx, http.MethodGet, ts.URL+"/api/v1/downloads/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	reader := bufio.NewReader(resp.Body)
+
+	// Read one SSE message, returning both its id: line and decoded data.
+	readMessage := func() (int64, domain.DownloadFeedMessage) {
+		t.Helper()
+		var sseID int64
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				t.Fatalf("read feed: %v", err)
+			}
+			if after, ok := strings.CutPrefix(line, "id: "); ok {
+				sseID, _ = strconv.ParseInt(strings.TrimSpace(after), 10, 64)
+			}
+			if after, ok := strings.CutPrefix(line, "data: "); ok {
+				var msg domain.DownloadFeedMessage
+				if err := json.Unmarshal([]byte(strings.TrimSpace(after)), &msg); err != nil {
+					t.Fatalf("bad feed JSON %q: %v", after, err)
+				}
+				return sseID, msg
+			}
+		}
+	}
+
+	// jobA came first (lower id) and must be sent first, carrying evA.ID — NOT
+	// the batch max (evB.ID). This is the exact value a client's Last-Event-ID
+	// would hold if it disconnected right here.
+	sseID, msg := readMessage()
+	if msg.Job == nil || msg.Job.ID != "jobA" {
+		t.Fatalf("first message = %+v, want jobA", msg)
+	}
+	if msg.EventID != evA.ID || sseID != evA.ID {
+		t.Fatalf("jobA cursor = event_id %d / id: %d, want %d (its own event, not batch max %d)", msg.EventID, sseID, evA.ID, evB.ID)
+	}
+
+	sseID, msg = readMessage()
+	if msg.Job == nil || msg.Job.ID != "jobB" {
+		t.Fatalf("second message = %+v, want jobB", msg)
+	}
+	if msg.EventID != evB.ID || sseID != evB.ID {
+		t.Fatalf("jobB cursor = event_id %d / id: %d, want %d", msg.EventID, sseID, evB.ID)
+	}
+}
+
 // TestDownloadsFeedFlushesHeadWithoutBacklog guards against the SSE feed
 // withholding its 200 response head until the first change or the 10s
 // keepalive: a client connecting when nothing is pending must still open

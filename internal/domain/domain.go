@@ -172,29 +172,42 @@ func SummarizeHooks(events []Event, stillRunning bool) []HookState {
 // the GET /downloads snapshot.
 const EventDeleted = "job_deleted"
 
-// overviewMilestones is the set of event types that change how a job appears
-// in the GET /downloads list — its status, resolved title/total_items, or
-// done/failed progress counters. The overview feed reacts only to these and
-// ignores the higher-frequency per-item detail events (item_progress,
-// codec_selected, retries, …) that don't alter the list-level view.
-var overviewMilestones = map[string]struct{}{
-	"job_queued":     {},
-	"job_recovered":  {},
-	"job_started":    {},
-	"resolved_input": {}, // title/total_items are populated by now
-	"item_completed": {},
-	"item_skipped":   {},
-	"item_failed":    {},
-	"job_finished":   {},
-	"job_failed":     {},
-	"job_cancelled":  {},
-	EventDeleted:     {},
+// PersistedOverviewMilestones are the persisted event types that change how a
+// job appears in the GET /downloads list — its status, resolved
+// title/total_items, or done/failed progress counters. The overview feed
+// reacts only to these (plus the unpersisted EventDeleted) and ignores the
+// higher-frequency per-item detail events (item_progress, codec_selected,
+// retries, …) that don't alter the list-level view.
+//
+// This is the single source of truth: the DB query that replays a cursor
+// (Store.ListMilestoneEventsAfter) builds its type filter from this slice, and
+// IsOverviewMilestone tests against it, so the two can never drift.
+var PersistedOverviewMilestones = []string{
+	"job_queued",
+	"job_recovered",
+	"job_started",
+	"resolved_input", // title/total_items are populated by now
+	"item_completed",
+	"item_skipped",
+	"item_failed",
+	"job_finished",
+	"job_failed",
+	"job_cancelled",
 }
 
+// overviewMilestones is the set membership form of PersistedOverviewMilestones
+// plus the unpersisted EventDeleted, for O(1) live-event filtering.
+var overviewMilestones = func() map[string]struct{} {
+	m := map[string]struct{}{EventDeleted: {}}
+	for _, t := range PersistedOverviewMilestones {
+		m[t] = struct{}{}
+	}
+	return m
+}()
+
 // IsOverviewMilestone reports whether an event of this type should wake the
-// GET /downloads overview feed. Used both to filter the persisted event log
-// when replaying a cursor and to decide which live events reach overview
-// subscribers at all.
+// GET /downloads overview feed. Used to decide which live events reach
+// overview subscribers at all.
 func IsOverviewMilestone(eventType string) bool {
 	_, ok := overviewMilestones[eventType]
 	return ok
