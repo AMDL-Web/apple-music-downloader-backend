@@ -120,13 +120,9 @@ download:
   check_integrity: true
 
 tools:
-  # string path or command name: ffmpeg executable.
+  # string path or command name: ffmpeg executable. Used to flatten the
+  # remuxed MP4 and to run the optional integrity check. All MP4 box/atom
+  # operations (sample extraction, re-encapsulation, metadata, cover art) are
+  # now handled in-process via the Go mp4ff/go-mp4tag libraries, so gpac,
+  # MP4Box and the Bento4 tools (mp4extract/mp4edit) are no longer required.
   ffmpeg: "ffmpeg"
-  # string path or command name: GPAC executable.
-  gpac: "gpac"
-  # string path or command name: MP4Box executable.
-  mp4box: "MP4Box"
-  # string path or command name: mp4extract executable.
-  mp4extract: "mp4extract"
-  # string path or command name: mp4edit executable.
-  mp4edit: "mp4edit"

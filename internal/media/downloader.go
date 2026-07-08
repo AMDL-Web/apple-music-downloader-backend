@@ -689,29 +689,19 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	if err != nil {
 		return fmt.Errorf("decrypt samples: %w", err)
 	}
-	var mediaBytes []byte
-	for _, sample := range decryptedSamples {
-		mediaBytes = append(mediaBytes, sample...)
-	}
 	set(domain.ItemRemuxing, 0.90, "remuxing")
-	outBytes, err := d.mp4.encapsulate(ctx, extracted, mediaBytes)
+	outBytes, err := d.mp4.encapsulate(ctx, extracted, decryptedSamples)
 	if err != nil {
 		return fmt.Errorf("encapsulate decrypted media: %w", err)
 	}
-	if codec != "ec3" && codec != "ac3" {
-		fixed, err := d.mp4.fixEncapsulate(ctx, outBytes)
-		if err != nil {
-			return fmt.Errorf("fix encapsulation: %w", err)
-		}
-		outBytes = fixed
+	// Flatten the fragmented MP4 produced by mp4ff into a regular progressive
+	// MP4 (also normalises the ftyp brand). The decoder configuration is carried
+	// over from the original init segment, so no esds fixup is required.
+	fixed, err := d.mp4.fixEncapsulate(ctx, outBytes)
+	if err != nil {
+		return fmt.Errorf("fix encapsulation: %w", err)
 	}
-	if codec == "aac" || codec == "aac-downmix" || codec == "aac-binaural" {
-		fixed, err := d.mp4.fixESDS(ctx, raw, outBytes)
-		if err != nil {
-			return fmt.Errorf("fix esds: %w", err)
-		}
-		outBytes = fixed
-	}
+	outBytes = fixed
 	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrity(ctx, outBytes) {
 		if codec != "alac" {
 			return fmt.Errorf("integrity check failed")
@@ -805,6 +795,13 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 	decrypted, err := decryptWidevineMP4(raw, license, parseLicense)
 	if err != nil {
 		return err
+	}
+	// Normalise the container (flatten + M4A brand + create the
+	// moov.udta.meta.ilst structure that go-mp4tag writes into). The decrypted
+	// WebPlayback asset has no udta box, so tagging would otherwise fail.
+	decrypted, err = d.mp4.fixEncapsulate(ctx, decrypted)
+	if err != nil {
+		return fmt.Errorf("normalize AAC-LC container: %w", err)
 	}
 	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrity(ctx, decrypted) {
 		return fmt.Errorf("AAC-LC integrity check failed")

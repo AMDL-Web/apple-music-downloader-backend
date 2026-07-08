@@ -72,7 +72,7 @@ func (f *fakeQualityService) QueryQuality(_ context.Context, req media.QualityRe
 }
 
 func configureTestTools() config.ToolsConfig {
-	return config.ToolsConfig{FFmpeg: "true", GPAC: "true", MP4Box: "true", MP4Extract: "true", MP4Edit: "true"}
+	return config.ToolsConfig{FFmpeg: "true"}
 }
 
 func requestJSON(t *testing.T, handler http.Handler, method, path, body string) *httptest.ResponseRecorder {

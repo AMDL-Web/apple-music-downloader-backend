@@ -18,11 +18,7 @@ func NewToolChecker(cfg config.ToolsConfig) *ToolChecker {
 
 func (c *ToolChecker) Check(ctx context.Context) []domain.Capability {
 	tools := map[string]string{
-		"ffmpeg":     c.cfg.FFmpeg,
-		"gpac":       c.cfg.GPAC,
-		"MP4Box":     c.cfg.MP4Box,
-		"mp4extract": c.cfg.MP4Extract,
-		"mp4edit":    c.cfg.MP4Edit,
+		"ffmpeg": c.cfg.FFmpeg,
 	}
 	out := make([]domain.Capability, 0, len(tools))
 	for name, binary := range tools {

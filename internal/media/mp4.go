@@ -3,17 +3,18 @@ package media
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
+	"github.com/Eyevinn/mp4ff/mp4"
 	"github.com/zhaarey/go-mp4tag"
 )
 
@@ -23,14 +24,18 @@ type sampleInfo struct {
 	Duration  int
 }
 
+// songInfo carries the parsed, still-encrypted media between extractSong and
+// encapsulate. The mp4ff init segment and fragments are retained so the
+// decrypted samples can be written back into the original container structure
+// without re-parsing.
 type songInfo struct {
-	Codec         string
-	Raw           []byte
-	Samples       []sampleInfo
-	NHML          string
-	DecoderParams []byte
-	CreationTime  time.Time
-	ModifiedTime  time.Time
+	Codec     string
+	Samples   []sampleInfo
+	init      *mp4.InitSegment
+	fragments []*mp4.Fragment
+	// fragSampleCounts[i] is the number of samples in fragments[i]; used to map
+	// the flat decrypted sample slice back onto each fragment's mdat.
+	fragSampleCounts []int
 }
 
 type MP4Processor struct {
@@ -41,120 +46,143 @@ func newMP4Processor(cfg config.Config) *MP4Processor {
 	return &MP4Processor{cfg: cfg}
 }
 
-func (p *MP4Processor) extractSong(ctx context.Context, raw []byte, codec string) (songInfo, error) {
-	dir, err := os.MkdirTemp(p.cfg.Download.TempDir, "extract-*")
+// extractSong parses the encrypted fragmented MP4 downloaded from the CDN and
+// pulls out the individual (still-encrypted) audio samples together with the
+// per-fragment sample-description index used to select the decryption key.
+// This replaces the previous gpac/MP4Box/mp4extract pipeline with pure-Go mp4ff
+// box parsing.
+func (p *MP4Processor) extractSong(_ context.Context, raw []byte, codec string) (songInfo, error) {
+	r := bytes.NewReader(raw)
+	var offset uint64
+	init, offset, err := readInitSegment(r, offset)
 	if err != nil {
-		return songInfo{}, err
+		return songInfo{}, fmt.Errorf("read init segment: %w", err)
 	}
-	defer os.RemoveAll(dir)
-	name := "song"
-	rawPath := filepath.Join(dir, name+".mp4")
-	nhmlPath := filepath.Join(dir, name+".nhml")
-	xmlPath := filepath.Join(dir, name+".xml")
-	mediaPath := filepath.Join(dir, name+".media")
-	if err := os.WriteFile(rawPath, raw, 0o644); err != nil {
-		return songInfo{}, err
+	if init == nil || init.Moov == nil {
+		return songInfo{}, errors.New("no moov box in init segment")
 	}
-	if err := run(ctx, p.cfg.Tools.GPAC, "-i", rawPath, "nhmlw:pckp=true", "-o", nhmlPath); err != nil {
-		return songInfo{}, err
+
+	var trex *mp4.TrexBox
+	if init.Moov.Mvex != nil && len(init.Moov.Mvex.Trexs) > 0 {
+		trex = init.Moov.Mvex.Trexs[0]
 	}
-	if err := run(ctx, p.cfg.Tools.MP4Box, "-diso", rawPath, "-out", xmlPath); err != nil {
-		return songInfo{}, err
+	defaultDescIndex := 1
+	if trex != nil && trex.DefaultSampleDescriptionIndex > 0 {
+		defaultDescIndex = int(trex.DefaultSampleDescriptionIndex)
 	}
-	nhmlRaw, err := os.ReadFile(nhmlPath)
-	if err != nil {
-		return songInfo{}, err
-	}
-	xmlRaw, err := os.ReadFile(xmlPath)
-	if err != nil {
-		return songInfo{}, err
-	}
-	mediaRaw, err := os.ReadFile(mediaPath)
-	if err != nil {
-		return songInfo{}, err
-	}
-	var decoder []byte
-	switch codec {
-	case "alac":
-		atomPath := filepath.Join(dir, name+".atom")
-		if err := run(ctx, p.cfg.Tools.MP4Extract, "moov/trak/mdia/minf/stbl/stsd/enca[0]/alac", rawPath, atomPath); err != nil {
-			return songInfo{}, err
+
+	var (
+		samples   []sampleInfo
+		fragments []*mp4.Fragment
+		counts    []int
+	)
+	for {
+		var frag *mp4.Fragment
+		frag, offset, err = readNextFragment(r, offset)
+		if err != nil {
+			return songInfo{}, fmt.Errorf("read fragment: %w", err)
 		}
-		decoder, _ = os.ReadFile(atomPath)
-	case "aac", "aac-downmix", "aac-binaural":
-		infoPath := filepath.Join(dir, name+".info")
-		decoder, _ = os.ReadFile(infoPath)
+		if frag == nil {
+			break
+		}
+		full, err := frag.GetFullSamples(trex)
+		if err != nil {
+			return songInfo{}, fmt.Errorf("get fragment samples: %w", err)
+		}
+
+		// The sample-description index is signalled per fragment via tfhd; fall
+		// back to the trex default when absent. It is 1-based in the container
+		// and selects one of the (typically two) decryption keys.
+		descIndex := defaultDescIndex
+		if len(frag.Moof.Trafs) > 0 {
+			tfhd := frag.Moof.Trafs[0].Tfhd
+			if tfhd != nil && tfhd.HasSampleDescriptionIndex() {
+				descIndex = int(tfhd.SampleDescriptionIndex)
+			}
+		}
+		keyIndex := max(0, descIndex-1)
+
+		for _, s := range full {
+			samples = append(samples, sampleInfo{DescIndex: keyIndex, Data: s.Data, Duration: int(s.Dur)})
+		}
+		fragments = append(fragments, frag)
+		counts = append(counts, len(full))
 	}
-	samples, err := parseSamples(string(nhmlRaw), string(xmlRaw), mediaRaw)
-	if err != nil {
-		return songInfo{}, err
+	if len(samples) == 0 {
+		return songInfo{}, errors.New("no samples extracted from media")
 	}
-	created, modified := parseMovieTimes(string(xmlRaw))
-	return songInfo{Codec: codec, Raw: raw, Samples: samples, NHML: string(nhmlRaw), DecoderParams: decoder, CreationTime: created, ModifiedTime: modified}, nil
+	return songInfo{Codec: codec, Samples: samples, init: init, fragments: fragments, fragSampleCounts: counts}, nil
 }
 
-func (p *MP4Processor) encapsulate(ctx context.Context, info songInfo, decrypted []byte) ([]byte, error) {
-	dir, err := os.MkdirTemp(p.cfg.Download.TempDir, "encap-*")
-	if err != nil {
-		return nil, err
+// encapsulate rebuilds a playable (fragmented) MP4 from the decrypted samples by
+// stripping the encryption boxes from the init segment and fragments and writing
+// the plaintext sample data back into each mdat. The decoder configuration
+// (alac/mp4a/ec-3) is preserved from the original init segment, so no external
+// muxer is required. The fragmented output is flattened to a regular MP4 by the
+// subsequent ffmpeg copy pass (fixEncapsulate).
+func (p *MP4Processor) encapsulate(_ context.Context, info songInfo, decrypted [][]byte) ([]byte, error) {
+	if info.init == nil || info.init.Moov == nil {
+		return nil, errors.New("missing init segment")
 	}
-	defer os.RemoveAll(dir)
-	name := "song"
+	if len(decrypted) != len(info.Samples) {
+		return nil, fmt.Errorf("decrypted sample count mismatch: got %d, want %d", len(decrypted), len(info.Samples))
+	}
 
-	ext := ".media"
-	if info.Codec == "ec3" || info.Codec == "ac3" {
-		ext = "." + info.Codec
+	// Convert encrypted sample entries (enca -> alac/mp4a/ec-3), drop sinf and
+	// moov-level pssh boxes.
+	if _, err := mp4.DecryptInit(info.init); err != nil {
+		return nil, fmt.Errorf("decrypt init: %w", err)
 	}
-	mediaPath := filepath.Join(dir, name+ext)
-	if err := os.WriteFile(mediaPath, decrypted, 0o644); err != nil {
-		return nil, err
+	// Drop encryption sample groups (seig) left in the sample table.
+	for _, trak := range info.init.Moov.Traks {
+		if trak.Mdia != nil && trak.Mdia.Minf != nil && trak.Mdia.Minf.Stbl != nil {
+			stbl := trak.Mdia.Minf.Stbl
+			stbl.Children = filterEncryptionSampleGroups(stbl.Children)
+		}
 	}
-	outPath := filepath.Join(dir, name+".m4a")
-	switch info.Codec {
-	case "alac":
-		nhmlPath := filepath.Join(dir, name+".nhml")
-		nhml := replaceNHMLBase(info.NHML, filepath.Base(mediaPath))
-		if err := os.WriteFile(nhmlPath, []byte(nhml), 0o644); err != nil {
-			return nil, err
-		}
-		if err := run(ctx, p.cfg.Tools.GPAC, "-i", nhmlPath, "nhmlr", "-o", outPath); err != nil {
-			return nil, err
-		}
-		atomPath := filepath.Join(dir, name+".atom")
-		finalPath := filepath.Join(dir, name+"_final.m4a")
-		if err := os.WriteFile(atomPath, info.DecoderParams, 0o644); err != nil {
-			return nil, err
-		}
-		if err := run(ctx, p.cfg.Tools.MP4Edit, "--insert", "moov/trak/mdia/minf/stbl/stsd/alac:"+atomPath, outPath, finalPath); err != nil {
-			return nil, err
-		}
-		outPath = finalPath
-	case "aac", "aac-downmix", "aac-binaural":
-		nhmlPath := filepath.Join(dir, name+".nhml")
-		infoPath := filepath.Join(dir, name+".info")
-		nhml := replaceNHMLBase(info.NHML, filepath.Base(mediaPath))
-		nhml = replaceOrInsertAttr(nhml, "specificInfoFile", filepath.Base(infoPath))
-		nhml = replaceOrInsertAttr(nhml, "streamType", "5")
-		if err := os.WriteFile(infoPath, info.DecoderParams, 0o644); err != nil {
-			return nil, err
-		}
-		if err := os.WriteFile(nhmlPath, []byte(nhml), 0o644); err != nil {
-			return nil, err
-		}
-		if err := run(ctx, p.cfg.Tools.GPAC, "-i", nhmlPath, "nhmlr", "-o", outPath); err != nil {
-			return nil, err
-		}
-	case "ec3", "ac3":
-		if err := run(ctx, p.cfg.Tools.GPAC, "-i", mediaPath, "-o", outPath); err != nil {
-			return nil, err
-		}
-	default:
-		return nil, fmt.Errorf("unsupported codec %s", info.Codec)
+	// Apple Music encrypts with two identical sample entries (two IVs); after
+	// decryption they are identical, so collapse to a single entry and point
+	// every fragment at it.
+	collapseSampleEntries(info.init)
+
+	var buf bytes.Buffer
+	if err := info.init.Encode(&buf); err != nil {
+		return nil, fmt.Errorf("encode init segment: %w", err)
 	}
-	if err := run(ctx, p.cfg.Tools.MP4Box, "-brand", "M4A ", "-ab", "M4A ", "-ab", "mp42", outPath); err != nil {
-		return nil, err
+
+	sampleIdx := 0
+	for fi, frag := range info.fragments {
+		n := info.fragSampleCounts[fi]
+		var mdatData []byte
+		for k := 0; k < n; k++ {
+			mdatData = append(mdatData, decrypted[sampleIdx]...)
+			sampleIdx++
+		}
+		if frag.Mdat == nil {
+			return nil, fmt.Errorf("fragment %d has no mdat box", fi)
+		}
+		frag.Mdat.Data = mdatData
+
+		// Strip per-fragment encryption boxes (senc/saiz/saio) and pssh. mp4ff
+		// recomputes trun data offsets on Encode, so no manual offset fixup is
+		// needed.
+		for _, traf := range frag.Moof.Trafs {
+			traf.RemoveEncryptionBoxes()
+			// Normalise the sample-description index to the single retained entry.
+			if traf.Tfhd != nil && traf.Tfhd.HasSampleDescriptionIndex() {
+				traf.Tfhd.SampleDescriptionIndex = 1
+			}
+		}
+		frag.Moof.RemovePsshs()
+
+		if err := frag.Encode(&buf); err != nil {
+			return nil, fmt.Errorf("encode fragment %d: %w", fi, err)
+		}
 	}
-	return os.ReadFile(outPath)
+	if sampleIdx != len(decrypted) {
+		return nil, fmt.Errorf("consumed %d of %d decrypted samples", sampleIdx, len(decrypted))
+	}
+	return buf.Bytes(), nil
 }
 
 func (p *MP4Processor) fixEncapsulate(ctx context.Context, song []byte) ([]byte, error) {
@@ -174,31 +202,6 @@ func (p *MP4Processor) fixEncapsulate(ctx context.Context, song []byte) ([]byte,
 	return os.ReadFile(outPath)
 }
 
-func (p *MP4Processor) fixESDS(ctx context.Context, rawSong, song []byte) ([]byte, error) {
-	dir, err := os.MkdirTemp(p.cfg.Download.TempDir, "esds-*")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(dir)
-	rawPath := filepath.Join(dir, "raw.m4a")
-	inPath := filepath.Join(dir, "in.m4a")
-	atomPath := filepath.Join(dir, "esds.atom")
-	outPath := filepath.Join(dir, "out.m4a")
-	if err := os.WriteFile(rawPath, rawSong, 0o644); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(inPath, song, 0o644); err != nil {
-		return nil, err
-	}
-	if err := run(ctx, p.cfg.Tools.MP4Extract, "moov/trak/mdia/minf/stbl/stsd/enca[0]/esds", rawPath, atomPath); err != nil {
-		return nil, err
-	}
-	if err := run(ctx, p.cfg.Tools.MP4Edit, "--replace", "moov/trak/mdia/minf/stbl/stsd/mp4a/esds:"+atomPath, inPath, outPath); err != nil {
-		return nil, err
-	}
-	return os.ReadFile(outPath)
-}
-
 func (p *MP4Processor) checkIntegrity(ctx context.Context, song []byte) bool {
 	dir, err := os.MkdirTemp(p.cfg.Download.TempDir, "check-*")
 	if err != nil {
@@ -212,23 +215,7 @@ func (p *MP4Processor) checkIntegrity(ctx context.Context, song []byte) bool {
 	return err == nil && len(out) == 0
 }
 
-func (p *MP4Processor) writeMetadata(ctx context.Context, path string, song applemusic.Song, lyrics string, cover []byte, info songInfo) error {
-	args := []string{"-name", "1=" + song.Name, "-itags", "tool=:" + "artist=AppleMusic"}
-	var coverPath string
-	if p.cfg.Download.EmbedCover && len(cover) > 0 {
-		var err error
-		coverPath, err = p.writeTemporaryCover(cover)
-		if err != nil {
-			return err
-		}
-		args[3] += ":cover=" + coverPath
-		defer os.Remove(coverPath)
-	}
-	args = append(args, path)
-	if err := run(ctx, p.cfg.Tools.MP4Box, args...); err != nil {
-		return err
-	}
-
+func (p *MP4Processor) writeMetadata(_ context.Context, path string, song applemusic.Song, lyrics string, cover []byte, _ songInfo) error {
 	tags := &mp4tag.MP4Tags{
 		Title:       song.Name,
 		Artist:      song.ArtistName,
@@ -274,6 +261,9 @@ func (p *MP4Processor) writeMetadata(ctx context.Context, path string, song appl
 			tags.ItunesArtistID = int32(id)
 		}
 	}
+	if p.cfg.Download.EmbedCover && len(cover) > 0 {
+		tags.Pictures = []*mp4tag.MP4Picture{{Format: mp4tag.ImageTypeAuto, Data: cover}}
+	}
 	mp4, err := mp4tag.Open(path)
 	if err != nil {
 		return err
@@ -282,116 +272,92 @@ func (p *MP4Processor) writeMetadata(ctx context.Context, path string, song appl
 	return mp4.Write(tags, []string{})
 }
 
-func (p *MP4Processor) writeTemporaryCover(cover []byte) (string, error) {
-	if err := os.MkdirAll(p.cfg.Download.TempDir, 0o755); err != nil {
-		return "", err
-	}
-	ext, err := standaloneCoverExt(p.cfg.Download.CoverFormat)
-	if err != nil {
-		return "", err
-	}
-	file, err := os.CreateTemp(p.cfg.Download.TempDir, "embedded-cover-*."+ext)
-	if err != nil {
-		return "", err
-	}
-	path := file.Name()
-	if _, err := file.Write(cover); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return "", err
-	}
-	return path, nil
-}
-
-func parseSamples(nhml, xml string, media []byte) ([]sampleInfo, error) {
-	nhmlSamples := parseNHMLSamples(nhml)
-	descIndexes := parseDescIndexes(xml)
-	if len(nhmlSamples) == 0 {
-		return nil, fmt.Errorf("no NHML samples extracted")
-	}
-	if len(descIndexes) == 0 {
-		descIndexes = make([]int, len(nhmlSamples))
-	}
-	reader := bytes.NewReader(media)
-	out := make([]sampleInfo, 0, len(nhmlSamples))
-	for i, n := range nhmlSamples {
-		data := make([]byte, n.length)
-		if _, err := reader.Read(data); err != nil {
-			return nil, err
+// readInitSegment reads the leading ftyp and moov boxes that make up the
+// initialization segment, tracking the running byte offset so subsequent
+// fragment boxes report the correct absolute positions (required for mdat
+// sample extraction).
+func readInitSegment(r io.Reader, offset uint64) (*mp4.InitSegment, uint64, error) {
+	init := mp4.NewMP4Init()
+	for i := 0; i < 2; i++ {
+		box, err := mp4.DecodeBox(offset, r)
+		if err != nil {
+			return nil, offset, err
 		}
-		desc := 0
-		if i < len(descIndexes) {
-			desc = descIndexes[i]
+		boxType := box.Type()
+		if boxType != "ftyp" && boxType != "moov" {
+			return nil, offset, fmt.Errorf("unexpected box type %s, expected ftyp or moov", boxType)
 		}
-		out = append(out, sampleInfo{DescIndex: desc, Data: data, Duration: n.duration})
+		init.AddChild(box)
+		offset += box.Size()
 	}
-	return out, nil
+	return init, offset, nil
 }
 
-type nhmlSample struct {
-	length   int
-	duration int
-}
-
-var nhmlSampleRe = regexp.MustCompile(`<NHNTSample\b[^>]*dataLength="(\d+)"[^>]*duration="(\d+)"`)
-
-func parseNHMLSamples(nhml string) []nhmlSample {
-	matches := nhmlSampleRe.FindAllStringSubmatch(nhml, -1)
-	out := make([]nhmlSample, 0, len(matches))
-	for _, m := range matches {
-		out = append(out, nhmlSample{length: atoi(m[1]), duration: atoi(m[2])})
-	}
-	return out
-}
-
-var (
-	moofRe = regexp.MustCompile(`(?s)<MovieFragmentBox\b.*?</MovieFragmentBox>`)
-	tfhdRe = regexp.MustCompile(`<TrackFragmentHeaderBox\b[^>]*SampleDescriptionIndex="(\d+)"`)
-	trunRe = regexp.MustCompile(`<TrackRunBox\b[^>]*SampleCount="(\d+)"`)
-	mvhdRe = regexp.MustCompile(`<MovieHeaderBox\b[^>]*CreationTime="(\d+)"[^>]*ModificationTime="(\d+)"`)
-)
-
-func parseDescIndexes(xml string) []int {
-	var out []int
-	for _, moof := range moofRe.FindAllString(xml, -1) {
-		desc := 0
-		if m := tfhdRe.FindStringSubmatch(moof); len(m) == 2 {
-			desc = max(0, atoi(m[1])-1)
+// readNextFragment reads the next moof+mdat fragment. It returns (nil, offset,
+// nil) at end of stream.
+func readNextFragment(r io.Reader, offset uint64) (*mp4.Fragment, uint64, error) {
+	frag := mp4.NewFragment()
+	for {
+		box, err := mp4.DecodeBox(offset, r)
+		if err == io.EOF {
+			return nil, offset, nil
 		}
-		for _, trun := range trunRe.FindAllStringSubmatch(moof, -1) {
-			for i := 0; i < atoi(trun[1]); i++ {
-				out = append(out, desc)
+		if err != nil {
+			return nil, offset, err
+		}
+		boxType := box.Type()
+		offset += box.Size()
+		switch boxType {
+		case "moof", "emsg", "prft":
+			frag.AddChild(box)
+		case "mdat":
+			frag.AddChild(box)
+			if frag.Moof == nil {
+				return nil, offset, fmt.Errorf("mdat box without preceding moof (ends @ offset %d)", offset)
+			}
+			return frag, offset, nil
+		default:
+			// Ignore unexpected top-level boxes between fragments.
+		}
+	}
+}
+
+// filterEncryptionSampleGroups removes sbgp/sgpd boxes that describe encryption
+// key assignment (grouping type seig/seam), leaving other sample groups (e.g.
+// roll) untouched.
+func filterEncryptionSampleGroups(children []mp4.Box) []mp4.Box {
+	out := make([]mp4.Box, 0, len(children))
+	for _, child := range children {
+		switch box := child.(type) {
+		case *mp4.SbgpBox:
+			if box.GroupingType == "seig" || box.GroupingType == "seam" {
+				continue
+			}
+		case *mp4.SgpdBox:
+			if box.GroupingType == "seig" || box.GroupingType == "seam" {
+				continue
 			}
 		}
+		out = append(out, child)
 	}
 	return out
 }
 
-func parseMovieTimes(xml string) (time.Time, time.Time) {
-	if m := mvhdRe.FindStringSubmatch(xml); len(m) == 3 {
-		return macTime(atoi(m[1])), macTime(atoi(m[2]))
+// collapseSampleEntries reduces a sample description table that holds multiple
+// (now identical, post-decryption) entries down to a single entry. Apple Music
+// ships two entries because two IVs are used to encrypt the track.
+func collapseSampleEntries(init *mp4.InitSegment) {
+	for _, trak := range init.Moov.Traks {
+		if trak.Mdia == nil || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil {
+			continue
+		}
+		stsd := trak.Mdia.Minf.Stbl.Stsd
+		if stsd == nil || len(stsd.Children) <= 1 {
+			continue
+		}
+		stsd.Children = stsd.Children[:1]
+		stsd.SampleCount = 1
 	}
-	return time.Now(), time.Now()
-}
-
-func macTime(seconds int) time.Time {
-	return time.Date(1904, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(seconds) * time.Second)
-}
-
-func replaceNHMLBase(nhml, mediaName string) string {
-	return replaceOrInsertAttr(nhml, "baseMediaFile", mediaName)
-}
-
-func replaceOrInsertAttr(nhml, attr, value string) string {
-	re := regexp.MustCompile(attr + `="[^"]*"`)
-	if re.MatchString(nhml) {
-		return re.ReplaceAllString(nhml, attr+`="`+value+`"`)
-	}
-	return strings.Replace(nhml, "<NHNTStream", "<NHNTStream "+attr+`="`+value+`"`, 1)
 }
 
 func run(ctx context.Context, name string, args ...string) error {
