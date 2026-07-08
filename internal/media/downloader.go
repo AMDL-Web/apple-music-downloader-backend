@@ -410,6 +410,10 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 			})})
 		}
 		item.Codec = codec
+		// Cleared so a client reading the snapshot mid-fallback never sees the
+		// previous codec's quality paired with the new codec's name; setItemQuality
+		// repopulates them once the new attempt's actual quality is known.
+		item.BitDepth, item.SampleRate, item.Bitrate = 0, 0, 0
 		attemptOutPath := ""
 		skipped := false
 
@@ -423,6 +427,9 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 			if codec == "aac-lc" {
 				d.setItemAttempt(ctx, reporter, &item, "download", attempt, clampAttempts(codecMaxAttempts), fmt.Sprintf("Downloading %s (%d/%d)", strings.ToUpper(codec), attempt, clampAttempts(codecMaxAttempts)))
 				attemptOutPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, "256Kbps")
+				// No per-track manifest to read quality from for aac-lc (unlike the
+				// enhanced codecs' HLS variant); leave bit_depth/sample_rate/bitrate
+				// at 0 (omitted from the API response) rather than assert a value.
 				if skip, err := d.handleExistingOutput(ctx, reporter, job, &item, attemptOutPath); skip || err != nil {
 					skipped = skip
 					return struct{}{}, err
@@ -637,6 +644,7 @@ func (d *Downloader) selectEnhancedMedia(ctx context.Context, job domain.Job, it
 	if err != nil {
 		return selectedDownloadMedia{}, fmt.Errorf("select %s media: %w", codec, err)
 	}
+	d.setItemQuality(ctx, reporter, item, info.BitDepth, info.SampleRate, info.Bandwidth)
 	payload, _ := json.Marshal(map[string]any{"codec_id": info.CodecID, "bit_depth": info.BitDepth, "sample_rate": info.SampleRate, "attempt": item.Attempt, "max_attempts": item.MaxAttempts})
 	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_selected", Phase: codec, Payload: string(payload)})
 
@@ -689,29 +697,19 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	if err != nil {
 		return fmt.Errorf("decrypt samples: %w", err)
 	}
-	var mediaBytes []byte
-	for _, sample := range decryptedSamples {
-		mediaBytes = append(mediaBytes, sample...)
-	}
 	set(domain.ItemRemuxing, 0.90, "remuxing")
-	outBytes, err := d.mp4.encapsulate(ctx, extracted, mediaBytes)
+	outBytes, err := d.mp4.encapsulate(ctx, extracted, decryptedSamples)
 	if err != nil {
 		return fmt.Errorf("encapsulate decrypted media: %w", err)
 	}
-	if codec != "ec3" && codec != "ac3" {
-		fixed, err := d.mp4.fixEncapsulate(ctx, outBytes)
-		if err != nil {
-			return fmt.Errorf("fix encapsulation: %w", err)
-		}
-		outBytes = fixed
+	// Flatten the fragmented MP4 produced by mp4ff into a regular progressive
+	// MP4 (also normalises the ftyp brand). The decoder configuration is carried
+	// over from the original init segment, so no esds fixup is required.
+	fixed, err := d.mp4.fixEncapsulate(ctx, outBytes)
+	if err != nil {
+		return fmt.Errorf("fix encapsulation: %w", err)
 	}
-	if codec == "aac" || codec == "aac-downmix" || codec == "aac-binaural" {
-		fixed, err := d.mp4.fixESDS(ctx, raw, outBytes)
-		if err != nil {
-			return fmt.Errorf("fix esds: %w", err)
-		}
-		outBytes = fixed
-	}
+	outBytes = fixed
 	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrity(ctx, outBytes) {
 		if codec != "alac" {
 			return fmt.Errorf("integrity check failed")
@@ -806,6 +804,13 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 	if err != nil {
 		return err
 	}
+	// Normalise the container (flatten + M4A brand + create the
+	// moov.udta.meta.ilst structure that go-mp4tag writes into). The decrypted
+	// WebPlayback asset has no udta box, so tagging would otherwise fail.
+	decrypted, err = d.mp4.fixEncapsulate(ctx, decrypted)
+	if err != nil {
+		return fmt.Errorf("normalize AAC-LC container: %w", err)
+	}
 	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrity(ctx, decrypted) {
 		return fmt.Errorf("AAC-LC integrity check failed")
 	}
@@ -842,6 +847,17 @@ func (d *Downloader) setItemAttempt(ctx context.Context, reporter jobs.Reporter,
 	item.Attempt = attempt
 	item.MaxAttempts = maximum
 	item.StatusMessage = message
+	_ = reporter.UpdateItem(ctx, *item)
+}
+
+// setItemQuality persists the concrete audio quality of the codec currently
+// being attempted once it's known, so a client reading the job snapshot
+// mid-download sees the same bit depth/sample rate/bitrate that will end up
+// in the final file rather than just the codec name.
+func (d *Downloader) setItemQuality(ctx context.Context, reporter jobs.Reporter, item *domain.JobItem, bitDepth, sampleRate, bitrate int) {
+	item.BitDepth = bitDepth
+	item.SampleRate = sampleRate
+	item.Bitrate = bitrate
 	_ = reporter.UpdateItem(ctx, *item)
 }
 

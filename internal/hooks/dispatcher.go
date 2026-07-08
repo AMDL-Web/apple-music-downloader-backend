@@ -30,16 +30,26 @@ type Dispatcher struct {
 	// after the dispatcher was supposed to be draining, which is undefined
 	// behavior per the sync.WaitGroup docs. closed additionally makes
 	// Shutdown a permanent cutover: once called, later Dispatch calls are
-	// dropped instead of racing to add more work.
+	// dropped instead of racing to add more work. mu also guards pending.
 	mu     sync.Mutex
 	closed bool
 	wg     sync.WaitGroup
+
+	// pending counts, per job id, how many dispatched hook executions haven't
+	// recorded their terminal hook_succeeded/hook_failed event yet. A caller
+	// deciding whether a job's event stream still has anything left to deliver
+	// cannot rely on the job's own terminal event alone: hook executions are
+	// fire-and-forget goroutines that can run for as long as their configured
+	// timeout, well after the job itself reached a terminal status. See
+	// Pending.
+	pending map[string]int
 }
 
 func NewDispatcher(cfg Config, recorder EventRecorder, logger *slog.Logger) *Dispatcher {
 	return &Dispatcher{
 		cfg: cfg, recorder: recorder, logger: logger,
-		sem: make(chan struct{}, cfg.Concurrency()),
+		sem:     make(chan struct{}, cfg.Concurrency()),
+		pending: map[string]int{},
 	}
 }
 
@@ -69,6 +79,7 @@ func (d *Dispatcher) Dispatch(event string, job domain.Job, items []domain.JobIt
 		return
 	}
 	d.wg.Add(len(matched))
+	d.pending[job.ID] += len(matched)
 	d.mu.Unlock()
 
 	for _, entry := range matched {
@@ -76,8 +87,21 @@ func (d *Dispatcher) Dispatch(event string, job domain.Job, items []domain.JobIt
 	}
 }
 
+// Pending reports whether jobID has any dispatched hook execution that
+// hasn't recorded its terminal hook_succeeded/hook_failed event yet.
+// Nil-safe so callers don't need to branch when hooks are disabled.
+func (d *Dispatcher) Pending(jobID string) bool {
+	if d == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.pending[jobID] > 0
+}
+
 func (d *Dispatcher) execute(entry Entry, payload Payload) {
 	defer d.wg.Done()
+	defer d.donePending(payload.Job.ID)
 	d.sem <- struct{}{}
 	defer func() { <-d.sem }()
 
@@ -113,6 +137,19 @@ func (d *Dispatcher) execute(entry Entry, payload Payload) {
 		}
 	}
 	d.record(ctx, entry, payload.Job.ID, "hook_failed", lastErr.Error(), map[string]any{"attempts": attempts})
+}
+
+// donePending runs after this execution's terminal hook_succeeded/hook_failed
+// event has already been recorded (record is called synchronously earlier in
+// execute, before its deferred calls unwind), so Pending only ever drops to
+// false once every dispatched execution's outcome is durably visible.
+func (d *Dispatcher) donePending(jobID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.pending[jobID]--
+	if d.pending[jobID] <= 0 {
+		delete(d.pending, jobID)
+	}
 }
 
 func (d *Dispatcher) record(ctx context.Context, entry Entry, jobID, eventType, message string, extra map[string]any) {

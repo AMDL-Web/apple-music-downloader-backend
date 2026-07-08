@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"amdl/internal/domain"
@@ -89,6 +90,9 @@ func (s *Store) initSchema(ctx context.Context) error {
 			status TEXT NOT NULL,
 			progress REAL NOT NULL DEFAULT 0,
 			codec TEXT NOT NULL DEFAULT '',
+			bit_depth INTEGER NOT NULL DEFAULT 0,
+			sample_rate INTEGER NOT NULL DEFAULT 0,
+			bitrate INTEGER NOT NULL DEFAULT 0,
 			retry_kind TEXT NOT NULL DEFAULT '',
 			attempt INTEGER NOT NULL DEFAULT 0,
 			max_attempts INTEGER NOT NULL DEFAULT 0,
@@ -123,6 +127,9 @@ func (s *Store) initSchema(ctx context.Context) error {
 		{"jobs", "artwork_url", "TEXT NOT NULL DEFAULT ''"},
 		{"jobs", "title", "TEXT NOT NULL DEFAULT ''"},
 		{"job_items", "artwork_url", "TEXT NOT NULL DEFAULT ''"},
+		{"job_items", "bit_depth", "INTEGER NOT NULL DEFAULT 0"},
+		{"job_items", "sample_rate", "INTEGER NOT NULL DEFAULT 0"},
+		{"job_items", "bitrate", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := s.ensureColumn(ctx, col.table, col.column, col.decl); err != nil {
 			return err
@@ -301,20 +308,20 @@ func scanJob(row jobScanner) (domain.Job, error) {
 }
 
 func (s *Store) CreateItem(ctx context.Context, item domain.JobItem) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO job_items(id,job_id,adam_id,kind,idx,title,artist,album,artwork_url,status,progress,codec,retry_kind,attempt,max_attempts,status_message,output_path,error,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, item.ID, item.JobID, item.AdamID, item.Kind, item.Index, item.Title, item.Artist, item.Album, item.ArtworkURL,
-		string(item.Status), item.Progress, item.Codec, item.RetryKind, item.Attempt, item.MaxAttempts, item.StatusMessage, item.OutputPath, item.Error, formatTime(item.CreatedAt), formatTime(item.UpdatedAt))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO job_items(id,job_id,adam_id,kind,idx,title,artist,album,artwork_url,status,progress,codec,bit_depth,sample_rate,bitrate,retry_kind,attempt,max_attempts,status_message,output_path,error,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, item.ID, item.JobID, item.AdamID, item.Kind, item.Index, item.Title, item.Artist, item.Album, item.ArtworkURL,
+		string(item.Status), item.Progress, item.Codec, item.BitDepth, item.SampleRate, item.Bitrate, item.RetryKind, item.Attempt, item.MaxAttempts, item.StatusMessage, item.OutputPath, item.Error, formatTime(item.CreatedAt), formatTime(item.UpdatedAt))
 	return err
 }
 
 func (s *Store) UpdateItem(ctx context.Context, item domain.JobItem) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE job_items SET title=?,artist=?,album=?,artwork_url=?,status=?,progress=?,codec=?,retry_kind=?,attempt=?,max_attempts=?,status_message=?,output_path=?,error=?,updated_at=? WHERE id=?`,
-		item.Title, item.Artist, item.Album, item.ArtworkURL, string(item.Status), item.Progress, item.Codec, item.RetryKind, item.Attempt, item.MaxAttempts, item.StatusMessage, item.OutputPath, item.Error, formatTime(item.UpdatedAt), item.ID)
+	_, err := s.db.ExecContext(ctx, `UPDATE job_items SET title=?,artist=?,album=?,artwork_url=?,status=?,progress=?,codec=?,bit_depth=?,sample_rate=?,bitrate=?,retry_kind=?,attempt=?,max_attempts=?,status_message=?,output_path=?,error=?,updated_at=? WHERE id=?`,
+		item.Title, item.Artist, item.Album, item.ArtworkURL, string(item.Status), item.Progress, item.Codec, item.BitDepth, item.SampleRate, item.Bitrate, item.RetryKind, item.Attempt, item.MaxAttempts, item.StatusMessage, item.OutputPath, item.Error, formatTime(item.UpdatedAt), item.ID)
 	return err
 }
 
 func (s *Store) ListItems(ctx context.Context, jobID string) ([]domain.JobItem, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,job_id,adam_id,kind,idx,title,artist,album,artwork_url,status,progress,codec,retry_kind,attempt,max_attempts,status_message,output_path,error,created_at,updated_at FROM job_items WHERE job_id=? ORDER BY idx`, jobID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,job_id,adam_id,kind,idx,title,artist,album,artwork_url,status,progress,codec,bit_depth,sample_rate,bitrate,retry_kind,attempt,max_attempts,status_message,output_path,error,created_at,updated_at FROM job_items WHERE job_id=? ORDER BY idx`, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +341,7 @@ func scanItem(row jobScanner) (domain.JobItem, error) {
 	var item domain.JobItem
 	var status, created, updated string
 	err := row.Scan(&item.ID, &item.JobID, &item.AdamID, &item.Kind, &item.Index, &item.Title, &item.Artist, &item.Album, &item.ArtworkURL, &status,
-		&item.Progress, &item.Codec, &item.RetryKind, &item.Attempt, &item.MaxAttempts, &item.StatusMessage, &item.OutputPath, &item.Error, &created, &updated)
+		&item.Progress, &item.Codec, &item.BitDepth, &item.SampleRate, &item.Bitrate, &item.RetryKind, &item.Attempt, &item.MaxAttempts, &item.StatusMessage, &item.OutputPath, &item.Error, &created, &updated)
 	item.Status = domain.ItemStatus(status)
 	item.CreatedAt = parseTime(created)
 	item.UpdatedAt = parseTime(updated)
@@ -397,7 +404,53 @@ func (s *Store) LatestEventID(ctx context.Context, jobID string) (int64, error) 
 }
 
 func (s *Store) ListEventsAfter(ctx context.Context, jobID string, afterID int64) ([]domain.Event, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,job_id,item_id,type,phase,message,payload,created_at FROM job_events WHERE job_id=? AND id>? ORDER BY id ASC`, jobID, afterID)
+	return s.queryEvents(ctx, `SELECT id,job_id,item_id,type,phase,message,payload,created_at FROM job_events WHERE job_id=? AND id>? ORDER BY id ASC`, jobID, afterID)
+}
+
+// LatestGlobalEventID returns the id of the most recent event across all jobs
+// (0 if none). The overview feed hands this to a client alongside the
+// GET /downloads snapshot as the cursor to resume from, mirroring how
+// LatestEventID pairs with a single job's snapshot.
+func (s *Store) LatestGlobalEventID(ctx context.Context) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id),0) FROM job_events`).Scan(&id)
+	return id, err
+}
+
+// milestoneTypePlaceholders is the "?,?,…" fragment and matching args for the
+// persisted overview-milestone types, built once from the single source of
+// truth (domain.PersistedOverviewMilestones) so the SQL filter can never drift
+// from IsOverviewMilestone.
+var milestoneTypePlaceholders, milestoneTypeArgs = func() (string, []any) {
+	marks := make([]string, len(domain.PersistedOverviewMilestones))
+	args := make([]any, len(domain.PersistedOverviewMilestones))
+	for i, t := range domain.PersistedOverviewMilestones {
+		marks[i] = "?"
+		args[i] = t
+	}
+	return strings.Join(marks, ","), args
+}()
+
+// ListMilestoneEventsAfter returns, across all jobs, the events newer than
+// afterID whose type changes the GET /downloads list-level view (the persisted
+// members of domain.IsOverviewMilestone; job_deleted is never persisted). The
+// overview feed uses this to learn which jobs changed since a cursor.
+func (s *Store) ListMilestoneEventsAfter(ctx context.Context, afterID int64) ([]domain.Event, error) {
+	args := append([]any{afterID}, milestoneTypeArgs...)
+	return s.queryEvents(ctx, `SELECT id,job_id,item_id,type,phase,message,payload,created_at FROM job_events
+		WHERE id>? AND type IN (`+milestoneTypePlaceholders+`)
+		ORDER BY id ASC`, args...)
+}
+
+// ListHookEvents returns only jobID's hook lifecycle events, so callers
+// summarizing hook status (GET /downloads/{id}) don't have to scan the far
+// more numerous progress events sharing the table.
+func (s *Store) ListHookEvents(ctx context.Context, jobID string) ([]domain.Event, error) {
+	return s.queryEvents(ctx, `SELECT id,job_id,item_id,type,phase,message,payload,created_at FROM job_events WHERE job_id=? AND type IN ('hook_started','hook_succeeded','hook_failed') ORDER BY id ASC`, jobID)
+}
+
+func (s *Store) queryEvents(ctx context.Context, query string, args ...any) ([]domain.Event, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

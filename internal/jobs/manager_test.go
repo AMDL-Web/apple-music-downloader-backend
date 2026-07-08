@@ -539,6 +539,22 @@ func TestNilHooksDispatcherIsNoop(t *testing.T) {
 	}
 }
 
+// TestHooksPendingIsNilSafe mirrors SetHooks/Dispatch's existing nil-receiver
+// contract: server.go's events/eventsWS handlers call HooksPending on every
+// terminal job regardless of whether SetHooks was ever called, and must not
+// need a nil *Manager check either.
+func TestHooksPendingIsNilSafe(t *testing.T) {
+	var m *Manager
+	if m.HooksPending("job-1") {
+		t.Fatal("nil *Manager HooksPending = true, want false")
+	}
+
+	manager := newTestManager(t) // hooks left unset (nil dispatcher)
+	if manager.HooksPending("job-1") {
+		t.Fatal("HooksPending with unset hooks dispatcher = true, want false")
+	}
+}
+
 // cancelThenReturnNilProcessor blocks until its context is cancelled and then
 // returns nil, simulating a processor that finishes "successfully" right as a
 // cancel arrives (or one that doesn't surface ctx errors).

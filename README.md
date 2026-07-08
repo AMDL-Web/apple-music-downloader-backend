@@ -21,11 +21,9 @@ AMDL Backend 是 Apple Music 下载系统的核心后端服务。它负责解析
 - Go 版本以 `go.mod` 为准。
 - 可访问的 `wrapper-manager` 服务。
 - 媒体封装阶段需要以下外部命令：
-  - `ffmpeg`
-  - `gpac`
-  - `MP4Box`
-  - `mp4extract`
-  - `mp4edit`
+  - `ffmpeg`（用于重封装扁平化与可选的完整性校验）
+
+  > 样本抽取、重封装、元数据与封面写入均已改为进程内的 Go 库实现（`mp4ff` / `go-mp4tag`），不再依赖 `gpac`、`MP4Box`、`mp4extract`、`mp4edit`。
 
 ## 快速启动
 

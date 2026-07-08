@@ -120,11 +120,7 @@ type DownloadConfig struct {
 }
 
 type ToolsConfig struct {
-	FFmpeg     string `yaml:"ffmpeg" json:"ffmpeg"`
-	GPAC       string `yaml:"gpac" json:"gpac"`
-	MP4Box     string `yaml:"mp4box" json:"mp4box"`
-	MP4Extract string `yaml:"mp4extract" json:"mp4extract"`
-	MP4Edit    string `yaml:"mp4edit" json:"mp4edit"`
+	FFmpeg string `yaml:"ffmpeg" json:"ffmpeg"`
 }
 
 func Default() Config {
@@ -147,7 +143,7 @@ func Default() Config {
 			PlaylistFolderFormat: "{PlaylistName}", PlaylistSongFileFormat: "{SongNumer:02d}. {ArtistName} - {SongName}",
 			ALACMaxSampleRate: 192000, ALACMaxBitDepth: 24, CheckIntegrity: true,
 		},
-		Tools: ToolsConfig{FFmpeg: "ffmpeg", GPAC: "gpac", MP4Box: "MP4Box", MP4Extract: "mp4extract", MP4Edit: "mp4edit"},
+		Tools: ToolsConfig{FFmpeg: "ffmpeg"},
 	}
 }
 

@@ -15,7 +15,7 @@ require github.com/coder/websocket v1.8.15
 
 require (
 	github.com/AMDL-Web/wrapper-manager/proto v0.1.0
-	github.com/Eyevinn/mp4ff v0.48.0 // indirect
+	github.com/Eyevinn/mp4ff v0.48.0
 	github.com/chmike/cmac-go v1.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect

@@ -82,20 +82,15 @@ func (f fakeDownloaderCatalog) FetchCover(context.Context, []string, string, str
 	return nil, nil
 }
 
-type noopReporter struct{}
-
-func (noopReporter) SetJob(context.Context, domain.Job) error         { return nil }
-func (noopReporter) AddItem(context.Context, domain.JobItem) error    { return nil }
-func (noopReporter) UpdateItem(context.Context, domain.JobItem) error { return nil }
-func (noopReporter) Event(context.Context, domain.Event) error        { return nil }
-
 type recordingReporter struct {
 	events []domain.Event
+	items  []domain.JobItem
 }
 
 func (*recordingReporter) SetJob(context.Context, domain.Job) error      { return nil }
 func (*recordingReporter) AddItem(context.Context, domain.JobItem) error { return nil }
-func (*recordingReporter) UpdateItem(context.Context, domain.JobItem) error {
+func (r *recordingReporter) UpdateItem(_ context.Context, item domain.JobItem) error {
+	r.items = append(r.items, item)
 	return nil
 }
 func (r *recordingReporter) Event(_ context.Context, ev domain.Event) error {
@@ -255,13 +250,15 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 		cfg:  config.Default(),
 		http: server.Client(),
 	}
+	item := &domain.JobItem{ID: "item-1"}
+	reporter := &recordingReporter{}
 	selected, err := downloader.selectEnhancedMedia(
 		context.Background(),
 		domain.Job{ID: "job-1"},
-		&domain.JobItem{ID: "item-1"},
+		item,
 		applemusic.Song{ID: "song-1", EnhancedHLS: server.URL + "/master.m3u8"},
 		"alac",
-		noopReporter{},
+		reporter,
 		func(domain.ItemStatus, float64, string) {},
 	)
 	if err != nil {
@@ -276,6 +273,16 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 	if got, want := qualityLabel(selected.info), "24-bit/96 kHz"; got != want {
 		t.Fatalf("qualityLabel = %q, want %q", got, want)
 	}
+	if item.BitDepth != 24 || item.SampleRate != 96000 || item.Bitrate != 2500000 {
+		t.Fatalf("item quality = %+v, want bit_depth=24 sample_rate=96000 bitrate=2500000", item)
+	}
+	if len(reporter.items) == 0 {
+		t.Fatal("selectEnhancedMedia did not persist the resolved quality via UpdateItem")
+	}
+	last := reporter.items[len(reporter.items)-1]
+	if last.BitDepth != 24 || last.SampleRate != 96000 || last.Bitrate != 2500000 {
+		t.Fatalf("persisted item quality = %+v, want bit_depth=24 sample_rate=96000 bitrate=2500000", last)
+	}
 
 	selected, err = downloader.downloadSelectedEnhancedMedia(context.Background(), selected, "alac", func(domain.ItemStatus, float64, string) {})
 	if err != nil {
@@ -286,6 +293,23 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 	}
 	if string(selected.raw) != "encrypted media bytes" {
 		t.Fatalf("selected.raw = %q, want encrypted media bytes", string(selected.raw))
+	}
+}
+
+func TestSetItemQualityUpdatesItemAndPersists(t *testing.T) {
+	downloader := &Downloader{}
+	reporter := &recordingReporter{}
+	item := domain.JobItem{ID: "item-1"}
+	downloader.setItemQuality(context.Background(), reporter, &item, 24, 96000, 3000000)
+
+	if item.BitDepth != 24 || item.SampleRate != 96000 || item.Bitrate != 3000000 {
+		t.Fatalf("item quality = %+v, want bit_depth=24 sample_rate=96000 bitrate=3000000", item)
+	}
+	if len(reporter.items) != 1 {
+		t.Fatalf("setItemQuality persisted %d items, want 1", len(reporter.items))
+	}
+	if got := reporter.items[0]; got.BitDepth != 24 || got.SampleRate != 96000 || got.Bitrate != 3000000 {
+		t.Fatalf("persisted item quality = %+v, want bit_depth=24 sample_rate=96000 bitrate=3000000", got)
 	}
 }
 

@@ -238,6 +238,59 @@ func TestDispatchExecRunsCommandWithEnvAndStdin(t *testing.T) {
 	}
 }
 
+// TestPendingTracksInFlightHookExecution guards the fix for a PR review
+// finding: a job's own terminal event is not the last event its stream will
+// ever see, because hook dispatch is fire-and-forget and can keep recording
+// hook_started/hook_succeeded/hook_failed well after that. Pending must
+// report true for the whole time an execution is in flight and only flip to
+// false once its terminal hook event has actually been recorded.
+func TestPendingTracksInFlightHookExecution(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	cfg := Config{Enabled: true, TimeoutSeconds: 5, Entries: []Entry{
+		{Name: "h", Type: "webhook", Events: []string{"job_finished"}, URL: server.URL},
+	}}
+	collector := newEventCollector(2) // hook_started + hook_succeeded
+	d := NewDispatcher(cfg, collector.record, discardLogger())
+
+	if d.Pending("job-1") {
+		t.Fatal("Pending before Dispatch = true, want false")
+	}
+	d.Dispatch("job_finished", domain.Job{ID: "job-1", Type: "song"}, nil)
+
+	deadline := time.After(2 * time.Second)
+	for !d.Pending("job-1") {
+		select {
+		case <-deadline:
+			t.Fatal("Pending never became true after Dispatch launched the hook")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	close(release) // let the blocked webhook call, and hook_succeeded, proceed
+	collector.wait(t)
+	d.Shutdown(context.Background())
+
+	if d.Pending("job-1") {
+		t.Fatal("Pending after hook completion = true, want false")
+	}
+}
+
+// TestPendingIsNilSafe mirrors Dispatch's existing nil-receiver contract so
+// callers (e.g. jobs.Manager.HooksPending) don't need to branch on whether
+// hooks are configured at all.
+func TestPendingIsNilSafe(t *testing.T) {
+	var d *Dispatcher
+	if d.Pending("job-1") {
+		t.Fatal("nil *Dispatcher Pending = true, want false")
+	}
+}
+
 // TestShutdownRejectsDispatchAfterClose exercises the WaitGroup safety fix:
 // a Shutdown that has already flipped closed=true must not race a concurrent
 // Dispatch's wg.Add against its own wg.Wait. Run under -race to catch a
