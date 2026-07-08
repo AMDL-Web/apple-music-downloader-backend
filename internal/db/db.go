@@ -243,9 +243,7 @@ func (s *Store) DeleteJob(ctx context.Context, id string) error {
 		}
 		return err
 	}
-	switch domain.JobStatus(status) {
-	case domain.JobCompleted, domain.JobFailed, domain.JobCancelled:
-	default:
+	if !domain.JobStatus(status).IsTerminal() {
 		return ErrJobNotTerminal
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM job_events WHERE job_id=?`, id); err != nil {

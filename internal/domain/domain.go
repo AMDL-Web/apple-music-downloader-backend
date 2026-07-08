@@ -12,6 +12,17 @@ const (
 	JobCancelled JobStatus = "cancelled"
 )
 
+// IsTerminal reports whether a job in this status will never emit another
+// event: no worker is running and none will be scheduled.
+func (s JobStatus) IsTerminal() bool {
+	switch s {
+	case JobCompleted, JobFailed, JobCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
 type ItemStatus string
 
 const (

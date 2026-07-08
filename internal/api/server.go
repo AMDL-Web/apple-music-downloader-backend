@@ -334,6 +334,18 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 // and torn down instead of holding the goroutine forever.
 func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	job, err := s.store.GetJob(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if job.Status.IsTerminal() {
+		// A terminal job will never emit another event, so a live subscription
+		// would just hold a socket open forever for nothing; the client already
+		// has the final state via GET .../downloads/{id}.
+		writeError(w, http.StatusConflict, fmt.Errorf("job %s is already %s: no further events will be emitted", id, job.Status))
+		return
+	}
 	lastID, _ := strconv.ParseInt(r.URL.Query().Get("last_event_id"), 10, 64)
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
 	if err != nil {
@@ -416,6 +428,18 @@ func (s *Server) deleteDownload(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	job, err := s.store.GetJob(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if job.Status.IsTerminal() {
+		// A terminal job will never emit another event, so a live subscription
+		// would just hold a connection open forever for nothing; the client
+		// already has the final state via GET .../downloads/{id}.
+		writeError(w, http.StatusConflict, fmt.Errorf("job %s is already %s: no further events will be emitted", id, job.Status))
+		return
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")

@@ -238,7 +238,7 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 		m.mu.Unlock()
 		return err
 	}
-	if isTerminalStatus(job.Status) {
+	if job.Status.IsTerminal() {
 		m.mu.Unlock()
 		return nil
 	}
@@ -312,7 +312,7 @@ func (m *Manager) run(parent context.Context, jobID string) {
 		m.logger.Error("load job", "job_id", jobID, "error", err)
 		return
 	}
-	if isTerminalStatus(job.Status) {
+	if job.Status.IsTerminal() {
 		// Cancel() (or another path) already finalized this job while it was
 		// queued. Do not resurrect it; its terminal hook was already dispatched.
 		m.mu.Unlock()
@@ -397,10 +397,6 @@ func (m *Manager) dispatchTerminal(ctx context.Context, job domain.Job, eventTyp
 		items, _ := m.store.ListItems(ctx, job.ID)
 		m.hooks.Dispatch(hookEvent, job, items)
 	}
-}
-
-func isTerminalStatus(status domain.JobStatus) bool {
-	return status == domain.JobCompleted || status == domain.JobFailed || status == domain.JobCancelled
 }
 
 // finalizeLogged is the worker-path wrapper around finalizeJob: there is no

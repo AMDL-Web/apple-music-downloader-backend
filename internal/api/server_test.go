@@ -693,6 +693,50 @@ func TestEventsWebSocketStreamsBacklogLiveAndResume(t *testing.T) {
 	_ = resume.Close(websocket.StatusNormalClosure, "")
 }
 
+func TestEventsRejectsTerminalJob(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	hub := events.NewHub()
+	manager := jobs.NewManager(store, hub, stubProcessor{}, 1, slog.Default())
+	server := &Server{store: store, hub: hub, manager: manager}
+
+	ctx := context.Background()
+	job := domain.Job{ID: "done1", Input: "song|us|1", Type: "song", Status: domain.JobCompleted}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads/done1/events", "")
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("SSE subscribe to terminal job: status = %d, want %d", recorder.Code, http.StatusConflict)
+	}
+
+	ts := httptest.NewServer(server.Routes())
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/v1/downloads/done1/events/ws"
+	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, resp, err := websocket.Dial(dialCtx, wsURL, nil)
+	if err == nil {
+		t.Fatal("WS subscribe to terminal job: dial succeeded, want rejection")
+	}
+	if resp == nil || resp.StatusCode != http.StatusConflict {
+		status := -1
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("WS subscribe to terminal job: status = %d, want %d", status, http.StatusConflict)
+	}
+
+	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads/missing/events", "")
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("SSE subscribe to missing job: status = %d, want %d", recorder.Code, http.StatusNotFound)
+	}
+}
+
 func TestCreateDownloadRejectsEmptyURLs(t *testing.T) {
 	server := newTestServerWithManager(t)
 	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads", `{"urls":[" , ,"]}`)

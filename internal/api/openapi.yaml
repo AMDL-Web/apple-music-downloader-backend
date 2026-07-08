@@ -324,7 +324,10 @@ paths:
     get:
       tags: [Downloads]
       summary: 订阅下载任务事件
-      description: Server-Sent Events 流，支持 Last-Event-ID 断点续接。
+      description: |
+        Server-Sent Events 流，支持 Last-Event-ID 断点续接。
+        任务已处于终态（completed/failed/cancelled）时拒绝订阅（409），
+        因为该任务不会再产生新事件；最终状态请改用 GET .../downloads/{job_id}。
       operationId: streamDownloadEvents
       parameters:
         - $ref: '#/components/parameters/JobID'
@@ -340,6 +343,14 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 任务已处于终态（completed/failed/cancelled），不再产生新事件，拒绝订阅。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/downloads/{job_id}/events/ws:
     get:
       tags: [Downloads]
@@ -351,6 +362,8 @@ paths:
         断线重连时通过 last_event_id 查询参数续接，只接收更新的事件。
         服务端每 10 秒发送一次 WebSocket ping 探测半开连接；连接为服务端单向推送，
         客户端发送的数据帧会导致连接被关闭。
+        任务已处于终态（completed/failed/cancelled）时拒绝握手（409），
+        因为该任务不会再产生新事件；最终状态请改用 GET .../downloads/{job_id}。
       operationId: streamDownloadEventsWebSocket
       parameters:
         - $ref: '#/components/parameters/JobID'
@@ -366,6 +379,14 @@ paths:
           description: 协议切换成功，开始推送事件流。
         '400':
           description: WebSocket 握手失败（缺少升级头等）。
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 任务已处于终态（completed/failed/cancelled），不再产生新事件，拒绝订阅。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 components:
   parameters:
     LoginID:
