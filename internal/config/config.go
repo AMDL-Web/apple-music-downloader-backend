@@ -132,7 +132,7 @@ func Default() Config {
 		Server:   ServerConfig{Listen: "127.0.0.1:18080"},
 		Database: DatabaseConfig{Path: "data/amdl.db"},
 		Wrapper: WrapperConfig{
-			Address: "192.168.3.42:8080", Insecure: true, TimeoutSeconds: 30, LoginTimeoutSeconds: 120,
+			Address: "127.0.0.1:8080", Insecure: true, TimeoutSeconds: 30, LoginTimeoutSeconds: 120,
 		},
 		Catalog: CatalogConfig{
 			DefaultStorefront: "us", Language: "en-US", DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song",

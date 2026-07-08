@@ -176,10 +176,20 @@ func (s *Store) FindActiveJobByKey(ctx context.Context, canonicalKey string) (do
 	return job, true, nil
 }
 
-func (s *Store) UpdateJob(ctx context.Context, job domain.Job) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, title=?, artwork_url=?, force=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
+// execer is satisfied by both *sql.DB and *sql.Tx, letting the same query
+// helper run standalone or as part of a larger transaction.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func updateJob(ctx context.Context, x execer, job domain.Job) error {
+	_, err := x.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, title=?, artwork_url=?, force=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
 		job.Type, job.Storefront, job.Title, job.ArtworkURL, job.Force, string(job.Status), job.TotalItems, job.DoneItems, job.FailedItems, job.Error, formatTime(job.UpdatedAt), job.ID)
 	return err
+}
+
+func (s *Store) UpdateJob(ctx context.Context, job domain.Job) error {
+	return updateJob(ctx, s.db, job)
 }
 
 func (s *Store) UpdateJobStatus(ctx context.Context, id string, status domain.JobStatus, updatedAt time.Time) error {
@@ -243,9 +253,7 @@ func (s *Store) DeleteJob(ctx context.Context, id string) error {
 		}
 		return err
 	}
-	switch domain.JobStatus(status) {
-	case domain.JobCompleted, domain.JobFailed, domain.JobCancelled:
-	default:
+	if !domain.JobStatus(status).IsTerminal() {
 		return ErrJobNotTerminal
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM job_events WHERE job_id=?`, id); err != nil {
@@ -333,17 +341,49 @@ func scanItem(row jobScanner) (domain.JobItem, error) {
 	return item, err
 }
 
-func (s *Store) AddEvent(ctx context.Context, event domain.Event) (domain.Event, error) {
+func addEvent(ctx context.Context, x execer, event domain.Event) (domain.Event, error) {
 	if event.CreatedAt.IsZero() {
 		event.CreatedAt = now()
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO job_events(job_id,item_id,type,phase,message,payload,created_at) VALUES(?,?,?,?,?,?,?)`,
+	res, err := x.ExecContext(ctx, `INSERT INTO job_events(job_id,item_id,type,phase,message,payload,created_at) VALUES(?,?,?,?,?,?,?)`,
 		event.JobID, event.ItemID, event.Type, event.Phase, event.Message, event.Payload, formatTime(event.CreatedAt))
 	if err != nil {
 		return event, err
 	}
 	event.ID, _ = res.LastInsertId()
 	return event, nil
+}
+
+func (s *Store) AddEvent(ctx context.Context, event domain.Event) (domain.Event, error) {
+	return addEvent(ctx, s.db, event)
+}
+
+// FinalizeJob persists a job's terminal status together with its terminal
+// domain event in a single transaction. A caller connection pool of size 1
+// (see Open) already serializes every query onto one connection, but wrapping
+// both writes in a transaction additionally guarantees no reader ever
+// observes the status as terminal without the corresponding event already
+// committed: previously the two writes landed as separate statements, so a
+// GetJob/ListEventsAfter pair issued between them could see a terminal status
+// with the terminal event still missing.
+func (s *Store) FinalizeJob(ctx context.Context, job domain.Job, event domain.Event) (domain.Event, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Event{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := updateJob(ctx, tx, job); err != nil {
+		return domain.Event{}, err
+	}
+	stored, err := addEvent(ctx, tx, event)
+	if err != nil {
+		return domain.Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Event{}, err
+	}
+	return stored, nil
 }
 
 // LatestEventID returns the id of the most recent event recorded for jobID, or

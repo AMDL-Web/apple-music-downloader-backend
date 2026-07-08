@@ -513,7 +513,7 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 			item.StatusMessage = fmt.Sprintf("%s download completed", codecName)
 		}
 		_ = reporter.UpdateItem(ctx, item)
-		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_completed", Message: item.OutputPath, Payload: marshalPayload(map[string]any{
+		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_completed", Message: item.StatusMessage, Payload: marshalPayload(map[string]any{
 			"codec": codec, "download_attempts": fetchAttempts, "decrypt_attempts": decryptAttempts,
 			"max_attempts": clampAttempts(codecMaxAttempts), "fallback_from": fallbackCodec(codecs, codecIndex),
 		})})

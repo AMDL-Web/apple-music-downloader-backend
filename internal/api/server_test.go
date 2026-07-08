@@ -693,6 +693,123 @@ func TestEventsWebSocketStreamsBacklogLiveAndResume(t *testing.T) {
 	_ = resume.Close(websocket.StatusNormalClosure, "")
 }
 
+func TestEventsRejectsTerminalJob(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	hub := events.NewHub()
+	manager := jobs.NewManager(store, hub, stubProcessor{}, 1, slog.Default())
+	server := &Server{store: store, hub: hub, manager: manager}
+
+	ctx := context.Background()
+	job := domain.Job{ID: "done1", Input: "song|us|1", Type: "song", Status: domain.JobCompleted}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads/done1/events", "")
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("SSE subscribe to terminal job: status = %d, want %d", recorder.Code, http.StatusConflict)
+	}
+
+	ts := httptest.NewServer(server.Routes())
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/v1/downloads/done1/events/ws"
+	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, resp, err := websocket.Dial(dialCtx, wsURL, nil)
+	if err == nil {
+		t.Fatal("WS subscribe to terminal job: dial succeeded, want rejection")
+	}
+	if resp == nil || resp.StatusCode != http.StatusConflict {
+		status := -1
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("WS subscribe to terminal job: status = %d, want %d", status, http.StatusConflict)
+	}
+
+	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads/missing/events", "")
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("SSE subscribe to missing job: status = %d, want %d", recorder.Code, http.StatusNotFound)
+	}
+}
+
+// TestEventsReplaysBacklogForTerminalJobInsteadOfRejecting guards against the
+// regression a PR reviewer caught: rejecting a terminal job's subscription
+// before checking for undelivered backlog would let a client miss events it
+// never saw (including the terminal event itself, in the narrow window where
+// the status write and the terminal event write used to land as separate,
+// non-atomic statements). A client that is not yet caught up must still get
+// the backlog; only a client with nothing left to receive gets rejected.
+func TestEventsReplaysBacklogForTerminalJobInsteadOfRejecting(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	hub := events.NewHub()
+	manager := jobs.NewManager(store, hub, stubProcessor{}, 1, slog.Default())
+	server := &Server{store: store, hub: hub, manager: manager}
+
+	ctx := context.Background()
+	job := domain.Job{ID: "done2", Input: "song|us|1", Type: "song", Status: domain.JobCompleted}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Event(ctx, domain.Event{JobID: job.ID, Type: "job_started", Message: "job started"}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.AddEvent(ctx, domain.Event{JobID: job.ID, Type: "job_finished", Message: "completed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/downloads/done2/events", nil)
+	recorder := httptest.NewRecorder()
+	server.Routes().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("SSE with pending backlog on terminal job: status = %d, want %d; body: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "job_started") || !strings.Contains(recorder.Body.String(), "job_finished") {
+		t.Fatalf("SSE body missing backlog events: %s", recorder.Body.String())
+	}
+
+	ts := httptest.NewServer(server.Routes())
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/v1/downloads/done2/events/ws"
+	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(dialCtx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("WS with pending backlog on terminal job: dial failed: %v", err)
+	}
+	defer conn.CloseNow()
+	_, raw, err := conn.Read(dialCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ev domain.Event
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		t.Fatalf("invalid event JSON %q: %v", raw, err)
+	}
+	if ev.Type != "job_started" {
+		t.Fatalf("first WS event = %+v, want job_started", ev)
+	}
+
+	// Fully caught up now: a fresh connection with last_event_id at the
+	// terminal event must go back to being rejected outright.
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/downloads/done2/events", nil)
+	req.Header.Set("Last-Event-ID", strconv.FormatInt(stored.ID, 10))
+	recorder = httptest.NewRecorder()
+	server.Routes().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("SSE fully caught up on terminal job: status = %d, want %d", recorder.Code, http.StatusConflict)
+	}
+}
+
 func TestCreateDownloadRejectsEmptyURLs(t *testing.T) {
 	server := newTestServerWithManager(t)
 	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads", `{"urls":[" , ,"]}`)

@@ -238,29 +238,29 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 		m.mu.Unlock()
 		return err
 	}
-	if isTerminalStatus(job.Status) {
+	if job.Status.IsTerminal() {
 		m.mu.Unlock()
 		return nil
 	}
 	job.Status = domain.JobCancelled
 	job.Error = "cancelled"
 	job.UpdatedAt = time.Now().UTC()
-	updateErr := m.store.UpdateJob(ctx, job)
-	if updateErr == nil {
+	persistErr := m.persistTerminal(ctx, job, "job_cancelled", "job cancelled")
+	if persistErr == nil {
 		// Mark the finalize sequence in flight before releasing m.mu: the
-		// status row now says cancelled, but the terminal event insert and
-		// hook dispatch below still read the job's rows. Delete must not
-		// remove them in that window.
+		// status row (and its terminal event, written atomically alongside
+		// it) now say cancelled, but hook dispatch below still reads the
+		// job's rows. Delete must not remove them in that window.
 		m.finalizing[jobID] = true
 	}
 	m.mu.Unlock()
 
-	// Only report success, emit the event, and dispatch hooks once the
-	// terminal status is durably persisted.
-	if updateErr != nil {
-		return updateErr
+	// Only report success and dispatch hooks once the terminal status is
+	// durably persisted.
+	if persistErr != nil {
+		return persistErr
 	}
-	m.dispatchTerminal(ctx, job, "job_cancelled", "job cancelled")
+	m.dispatchHooks(ctx, job)
 	m.mu.Lock()
 	delete(m.finalizing, jobID)
 	m.mu.Unlock()
@@ -312,7 +312,7 @@ func (m *Manager) run(parent context.Context, jobID string) {
 		m.logger.Error("load job", "job_id", jobID, "error", err)
 		return
 	}
-	if isTerminalStatus(job.Status) {
+	if job.Status.IsTerminal() {
 		// Cancel() (or another path) already finalized this job while it was
 		// queued. Do not resurrect it; its terminal hook was already dispatched.
 		m.mu.Unlock()
@@ -379,28 +379,43 @@ func (m *Manager) run(parent context.Context, jobID string) {
 // so callers can propagate or log it, and no hook fires.
 func (m *Manager) finalizeJob(ctx context.Context, job domain.Job, eventType, message string) error {
 	job.UpdatedAt = time.Now().UTC()
-	if err := m.store.UpdateJob(ctx, job); err != nil {
+	if err := m.persistTerminal(ctx, job, eventType, message); err != nil {
 		return err
 	}
-	m.dispatchTerminal(ctx, job, eventType, message)
+	m.dispatchHooks(ctx, job)
 	return nil
 }
 
-// dispatchTerminal emits the terminal domain event and any subscribed
-// post-download hooks for a job whose terminal status has already been
-// persisted. It must be called only after a successful status write and never
-// while holding m.mu (Dispatch is non-blocking, but the store reads here
-// should not extend the lock).
-func (m *Manager) dispatchTerminal(ctx context.Context, job domain.Job, eventType, message string) {
-	_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: eventType, Message: message})
+// persistTerminal atomically persists job's terminal status together with its
+// terminal domain event (Store.FinalizeJob), then publishes the stored event
+// to the hub. The atomicity matters to callers of GET .../events(/ws): they
+// read a job's status and its events table independently, so if these two
+// writes ever landed as separate statements, such a reader could observe the
+// terminal status with the terminal event still missing and wrongly conclude
+// no more events are pending.
+func (m *Manager) persistTerminal(ctx context.Context, job domain.Job, eventType, message string) error {
+	ev := domain.Event{JobID: job.ID, Type: eventType, Message: message}
+	if ev.Payload == "" && ev.Message != "" {
+		raw, _ := json.Marshal(map[string]string{"message": ev.Message})
+		ev.Payload = string(raw)
+	}
+	stored, err := m.store.FinalizeJob(ctx, job, ev)
+	if err != nil {
+		return err
+	}
+	m.hub.Publish(stored)
+	return nil
+}
+
+// dispatchHooks fires any post-download hooks subscribed to job's terminal
+// status. Must be called only after persistTerminal has durably committed the
+// terminal status and its event, and never while holding m.mu (Dispatch is
+// non-blocking, but the store read here should not extend the lock).
+func (m *Manager) dispatchHooks(ctx context.Context, job domain.Job) {
 	if hookEvent := hookEventForStatus(job.Status); hookEvent != "" {
 		items, _ := m.store.ListItems(ctx, job.ID)
 		m.hooks.Dispatch(hookEvent, job, items)
 	}
-}
-
-func isTerminalStatus(status domain.JobStatus) bool {
-	return status == domain.JobCompleted || status == domain.JobFailed || status == domain.JobCancelled
 }
 
 // finalizeLogged is the worker-path wrapper around finalizeJob: there is no

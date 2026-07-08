@@ -762,7 +762,7 @@ func TestCancelRacingStartupDispatchesExactlyOneConsistentHook(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !isTerminalStatus(job.Status) {
+			if !job.Status.IsTerminal() {
 				pending++
 			}
 		}
