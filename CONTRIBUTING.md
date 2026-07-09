@@ -28,4 +28,4 @@ For multiple commits in a branch:
 git rebase --signoff origin/main
 ```
 
-Pull requests are checked by the `DCO` CI workflow ([.github/workflows/dco.yml](.github/workflows/dco.yml)) and will fail if any commit is missing a valid `Signed-off-by` trailer.
+Pull requests are checked by the [DCO GitHub App](https://github.com/apps/dco) and will fail if any commit is missing a valid `Signed-off-by` trailer that matches the commit's author or committer.
