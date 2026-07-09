@@ -1,0 +1,56 @@
+name: DCO
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: DCO
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check commits are signed off
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch origin "$BASE_REF" --depth=1
+            RANGE="origin/${BASE_REF}..${HEAD_SHA}"
+          elif [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ] || [ -z "$BEFORE_SHA" ]; then
+            RANGE="$HEAD_SHA"
+          else
+            RANGE="${BEFORE_SHA}..${HEAD_SHA}"
+          fi
+
+          missing=0
+          for sha in $(git log --no-merges --format='%H' "$RANGE"); do
+            msg=$(git log -1 --format='%B' "$sha")
+            if ! printf '%s\n' "$msg" | grep -qE '^Signed-off-by: .+ <[^<>]+@[^<>]+>$'; then
+              echo "::error::Commit $sha (\"$(git log -1 --format='%s' "$sha")\") is missing a 'Signed-off-by' trailer."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -eq 1 ]; then
+            echo ""
+            echo "This repository requires the Developer Certificate of Origin (DCO) on every commit."
+            echo "Sign your commits with: git commit -s"
+            echo "To fix an existing commit: git commit --amend -s (then force-push your branch)"
+            exit 1
+          fi
+
+          echo "All commits are signed off."
