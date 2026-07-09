@@ -175,6 +175,9 @@ func TestEncapsulateStripsEncryptionStructure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extractSong: %v", err)
 	}
+	// Intentionally mutate the parsed init segment to simulate Apple Music's
+	// two-entry encrypted layout (dual sample descriptions / two-IV setup).
+	// encapsulate is expected to collapse this back to a single clear entry.
 	stsdIn := info.init.Moov.Traks[0].Mdia.Minf.Stbl.Stsd
 	if len(stsdIn.Children) == 0 {
 		t.Fatal("empty input stsd")
