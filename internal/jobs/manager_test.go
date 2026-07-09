@@ -370,6 +370,51 @@ func TestJobQueuedDispatchesHook(t *testing.T) {
 	}
 }
 
+// TestRecoverUnfinishedDoesNotDispatchJobQueuedHook guards the documented
+// design decision that recovery re-enqueues jobs without re-firing the
+// job_queued creation hook: those jobs were created before the restart, so
+// dispatching job_queued again would double-notify external systems.
+func TestRecoverUnfinishedDoesNotDispatchJobQueuedHook(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	queued := domain.Job{ID: "job-recover", Input: "https://music.apple.com/cn/song/q/1", Type: "song", Storefront: "cn", CanonicalKey: "song:cn:1", Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateJob(ctx, queued); err != nil {
+		t.Fatal(err)
+	}
+
+	hooksCfg := hooks.Config{Enabled: true, Entries: []hooks.Entry{
+		{Name: "on-queued", Type: "webhook", Events: []string{"job_queued"}, URL: server.URL},
+	}}
+	manager := NewManager(store, events.NewHub(), recoveryProcessor{}, 1, slog.Default())
+	dispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, slog.Default())
+	manager.SetHooks(dispatcher)
+
+	// Do NOT start workers: recovery itself must not fire the creation hook.
+	if _, err := manager.RecoverUnfinished(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Dispatch launches its webhook goroutine synchronously, so any erroneous
+	// dispatch during recovery is already counted in the WaitGroup that
+	// Shutdown drains — no arbitrary sleep needed.
+	dispatcher.Shutdown(context.Background())
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("job_queued hook calls after recovery = %d, want 0", got)
+	}
+}
+
 func TestCancelQueuedJobDispatchesCancelledHookAndNeverRuns(t *testing.T) {
 	var calls int32
 	var lastEvent string

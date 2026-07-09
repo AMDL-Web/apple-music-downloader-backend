@@ -45,7 +45,10 @@ entries:
   #   # job_failed, job_cancelled.
   #   #   job_queued: job was just created and queued. Fires before any track
   #   #     is resolved, so the payload's `items` list is empty and total_items
-  #   #     is 0; the job status is "queued".
+  #   #     is 0; the job status is "queued". Cannot be combined with any
+  #   #     terminal event in the same entry (that would run the entry twice
+  #   #     for one job and collapse in the hook status summary) — put creation
+  #   #     and terminal hooks in separate entries, which may share a url/command.
   #   #   job_finished: job completed with zero failed items.
   #   #   job_failed: job completed with at least one failed item, or aborted
   #   #     with an error.

@@ -146,10 +146,25 @@ func (c Config) validate() error {
 		if len(e.Events) == 0 {
 			return fmt.Errorf("%s: events must list at least one of %s", label, strings.Join(sortedKeys(allowedEvents), ", "))
 		}
+		hasCreation, hasTerminal := false, false
 		for _, ev := range e.Events {
 			if _, ok := allowedEvents[ev]; !ok {
 				return fmt.Errorf("%s: unsupported event %q, must be one of %s", label, ev, strings.Join(sortedKeys(allowedEvents), ", "))
 			}
+			if ev == "job_queued" {
+				hasCreation = true
+			} else {
+				hasTerminal = true
+			}
+		}
+		// A single entry firing on both creation and a terminal event would run
+		// twice for the same job, but the hook lifecycle events (and the
+		// GET /downloads/{id} snapshot's SummarizeHooks) are keyed by hook name
+		// alone, so the second run's result would overwrite the first's. Keep
+		// one execution per entry per job: split creation and terminal hooks
+		// into separate entries (they may share a URL/command).
+		if hasCreation && hasTerminal {
+			return fmt.Errorf("%s: job_queued (creation) cannot be combined with terminal events in one hook; define a separate entry for each", label)
 		}
 		for _, jt := range e.JobTypes {
 			if _, ok := allowedJobTypes[jt]; !ok {
