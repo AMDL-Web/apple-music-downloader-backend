@@ -268,13 +268,13 @@ func (p *MP4Processor) writeMetadata(_ context.Context, path string, song applem
 		tags.ItunesAdvisory = mp4tag.ItunesAdvisoryNone
 	}
 	if song.AlbumID != "" {
-		if id, err := strconv.ParseUint(song.AlbumID, 10, 32); err == nil {
-			tags.ItunesAlbumID = int32(uint32(id))
+		if id, err := strconv.ParseInt(song.AlbumID, 10, 32); err == nil {
+			tags.ItunesAlbumID = int32(id)
 		}
 	}
 	if song.ArtistID != "" {
-		if id, err := strconv.ParseUint(song.ArtistID, 10, 32); err == nil {
-			tags.ItunesArtistID = int32(uint32(id))
+		if id, err := strconv.ParseInt(song.ArtistID, 10, 32); err == nil {
+			tags.ItunesArtistID = int32(id)
 		}
 	}
 	if p.cfg.Download.EmbedCover && len(cover) > 0 {
