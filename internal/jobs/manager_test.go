@@ -302,6 +302,74 @@ func TestJobCompletionDispatchesHook(t *testing.T) {
 	}
 }
 
+func TestJobCreationDispatchesHook(t *testing.T) {
+	var calls int32
+	var mu sync.Mutex
+	var gotEvent, gotStatus string
+	var gotTotal, gotItems int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Event string `json:"event"`
+			Job   struct {
+				Status     string `json:"status"`
+				TotalItems int    `json:"total_items"`
+			} `json:"job"`
+			Items []struct{} `json:"items"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		mu.Lock()
+		gotEvent = payload.Event
+		gotStatus = payload.Job.Status
+		gotTotal = payload.Job.TotalItems
+		gotItems = len(payload.Items)
+		mu.Unlock()
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	hooksCfg := hooks.Config{Enabled: true, Entries: []hooks.Entry{
+		{Name: "on-create", Type: "webhook", Events: []string{"job_created"}, URL: server.URL},
+	}}
+	manager := NewManager(store, events.NewHub(), keyedProcessor{}, 1, slog.Default())
+	dispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, slog.Default())
+	manager.SetHooks(dispatcher)
+
+	// Deliberately do NOT start workers: the creation hook fires from
+	// SubmitBatch itself, so the job stays queued and only job_created can fire.
+	resp := manager.SubmitBatch(context.Background(), []string{"song|us|1"}, false)
+	if resp.Accepted != 1 {
+		t.Fatalf("submit = %+v, want 1 accepted", resp)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && atomic.LoadInt32(&calls) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	dispatcher.Shutdown(context.Background())
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("webhook calls = %d, want 1 after job creation", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gotEvent != "job_created" {
+		t.Fatalf("event = %q, want job_created", gotEvent)
+	}
+	if gotStatus != string(domain.JobQueued) {
+		t.Fatalf("job status = %q, want %q", gotStatus, domain.JobQueued)
+	}
+	if gotTotal != 0 || gotItems != 0 {
+		t.Fatalf("creation payload total_items=%d items=%d, want 0 and 0 (no tracks resolved yet)", gotTotal, gotItems)
+	}
+}
+
 func TestCancelQueuedJobDispatchesCancelledHookAndNeverRuns(t *testing.T) {
 	var calls int32
 	var lastEvent string

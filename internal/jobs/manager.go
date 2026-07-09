@@ -203,6 +203,11 @@ func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool) do
 		}
 		_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_queued", Message: "job queued"})
 		m.queue <- job.ID
+		// Fire creation hooks now that the job row is durably persisted and
+		// enqueued. There are no items yet — they are resolved during
+		// processing — so the payload carries an empty item list. Dispatch is
+		// non-blocking, so calling it while holding submitMu is safe.
+		m.hooks.Dispatch("job_created", job, nil)
 		accepted := job
 		results[c.index] = domain.SubmitResult{URL: c.url, Status: domain.SubmitAccepted, Job: &accepted}
 	}

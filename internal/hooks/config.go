@@ -117,6 +117,7 @@ func LoadConfig(path string) (Config, error) {
 }
 
 var allowedEvents = map[string]struct{}{
+	"job_created":   {},
 	"job_finished":  {},
 	"job_failed":    {},
 	"job_cancelled": {},

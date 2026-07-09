@@ -56,6 +56,24 @@ entries:
 	}
 }
 
+func TestLoadConfigAcceptsJobCreatedEvent(t *testing.T) {
+	path := writeHooksConfig(t, `
+enabled: true
+entries:
+  - name: "on-create"
+    type: "webhook"
+    events: ["job_created"]
+    url: "http://example.local/created"
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v, want nil for job_created event", err)
+	}
+	if len(cfg.Entries) != 1 || !cfg.Entries[0].MatchesEvent("job_created") {
+		t.Fatalf("entry did not match job_created: %+v", cfg.Entries)
+	}
+}
+
 func TestLoadConfigRejectsDuplicateNames(t *testing.T) {
 	path := writeHooksConfig(t, `
 entries:
