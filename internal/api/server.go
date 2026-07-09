@@ -631,9 +631,9 @@ func writeSSE(w http.ResponseWriter, ev domain.Event) {
 // downloadsFeed is the SSE overview feed: it pushes one DownloadFeedMessage
 // per change to the GET /downloads list — download_upserted (the affected
 // job's latest snapshot) as jobs are queued/started/progress/finish, and
-// download_deleted as jobs are removed. Resume via the Last-Event-ID header
-// (the event_id of the last upsert seen); the client should first GET
-// /downloads for the full list and use that response's last_event_id here.
+// download_deleted as jobs are removed. Resume via the Last-Event-ID header;
+// the client should first GET /downloads for the full list and use that
+// response's last_event_id here.
 func (s *Server) downloadsFeed(w http.ResponseWriter, r *http.Request) {
 	lastID, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -658,11 +658,7 @@ func (s *Server) downloadsFeed(w http.ResponseWriter, r *http.Request) {
 
 	write := func(msg domain.DownloadFeedMessage) error {
 		raw, _ := json.Marshal(msg)
-		// download_deleted carries no event_id, so it omits the SSE id line and
-		// leaves the client's Last-Event-ID (the last upsert cursor) untouched.
-		if msg.EventID > 0 {
-			fmt.Fprintf(w, "id: %d\n", msg.EventID)
-		}
+		fmt.Fprintf(w, "id: %d\n", msg.EventID)
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", msg.Type, raw)
 		flusher.Flush()
 		return nil
@@ -679,8 +675,8 @@ func (s *Server) downloadsFeed(w http.ResponseWriter, r *http.Request) {
 
 // downloadsFeedWS is the WebSocket twin of downloadsFeed. Resume via the
 // last_event_id query parameter (WebSocket has no Last-Event-ID header). Each
-// DownloadFeedMessage is one JSON text message; download_deleted messages omit
-// event_id, so a client tracking its resume cursor must not advance it on those.
+// DownloadFeedMessage is one JSON text message with event_id as the resume
+// cursor.
 func (s *Server) downloadsFeedWS(w http.ResponseWriter, r *http.Request) {
 	lastID, _ := strconv.ParseInt(r.URL.Query().Get("last_event_id"), 10, 64)
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
@@ -708,45 +704,56 @@ func (s *Server) downloadsFeedWS(w http.ResponseWriter, r *http.Request) {
 }
 
 // runDownloadsFeed drives the overview feed loop shared by the SSE and WS
-// endpoints. It drains milestone events newer than the cursor into one
-// download_upserted per affected job (deduped, latest snapshot), forwards
-// download_deleted notifications as they arrive live, and calls keepalive on
-// each tick. write returning an error (client gone) ends the loop.
+// endpoints. It drains milestone events newer than the cursor into one message
+// per affected job (deduped to the latest action/snapshot) and calls keepalive
+// on each tick. write returning an error (client gone) ends the loop.
 func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, ch <-chan domain.Event, tick <-chan time.Time, write func(domain.DownloadFeedMessage) error, keepalive func() error) {
 	drain := func() error {
 		events, err := s.store.ListMilestoneEventsAfter(ctx, lastID)
 		if err != nil {
 			return nil // keep the connection; the next wake or tick retries
 		}
+		type pendingMessage struct {
+			eventID int64
+			deleted bool
+		}
 		// One upsert per job, carrying that job's own highest milestone id in
 		// this batch — never the batch-wide max. Emitting a job's message with
 		// the batch max would advance the client's resume cursor past other
 		// jobs' still-undelivered messages, so a mid-batch disconnect would skip
 		// them permanently (ListMilestoneEventsAfter is strict id>afterID).
-		jobMaxID := map[string]int64{}
+		latest := map[string]pendingMessage{}
 		var order []string
 		for _, ev := range events {
-			if _, seen := jobMaxID[ev.JobID]; !seen {
+			if _, seen := latest[ev.JobID]; !seen {
 				order = append(order, ev.JobID)
 			}
-			if ev.ID > jobMaxID[ev.JobID] {
-				jobMaxID[ev.JobID] = ev.ID
+			if ev.ID > latest[ev.JobID].eventID {
+				latest[ev.JobID] = pendingMessage{eventID: ev.ID, deleted: ev.Type == domain.EventDeleted}
 			}
 		}
 		// Send in ascending per-job cursor order so the client's Last-Event-ID
 		// only ever moves forward: a disconnect after message k leaves the
 		// cursor at k's id, and every later message (higher id) is simply
 		// redelivered on reconnect — an idempotent upsert, never a skip.
-		sort.Slice(order, func(i, j int) bool { return jobMaxID[order[i]] < jobMaxID[order[j]] })
+		sort.Slice(order, func(i, j int) bool { return latest[order[i]].eventID < latest[order[j]].eventID })
 		for _, jobID := range order {
+			pending := latest[jobID]
+			if pending.deleted {
+				if err := write(domain.DownloadFeedMessage{Type: "download_deleted", JobID: jobID, EventID: pending.eventID}); err != nil {
+					return err
+				}
+				lastID = pending.eventID
+				continue
+			}
 			snap, ok := s.jobSnapshot(ctx, jobID)
 			if !ok {
 				continue // job deleted between the milestone and this read
 			}
-			if err := write(domain.DownloadFeedMessage{Type: "download_upserted", Job: snap, EventID: jobMaxID[jobID]}); err != nil {
+			if err := write(domain.DownloadFeedMessage{Type: "download_upserted", Job: snap, EventID: pending.eventID}); err != nil {
 				return err
 			}
-			lastID = jobMaxID[jobID]
+			lastID = pending.eventID
 		}
 		return nil
 	}
@@ -758,18 +765,9 @@ func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, ch <-chan d
 		select {
 		case <-ctx.Done():
 			return
-		case ev, ok := <-ch:
+		case _, ok := <-ch:
 			if !ok {
 				return
-			}
-			if ev.Type == domain.EventDeleted {
-				// Deletion isn't persisted, so it can't be drained from the
-				// store — forward it directly. jobSnapshot would fail for the
-				// now-gone job, so this is the only push for it.
-				if err := write(domain.DownloadFeedMessage{Type: "download_deleted", JobID: ev.JobID}); err != nil {
-					return
-				}
-				continue
 			}
 			if err := drain(); err != nil {
 				return

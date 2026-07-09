@@ -3,6 +3,7 @@ package media
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,6 +84,48 @@ func TestEncapsulateRoundTripProducesPlayableFile(t *testing.T) {
 	}
 }
 
+func TestExtractSongAcceptsOptionalInitBoxesBeforeMoov(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not available")
+	}
+
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "frag.m4a")
+	gen := exec.Command("ffmpeg", "-y", "-v", "error",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+		"-c:a", "aac", "-b:a", "128k",
+		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
+		src)
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Fatalf("generate fragmented input: %v: %s", err, out)
+	}
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) < 8 {
+		t.Fatalf("input too short: %d bytes", len(raw))
+	}
+	ftypSize := int(binary.BigEndian.Uint32(raw[:4]))
+	if ftypSize <= 0 || ftypSize > len(raw) || string(raw[4:8]) != "ftyp" {
+		t.Fatalf("unexpected first box: size=%d type=%q", ftypSize, raw[4:8])
+	}
+	free := []byte{0, 0, 0, 8, 'f', 'r', 'e', 'e'}
+	withFree := append(append(append([]byte{}, raw[:ftypSize]...), free...), raw[ftypSize:]...)
+
+	cfg := config.Config{}
+	cfg.Download.TempDir = tmp
+	cfg.Tools.FFmpeg = "ffmpeg"
+	p := newMP4Processor(cfg)
+	info, err := p.extractSong(context.Background(), withFree, "aac")
+	if err != nil {
+		t.Fatalf("extractSong with free box between ftyp and moov: %v", err)
+	}
+	if len(info.Samples) == 0 {
+		t.Fatal("no samples extracted")
+	}
+}
+
 // TestEncapsulateStripsEncryptionStructure verifies the encryption-specific
 // transformation that replaces the old mp4extract/mp4edit/gpac pipeline: on a
 // real CENC-encrypted fragmented MP4, encapsulate must convert the protected
@@ -132,6 +175,16 @@ func TestEncapsulateStripsEncryptionStructure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extractSong: %v", err)
 	}
+	stsdIn := info.init.Moov.Traks[0].Mdia.Minf.Stbl.Stsd
+	if len(stsdIn.Children) == 0 {
+		t.Fatal("empty input stsd")
+	}
+	stsdIn.Children = append(stsdIn.Children, stsdIn.Children[0])
+	stsdIn.SampleCount = 2
+	if info.init.Moov.Mvex == nil || len(info.init.Moov.Mvex.Trexs) == 0 {
+		t.Fatal("input missing trex")
+	}
+	info.init.Moov.Mvex.Trexs[0].DefaultSampleDescriptionIndex = 2
 	decrypted := make([][]byte, len(info.Samples))
 	for i, s := range info.Samples {
 		decrypted[i] = s.Data
@@ -148,6 +201,10 @@ func TestEncapsulateStripsEncryptionStructure(t *testing.T) {
 	stsd := outFile.Moov.Traks[0].Mdia.Minf.Stbl.Stsd
 	if stsd.SampleCount != 1 || len(stsd.Children) != 1 {
 		t.Fatalf("stsd not collapsed: SampleCount=%d children=%d", stsd.SampleCount, len(stsd.Children))
+	}
+	trex := outFile.Moov.Mvex.Trexs[0]
+	if trex.DefaultSampleDescriptionIndex != 1 {
+		t.Fatalf("trex default sample description index = %d, want 1 after stsd collapse", trex.DefaultSampleDescriptionIndex)
 	}
 	entry, ok := stsd.Children[0].(*mp4.AudioSampleEntryBox)
 	if !ok {

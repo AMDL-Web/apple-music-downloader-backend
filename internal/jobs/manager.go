@@ -202,6 +202,16 @@ func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool) do
 			continue
 		}
 		_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_queued", Message: "job queued"})
+		// Fire creation hooks before enqueuing, so the job_queued hook is
+		// dispatched before a worker can claim the job and reach a terminal
+		// hook. The hook event name matches the job_queued domain event emitted
+		// just above, so the two stay semantically aligned. There are no items
+		// yet — they are resolved during processing — so the payload carries an
+		// empty item list. Dispatch is non-blocking, so calling it while
+		// holding submitMu is safe. Ordering between the job_queued hook and a
+		// later terminal hook is best-effort only: both are independent async
+		// deliveries, so a fast job's terminal webhook may still arrive first.
+		m.hooks.Dispatch("job_queued", job, nil)
 		m.queue <- job.ID
 		accepted := job
 		results[c.index] = domain.SubmitResult{URL: c.url, Status: domain.SubmitAccepted, Job: &accepted}
@@ -294,16 +304,14 @@ func (m *Manager) Delete(ctx context.Context, jobID string) error {
 		m.mu.Unlock()
 		return db.ErrJobNotTerminal
 	}
-	err := m.store.DeleteJob(ctx, jobID)
+	deleted, err := m.store.DeleteJob(ctx, jobID)
 	m.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	// Broadcast an unpersisted deletion so the overview feed can drop the job.
-	// DeleteJob has already removed the job's persisted events, so this live
-	// signal is the only way overview subscribers learn of the deletion; a
-	// missed one is recovered on reconnect via GET /downloads.
-	m.hub.Publish(domain.Event{JobID: jobID, Type: domain.EventDeleted})
+	// Broadcast the persisted tombstone so live overview subscribers can drop the
+	// job immediately; missed broadcasts are replayed from job_events by cursor.
+	m.hub.Publish(deleted)
 	return nil
 }
 

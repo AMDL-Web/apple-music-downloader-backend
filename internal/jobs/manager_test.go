@@ -302,6 +302,119 @@ func TestJobCompletionDispatchesHook(t *testing.T) {
 	}
 }
 
+func TestJobQueuedDispatchesHook(t *testing.T) {
+	var calls int32
+	var mu sync.Mutex
+	var gotEvent, gotStatus string
+	var gotTotal, gotItems int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Event string `json:"event"`
+			Job   struct {
+				Status     string `json:"status"`
+				TotalItems int    `json:"total_items"`
+			} `json:"job"`
+			Items []struct{} `json:"items"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		mu.Lock()
+		gotEvent = payload.Event
+		gotStatus = payload.Job.Status
+		gotTotal = payload.Job.TotalItems
+		gotItems = len(payload.Items)
+		mu.Unlock()
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	hooksCfg := hooks.Config{Enabled: true, Entries: []hooks.Entry{
+		{Name: "on-queued", Type: "webhook", Events: []string{"job_queued"}, URL: server.URL},
+	}}
+	manager := NewManager(store, events.NewHub(), keyedProcessor{}, 1, slog.Default())
+	dispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, slog.Default())
+	manager.SetHooks(dispatcher)
+
+	// Deliberately do NOT start workers: the creation hook fires from
+	// SubmitBatch itself, so the job stays queued and only job_queued can fire.
+	resp := manager.SubmitBatch(context.Background(), []string{"song|us|1"}, false)
+	if resp.Accepted != 1 {
+		t.Fatalf("submit = %+v, want 1 accepted", resp)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && atomic.LoadInt32(&calls) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	dispatcher.Shutdown(context.Background())
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("webhook calls = %d, want 1 after job creation", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gotEvent != "job_queued" {
+		t.Fatalf("event = %q, want job_queued", gotEvent)
+	}
+	if gotStatus != string(domain.JobQueued) {
+		t.Fatalf("job status = %q, want %q", gotStatus, domain.JobQueued)
+	}
+	if gotTotal != 0 || gotItems != 0 {
+		t.Fatalf("creation payload total_items=%d items=%d, want 0 and 0 (no tracks resolved yet)", gotTotal, gotItems)
+	}
+}
+
+// TestRecoverUnfinishedDoesNotDispatchJobQueuedHook guards the documented
+// design decision that recovery re-enqueues jobs without re-firing the
+// job_queued creation hook: those jobs were created before the restart, so
+// dispatching job_queued again would double-notify external systems.
+func TestRecoverUnfinishedDoesNotDispatchJobQueuedHook(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	queued := domain.Job{ID: "job-recover", Input: "https://music.apple.com/cn/song/q/1", Type: "song", Storefront: "cn", CanonicalKey: "song:cn:1", Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateJob(ctx, queued); err != nil {
+		t.Fatal(err)
+	}
+
+	hooksCfg := hooks.Config{Enabled: true, Entries: []hooks.Entry{
+		{Name: "on-queued", Type: "webhook", Events: []string{"job_queued"}, URL: server.URL},
+	}}
+	manager := NewManager(store, events.NewHub(), recoveryProcessor{}, 1, slog.Default())
+	dispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, slog.Default())
+	manager.SetHooks(dispatcher)
+
+	// Do NOT start workers: recovery itself must not fire the creation hook.
+	if _, err := manager.RecoverUnfinished(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Dispatch launches its webhook goroutine synchronously, so any erroneous
+	// dispatch during recovery is already counted in the WaitGroup that
+	// Shutdown drains — no arbitrary sleep needed.
+	dispatcher.Shutdown(context.Background())
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("job_queued hook calls after recovery = %d, want 0", got)
+	}
+}
+
 func TestCancelQueuedJobDispatchesCancelledHookAndNeverRuns(t *testing.T) {
 	var calls int32
 	var lastEvent string

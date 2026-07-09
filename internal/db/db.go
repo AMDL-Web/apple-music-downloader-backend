@@ -238,41 +238,50 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
 }
 
 // DeleteJob removes a terminal (completed/failed/cancelled) job together with
-// its items and events. Queued/running jobs are refused with ErrJobNotTerminal
-// so an in-flight worker never loses the rows it is still updating; cancel the
-// job first. The status check and the three deletes run in one transaction.
+// its items and old per-job events, then persists a job_deleted tombstone event
+// so overview feeds can replay the deletion from a snapshot cursor. Queued or
+// running jobs are refused with ErrJobNotTerminal so an in-flight worker never
+// loses the rows it is still updating; cancel the job first. The status check,
+// deletes, and tombstone insert run in one transaction.
 //
 // The row status alone cannot tell whether the manager's finalize sequence
 // (terminal event insert + hook dispatch) has finished — callers must go
 // through jobs.Manager.Delete, which additionally refuses while a finalize is
 // still in flight.
-func (s *Store) DeleteJob(ctx context.Context, id string) error {
+func (s *Store) DeleteJob(ctx context.Context, id string) (domain.Event, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return domain.Event{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	var status string
 	if err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id=?`, id).Scan(&status); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return ErrJobNotFound
+			return domain.Event{}, ErrJobNotFound
 		}
-		return err
+		return domain.Event{}, err
 	}
 	if !domain.JobStatus(status).IsTerminal() {
-		return ErrJobNotTerminal
+		return domain.Event{}, ErrJobNotTerminal
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM job_events WHERE job_id=?`, id); err != nil {
-		return err
+		return domain.Event{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM job_items WHERE job_id=?`, id); err != nil {
-		return err
+		return domain.Event{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE id=?`, id); err != nil {
-		return err
+		return domain.Event{}, err
 	}
-	return tx.Commit()
+	tombstone, err := addEvent(ctx, tx, domain.Event{JobID: id, Type: domain.EventDeleted})
+	if err != nil {
+		return domain.Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Event{}, err
+	}
+	return tombstone, nil
 }
 
 func (s *Store) ListRecoverableJobs(ctx context.Context) ([]domain.Job, error) {
@@ -417,14 +426,15 @@ func (s *Store) LatestGlobalEventID(ctx context.Context) (int64, error) {
 	return id, err
 }
 
-// milestoneTypePlaceholders is the "?,?,…" fragment and matching args for the
-// persisted overview-milestone types, built once from the single source of
-// truth (domain.PersistedOverviewMilestones) so the SQL filter can never drift
-// from IsOverviewMilestone.
+// milestoneTypePlaceholders is the "?,?,…" fragment and matching args for
+// overview-milestone types, built once from the single source of truth so the
+// SQL filter can never drift from IsOverviewMilestone.
 var milestoneTypePlaceholders, milestoneTypeArgs = func() (string, []any) {
-	marks := make([]string, len(domain.PersistedOverviewMilestones))
-	args := make([]any, len(domain.PersistedOverviewMilestones))
-	for i, t := range domain.PersistedOverviewMilestones {
+	types := append([]string{}, domain.PersistedOverviewMilestones...)
+	types = append(types, domain.EventDeleted)
+	marks := make([]string, len(types))
+	args := make([]any, len(types))
+	for i, t := range types {
 		marks[i] = "?"
 		args[i] = t
 	}
@@ -432,9 +442,8 @@ var milestoneTypePlaceholders, milestoneTypeArgs = func() (string, []any) {
 }()
 
 // ListMilestoneEventsAfter returns, across all jobs, the events newer than
-// afterID whose type changes the GET /downloads list-level view (the persisted
-// members of domain.IsOverviewMilestone; job_deleted is never persisted). The
-// overview feed uses this to learn which jobs changed since a cursor.
+// afterID whose type changes the GET /downloads list-level view. The overview
+// feed uses this to learn which jobs changed since a cursor.
 func (s *Store) ListMilestoneEventsAfter(ctx context.Context, afterID int64) ([]domain.Event, error) {
 	args := append([]any{afterID}, milestoneTypeArgs...)
 	return s.queryEvents(ctx, `SELECT id,job_id,item_id,type,phase,message,payload,created_at FROM job_events

@@ -265,8 +265,8 @@ paths:
         只有影响列表展示的「里程碑」事件才会触发推送（新建/恢复/开始/解析完成/
         单曲完成或跳过或失败/终态/删除），逐曲下载进度等高频细节不会推送。
         断线续接：先 GET /downloads 取得 last_event_id，再用 Last-Event-ID 头
-        续接，只接收此后新增的变化。download_deleted 不带 event_id、不推进游标
-        （删除未持久化，断线期间发生的删除靠重连时的 GET /downloads 全量自愈）。
+        续接，只接收此后新增的变化。download_upserted 与 download_deleted 都带
+        event_id，客户端每处理完一条消息后将该值作为新的续接游标。
       operationId: streamDownloadsFeed
       parameters:
         - name: Last-Event-ID
@@ -291,8 +291,8 @@ paths:
       description: |
         /api/v1/downloads/events 的 WebSocket 版本，语义一致。握手成功后服务端将
         每条 DownloadFeedMessage 作为一条 JSON 文本消息推送。断线重连时通过
-        last_event_id 查询参数续接；download_deleted 消息不含 event_id，客户端在
-        维护续接游标时不应因它推进游标。
+        last_event_id 查询参数续接；download_upserted 与 download_deleted 都带
+        event_id，客户端每处理完一条消息后将该值作为新的续接游标。
       operationId: streamDownloadsFeedWebSocket
       parameters:
         - name: last_event_id
@@ -903,10 +903,10 @@ components:
           type: integer
           format: int64
           description: >-
-            续接游标；download_upserted 带此值（为触发该任务快照的里程碑事件自身
-            的 id，而非同批推送的最大 id），客户端处理后作为下次续接起点，逐条严格
-            递增。断线重连时未送达的更新只会被重发（幂等 upsert），不会被跳过。
-            download_deleted 不带此字段（删除未持久化），客户端不应因它推进游标。
+            续接游标；download_upserted 为触发该任务快照的里程碑事件自身 id，
+            download_deleted 为删除 tombstone 事件 id（都不是同批推送的最大 id）。
+            客户端处理后作为下次续接起点，逐条严格递增。断线重连时未送达的更新
+            只会被重发（upsert/delete 均幂等），不会被跳过。
     DownloadDetail:
       type: object
       required: [job, items, hooks, last_event_id]

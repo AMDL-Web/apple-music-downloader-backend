@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -410,5 +411,40 @@ func TestListMilestoneEventsAfterFiltersAndOrders(t *testing.T) {
 	}
 	if len(after) != 0 {
 		t.Fatalf("ListMilestoneEventsAfter(last) = %+v, want empty", after)
+	}
+}
+
+func TestDeleteJobPersistsOverviewTombstone(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	job := domain.Job{ID: "job1", Input: "song|us|1", Type: "song", CanonicalKey: "song:us:1", Status: domain.JobCompleted}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := store.AddEvent(ctx, domain.Event{JobID: job.ID, Type: "job_finished"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tombstone, err := store.DeleteJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tombstone.Type != domain.EventDeleted || tombstone.JobID != job.ID || tombstone.ID <= finished.ID {
+		t.Fatalf("tombstone = %+v, want job_deleted for %s after event %d", tombstone, job.ID, finished.ID)
+	}
+
+	events, err := store.ListMilestoneEventsAfter(ctx, finished.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Type != domain.EventDeleted || events[0].ID != tombstone.ID {
+		t.Fatalf("ListMilestoneEventsAfter(%d) = %+v, want tombstone %d", finished.ID, events, tombstone.ID)
+	}
+	if _, err := store.GetJob(ctx, job.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("GetJob after delete err = %v, want sql.ErrNoRows", err)
 	}
 }

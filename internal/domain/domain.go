@@ -165,11 +165,10 @@ func SummarizeHooks(events []Event, stillRunning bool) []HookState {
 	return out
 }
 
-// EventDeleted is the type of the in-memory-only event the manager broadcasts
-// when a job is deleted. Unlike every other event type it is never persisted
-// (DeleteJob removes the job's rows, including its events), so it exists purely
-// to wake the overview feed; a client that misses it recovers on reconnect via
-// the GET /downloads snapshot.
+// EventDeleted is the tombstone event the manager records and broadcasts when a
+// job is deleted. DeleteJob removes the job row and its old per-job events, then
+// persists this global event so the overview feed can replay deletions from a
+// snapshot cursor even if a client misses the live broadcast.
 const EventDeleted = "job_deleted"
 
 // PersistedOverviewMilestones are the persisted event types that change how a
@@ -179,9 +178,10 @@ const EventDeleted = "job_deleted"
 // higher-frequency per-item detail events (item_progress, codec_selected,
 // retries, …) that don't alter the list-level view.
 //
-// This is the single source of truth: the DB query that replays a cursor
-// (Store.ListMilestoneEventsAfter) builds its type filter from this slice, and
-// IsOverviewMilestone tests against it, so the two can never drift.
+// This is the single source of truth for non-deletion overview milestones: the
+// DB query that replays a cursor appends EventDeleted to this slice, and
+// IsOverviewMilestone tests against the same combined set, so the two can never
+// drift.
 var PersistedOverviewMilestones = []string{
 	"job_queued",
 	"job_recovered",
@@ -196,7 +196,7 @@ var PersistedOverviewMilestones = []string{
 }
 
 // overviewMilestones is the set membership form of PersistedOverviewMilestones
-// plus the unpersisted EventDeleted, for O(1) live-event filtering.
+// plus EventDeleted, for O(1) live-event filtering.
 var overviewMilestones = func() map[string]struct{} {
 	m := map[string]struct{}{EventDeleted: {}}
 	for _, t := range PersistedOverviewMilestones {
@@ -217,7 +217,7 @@ func IsOverviewMilestone(eventType string) bool {
 // feed. Type is download_upserted (Job carries the affected job's latest
 // snapshot, with live-derived progress counters) or download_deleted (only
 // JobID is set). EventID is the persisted-event cursor a client hands back to
-// resume; it is 0 for download_deleted, which is an unpersisted notification.
+// resume.
 type DownloadFeedMessage struct {
 	Type    string `json:"type"`
 	Job     *Job   `json:"job,omitempty"`

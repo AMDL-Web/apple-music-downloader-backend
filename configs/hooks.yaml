@@ -1,7 +1,8 @@
-# Post-download hooks: run a webhook call or a local command when a download
-# job reaches a terminal state (completed/failed/cancelled). This file is
-# loaded independently from configs/config.yaml, so hooks can be added,
-# removed, or toggled without touching the main backend configuration.
+# Download job hooks: run a webhook call or a local command when a download
+# job is queued (job_queued) or reaches a terminal state
+# (completed/failed/cancelled). This file is loaded independently from
+# configs/config.yaml, so hooks can be added, removed, or toggled without
+# touching the main backend configuration.
 # Missing this file entirely is not an error: hooks are simply disabled.
 #
 # Config reload: hooks.yaml is read once at backend startup. Changes require
@@ -19,9 +20,9 @@ timeout_seconds: 30
 # all entries. Values <= 0 fall back to 2.
 max_concurrent: 2
 
-# list: hook definitions. Evaluated independently for every terminal job
-# event; every entry whose `enabled`, `events`, and `job_types` all match
-# runs concurrently (bounded by max_concurrent above). Add a list item to
+# list: hook definitions. Evaluated independently for every job queued and
+# terminal job event; every entry whose `enabled`, `events`, and `job_types`
+# all match runs concurrently (bounded by max_concurrent above). Add a list item to
 # create a new hook, delete one to remove it, or flip `enabled` to pause it
 # without losing its configuration.
 #
@@ -40,7 +41,14 @@ entries:
   #   #   webhook: sends an HTTP POST to `url`.
   #   #   exec: runs a local command via `command`.
   #   type: "webhook"
-  #   # list enum, required, at least one: job_finished, job_failed, job_cancelled.
+  #   # list enum, required, at least one: job_queued, job_finished,
+  #   # job_failed, job_cancelled.
+  #   #   job_queued: job was just created and queued. Fires before any track
+  #   #     is resolved, so the payload's `items` list is empty and total_items
+  #   #     is 0; the job status is "queued". Cannot be combined with any
+  #   #     terminal event in the same entry (that would run the entry twice
+  #   #     for one job and collapse in the hook status summary) — put creation
+  #   #     and terminal hooks in separate entries, which may share a url/command.
   #   #   job_finished: job completed with zero failed items.
   #   #   job_failed: job completed with at least one failed item, or aborted
   #   #     with an error.
@@ -72,10 +80,10 @@ entries:
   #   # string, required for type exec: command executed via `sh -c`. The JSON
   #   # payload (see below) is written to the command's stdin, and these
   #   # environment variables are also set:
-  #   #   AMDL_EVENT          - job_finished | job_failed | job_cancelled
+  #   #   AMDL_EVENT          - job_queued | job_finished | job_failed | job_cancelled
   #   #   AMDL_JOB_ID         - job ID
   #   #   AMDL_JOB_TYPE       - song | album | playlist | artist
-  #   #   AMDL_JOB_STATUS     - completed | failed | cancelled
+  #   #   AMDL_JOB_STATUS     - queued | completed | failed | cancelled
   #   #   AMDL_JOB_INPUT      - original Apple Music URL
   #   #   AMDL_STOREFRONT     - storefront code, e.g. "us", "cn"
   #   #   AMDL_TOTAL_ITEMS    - total track count
