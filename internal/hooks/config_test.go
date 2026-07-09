@@ -56,21 +56,21 @@ entries:
 	}
 }
 
-func TestLoadConfigAcceptsJobCreatedEvent(t *testing.T) {
+func TestLoadConfigAcceptsJobQueuedEvent(t *testing.T) {
 	path := writeHooksConfig(t, `
 enabled: true
 entries:
-  - name: "on-create"
+  - name: "on-queued"
     type: "webhook"
-    events: ["job_created"]
-    url: "http://example.local/created"
+    events: ["job_queued"]
+    url: "http://example.local/queued"
 `)
 	cfg, err := LoadConfig(path)
 	if err != nil {
-		t.Fatalf("LoadConfig() error = %v, want nil for job_created event", err)
+		t.Fatalf("LoadConfig() error = %v, want nil for job_queued event", err)
 	}
-	if len(cfg.Entries) != 1 || !cfg.Entries[0].MatchesEvent("job_created") {
-		t.Fatalf("entry did not match job_created: %+v", cfg.Entries)
+	if len(cfg.Entries) != 1 || !cfg.Entries[0].MatchesEvent("job_queued") {
+		t.Fatalf("entry did not match job_queued: %+v", cfg.Entries)
 	}
 }
 

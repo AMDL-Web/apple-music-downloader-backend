@@ -302,7 +302,7 @@ func TestJobCompletionDispatchesHook(t *testing.T) {
 	}
 }
 
-func TestJobCreationDispatchesHook(t *testing.T) {
+func TestJobQueuedDispatchesHook(t *testing.T) {
 	var calls int32
 	var mu sync.Mutex
 	var gotEvent, gotStatus string
@@ -335,14 +335,14 @@ func TestJobCreationDispatchesHook(t *testing.T) {
 	defer store.Close()
 
 	hooksCfg := hooks.Config{Enabled: true, Entries: []hooks.Entry{
-		{Name: "on-create", Type: "webhook", Events: []string{"job_created"}, URL: server.URL},
+		{Name: "on-queued", Type: "webhook", Events: []string{"job_queued"}, URL: server.URL},
 	}}
 	manager := NewManager(store, events.NewHub(), keyedProcessor{}, 1, slog.Default())
 	dispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, slog.Default())
 	manager.SetHooks(dispatcher)
 
 	// Deliberately do NOT start workers: the creation hook fires from
-	// SubmitBatch itself, so the job stays queued and only job_created can fire.
+	// SubmitBatch itself, so the job stays queued and only job_queued can fire.
 	resp := manager.SubmitBatch(context.Background(), []string{"song|us|1"}, false)
 	if resp.Accepted != 1 {
 		t.Fatalf("submit = %+v, want 1 accepted", resp)
@@ -359,8 +359,8 @@ func TestJobCreationDispatchesHook(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if gotEvent != "job_created" {
-		t.Fatalf("event = %q, want job_created", gotEvent)
+	if gotEvent != "job_queued" {
+		t.Fatalf("event = %q, want job_queued", gotEvent)
 	}
 	if gotStatus != string(domain.JobQueued) {
 		t.Fatalf("job status = %q, want %q", gotStatus, domain.JobQueued)
