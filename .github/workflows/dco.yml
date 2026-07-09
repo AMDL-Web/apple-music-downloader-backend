@@ -28,7 +28,10 @@ jobs:
           set -euo pipefail
 
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            git fetch origin "$BASE_REF" --depth=1
+            # actions/checkout already fetched full history for all branches
+            # (fetch-depth: 0); fetching the base ref again with --depth=1
+            # here would shallow it and break ancestry, making the range
+            # below include unrelated already-merged commits.
             RANGE="origin/${BASE_REF}..${HEAD_SHA}"
           elif [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ] || [ -z "$BEFORE_SHA" ]; then
             RANGE="$HEAD_SHA"
