@@ -56,6 +56,37 @@ entries:
 	}
 }
 
+func TestLoadConfigAcceptsJobQueuedEvent(t *testing.T) {
+	path := writeHooksConfig(t, `
+enabled: true
+entries:
+  - name: "on-queued"
+    type: "webhook"
+    events: ["job_queued"]
+    url: "http://example.local/queued"
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v, want nil for job_queued event", err)
+	}
+	if len(cfg.Entries) != 1 || !cfg.Entries[0].MatchesEvent("job_queued") {
+		t.Fatalf("entry did not match job_queued: %+v", cfg.Entries)
+	}
+}
+
+func TestLoadConfigRejectsMixingCreationAndTerminalEvents(t *testing.T) {
+	path := writeHooksConfig(t, `
+entries:
+  - name: "mixed"
+    type: "webhook"
+    events: ["job_queued", "job_finished"]
+    url: "http://example.local"
+`)
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "cannot be combined with terminal events") {
+		t.Fatalf("LoadConfig() error = %v, want creation/terminal mix rejection", err)
+	}
+}
+
 func TestLoadConfigRejectsDuplicateNames(t *testing.T) {
 	path := writeHooksConfig(t, `
 entries:
