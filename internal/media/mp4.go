@@ -163,17 +163,28 @@ func (p *MP4Processor) encapsulate(_ context.Context, info songInfo, decrypted [
 		}
 		frag.Mdat.Data = mdatData
 
-		// Strip per-fragment encryption boxes (senc/saiz/saio) and pssh. mp4ff
-		// recomputes trun data offsets on Encode, so no manual offset fixup is
-		// needed.
+		// Strip per-fragment encryption boxes (senc/saiz/saio) and pssh, then
+		// shrink trun.data_offset by the removed byte count. mp4ff Encode does
+		// NOT recompute data_offset when it is already non-zero — leaving the
+		// pre-strip value makes ffmpeg flatten read past the real mdat payload
+		// (observed as leading zeroed ALAC packets after fixEncapsulate).
+		var bytesRemoved uint64
 		for _, traf := range frag.Moof.Trafs {
-			traf.RemoveEncryptionBoxes()
+			bytesRemoved += traf.RemoveEncryptionBoxes()
 			// Normalise the sample-description index to the single retained entry.
 			if traf.Tfhd != nil && traf.Tfhd.HasSampleDescriptionIndex() {
 				traf.Tfhd.SampleDescriptionIndex = 1
 			}
 		}
-		frag.Moof.RemovePsshs()
+		_, psshRemoved := frag.Moof.RemovePsshs()
+		bytesRemoved += psshRemoved
+		for _, traf := range frag.Moof.Trafs {
+			for _, trun := range traf.Truns {
+				if trun.HasDataOffset() {
+					trun.DataOffset -= int32(bytesRemoved)
+				}
+			}
+		}
 
 		if err := frag.Encode(&buf); err != nil {
 			return nil, fmt.Errorf("encode fragment %d: %w", fi, err)
