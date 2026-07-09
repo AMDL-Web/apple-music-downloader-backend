@@ -77,7 +77,7 @@ This backend is the **download core**. It intentionally has NO authentication la
 Every commit merged into `main` or `dev` MUST be signed off under the [Developer Certificate of Origin](https://developercertificate.org/):
 
 - Sign off commits with `git commit -s` (adds a `Signed-off-by: Name <email>` trailer).
-- The `DCO` GitHub Actions check (`.github/workflows/dco.yml`) enforces this on every pull request and on direct pushes to `main`/`dev`; commits missing a valid `Signed-off-by` trailer will fail the check.
+- The `DCO` GitHub Actions check (`.github/workflows/dco.yml`) enforces this on every pull request into `main`/`dev`; commits missing a valid `Signed-off-by` trailer will fail the check.
 - See [CONTRIBUTING.md](CONTRIBUTING.md) for details, including how to fix a commit that's missing sign-off.
 
 ## Codex Commit Attribution
