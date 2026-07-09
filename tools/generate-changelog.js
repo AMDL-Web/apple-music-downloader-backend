@@ -214,7 +214,7 @@ function getGitHubRepoUrl() {
 }
 
 function generateMd(classifiedData, tagName, latest, withHash = false) {
-  const { categories, contributors } = classifiedData;
+  const { categories } = classifiedData;
   const now = new Date().toLocaleDateString('zh-CN');
   const lines = [];
   const repoUrl = getGitHubRepoUrl();

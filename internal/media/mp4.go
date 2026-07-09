@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -178,10 +179,14 @@ func (p *MP4Processor) encapsulate(_ context.Context, info songInfo, decrypted [
 		}
 		_, psshRemoved := frag.Moof.RemovePsshs()
 		bytesRemoved += psshRemoved
+		if bytesRemoved > math.MaxInt32 {
+			return nil, fmt.Errorf("fragment %d removed too many bytes for trun.data_offset adjustment: %d", fi, bytesRemoved)
+		}
+		removed := int32(bytesRemoved)
 		for _, traf := range frag.Moof.Trafs {
 			for _, trun := range traf.Truns {
 				if trun.HasDataOffset() {
-					trun.DataOffset -= int32(bytesRemoved)
+					trun.DataOffset -= removed
 				}
 			}
 		}
@@ -263,13 +268,13 @@ func (p *MP4Processor) writeMetadata(_ context.Context, path string, song applem
 		tags.ItunesAdvisory = mp4tag.ItunesAdvisoryNone
 	}
 	if song.AlbumID != "" {
-		if id, err := strconv.ParseUint(song.AlbumID, 10, 64); err == nil {
-			tags.ItunesAlbumID = int32(id)
+		if id, err := strconv.ParseUint(song.AlbumID, 10, 32); err == nil {
+			tags.ItunesAlbumID = int32(uint32(id))
 		}
 	}
 	if song.ArtistID != "" {
-		if id, err := strconv.ParseUint(song.ArtistID, 10, 64); err == nil {
-			tags.ItunesArtistID = int32(id)
+		if id, err := strconv.ParseUint(song.ArtistID, 10, 32); err == nil {
+			tags.ItunesArtistID = int32(uint32(id))
 		}
 	}
 	if p.cfg.Download.EmbedCover && len(cover) > 0 {
@@ -312,7 +317,7 @@ func readNextFragment(r io.Reader, offset uint64) (*mp4.Fragment, uint64, error)
 	frag := mp4.NewFragment()
 	for {
 		box, err := mp4.DecodeBox(offset, r)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return nil, offset, nil
 		}
 		if err != nil {
