@@ -3,8 +3,6 @@ name: DCO
 on:
   pull_request:
     branches: [main, dev]
-  push:
-    branches: [main, dev]
 
 permissions:
   contents: read
@@ -20,21 +18,15 @@ jobs:
 
       - name: Check commits are signed off
         env:
-          EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
 
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            git fetch origin "$BASE_REF" --depth=1
-            RANGE="origin/${BASE_REF}..${HEAD_SHA}"
-          elif [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ] || [ -z "$BEFORE_SHA" ]; then
-            RANGE="$HEAD_SHA"
-          else
-            RANGE="${BEFORE_SHA}..${HEAD_SHA}"
-          fi
+          # actions/checkout already fetched full history for all branches
+          # (fetch-depth: 0), so origin/$BASE_REF is available locally with
+          # correct ancestry; no extra fetch needed.
+          RANGE="origin/${BASE_REF}..${HEAD_SHA}"
 
           missing=0
           for sha in $(git log --no-merges --format='%H' "$RANGE"); do
