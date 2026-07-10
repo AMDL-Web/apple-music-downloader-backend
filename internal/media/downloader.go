@@ -77,6 +77,11 @@ func (d *Downloader) ValidateRequest(ctx context.Context, url string) (jobs.Vali
 }
 
 func (d *Downloader) validateStorefront(ctx context.Context, storefront string) error {
+	if d.cfg.Simulate.Enabled {
+		// Test mode never decrypts, so it must not depend on a running
+		// wrapper/decryptor or its supported-storefront list.
+		return nil
+	}
 	status, err := d.wrapper.Status(ctx)
 	if err != nil {
 		message := fmt.Sprintf("failed to check decryptor status: %v", err)
@@ -391,6 +396,13 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	item.Album = song.AlbumName
 	item.ArtworkURL = firstNonEmpty(song.ArtworkURL, song.AlbumArtworkURL, item.ArtworkURL)
 	_ = reporter.UpdateItem(ctx, item)
+
+	if d.cfg.Simulate.Enabled {
+		// Test mode: real catalog metadata was resolved above, but everything
+		// from here on (covers, lyrics, media selection, transfer, decrypt,
+		// disk writes) is simulated with an identical status/event lifecycle.
+		return d.simulateTrack(ctx, job, &item, song, collectionType, collectionName, collectionID, playlistIndex, folderArtist, reporter, set)
+	}
 
 	coverAnchorPath := outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, "", "")
 	if d.cfg.Download.SaveAlbumCover || d.cfg.Download.SaveArtistCover {

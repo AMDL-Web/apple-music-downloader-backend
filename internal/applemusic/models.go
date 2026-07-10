@@ -12,6 +12,7 @@ type Song struct {
 	DiscNumber            int
 	TrackCount            int
 	DiscCount             int
+	DurationInMillis      int
 	ISRC                  string
 	ContentRating         string
 	HasLyrics             bool

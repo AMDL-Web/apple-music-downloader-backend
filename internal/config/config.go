@@ -17,6 +17,7 @@ type Config struct {
 	Catalog  CatalogConfig  `yaml:"catalog" json:"catalog"`
 	Download DownloadConfig `yaml:"download" json:"download"`
 	Tools    ToolsConfig    `yaml:"tools" json:"tools"`
+	Simulate SimulateConfig `yaml:"simulate" json:"simulate"`
 }
 
 type ServerConfig struct {
@@ -123,6 +124,17 @@ type ToolsConfig struct {
 	FFmpeg string `yaml:"ffmpeg" json:"ffmpeg"`
 }
 
+// SimulateConfig drives the local test mode: when enabled, download jobs run
+// through the exact same status/progress/event lifecycle as a real download,
+// but media selection, transfer, decryption, and disk writes are simulated.
+// Transfer progress advances at a random speed drawn from
+// [MinSpeedKBps, MaxSpeedKBps] kilobytes per second.
+type SimulateConfig struct {
+	Enabled      bool `yaml:"enabled" json:"enabled"`
+	MinSpeedKBps int  `yaml:"min_speed_kbps" json:"min_speed_kbps"`
+	MaxSpeedKBps int  `yaml:"max_speed_kbps" json:"max_speed_kbps"`
+}
+
 func Default() Config {
 	return Config{
 		Server:   ServerConfig{Listen: "127.0.0.1:18080"},
@@ -143,7 +155,8 @@ func Default() Config {
 			PlaylistFolderFormat: "{PlaylistName}", PlaylistSongFileFormat: "{SongNumer:02d}. {ArtistName} - {SongName}",
 			ALACMaxSampleRate: 192000, ALACMaxBitDepth: 24, CheckIntegrity: true,
 		},
-		Tools: ToolsConfig{FFmpeg: "ffmpeg"},
+		Tools:    ToolsConfig{FFmpeg: "ffmpeg"},
+		Simulate: SimulateConfig{Enabled: false, MinSpeedKBps: 512, MaxSpeedKBps: 4096},
 	}
 }
 
@@ -227,6 +240,14 @@ func (c Config) validate() error {
 	for _, codec := range c.Download.QualityPriority {
 		if _, ok := allowedCodecs[codec]; !ok {
 			return fmt.Errorf("unsupported codec %q in download.quality_priority", codec)
+		}
+	}
+	if c.Simulate.Enabled {
+		if c.Simulate.MinSpeedKBps < 1 {
+			return fmt.Errorf("simulate.min_speed_kbps must be >= 1 when simulate mode is enabled")
+		}
+		if c.Simulate.MaxSpeedKBps < c.Simulate.MinSpeedKBps {
+			return fmt.Errorf("simulate.max_speed_kbps must be >= simulate.min_speed_kbps")
 		}
 	}
 	return nil
