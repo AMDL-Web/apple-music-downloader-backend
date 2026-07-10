@@ -795,7 +795,12 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
-	if err := os.WriteFile(outPath, outBytes, 0o644); err != nil {
+	// Write to a .part name and only rename onto outPath once metadata is in
+	// place: handleExistingOutput trusts bare existence at the final path when
+	// deciding to skip, so a crash between the audio write and tagging must
+	// never leave a truncated or untagged file there.
+	partPath := outPath + partSuffix
+	if err := os.WriteFile(partPath, outBytes, 0o644); err != nil {
 		return fmt.Errorf("write output file: %w", err)
 	}
 	if d.cfg.Download.SaveLyricsFile && lyrics != "" {
@@ -808,8 +813,11 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 		}
 	}
 	set(domain.ItemTagging, 0.97, "writing metadata")
-	if err := d.mp4.writeMetadata(ctx, outPath, song, lyrics, cover, extracted); err != nil {
+	if err := d.mp4.writeMetadata(ctx, partPath, song, lyrics, cover, extracted); err != nil {
 		return fmt.Errorf("write metadata: %w", err)
+	}
+	if err := os.Rename(partPath, outPath); err != nil {
+		return fmt.Errorf("finalize output file: %w", err)
 	}
 	item.Status = domain.ItemCompleted
 	item.Progress = 1
@@ -882,7 +890,10 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
-	if err := os.WriteFile(outPath, decrypted, 0o644); err != nil {
+	// Same .part-then-rename finalize as downloadEnhancedCodec: the final path
+	// must only ever hold a complete, tagged file.
+	partPath := outPath + partSuffix
+	if err := os.WriteFile(partPath, decrypted, 0o644); err != nil {
 		return fmt.Errorf("write AAC-LC output file: %w", err)
 	}
 	if d.cfg.Download.SaveLyricsFile && lyrics != "" {
@@ -895,8 +906,11 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 		}
 	}
 	set(domain.ItemTagging, 0.97, "writing AAC-LC metadata")
-	if err := d.mp4.writeMetadata(ctx, outPath, song, lyrics, cover, songInfo{Codec: "aac-lc"}); err != nil {
+	if err := d.mp4.writeMetadata(ctx, partPath, song, lyrics, cover, songInfo{Codec: "aac-lc"}); err != nil {
 		return fmt.Errorf("write AAC-LC metadata: %w", err)
+	}
+	if err := os.Rename(partPath, outPath); err != nil {
+		return fmt.Errorf("finalize AAC-LC output file: %w", err)
 	}
 	item.Status = domain.ItemCompleted
 	item.Progress = 1
@@ -969,8 +983,14 @@ func marshalPayload(value any) string {
 	return string(raw)
 }
 
+// partSuffix marks an output file that is still being written/tagged. The
+// finalize step renames it onto the bare outPath only after metadata is in,
+// so existence at the final path always implies a complete, tagged file.
+const partSuffix = ".part"
+
 func cleanupFailedOutput(outPath string) {
 	_ = os.Remove(outPath)
+	_ = os.Remove(outPath + partSuffix)
 	_ = os.Remove(strings.TrimSuffix(outPath, ".m4a") + ".lrc")
 	_ = os.Remove(strings.TrimSuffix(outPath, ".m4a") + ".ttml")
 }
