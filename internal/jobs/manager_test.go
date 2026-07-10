@@ -923,3 +923,149 @@ func TestCancelRacingStartupDispatchesExactlyOneConsistentHook(t *testing.T) {
 		}
 	}
 }
+
+func TestRetryRequeuesFailedJobAndResetsOnlyUnfinishedItems(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	job := domain.Job{ID: "job-failed", Input: "https://music.apple.com/cn/album/example/1", Type: "album", Storefront: "cn", CanonicalKey: "album:cn:1", Status: domain.JobFailed, TotalItems: 2, DoneItems: 1, FailedItems: 1, Error: "boom", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	completed := domain.JobItem{ID: "item-done", JobID: job.ID, AdamID: "song-1", Kind: "song", Index: 1, Status: domain.ItemCompleted, Progress: 1, Codec: "alac", CreatedAt: now, UpdatedAt: now}
+	failed := domain.JobItem{ID: "item-failed", JobID: job.ID, AdamID: "song-2", Kind: "song", Index: 2, Status: domain.ItemFailed, Progress: 0.4, Codec: "alac", RetryKind: "download", Attempt: 3, MaxAttempts: 3, StatusMessage: "ALAC failed", Error: "boom", CreatedAt: now, UpdatedAt: now}
+	for _, item := range []domain.JobItem{completed, failed} {
+		if err := store.CreateItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	manager := NewManager(store, events.NewHub(), recoveryProcessor{}, 1, slog.Default())
+	if err := manager.Retry(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.JobQueued || got.Error != "" {
+		t.Fatalf("job after retry = status %s error %q, want queued with empty error", got.Status, got.Error)
+	}
+	items, err := store.ListItems(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want 2", len(items))
+	}
+	if items[0].Status != domain.ItemCompleted || items[0].Progress != 1 || items[0].Codec != "alac" {
+		t.Fatalf("completed item was touched by retry: %+v", items[0])
+	}
+	reset := items[1]
+	if reset.Status != domain.ItemQueued || reset.Progress != 0 || reset.Codec != "" || reset.Error != "" ||
+		reset.RetryKind != "" || reset.Attempt != 0 || reset.MaxAttempts != 0 || reset.StatusMessage != "" {
+		t.Fatalf("failed item was not reset to queued: %+v", reset)
+	}
+	if len(manager.queue) != 1 || <-manager.queue != job.ID {
+		t.Fatal("retry did not enqueue the job")
+	}
+	events, err := store.ListEventsAfter(ctx, job.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Type != "job_retried" {
+		t.Fatalf("events = %+v, want one job_retried", events)
+	}
+}
+
+func TestRetryRefusesNonFailedMissingAndDuplicateJobs(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	manager := NewManager(store, events.NewHub(), recoveryProcessor{}, 1, slog.Default())
+
+	for i, status := range []domain.JobStatus{domain.JobQueued, domain.JobRunning, domain.JobCompleted, domain.JobCancelled} {
+		job := domain.Job{ID: "job-" + string(status), Input: "in", Type: "song", CanonicalKey: "song:cn:" + strconv.Itoa(i), Status: status, CreatedAt: now, UpdatedAt: now}
+		if err := store.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.Retry(ctx, job.ID); !errors.Is(err, ErrJobNotRetryable) {
+			t.Fatalf("Retry(%s job) = %v, want ErrJobNotRetryable", status, err)
+		}
+	}
+
+	if err := manager.Retry(ctx, "no-such-job"); !errors.Is(err, db.ErrJobNotFound) {
+		t.Fatalf("Retry(missing job) = %v, want ErrJobNotFound", err)
+	}
+
+	// The same canonical key already has an active job (resubmitted by the
+	// user): retrying the old failed job must be refused, not trip the
+	// partial unique index.
+	failed := domain.Job{ID: "job-old-failed", Input: "in", Type: "song", CanonicalKey: "song:cn:dup", Status: domain.JobFailed, CreatedAt: now, UpdatedAt: now}
+	active := domain.Job{ID: "job-new-active", Input: "in", Type: "song", CanonicalKey: "song:cn:dup", Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now}
+	for _, job := range []domain.Job{failed, active} {
+		if err := store.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := manager.Retry(ctx, failed.ID); !errors.Is(err, db.ErrDuplicateActive) {
+		t.Fatalf("Retry(failed job with active duplicate) = %v, want ErrDuplicateActive", err)
+	}
+	if len(manager.queue) != 0 {
+		t.Fatalf("queue length = %d, want 0 after refused retries", len(manager.queue))
+	}
+}
+
+// TestRetryRefusesWhilePreviousRunIsFinalizing covers the window where the
+// job row already reads failed but the old worker's deferred cleanup has not
+// removed its cancels entry yet (or Cancel's queued path is still dispatching
+// hooks under a finalizing mark). Retrying inside that window would let the
+// old worker's deferred delete remove the new run's cancel registration.
+func TestRetryRefusesWhilePreviousRunIsFinalizing(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	job := domain.Job{ID: "job-finalizing", Input: "in", Type: "song", CanonicalKey: "song:cn:fin", Status: domain.JobFailed, CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(store, events.NewHub(), recoveryProcessor{}, 1, slog.Default())
+
+	manager.mu.Lock()
+	manager.cancels[job.ID] = func() {}
+	manager.mu.Unlock()
+	if err := manager.Retry(ctx, job.ID); !errors.Is(err, ErrJobFinalizing) {
+		t.Fatalf("Retry(with lingering cancels entry) = %v, want ErrJobFinalizing", err)
+	}
+
+	manager.mu.Lock()
+	delete(manager.cancels, job.ID)
+	manager.finalizing[job.ID] = true
+	manager.mu.Unlock()
+	if err := manager.Retry(ctx, job.ID); !errors.Is(err, ErrJobFinalizing) {
+		t.Fatalf("Retry(while finalizing) = %v, want ErrJobFinalizing", err)
+	}
+
+	manager.mu.Lock()
+	delete(manager.finalizing, job.ID)
+	manager.mu.Unlock()
+	if err := manager.Retry(ctx, job.ID); err != nil {
+		t.Fatalf("Retry(after finalize finished) = %v, want success", err)
+	}
+	if len(manager.queue) != 1 || <-manager.queue != job.ID {
+		t.Fatal("retry after finalize did not enqueue the job")
+	}
+}

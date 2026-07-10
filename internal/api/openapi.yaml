@@ -475,6 +475,49 @@ paths:
                     const: cancelled
         '500':
           $ref: '#/components/responses/InternalError'
+  /api/v1/downloads/{job_id}/retry:
+    post:
+      tags: [Downloads]
+      summary: 重试失败的下载任务
+      description: |
+        将处于 failed 终态的任务重新入队执行，实际重试只针对未完成的轨道：
+        已完成（completed）或已跳过（skipped_existing）的任务项保持原状、不会重新下载；
+        其余任务项（failed 等）被重置为 queued 后在原任务项 id 下重新处理。
+        重新入队会记录并推送 job_retried 事件（属于总览里程碑事件，会驱动 GET /downloads 总览流）。
+      operationId: retryDownload
+      parameters:
+        - $ref: '#/components/parameters/JobID'
+      responses:
+        '202':
+          description: 任务已重新入队。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: queued
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            任务不处于 failed 状态；或相同链接已存在排队/进行中的任务；
+            或上一次运行仍在收尾（终态刚写入、worker 清理/hook 分发还未完成，
+            窗口极短，稍后重试即可）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 任务队列已满，稍后重试。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/v1/downloads/{job_id}/events:
     get:
       tags: [Downloads]
