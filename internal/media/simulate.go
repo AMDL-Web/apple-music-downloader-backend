@@ -71,6 +71,7 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 
 		var info selectedMediaInfo
 		var outPath string
+		fetchAttempts := 1
 		if codec == "aac-lc" {
 			// Like the real AAC-LC path, the existing-output check runs before
 			// any WebPlayback traffic or codec_selected event. The playlist
@@ -87,12 +88,35 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 			})})
 			info = selectedMediaInfo{CodecID: "aac-lc", Bandwidth: 256000}
 		} else {
-			d.setItemAttempt(ctx, reporter, item, "download", 1, maxAttempts, fmt.Sprintf("Selecting %s (1/%d)", codecName, maxAttempts))
-			selected, selectErr := d.selectEnhancedMedia(ctx, job, item, song, codec, reporter, set)
+			// Selection is a real network operation, so it keeps the real
+			// path's retry envelope: per-attempt messages, operation_retry
+			// events, and recovery events with true attempt counts.
+			codecMaxAttempts := attemptsForCodec(d.cfg.Download.MaxAttempts, codecIndex)
+			var selected selectedDownloadMedia
+			_, attempts, selectErr := retryValue(ctx, codecMaxAttempts, retryBackoff, func(attempt int) (struct{}, error) {
+				d.setItemAttempt(ctx, reporter, item, "download", attempt, clampAttempts(codecMaxAttempts), fmt.Sprintf("Selecting %s (%d/%d)", codecName, attempt, clampAttempts(codecMaxAttempts)))
+				s, err := d.selectEnhancedMedia(ctx, job, item, song, codec, reporter, set)
+				if err != nil {
+					return struct{}{}, err
+				}
+				selected = s
+				return struct{}{}, nil
+			}, func(failure retryFailure) {
+				operation := codecName
+				if isNonRetryableError(failure.Err) {
+					operation = "select " + operation
+				}
+				d.setRetryFailure(ctx, reporter, item, "download", operation, failure)
+				d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "download", codec, failure)
+			})
+			fetchAttempts = attempts
 			if selectErr != nil {
 				lastErr = selectErr
-				d.reportCodecFailed(ctx, reporter, job, *item, codec, "download", 1, 1, selectErr)
+				d.reportCodecFailed(ctx, reporter, job, *item, codec, "download", codecMaxAttempts, attempts, selectErr)
 				continue
+			}
+			if attempts > 1 {
+				d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "download", codec, attempts)
 			}
 			info = selected.info
 			outPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, qualityLabel(info))
@@ -127,14 +151,17 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 		item.Progress = 1
 		item.OutputPath = outPath
 		item.Codec = codec
-		if codecIndex > 0 {
+		switch {
+		case codecIndex > 0:
 			item.StatusMessage = fmt.Sprintf("Completed after fallback to %s", codecName)
-		} else {
+		case fetchAttempts > 1:
+			item.StatusMessage = fmt.Sprintf("%s completed (download took %d attempts)", codecName, fetchAttempts)
+		default:
 			item.StatusMessage = fmt.Sprintf("%s download completed", codecName)
 		}
 		_ = reporter.UpdateItem(ctx, *item)
 		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_completed", Message: item.StatusMessage, Payload: marshalPayload(map[string]any{
-			"codec": codec, "download_attempts": 1, "decrypt_attempts": 1,
+			"codec": codec, "download_attempts": fetchAttempts, "decrypt_attempts": 1,
 			"max_attempts": maxAttempts, "fallback_from": fallbackCodec(codecs, codecIndex),
 		})})
 		return nil

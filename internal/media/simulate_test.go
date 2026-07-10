@@ -117,6 +117,7 @@ func TestSimulateTrackFallsBackToAACLCWithoutManifest(t *testing.T) {
 	cfg := config.Default()
 	cfg.Simulate = config.SimulateConfig{Enabled: true, MinSpeedKBps: 1_000_000, MaxSpeedKBps: 1_000_000}
 	cfg.Download.DownloadsDir = t.TempDir()
+	cfg.Download.MaxAttempts = 1 // avoid retry backoff delays; selection retries mirror the real path
 	// No EnhancedHLS manifest: every enhanced codec fails selection and the
 	// simulated run must walk the same fallback chain down to AAC-LC.
 	downloader := &Downloader{
