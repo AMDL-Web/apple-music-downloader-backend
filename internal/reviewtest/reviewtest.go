@@ -1,5 +1,10 @@
 package reviewtest
 
 func LastElement(items []string) string {
-	return items[len(items)]
+func LastElement(items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	return items[len(items)-1]
+}
 }
