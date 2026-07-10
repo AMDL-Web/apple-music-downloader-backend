@@ -151,16 +151,9 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	}
 	folderArtist := collectionFolderArtist(parsed.Type, tracks)
 
-	items := make([]domain.JobItem, len(tracks))
-	for i, track := range tracks {
-		items[i] = domain.JobItem{
-			ID: storage.NewID("item"), JobID: job.ID, AdamID: track.ID, Kind: "song", Index: i + 1,
-			Title: track.Name, Artist: track.ArtistName, Album: track.AlbumName,
-			ArtworkURL: firstNonEmpty(track.ArtworkURL, track.AlbumArtworkURL), Status: domain.ItemQueued,
-		}
-		if err := reporter.AddItem(ctx, items[i]); err != nil {
-			return err
-		}
+	items, finished, err := syncJobItems(ctx, job, tracks, reporter)
+	if err != nil {
+		return err
 	}
 
 	parallel := d.cfg.Download.MaxParallelTracks
@@ -172,6 +165,10 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	var mu sync.Mutex
 	var firstErr error
 	for i := range tracks {
+		if finished[i] {
+			// Finished in a previous run of this job; keep the item as-is.
+			continue
+		}
 		i := i
 		select {
 		case <-ctx.Done():
@@ -194,6 +191,72 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	}
 	wg.Wait()
 	return firstErr
+}
+
+// syncJobItems reconciles the resolved track list with the item rows a
+// previous run of this job may have left behind (a retry of a failed job, or
+// a requeue after a backend restart), instead of inserting duplicates. Items
+// that already finished (completed/skipped) keep their state and are flagged
+// in the returned finished slice so the caller excludes them from
+// downloading; everything else is reset to queued and re-processed under its
+// original item id. Rows whose track no longer appears in the resolved
+// collection (e.g. a playlist edited between runs) are removed so the
+// progress counters stay consistent with total_items. Tracks never seen
+// before get a fresh item row, as on a first run.
+func syncJobItems(ctx context.Context, job domain.Job, tracks []applemusic.Song, reporter jobs.Reporter) ([]domain.JobItem, []bool, error) {
+	previous, err := reporter.ListItems(ctx, job.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	previousByAdamID := make(map[string][]domain.JobItem, len(previous))
+	for _, item := range previous {
+		previousByAdamID[item.AdamID] = append(previousByAdamID[item.AdamID], item)
+	}
+	takePrevious := func(adamID string) (domain.JobItem, bool) {
+		queued := previousByAdamID[adamID]
+		if len(queued) == 0 {
+			return domain.JobItem{}, false
+		}
+		previousByAdamID[adamID] = queued[1:]
+		return queued[0], true
+	}
+
+	items := make([]domain.JobItem, len(tracks))
+	finished := make([]bool, len(tracks))
+	for i, track := range tracks {
+		if prev, ok := takePrevious(track.ID); ok {
+			indexChanged := prev.Index != i+1
+			prev.Index = i + 1
+			if prev.Finished() {
+				finished[i] = true
+			} else {
+				prev.ResetForRetry()
+			}
+			items[i] = prev
+			if !finished[i] || indexChanged {
+				if err := reporter.UpdateItem(ctx, prev); err != nil {
+					return nil, nil, err
+				}
+			}
+			continue
+		}
+		items[i] = domain.JobItem{
+			ID: storage.NewID("item"), JobID: job.ID, AdamID: track.ID, Kind: "song", Index: i + 1,
+			Title: track.Name, Artist: track.ArtistName, Album: track.AlbumName,
+			ArtworkURL: firstNonEmpty(track.ArtworkURL, track.AlbumArtworkURL), Status: domain.ItemQueued,
+		}
+		if err := reporter.AddItem(ctx, items[i]); err != nil {
+			return nil, nil, err
+		}
+	}
+	for _, leftover := range previousByAdamID {
+		for _, stale := range leftover {
+			if err := reporter.RemoveItem(ctx, stale.ID); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+	return items, finished, nil
 }
 
 func collectionFolderArtist(collectionType applemusic.URLType, tracks []applemusic.Song) string {
