@@ -144,7 +144,7 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 		}
 
 		d.setItemAttempt(ctx, reporter, item, "decrypt", 1, maxAttempts, fmt.Sprintf("Decrypting %s (1/%d)", codecName, maxAttempts))
-		if err := d.simulateDecryptPhases(ctx, song, codec, totalBytes, set); err != nil {
+		if err := d.simulateDecryptPhases(ctx, song, codec, info.SampleRate, totalBytes, set); err != nil {
 			return d.failItem(ctx, reporter, job, *item, err)
 		}
 
@@ -175,7 +175,7 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 
 // simulateDecryptPhases walks the post-download statuses with the same
 // progress values and messages the real decrypt path emits for the codec.
-func (d *Downloader) simulateDecryptPhases(ctx context.Context, song applemusic.Song, codec string, totalBytes int64, set func(domain.ItemStatus, float64, string)) error {
+func (d *Downloader) simulateDecryptPhases(ctx context.Context, song applemusic.Song, codec string, sampleRate int, totalBytes int64, set func(domain.ItemStatus, float64, string)) error {
 	if codec == "aac-lc" {
 		// decryptAACLC reports no granular progress between the license
 		// request and the save step.
@@ -197,7 +197,7 @@ func (d *Downloader) simulateDecryptPhases(ctx context.Context, song applemusic.
 		return nil
 	}
 	set(domain.ItemDecrypting, 0.55, "extracting samples")
-	totalSamples := simulatedSampleCount(song, codec)
+	totalSamples := simulatedSampleCount(song, codec, sampleRate)
 	// Decrypt works on bytes already in memory, so pace it faster than the
 	// network transfer: the same speed range over roughly a third of the size.
 	if err := d.simulateTransfer(ctx, totalBytes/3, func(p float64) {
@@ -285,16 +285,22 @@ func simulatedSizeBytes(song applemusic.Song, info selectedMediaInfo) int64 {
 	return int64(float64(bandwidth) / 8 * seconds)
 }
 
-func simulatedSampleCount(song applemusic.Song, codec string) int {
+// simulatedSampleCount estimates the packet count of the decrypted stream
+// from the track duration and the sample rate reported by the selected
+// manifest (falling back to 44.1 kHz when the manifest carries none).
+func simulatedSampleCount(song applemusic.Song, codec string, sampleRate int) int {
 	seconds := float64(song.DurationInMillis) / 1000
 	if seconds <= 0 {
 		seconds = 210
 	}
-	framesPerPacket := 1024.0 // AAC-family packet size at 44.1 kHz
+	if sampleRate <= 0 {
+		sampleRate = 44100
+	}
+	framesPerPacket := 1024.0 // AAC-family samples per packet
 	if codec == "alac" {
 		framesPerPacket = 4096
 	}
-	count := int(seconds * 44100 / framesPerPacket)
+	count := int(seconds * float64(sampleRate) / framesPerPacket)
 	if count < 1 {
 		count = 1
 	}
