@@ -278,7 +278,7 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listDownloads(w http.ResponseWriter, r *http.Request) {
-	filter, err := parseJobListFilter(r)
+	filter, err := parseJobListFilter(r.URL.Query())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -314,28 +314,12 @@ var (
 	}
 )
 
-func parseJobListFilter(r *http.Request) (db.JobListFilter, error) {
-	q := r.URL.Query()
+// parseJobFilterConstraints parses the content filters shared by GET /downloads
+// and the overview SSE/WS feeds (status/type/storefront/q/time windows).
+func parseJobFilterConstraints(q url.Values) (db.JobListFilter, error) {
 	filter := db.JobListFilter{
 		Storefront: strings.TrimSpace(q.Get("storefront")),
 		Query:      strings.TrimSpace(q.Get("q")),
-		Sort:       strings.TrimSpace(q.Get("sort")),
-		Order:      strings.TrimSpace(strings.ToLower(q.Get("order"))),
-	}
-
-	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
-		limit, err := strconv.Atoi(raw)
-		if err != nil || limit < 1 || limit > 200 {
-			return filter, fmt.Errorf("limit must be an integer between 1 and 200")
-		}
-		filter.Limit = limit
-	}
-	if raw := strings.TrimSpace(q.Get("offset")); raw != "" {
-		offset, err := strconv.Atoi(raw)
-		if err != nil || offset < 0 {
-			return filter, fmt.Errorf("offset must be a non-negative integer")
-		}
-		filter.Offset = offset
 	}
 
 	statuses, err := parseCSVQuery(q, "status")
@@ -361,13 +345,6 @@ func parseJobListFilter(r *http.Request) (db.JobListFilter, error) {
 		filter.Types = append(filter.Types, t)
 	}
 
-	if filter.Sort != "" && filter.Sort != db.JobListSortCreatedAt && filter.Sort != db.JobListSortUpdatedAt {
-		return filter, fmt.Errorf("sort must be created_at or updated_at")
-	}
-	if filter.Order != "" && filter.Order != db.JobListOrderAsc && filter.Order != db.JobListOrderDesc {
-		return filter, fmt.Errorf("order must be asc or desc")
-	}
-
 	if filter.CreatedAfter, err = parseOptionalTime(q.Get("created_after"), false); err != nil {
 		return filter, fmt.Errorf("created_after: %w", err)
 	}
@@ -386,8 +363,46 @@ func parseJobListFilter(r *http.Request) (db.JobListFilter, error) {
 	if filter.UpdatedAfter != nil && filter.UpdatedBefore != nil && filter.UpdatedAfter.After(*filter.UpdatedBefore) {
 		return filter, fmt.Errorf("updated_after must be <= updated_before")
 	}
+	return filter, nil
+}
+
+func parseJobListFilter(q url.Values) (db.JobListFilter, error) {
+	filter, err := parseJobFilterConstraints(q)
+	if err != nil {
+		return filter, err
+	}
+	filter.Sort = strings.TrimSpace(q.Get("sort"))
+	filter.Order = strings.TrimSpace(strings.ToLower(q.Get("order")))
+
+	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > 200 {
+			return filter, fmt.Errorf("limit must be an integer between 1 and 200")
+		}
+		filter.Limit = limit
+	}
+	if raw := strings.TrimSpace(q.Get("offset")); raw != "" {
+		offset, err := strconv.Atoi(raw)
+		if err != nil || offset < 0 {
+			return filter, fmt.Errorf("offset must be a non-negative integer")
+		}
+		filter.Offset = offset
+	}
+	if filter.Sort != "" && filter.Sort != db.JobListSortCreatedAt && filter.Sort != db.JobListSortUpdatedAt {
+		return filter, fmt.Errorf("sort must be created_at or updated_at")
+	}
+	if filter.Order != "" && filter.Order != db.JobListOrderAsc && filter.Order != db.JobListOrderDesc {
+		return filter, fmt.Errorf("order must be asc or desc")
+	}
 	filter.Normalize()
 	return filter, nil
+}
+
+// parseJobFeedFilter parses overview-feed query filters. Pagination and sort
+// are list-only and ignored here so clients can reuse the same filter query
+// string as GET /downloads.
+func parseJobFeedFilter(q url.Values) (db.JobListFilter, error) {
+	return parseJobFilterConstraints(q)
 }
 
 // parseCSVQuery collects values for key from both repeated query params and
@@ -762,7 +777,17 @@ func writeSSE(w http.ResponseWriter, ev domain.Event) {
 // download_deleted as jobs are removed. Resume via the Last-Event-ID header;
 // the client should first GET /downloads for the full list and use that
 // response's last_event_id here.
+//
+// The same content filters as GET /downloads (status/type/storefront/q/time
+// windows) may be passed as query parameters. With a filter, only matching
+// jobs produce download_upserted; a job that leaves the filtered view (or is
+// hard-deleted) produces download_deleted so the client can drop it.
 func (s *Server) downloadsFeed(w http.ResponseWriter, r *http.Request) {
+	filter, err := parseJobFeedFilter(r.URL.Query())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	lastID, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -798,14 +823,20 @@ func (s *Server) downloadsFeed(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 		return nil
 	}
-	s.runDownloadsFeed(r.Context(), lastID, ch, ticker.C, write, keepalive)
+	s.runDownloadsFeed(r.Context(), lastID, filter, ch, ticker.C, write, keepalive)
 }
 
 // downloadsFeedWS is the WebSocket twin of downloadsFeed. Resume via the
 // last_event_id query parameter (WebSocket has no Last-Event-ID header). Each
 // DownloadFeedMessage is one JSON text message with event_id as the resume
-// cursor.
+// cursor. Content filters share the same query parameters as downloadsFeed
+// (and GET /downloads), alongside last_event_id.
 func (s *Server) downloadsFeedWS(w http.ResponseWriter, r *http.Request) {
+	filter, err := parseJobFeedFilter(r.URL.Query())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	lastID, _ := strconv.ParseInt(r.URL.Query().Get("last_event_id"), 10, 64)
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
 	if err != nil {
@@ -828,14 +859,28 @@ func (s *Server) downloadsFeedWS(w http.ResponseWriter, r *http.Request) {
 		defer pingCancel()
 		return conn.Ping(pingCtx)
 	}
-	s.runDownloadsFeed(ctx, lastID, ch, ticker.C, write, keepalive)
+	s.runDownloadsFeed(ctx, lastID, filter, ch, ticker.C, write, keepalive)
 }
 
 // runDownloadsFeed drives the overview feed loop shared by the SSE and WS
 // endpoints. It drains milestone events newer than the cursor into one message
 // per affected job (deduped to the latest action/snapshot) and calls keepalive
 // on each tick. write returning an error (client gone) ends the loop.
-func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, ch <-chan domain.Event, tick <-chan time.Time, write func(domain.DownloadFeedMessage) error, keepalive func() error) {
+//
+// When filter has content constraints, upserts are limited to matching jobs.
+// A non-matching job produces download_deleted when either (a) this connection
+// previously upserted it, or (b) the client resumed with last_event_id > 0
+// (assumed to hold a filtered GET /downloads snapshot that may still list it).
+// Cold-start subscriptions (last_event_id=0) skip never-matched jobs so a
+// filtered backlog replay does not spam deletes for the whole history.
+// Hard-delete tombstones always produce download_deleted.
+func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, filter db.JobListFilter, ch <-chan domain.Event, tick <-chan time.Time, write func(domain.DownloadFeedMessage) error, keepalive func() error) {
+	filtering := filter.HasConstraints()
+	resumeMode := lastID > 0
+	// Jobs this connection has pushed as download_upserted. Combined with
+	// resumeMode to decide whether a non-matching snapshot should become a
+	// synthetic download_deleted.
+	seen := map[string]struct{}{}
 	drain := func() error {
 		events, err := s.store.ListMilestoneEventsAfter(ctx, lastID)
 		if err != nil {
@@ -853,7 +898,7 @@ func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, ch <-chan d
 		latest := map[string]pendingMessage{}
 		var order []string
 		for _, ev := range events {
-			if _, seen := latest[ev.JobID]; !seen {
+			if _, seenJob := latest[ev.JobID]; !seenJob {
 				order = append(order, ev.JobID)
 			}
 			if ev.ID > latest[ev.JobID].eventID {
@@ -871,15 +916,39 @@ func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, ch <-chan d
 				if err := write(domain.DownloadFeedMessage{Type: "download_deleted", JobID: jobID, EventID: pending.eventID}); err != nil {
 					return err
 				}
+				delete(seen, jobID)
 				lastID = pending.eventID
 				continue
 			}
 			snap, ok := s.jobSnapshot(ctx, jobID)
 			if !ok {
-				continue // job deleted between the milestone and this read
+				// Job gone between the milestone and this read (race with a
+				// hard delete whose tombstone may arrive in a later drain).
+				// Advance the cursor so we do not re-process this milestone;
+				// the tombstone will deliver download_deleted when it lands.
+				lastID = pending.eventID
+				continue
+			}
+			if filtering && !filter.Matches(*snap) {
+				_, wasSeen := seen[jobID]
+				if wasSeen || resumeMode {
+					// Job left the filtered view (e.g. status changed from
+					// running → completed while subscribed to status=running),
+					// or the client resumed from a snapshot that may still
+					// list it. download_deleted is idempotent for clients.
+					if err := write(domain.DownloadFeedMessage{Type: "download_deleted", JobID: jobID, EventID: pending.eventID}); err != nil {
+						return err
+					}
+					delete(seen, jobID)
+				}
+				lastID = pending.eventID
+				continue
 			}
 			if err := write(domain.DownloadFeedMessage{Type: "download_upserted", Job: snap, EventID: pending.eventID}); err != nil {
 				return err
+			}
+			if filtering {
+				seen[jobID] = struct{}{}
 			}
 			lastID = pending.eventID
 		}

@@ -956,6 +956,123 @@ func TestDownloadsFeedWSResumesFromCursor(t *testing.T) {
 	}
 }
 
+func TestDownloadsFeedFiltersByStatus(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	hub := events.NewHub()
+	manager := jobs.NewManager(store, hub, stubProcessor{}, 1, slog.Default())
+	server := &Server{store: store, hub: hub, manager: manager}
+
+	ctx := context.Background()
+	done := domain.Job{ID: "done", Input: "song|us|done", Type: "song", CanonicalKey: "song:done", Status: domain.JobCompleted}
+	run := domain.Job{ID: "run", Input: "song|us|run", Type: "song", CanonicalKey: "song:run", Status: domain.JobRunning}
+	for _, job := range []domain.Job{done, run} {
+		if err := store.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.AddEvent(ctx, domain.Event{JobID: done.ID, Type: "job_finished"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddEvent(ctx, domain.Event{JobID: run.ID, Type: "job_started"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(server.Routes())
+	defer ts.Close()
+	getCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(getCtx, http.MethodGet, ts.URL+"/api/v1/downloads/events?status=running", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	reader := bufio.NewReader(resp.Body)
+
+	readMessage := func() (string, domain.DownloadFeedMessage) {
+		t.Helper()
+		var eventType string
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				t.Fatalf("read feed: %v", err)
+			}
+			if after, ok := strings.CutPrefix(line, "event: "); ok {
+				eventType = strings.TrimSpace(after)
+			}
+			if after, ok := strings.CutPrefix(line, "data: "); ok {
+				var msg domain.DownloadFeedMessage
+				if err := json.Unmarshal([]byte(strings.TrimSpace(after)), &msg); err != nil {
+					t.Fatalf("bad feed JSON %q: %v", after, err)
+				}
+				return eventType, msg
+			}
+		}
+	}
+
+	// Cold start with status=running: only the running job is upserted; the
+	// completed job is skipped (no synthetic delete spam).
+	et, msg := readMessage()
+	if et != "download_upserted" || msg.Job == nil || msg.Job.ID != "run" {
+		t.Fatalf("first filtered message = %s %+v, want upsert for run", et, msg)
+	}
+
+	// Leave-filter: when the running job finishes, the filtered view should
+	// receive download_deleted so the client can drop it.
+	if err := store.UpdateJobStatus(ctx, run.ID, domain.JobCompleted, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Event(ctx, domain.Event{JobID: run.ID, Type: "job_finished", Message: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	et, msg = readMessage()
+	if et != "download_deleted" || msg.JobID != "run" {
+		t.Fatalf("leave-filter message = %s %+v, want download_deleted for run", et, msg)
+	}
+
+	// A newly queued job that never matches stays silent; a matching one upserts.
+	other := domain.Job{ID: "fail", Input: "song|us|fail", Type: "song", CanonicalKey: "song:fail", Status: domain.JobFailed}
+	if err := store.CreateJob(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Event(ctx, domain.Event{JobID: other.ID, Type: "job_failed", Message: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	match := domain.Job{ID: "run2", Input: "song|us|run2", Type: "song", CanonicalKey: "song:run2", Status: domain.JobRunning}
+	if err := store.CreateJob(ctx, match); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Event(ctx, domain.Event{JobID: match.ID, Type: "job_started", Message: "started"}); err != nil {
+		t.Fatal(err)
+	}
+	et, msg = readMessage()
+	if et != "download_upserted" || msg.Job == nil || msg.Job.ID != "run2" {
+		t.Fatalf("live filtered message = %s %+v, want upsert for run2 (failed job must be skipped)", et, msg)
+	}
+}
+
+func TestDownloadsFeedRejectsBadFilter(t *testing.T) {
+	server := newTestServerWithManager(t)
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads/events?status=nope", "")
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("SSE bad filter status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+	}
+	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads/events/ws?type=video", "")
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("WS bad filter status = %d, want 400; body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 // TestDownloadsFeedBatchUsesPerJobCursor guards the resume-cursor bug two
 // reviewers caught: when one drain batch contains milestones for several jobs,
 // each download_upserted must carry that job's own milestone id, not the

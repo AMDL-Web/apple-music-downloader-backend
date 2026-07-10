@@ -553,6 +553,36 @@ func TestListJobsFilterPaginationAndSort(t *testing.T) {
 	}
 }
 
+func TestJobListFilterMatches(t *testing.T) {
+	base := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	job := domain.Job{
+		ID: "j1", Input: "https://music.apple.com/us/song/alpha/1", Type: "song",
+		Storefront: "us", Title: "Alpha Song", Status: domain.JobRunning,
+		CreatedAt: base, UpdatedAt: base.Add(time.Hour),
+	}
+	empty := JobListFilter{}
+	if !empty.Matches(job) || empty.HasConstraints() {
+		t.Fatalf("empty filter should match everything and report no constraints")
+	}
+	statusOnly := JobListFilter{Statuses: []domain.JobStatus{domain.JobFailed}}
+	if statusOnly.Matches(job) || !statusOnly.HasConstraints() {
+		t.Fatalf("status filter should reject running job")
+	}
+	typeSF := JobListFilter{Types: []string{"song"}, Storefront: "us"}
+	if !typeSF.Matches(job) {
+		t.Fatalf("type+storefront should match")
+	}
+	q := JobListFilter{Query: "ALPHA"}
+	if !q.Matches(job) {
+		t.Fatalf("q should be case-insensitive")
+	}
+	after := base.Add(2 * time.Hour)
+	window := JobListFilter{CreatedAfter: &after}
+	if window.Matches(job) {
+		t.Fatalf("created_after should reject older job")
+	}
+}
+
 func idsOf(jobs []domain.Job) []string {
 	out := make([]string, len(jobs))
 	for i, job := range jobs {
