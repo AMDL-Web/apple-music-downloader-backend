@@ -280,18 +280,18 @@ func (s *Store) GetJob(ctx context.Context, id string) (domain.Job, error) {
 // time windows. Zero values mean "no constraint" except Limit, which the
 // store clamps to [1, 200] with a default of 50.
 type JobListFilter struct {
-	Limit          int
-	Offset         int
-	Statuses       []domain.JobStatus
-	Types          []string
-	Storefront     string
-	Query          string
-	CreatedAfter   *time.Time
-	CreatedBefore  *time.Time
-	UpdatedAfter   *time.Time
-	UpdatedBefore  *time.Time
-	Sort           string // created_at (default) or updated_at
-	Order          string // desc (default) or asc
+	Limit         int
+	Offset        int
+	Statuses      []domain.JobStatus
+	Types         []string
+	Storefront    string
+	Query         string
+	CreatedAfter  *time.Time
+	CreatedBefore *time.Time
+	UpdatedAfter  *time.Time
+	UpdatedBefore *time.Time
+	Sort          string // created_at (default) or updated_at
+	Order         string // desc (default) or asc
 }
 
 const (
