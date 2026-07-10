@@ -121,14 +121,6 @@ curl 'http://localhost:18080/api/v1/downloads?limit=20&offset=0&status=failed,ca
 
 可用查询参数：`limit`、`offset`、`status`、`type`、`storefront`、`q`、`created_after`、`created_before`、`updated_after`、`updated_before`、`sort`、`order`。响应额外返回 `total`、`limit`、`offset`。
 
-监听列表变化（SSE，可带与列表相同的内容筛选参数）：
-
-```bash
-curl -N 'http://localhost:18080/api/v1/downloads/events?status=running,queued&type=album'
-```
-
-WebSocket 版本为 `/api/v1/downloads/events/ws`，筛选参数相同，续接用 `last_event_id`。
-
 监听任务事件：
 
 ```bash

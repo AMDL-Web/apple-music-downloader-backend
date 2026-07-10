@@ -223,14 +223,74 @@ paths:
             type: integer
             minimum: 0
             default: 0
-        - $ref: '#/components/parameters/DownloadStatusFilter'
-        - $ref: '#/components/parameters/DownloadTypeFilter'
-        - $ref: '#/components/parameters/DownloadStorefrontFilter'
-        - $ref: '#/components/parameters/DownloadQueryFilter'
-        - $ref: '#/components/parameters/DownloadCreatedAfter'
-        - $ref: '#/components/parameters/DownloadCreatedBefore'
-        - $ref: '#/components/parameters/DownloadUpdatedAfter'
-        - $ref: '#/components/parameters/DownloadUpdatedBefore'
+        - name: status
+          in: query
+          description: >-
+            按任务状态筛选；可重复或逗号分隔。允许值：queued, running,
+            completed, failed, cancelled。
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [queued, running, completed, failed, cancelled]
+          style: form
+          explode: true
+        - name: type
+          in: query
+          description: >-
+            按任务类型筛选；可重复或逗号分隔。允许值：song, album, playlist,
+            artist。
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [song, album, playlist, artist]
+          style: form
+          explode: true
+        - name: storefront
+          in: query
+          description: 按 Apple Music storefront 精确匹配，例如 us、cn、jp。
+          schema:
+            type: string
+        - name: q
+          in: query
+          description: >-
+            在任务 title 与 input 上做子串搜索（SQLite LIKE；ASCII 字母不区分大小写）。
+            `%` 与 `_` 按字面匹配。
+          schema:
+            type: string
+        - name: created_after
+          in: query
+          description: >-
+            仅返回 created_at >= 该时刻的任务。接受 RFC3339（含可选纳秒）或
+            YYYY-MM-DD（按 UTC 日初 00:00:00）。
+          schema:
+            type: string
+            format: date-time
+        - name: created_before
+          in: query
+          description: >-
+            仅返回 created_at <= 该时刻的任务。接受 RFC3339（含可选纳秒）或
+            YYYY-MM-DD（按 UTC 日末 23:59:59.999999999）。
+          schema:
+            type: string
+            format: date-time
+        - name: updated_after
+          in: query
+          description: >-
+            仅返回 updated_at >= 该时刻的任务。接受 RFC3339（含可选纳秒）或
+            YYYY-MM-DD（按 UTC 日初 00:00:00）。
+          schema:
+            type: string
+            format: date-time
+        - name: updated_before
+          in: query
+          description: >-
+            仅返回 updated_at <= 该时刻的任务。接受 RFC3339（含可选纳秒）或
+            YYYY-MM-DD（按 UTC 日末 23:59:59.999999999）。
+          schema:
+            type: string
+            format: date-time
         - name: sort
           in: query
           description: 排序字段；默认 created_at。
@@ -307,16 +367,6 @@ paths:
         断线续接：先 GET /downloads 取得 last_event_id，再用 Last-Event-ID 头
         续接，只接收此后新增的变化。download_upserted 与 download_deleted 都带
         event_id，客户端每处理完一条消息后将该值作为新的续接游标。
-
-        筛选：可携带与 GET /downloads 相同的内容筛选参数（status/type/storefront/
-        q/时间窗口；limit/offset/sort/order 仅列表使用，此处忽略）。带筛选时：
-        - 仅匹配筛选条件的任务会推送 download_upserted；
-        - 本连接曾 upsert 过的任务、或从 last_event_id>0 续接（假定客户端持有
-          同筛选条件的 GET /downloads 快照）时，若任务不再匹配，会推送
-          download_deleted，便于客户端从过滤视图移除；
-        - last_event_id=0 的冷启动不会为历史中从未匹配的任务刷一串 delete；
-        - 真实删除的 tombstone 始终推送 download_deleted；
-        - 客户端应将 download_deleted 视为幂等（本地没有该任务时忽略即可）。
       operationId: streamDownloadsFeed
       parameters:
         - name: Last-Event-ID
@@ -325,14 +375,6 @@ paths:
           schema:
             type: integer
             format: int64
-        - $ref: '#/components/parameters/DownloadStatusFilter'
-        - $ref: '#/components/parameters/DownloadTypeFilter'
-        - $ref: '#/components/parameters/DownloadStorefrontFilter'
-        - $ref: '#/components/parameters/DownloadQueryFilter'
-        - $ref: '#/components/parameters/DownloadCreatedAfter'
-        - $ref: '#/components/parameters/DownloadCreatedBefore'
-        - $ref: '#/components/parameters/DownloadUpdatedAfter'
-        - $ref: '#/components/parameters/DownloadUpdatedBefore'
       responses:
         '200':
           description: SSE 事件流，每条 data 为一个 DownloadFeedMessage。
@@ -340,12 +382,6 @@ paths:
             text/event-stream:
               schema:
                 type: string
-        '400':
-          description: 查询参数无效（非法枚举、时间格式等）。
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/InternalError'
   /api/v1/downloads/events/ws:
@@ -357,9 +393,6 @@ paths:
         每条 DownloadFeedMessage 作为一条 JSON 文本消息推送。断线重连时通过
         last_event_id 查询参数续接；download_upserted 与 download_deleted 都带
         event_id，客户端每处理完一条消息后将该值作为新的续接游标。
-
-        筛选参数与 SSE 端点相同（status/type/storefront/q/时间窗口），可与
-        last_event_id 一起放在查询串中。
       operationId: streamDownloadsFeedWebSocket
       parameters:
         - name: last_event_id
@@ -369,23 +402,11 @@ paths:
             type: integer
             format: int64
             default: 0
-        - $ref: '#/components/parameters/DownloadStatusFilter'
-        - $ref: '#/components/parameters/DownloadTypeFilter'
-        - $ref: '#/components/parameters/DownloadStorefrontFilter'
-        - $ref: '#/components/parameters/DownloadQueryFilter'
-        - $ref: '#/components/parameters/DownloadCreatedAfter'
-        - $ref: '#/components/parameters/DownloadCreatedBefore'
-        - $ref: '#/components/parameters/DownloadUpdatedAfter'
-        - $ref: '#/components/parameters/DownloadUpdatedBefore'
       responses:
         '101':
           description: 协议切换成功，开始推送列表变化。
         '400':
-          description: WebSocket 握手失败（缺少升级头等），或查询参数无效。
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
+          description: WebSocket 握手失败（缺少升级头等）。
   /api/v1/downloads/{job_id}:
     get:
       tags: [Downloads]
@@ -547,82 +568,6 @@ components:
       schema:
         type: string
       example: job_01JZ0000000000000000000000
-    DownloadStatusFilter:
-      name: status
-      in: query
-      description: >-
-        按任务状态筛选；可重复或逗号分隔。允许值：queued, running,
-        completed, failed, cancelled。
-      schema:
-        type: array
-        items:
-          type: string
-          enum: [queued, running, completed, failed, cancelled]
-      style: form
-      explode: true
-    DownloadTypeFilter:
-      name: type
-      in: query
-      description: >-
-        按任务类型筛选；可重复或逗号分隔。允许值：song, album, playlist,
-        artist。
-      schema:
-        type: array
-        items:
-          type: string
-          enum: [song, album, playlist, artist]
-      style: form
-      explode: true
-    DownloadStorefrontFilter:
-      name: storefront
-      in: query
-      description: 按 Apple Music storefront 精确匹配，例如 us、cn、jp。
-      schema:
-        type: string
-    DownloadQueryFilter:
-      name: q
-      in: query
-      description: >-
-        在任务 title 与 input 上做子串搜索（SQLite LIKE；ASCII 字母不区分大小写）。
-        `%` 与 `_` 按字面匹配。
-      schema:
-        type: string
-    DownloadCreatedAfter:
-      name: created_after
-      in: query
-      description: >-
-        仅匹配 created_at >= 该时刻的任务。接受 RFC3339（含可选纳秒）或
-        YYYY-MM-DD（按 UTC 日初 00:00:00）。
-      schema:
-        type: string
-        format: date-time
-    DownloadCreatedBefore:
-      name: created_before
-      in: query
-      description: >-
-        仅匹配 created_at <= 该时刻的任务。接受 RFC3339（含可选纳秒）或
-        YYYY-MM-DD（按 UTC 日末 23:59:59.999999999）。
-      schema:
-        type: string
-        format: date-time
-    DownloadUpdatedAfter:
-      name: updated_after
-      in: query
-      description: >-
-        仅匹配 updated_at >= 该时刻的任务。接受 RFC3339（含可选纳秒）或
-        YYYY-MM-DD（按 UTC 日初 00:00:00）。
-      schema:
-        type: string
-        format: date-time
-    DownloadUpdatedBefore:
-      name: updated_before
-      in: query
-      description: >-
-        仅匹配 updated_at <= 该时刻的任务。接受 RFC3339（含可选纳秒）或
-        YYYY-MM-DD（按 UTC 日末 23:59:59.999999999）。
-      schema:
-        type: string
-        format: date-time
   responses:
     BadRequest:
       description: 请求参数错误。
