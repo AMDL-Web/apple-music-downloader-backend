@@ -399,6 +399,7 @@ func TestOpenAPISpecification(t *testing.T) {
 		"/api/v1/downloads/events/ws":          {"get"},
 		"/api/v1/downloads/{job_id}":           {"get", "delete"},
 		"/api/v1/downloads/{job_id}/cancel":    {"post"},
+		"/api/v1/downloads/{job_id}/retry":     {"post"},
 		"/api/v1/downloads/{job_id}/events":    {"get"},
 		"/api/v1/downloads/{job_id}/events/ws": {"get"},
 	}
@@ -1438,5 +1439,69 @@ func TestDeveloperTokenSigningError(t *testing.T) {
 	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/developer-token", "")
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestRetryDownloadRequeuesFailedJobAndKeepsFinishedItems(t *testing.T) {
+	server := newTestServerWithManager(t)
+	ctx := context.Background()
+	job := domain.Job{ID: "job1", Input: "album|us|1", Type: "album", CanonicalKey: "album:us:1", Status: domain.JobFailed, Error: "boom"}
+	if err := server.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []domain.JobItem{
+		{ID: "item1", JobID: job.ID, AdamID: "s1", Kind: "song", Index: 1, Status: domain.ItemCompleted, Progress: 1},
+		{ID: "item2", JobID: job.ID, AdamID: "s2", Kind: "song", Index: 2, Status: domain.ItemFailed, Error: "boom"},
+	} {
+		if err := server.store.CreateItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads/"+job.ID+"/retry", "")
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["status"] != "queued" {
+		t.Fatalf("body = %s, want status queued", recorder.Body.String())
+	}
+	got, err := server.store.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.JobQueued || got.Error != "" {
+		t.Fatalf("job after retry = status %s error %q, want queued with empty error", got.Status, got.Error)
+	}
+	items, err := server.store.ListItems(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items[0].Status != domain.ItemCompleted {
+		t.Fatalf("completed item status = %s, want untouched completed", items[0].Status)
+	}
+	if items[1].Status != domain.ItemQueued || items[1].Error != "" {
+		t.Fatalf("failed item after retry = %+v, want queued with empty error", items[1])
+	}
+}
+
+func TestRetryDownloadRejectsNonFailedAndMissingJobs(t *testing.T) {
+	server := newTestServerWithManager(t)
+	ctx := context.Background()
+	completed := domain.Job{ID: "job-done", Input: "song|us|1", Type: "song", CanonicalKey: "song:us:1", Status: domain.JobCompleted}
+	if err := server.store.CreateJob(ctx, completed); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads/"+completed.ID+"/retry", "")
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("retry completed job status = %d, want 409", recorder.Code)
+	}
+	recorder = requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads/no-such-job/retry", "")
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("retry missing job status = %d, want 404", recorder.Code)
 	}
 }

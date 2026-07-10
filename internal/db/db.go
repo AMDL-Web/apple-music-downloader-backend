@@ -329,6 +329,15 @@ func (s *Store) UpdateItem(ctx context.Context, item domain.JobItem) error {
 	return err
 }
 
+// DeleteItem removes a single item row. Used when a re-run of a job (retry or
+// post-restart requeue) resolves a collection that no longer contains a track
+// a previous run created an item for, so stale rows don't distort the job's
+// progress counters.
+func (s *Store) DeleteItem(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM job_items WHERE id=?`, id)
+	return err
+}
+
 func (s *Store) ListItems(ctx context.Context, jobID string) ([]domain.JobItem, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,job_id,adam_id,kind,idx,title,artist,album,artwork_url,status,progress,codec,bit_depth,sample_rate,bitrate,retry_kind,attempt,max_attempts,status_message,output_path,error,created_at,updated_at FROM job_items WHERE job_id=? ORDER BY idx`, jobID)
 	if err != nil {

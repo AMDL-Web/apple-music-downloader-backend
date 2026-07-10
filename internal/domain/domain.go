@@ -83,6 +83,29 @@ type JobItem struct {
 	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
+// Finished reports whether the item ended in a state that a job retry must
+// preserve: the track is already on disk (completed) or was intentionally left
+// alone (skipped_existing). Everything else is re-processed by a retry.
+func (i JobItem) Finished() bool {
+	return i.Status == ItemCompleted || i.Status == ItemSkipped
+}
+
+// ResetForRetry returns the item to its pre-download queued state, clearing
+// progress, quality, retry bookkeeping and error fields while keeping its
+// identity (ID/JobID/AdamID/Index) and previously resolved metadata, so a
+// retried job re-processes the track under the same item id.
+func (i *JobItem) ResetForRetry() {
+	i.Status = ItemQueued
+	i.Progress = 0
+	i.Codec = ""
+	i.BitDepth, i.SampleRate, i.Bitrate = 0, 0, 0
+	i.RetryKind = ""
+	i.Attempt = 0
+	i.MaxAttempts = 0
+	i.StatusMessage = ""
+	i.Error = ""
+}
+
 // CountItemProgress reports how many items in the slice are finished (completed
 // or skipped) versus failed, using the same done/failed accounting applied when
 // a job's DoneItems/FailedItems counters are refreshed. Deriving the counters
@@ -185,6 +208,7 @@ const EventDeleted = "job_deleted"
 var PersistedOverviewMilestones = []string{
 	"job_queued",
 	"job_recovered",
+	"job_retried",
 	"job_started",
 	"resolved_input", // title/total_items are populated by now
 	"item_completed",
