@@ -183,9 +183,12 @@ func TestArtworkURLRoundTrip(t *testing.T) {
 	if got.ArtworkURL != job.ArtworkURL {
 		t.Fatalf("job artwork_url = %q, want %q", got.ArtworkURL, job.ArtworkURL)
 	}
-	listed, err := store.ListJobs(ctx, 10)
+	listed, total, err := store.ListJobs(ctx, JobListFilter{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("total = %d, want 1", total)
 	}
 	if len(listed) != 1 || listed[0].ArtworkURL != job.ArtworkURL {
 		t.Fatalf("listed job artwork_url = %+v, want %q", listed, job.ArtworkURL)
@@ -447,4 +450,113 @@ func TestDeleteJobPersistsOverviewTombstone(t *testing.T) {
 	if _, err := store.GetJob(ctx, job.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("GetJob after delete err = %v, want sql.ErrNoRows", err)
 	}
+}
+
+func TestListJobsFilterPaginationAndSort(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	base := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	jobs := []domain.Job{
+		{ID: "j1", Input: "https://music.apple.com/us/song/one/1", Type: "song", Storefront: "us", Title: "Alpha Song", CanonicalKey: "song|us|1", Status: domain.JobCompleted, CreatedAt: base, UpdatedAt: base.Add(3 * time.Hour)},
+		{ID: "j2", Input: "https://music.apple.com/cn/album/two/2", Type: "album", Storefront: "cn", Title: "Beta Album", CanonicalKey: "album|cn|2", Status: domain.JobFailed, CreatedAt: base.Add(1 * time.Hour), UpdatedAt: base.Add(2 * time.Hour)},
+		{ID: "j3", Input: "https://music.apple.com/jp/playlist/three/3", Type: "playlist", Storefront: "jp", Title: "Gamma Playlist", CanonicalKey: "playlist|jp|3", Status: domain.JobRunning, CreatedAt: base.Add(2 * time.Hour), UpdatedAt: base.Add(4 * time.Hour)},
+		{ID: "j4", Input: "https://music.apple.com/us/artist/four/4", Type: "artist", Storefront: "us", Title: "Delta Artist", CanonicalKey: "artist|us|4", Status: domain.JobQueued, CreatedAt: base.Add(3 * time.Hour), UpdatedAt: base.Add(1 * time.Hour)},
+	}
+	for _, job := range jobs {
+		if err := store.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.CreateItem(ctx, domain.JobItem{
+		ID: "i1", JobID: "j3", AdamID: "1", Kind: "song", Index: 1,
+		Status: domain.ItemCompleted, CreatedAt: base, UpdatedAt: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateItem(ctx, domain.JobItem{
+		ID: "i2", JobID: "j3", AdamID: "2", Kind: "song", Index: 2,
+		Status: domain.ItemFailed, CreatedAt: base, UpdatedAt: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, total, err := store.ListJobs(ctx, JobListFilter{Limit: 2, Offset: 1, Sort: JobListSortCreatedAt, Order: JobListOrderDesc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 4 {
+		t.Fatalf("total = %d, want 4", total)
+	}
+	if len(listed) != 2 || listed[0].ID != "j3" || listed[1].ID != "j2" {
+		t.Fatalf("page = %+v, want j3 then j2", idsOf(listed))
+	}
+	if listed[0].DoneItems != 1 || listed[0].FailedItems != 1 {
+		t.Fatalf("j3 progress done=%d failed=%d, want 1/1", listed[0].DoneItems, listed[0].FailedItems)
+	}
+
+	listed, total, err = store.ListJobs(ctx, JobListFilter{
+		Statuses: []domain.JobStatus{domain.JobFailed, domain.JobCancelled},
+		Limit:    50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(listed) != 1 || listed[0].ID != "j2" {
+		t.Fatalf("status filter = ids=%v total=%d, want [j2]/1", idsOf(listed), total)
+	}
+
+	listed, total, err = store.ListJobs(ctx, JobListFilter{Types: []string{"song", "artist"}, Storefront: "us", Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 || len(listed) != 2 {
+		t.Fatalf("type+storefront = ids=%v total=%d, want 2 us song/artist", idsOf(listed), total)
+	}
+
+	listed, total, err = store.ListJobs(ctx, JobListFilter{Query: "beta", Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || listed[0].ID != "j2" {
+		t.Fatalf("q=beta = ids=%v total=%d, want [j2]", idsOf(listed), total)
+	}
+
+	listed, total, err = store.ListJobs(ctx, JobListFilter{Query: "%", Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 0 {
+		t.Fatalf("literal %% query matched %d jobs, want 0", total)
+	}
+
+	after := base.Add(90 * time.Minute)
+	before := base.Add(150 * time.Minute)
+	listed, total, err = store.ListJobs(ctx, JobListFilter{CreatedAfter: &after, CreatedBefore: &before, Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || listed[0].ID != "j3" {
+		t.Fatalf("created window = ids=%v total=%d, want [j3]", idsOf(listed), total)
+	}
+
+	listed, total, err = store.ListJobs(ctx, JobListFilter{Sort: JobListSortUpdatedAt, Order: JobListOrderAsc, Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 4 || idsOf(listed)[0] != "j4" || idsOf(listed)[3] != "j3" {
+		t.Fatalf("sort updated_at asc = %v, want j4 ... j3", idsOf(listed))
+	}
+}
+
+func idsOf(jobs []domain.Job) []string {
+	out := make([]string, len(jobs))
+	for i, job := range jobs {
+		out[i] = job.ID
+	}
+	return out
 }

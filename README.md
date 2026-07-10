@@ -113,6 +113,14 @@ curl -X POST http://localhost:18080/api/v1/downloads \
 curl http://localhost:18080/api/v1/downloads/{job_id}
 ```
 
+列出任务（支持分页与筛选）：
+
+```bash
+curl 'http://localhost:18080/api/v1/downloads?limit=20&offset=0&status=failed,cancelled&type=album&storefront=cn&q=beta&created_after=2024-07-01&sort=updated_at&order=desc'
+```
+
+可用查询参数：`limit`、`offset`、`status`、`type`、`storefront`、`q`、`created_after`、`created_before`、`updated_after`、`updated_before`、`sort`、`order`。响应额外返回 `total`、`limit`、`offset`。
+
 监听任务事件：
 
 ```bash

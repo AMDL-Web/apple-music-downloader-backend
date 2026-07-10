@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -277,7 +278,11 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listDownloads(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	filter, err := parseJobListFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	// Read the global cursor before the job snapshot, for the same reason
 	// getDownload reads its per-job cursor first: an event committing between
 	// this read and the snapshot is already reflected in the snapshot, so the
@@ -288,26 +293,149 @@ func (s *Server) listDownloads(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	jobs, err := s.store.ListJobs(r.Context(), limit)
+	// ListJobs already derives done_items/failed_items from live job_items,
+	// matching getDownload and the overview feed's pushed snapshots.
+	jobs, total, err := s.store.ListJobs(r.Context(), filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	// Derive each job's progress counters from its live items, matching
-	// getDownload and the overview feed's pushed snapshots — the stored job-row
-	// counters are only refreshed at terminal status, so a running job would
-	// otherwise report done_items=0 here.
-	for i := range jobs {
-		items, err := s.store.ListItems(r.Context(), jobs[i].ID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		jobs[i].DoneItems, jobs[i].FailedItems = domain.CountItemProgress(items)
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"downloads": jobs, "last_event_id": lastEventID,
+		"downloads": jobs, "total": total, "limit": filter.Limit, "offset": filter.Offset, "last_event_id": lastEventID,
 	})
+}
+
+var (
+	allowedListStatuses = map[domain.JobStatus]struct{}{
+		domain.JobQueued: {}, domain.JobRunning: {}, domain.JobCompleted: {}, domain.JobFailed: {}, domain.JobCancelled: {},
+	}
+	allowedListTypes = map[string]struct{}{
+		"song": {}, "album": {}, "playlist": {}, "artist": {},
+	}
+)
+
+func parseJobListFilter(r *http.Request) (db.JobListFilter, error) {
+	q := r.URL.Query()
+	filter := db.JobListFilter{
+		Storefront: strings.TrimSpace(q.Get("storefront")),
+		Query:      strings.TrimSpace(q.Get("q")),
+		Sort:       strings.TrimSpace(q.Get("sort")),
+		Order:      strings.TrimSpace(strings.ToLower(q.Get("order"))),
+	}
+
+	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > 200 {
+			return filter, fmt.Errorf("limit must be an integer between 1 and 200")
+		}
+		filter.Limit = limit
+	}
+	if raw := strings.TrimSpace(q.Get("offset")); raw != "" {
+		offset, err := strconv.Atoi(raw)
+		if err != nil || offset < 0 {
+			return filter, fmt.Errorf("offset must be a non-negative integer")
+		}
+		filter.Offset = offset
+	}
+
+	statuses, err := parseCSVQuery(q, "status")
+	if err != nil {
+		return filter, err
+	}
+	for _, st := range statuses {
+		js := domain.JobStatus(st)
+		if _, ok := allowedListStatuses[js]; !ok {
+			return filter, fmt.Errorf("status %q is not supported; allowed: queued, running, completed, failed, cancelled", st)
+		}
+		filter.Statuses = append(filter.Statuses, js)
+	}
+
+	types, err := parseCSVQuery(q, "type")
+	if err != nil {
+		return filter, err
+	}
+	for _, t := range types {
+		if _, ok := allowedListTypes[t]; !ok {
+			return filter, fmt.Errorf("type %q is not supported; allowed: song, album, playlist, artist", t)
+		}
+		filter.Types = append(filter.Types, t)
+	}
+
+	if filter.Sort != "" && filter.Sort != db.JobListSortCreatedAt && filter.Sort != db.JobListSortUpdatedAt {
+		return filter, fmt.Errorf("sort must be created_at or updated_at")
+	}
+	if filter.Order != "" && filter.Order != db.JobListOrderAsc && filter.Order != db.JobListOrderDesc {
+		return filter, fmt.Errorf("order must be asc or desc")
+	}
+
+	if filter.CreatedAfter, err = parseOptionalTime(q.Get("created_after"), false); err != nil {
+		return filter, fmt.Errorf("created_after: %w", err)
+	}
+	if filter.CreatedBefore, err = parseOptionalTime(q.Get("created_before"), true); err != nil {
+		return filter, fmt.Errorf("created_before: %w", err)
+	}
+	if filter.UpdatedAfter, err = parseOptionalTime(q.Get("updated_after"), false); err != nil {
+		return filter, fmt.Errorf("updated_after: %w", err)
+	}
+	if filter.UpdatedBefore, err = parseOptionalTime(q.Get("updated_before"), true); err != nil {
+		return filter, fmt.Errorf("updated_before: %w", err)
+	}
+	if filter.CreatedAfter != nil && filter.CreatedBefore != nil && filter.CreatedAfter.After(*filter.CreatedBefore) {
+		return filter, fmt.Errorf("created_after must be <= created_before")
+	}
+	if filter.UpdatedAfter != nil && filter.UpdatedBefore != nil && filter.UpdatedAfter.After(*filter.UpdatedBefore) {
+		return filter, fmt.Errorf("updated_after must be <= updated_before")
+	}
+	filter.Normalize()
+	return filter, nil
+}
+
+// parseCSVQuery collects values for key from both repeated query params and
+// comma-separated entries (status=a&status=b and status=a,b are equivalent).
+func parseCSVQuery(q url.Values, key string) ([]string, error) {
+	raw := q[key]
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0)
+	for _, part := range raw {
+		for _, item := range strings.Split(part, ",") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			if _, ok := seen[item]; ok {
+				continue
+			}
+			seen[item] = struct{}{}
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
+func parseOptionalTime(raw string, endOfDayIfDateOnly bool) (*time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		utc := t.UTC()
+		return &utc, nil
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		utc := t.UTC()
+		return &utc, nil
+	}
+	if t, err := time.Parse("2006-01-02", raw); err == nil {
+		utc := t.UTC()
+		if endOfDayIfDateOnly {
+			utc = utc.Add(24*time.Hour - time.Nanosecond)
+		}
+		return &utc, nil
+	}
+	return nil, fmt.Errorf("must be RFC3339 or YYYY-MM-DD")
 }
 
 // jobSnapshot returns a job with progress counters derived from its live
