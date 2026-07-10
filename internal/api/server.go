@@ -338,11 +338,7 @@ func parseJobListFilter(r *http.Request) (db.JobListFilter, error) {
 		filter.Offset = offset
 	}
 
-	statuses, err := parseCSVQuery(q, "status")
-	if err != nil {
-		return filter, err
-	}
-	for _, st := range statuses {
+	for _, st := range parseCSVQuery(q, "status") {
 		js := domain.JobStatus(st)
 		if _, ok := allowedListStatuses[js]; !ok {
 			return filter, fmt.Errorf("status %q is not supported; allowed: queued, running, completed, failed, cancelled", st)
@@ -350,11 +346,7 @@ func parseJobListFilter(r *http.Request) (db.JobListFilter, error) {
 		filter.Statuses = append(filter.Statuses, js)
 	}
 
-	types, err := parseCSVQuery(q, "type")
-	if err != nil {
-		return filter, err
-	}
-	for _, t := range types {
+	for _, t := range parseCSVQuery(q, "type") {
 		if _, ok := allowedListTypes[t]; !ok {
 			return filter, fmt.Errorf("type %q is not supported; allowed: song, album, playlist, artist", t)
 		}
@@ -368,6 +360,7 @@ func parseJobListFilter(r *http.Request) (db.JobListFilter, error) {
 		return filter, fmt.Errorf("order must be asc or desc")
 	}
 
+	var err error
 	if filter.CreatedAfter, err = parseOptionalTime(q.Get("created_after"), false); err != nil {
 		return filter, fmt.Errorf("created_after: %w", err)
 	}
@@ -392,10 +385,10 @@ func parseJobListFilter(r *http.Request) (db.JobListFilter, error) {
 
 // parseCSVQuery collects values for key from both repeated query params and
 // comma-separated entries (status=a&status=b and status=a,b are equivalent).
-func parseCSVQuery(q url.Values, key string) ([]string, error) {
+func parseCSVQuery(q url.Values, key string) []string {
 	raw := q[key]
 	if len(raw) == 0 {
-		return nil, nil
+		return nil
 	}
 	seen := map[string]struct{}{}
 	out := make([]string, 0)
@@ -412,7 +405,7 @@ func parseCSVQuery(q url.Values, key string) ([]string, error) {
 			out = append(out, item)
 		}
 	}
-	return out, nil
+	return out
 }
 
 func parseOptionalTime(raw string, endOfDayIfDateOnly bool) (*time.Time, error) {

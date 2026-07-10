@@ -135,7 +135,10 @@ func (s *Store) initSchema(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	// Rewrite variable-width RFC3339Nano timestamps (trailing zeros trimmed)
+	// to a fixed 9-digit fractional form so TEXT ORDER BY / range compares
+	// match chronological order. Idempotent: already-normalized rows are skipped.
+	return s.normalizeTimestampColumns(ctx)
 }
 
 func (s *Store) ensureColumn(ctx context.Context, table, column, decl string) error {
@@ -152,11 +155,74 @@ func (s *Store) ensureColumn(ctx context.Context, table, column, decl string) er
 
 func now() time.Time { return time.Now().UTC().Truncate(time.Millisecond) }
 
-func formatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+// timeLayoutFixed is a fixed-width UTC RFC3339 with exactly 9 fractional
+// digits. Unlike time.RFC3339Nano (which trims trailing zeros / omits the
+// fraction entirely for whole seconds), this keeps lexicographic TEXT order
+// identical to chronological order in SQLite comparisons and ORDER BY.
+const timeLayoutFixed = "2006-01-02T15:04:05.000000000Z07:00"
+
+// fixedTimestampGLOB matches formatTime output in SQLite GLOB syntax
+// (? = one character). Used to skip already-normalized rows on Open.
+const fixedTimestampGLOB = "????-??-??T??:??:??.?????????Z"
+
+func formatTime(t time.Time) string { return t.UTC().Format(timeLayoutFixed) }
 
 func parseTime(v string) time.Time {
+	// Accept both the fixed-width form and legacy variable-width RFC3339Nano
+	// rows that have not yet been rewritten by normalizeTimestampColumns.
+	if t, err := time.Parse(timeLayoutFixed, v); err == nil {
+		return t
+	}
 	t, _ := time.Parse(time.RFC3339Nano, v)
 	return t
+}
+
+// normalizeTimestampColumns rewrites persisted timestamps that are not in
+// fixed-width form (legacy RFC3339Nano with trimmed fractional seconds).
+// Safe to run on every Open: rows already matching fixedTimestampGLOB are
+// left untouched.
+func (s *Store) normalizeTimestampColumns(ctx context.Context) error {
+	rewrites := []struct {
+		table string
+		idCol string
+		col   string
+	}{
+		{"jobs", "id", "created_at"},
+		{"jobs", "id", "updated_at"},
+		{"job_items", "id", "created_at"},
+		{"job_items", "id", "updated_at"},
+		{"job_events", "id", "created_at"},
+	}
+	for _, rw := range rewrites {
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT `+rw.idCol+`, `+rw.col+` FROM `+rw.table+` WHERE `+rw.col+` NOT GLOB '`+fixedTimestampGLOB+`'`)
+		if err != nil {
+			return err
+		}
+		type pair struct{ id, raw string }
+		var batch []pair
+		for rows.Next() {
+			var p pair
+			if err := rows.Scan(&p.id, &p.raw); err != nil {
+				rows.Close()
+				return err
+			}
+			batch = append(batch, p)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, p := range batch {
+			if _, err := s.db.ExecContext(ctx,
+				`UPDATE `+rw.table+` SET `+rw.col+`=? WHERE `+rw.idCol+`=?`,
+				formatTime(parseTime(p.raw)), p.id); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Store) CreateJob(ctx context.Context, job domain.Job) error {

@@ -666,6 +666,40 @@ func TestListDownloadsQueryFilters(t *testing.T) {
 		t.Fatalf("created window resp = %+v", resp)
 	}
 
+	// Whole-second created_after must include a job created later in that same
+	// second (sub-second fraction). This is the lexicographic TEXT-compare bug.
+	fracJob := domain.Job{
+		ID: "frac", Input: "https://music.apple.com/us/song/frac/9", Type: "song", Storefront: "us",
+		Title: "Frac", CanonicalKey: "song|us|9", Status: domain.JobCompleted,
+		CreatedAt: time.Date(2024, 7, 1, 16, 0, 0, 500000000, time.UTC),
+		UpdatedAt: time.Date(2024, 7, 1, 16, 0, 0, 500000000, time.UTC),
+	}
+	if err := server.store.CreateJob(ctx, fracJob); err != nil {
+		t.Fatal(err)
+	}
+	recorder = requestJSON(t, server.Routes(), http.MethodGet,
+		"/api/v1/downloads?created_after=2024-07-01T16:00:00Z&created_before=2024-07-01T16:00:00Z", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 0 {
+		t.Fatalf("created_before=exact-second should exclude frac job, got %+v", resp)
+	}
+	recorder = requestJSON(t, server.Routes(), http.MethodGet,
+		"/api/v1/downloads?created_after=2024-07-01T16:00:00Z&limit=10", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 1 || len(resp.Downloads) != 1 || resp.Downloads[0].ID != "frac" {
+		t.Fatalf("created_after whole-second must include frac job, got %+v", resp)
+	}
+
 	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads?limit=1&offset=1&sort=created_at&order=asc", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
@@ -673,7 +707,8 @@ func TestListDownloadsQueryFilters(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Total != 3 || resp.Offset != 1 || len(resp.Downloads) != 1 || resp.Downloads[0].ID != "b" {
+	// a,b,c,frac — offset 1 of created_at asc is still b.
+	if resp.Total != 4 || resp.Offset != 1 || len(resp.Downloads) != 1 || resp.Downloads[0].ID != "b" {
 		t.Fatalf("offset page resp = %+v", resp)
 	}
 
