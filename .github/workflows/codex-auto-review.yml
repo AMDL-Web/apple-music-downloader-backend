@@ -25,17 +25,16 @@ jobs:
       - name: Comment "codex review" as An0nCh1hayaa
         env:
           GH_TOKEN: ${{ secrets.CODEX_REVIEW_PAT }}
+          REVIEW_BODY: |
+            codex review
+
+            请重点关注：
+            - 正确性问题（并发、错误处理、边界条件）
+            - 是否符合仓库架构与 CLAUDE.md 中的约定
+            - config.yaml / openapi.yaml 是否随改动同步更新
+            - 是否混入本地路径、密钥等不适合开源仓库的内容
+            - 是否存在破坏性改动（参数名、端口等）
         run: |
           gh pr comment "${{ github.event.pull_request.number }}" \
             --repo "${{ github.repository }}" \
-            --body "$(cat <<'EOF'
-codex review
-
-请重点关注：
-- 正确性问题（并发、错误处理、边界条件）
-- 是否符合仓库架构与 CLAUDE.md 中的约定
-- config.yaml / openapi.yaml 是否随改动同步更新
-- 是否混入本地路径、密钥等不适合开源仓库的内容
-- 是否存在破坏性改动（参数名、端口等）
-EOF
-)"
+            --body "$REVIEW_BODY"
