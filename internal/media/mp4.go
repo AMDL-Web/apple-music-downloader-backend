@@ -212,7 +212,13 @@ func (p *MP4Processor) fixEncapsulate(ctx context.Context, song []byte) ([]byte,
 	if err := os.WriteFile(inPath, song, 0o644); err != nil {
 		return nil, err
 	}
-	if err := run(ctx, p.cfg.Tools.FFmpeg, "-y", "-i", inPath, "-fflags", "+bitexact", "-map_metadata", "0", "-c:a", "copy", "-c:v", "copy", outPath); err != nil {
+	// -f mp4 is required: ffmpeg infers the muxer from the .m4a extension
+	// otherwise, which selects the "ipod" muxer. That muxer's codec tag table
+	// has no entry for eac3 (EC-3/Dolby Atmos), so it refuses to write the
+	// header ("Could not find tag for codec eac3 ... not currently supported
+	// in container") and every EC-3 download fails at this step. The generic
+	// mp4 muxer supports the same brands/tags plus ec-3.
+	if err := run(ctx, p.cfg.Tools.FFmpeg, "-y", "-i", inPath, "-fflags", "+bitexact", "-map_metadata", "0", "-c:a", "copy", "-c:v", "copy", "-f", "mp4", outPath); err != nil {
 		return nil, err
 	}
 	return os.ReadFile(outPath)
