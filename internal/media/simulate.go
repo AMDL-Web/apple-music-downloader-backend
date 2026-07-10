@@ -35,6 +35,27 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 	if err != nil {
 		return d.failItem(ctx, reporter, job, *item, err)
 	}
+	// Mirrors handleExistingOutput without ever mutating the disk: simulate
+	// mode must not delete a previously real-downloaded file even under force.
+	existingSkip := func(outPath string) bool {
+		item.OutputPath = outPath
+		if _, statErr := os.Stat(outPath); statErr != nil {
+			return false
+		}
+		if !job.Force {
+			item.Status = domain.ItemSkipped
+			item.Progress = 1
+			item.RetryKind = ""
+			item.Attempt = 0
+			item.MaxAttempts = 0
+			item.StatusMessage = "File already exists; skipped"
+			_ = reporter.UpdateItem(ctx, *item)
+			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_skipped", Message: "already exists"})
+			return true
+		}
+		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_overwrite", Message: "force overwrite enabled"})
+		return false
+	}
 	var lastErr error
 	for codecIndex, codec := range codecs {
 		codecName := strings.ToUpper(codec)
@@ -51,15 +72,20 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 		var info selectedMediaInfo
 		var outPath string
 		if codec == "aac-lc" {
-			// The AAC-LC playlist comes from wrapper.WebPlayback, which test
-			// mode must not depend on; fake the selection with the same event.
+			// Like the real AAC-LC path, the existing-output check runs before
+			// any WebPlayback traffic or codec_selected event. The playlist
+			// itself comes from wrapper.WebPlayback, which test mode must not
+			// depend on, so the selection is faked with the same event.
 			d.setItemAttempt(ctx, reporter, item, "download", 1, maxAttempts, fmt.Sprintf("Downloading %s (1/%d)", codecName, maxAttempts))
+			outPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, "256Kbps")
+			if existingSkip(outPath) {
+				return nil
+			}
 			set(domain.ItemDownloading, 0.03, "requesting AAC-LC WebPlayback asset")
 			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_selected", Phase: "aac-lc", Payload: marshalPayload(map[string]any{
 				"codec_id": "aac-lc", "attempt": item.Attempt, "max_attempts": item.MaxAttempts,
 			})})
 			info = selectedMediaInfo{CodecID: "aac-lc", Bandwidth: 256000}
-			outPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, "256Kbps")
 		} else {
 			d.setItemAttempt(ctx, reporter, item, "download", 1, maxAttempts, fmt.Sprintf("Selecting %s (1/%d)", codecName, maxAttempts))
 			selected, selectErr := d.selectEnhancedMedia(ctx, job, item, song, codec, reporter, set)
@@ -70,23 +96,9 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 			}
 			info = selected.info
 			outPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, qualityLabel(info))
-		}
-		item.OutputPath = outPath
-		// Mirrors handleExistingOutput without ever mutating the disk: simulate
-		// mode must not delete a previously real-downloaded file even under force.
-		if _, statErr := os.Stat(outPath); statErr == nil {
-			if !job.Force {
-				item.Status = domain.ItemSkipped
-				item.Progress = 1
-				item.RetryKind = ""
-				item.Attempt = 0
-				item.MaxAttempts = 0
-				item.StatusMessage = "File already exists; skipped"
-				_ = reporter.UpdateItem(ctx, *item)
-				_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_skipped", Message: "already exists"})
+			if existingSkip(outPath) {
 				return nil
 			}
-			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_overwrite", Message: "force overwrite enabled"})
 		}
 
 		totalBytes := simulatedSizeBytes(song, info)
