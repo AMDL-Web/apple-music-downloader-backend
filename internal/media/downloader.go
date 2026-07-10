@@ -139,7 +139,9 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	tracks := resolved.Tracks
 	collectionName := resolved.Name
 	collectionID := resolved.ID
-	if parsed.Type == applemusic.TypePlaylist && d.cfg.Download.SavePlaylistCover && len(tracks) > 0 {
+	// Simulate mode never fetches artwork or writes files, so the standalone
+	// playlist cover is skipped along with the per-track disk writes.
+	if parsed.Type == applemusic.TypePlaylist && d.cfg.Download.SavePlaylistCover && len(tracks) > 0 && !d.cfg.Simulate.Enabled {
 		folder := playlistFolderPath(d.cfg, tracks[0], collectionName, collectionID)
 		if coverErr := d.savePlaylistCover(ctx, resolved.ArtworkURL, folder); coverErr != nil {
 			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, Type: "standalone_cover_failed", Phase: "playlist_cover", Message: coverErr.Error()})
