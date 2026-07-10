@@ -263,6 +263,18 @@ func TestCodecRoundTripThroughRealEncryption(t *testing.T) {
 			}
 			t.Logf("flattened size: %d bytes", len(flat))
 
+			// downloader.go documents fixEncapsulate as writing an "M4A " ftyp
+			// brand; the generic mp4 muxer needed for EC-3 support defaults to
+			// "isom" instead, so -brand must be passed explicitly to keep that
+			// comment accurate.
+			if len(flat) < 12 || string(flat[8:12]) != "M4A " {
+				got := "<too short>"
+				if len(flat) >= 12 {
+					got = string(flat[8:12])
+				}
+				t.Fatalf("ftyp major_brand = %q, want \"M4A \"", got)
+			}
+
 			if !p.checkIntegrity(ctx, flat) {
 				dir, _ := os.MkdirTemp(cfg.Download.TempDir, "diag-*")
 				inPath := filepath.Join(dir, "song.m4a")
