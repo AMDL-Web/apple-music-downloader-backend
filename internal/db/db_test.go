@@ -183,9 +183,12 @@ func TestArtworkURLRoundTrip(t *testing.T) {
 	if got.ArtworkURL != job.ArtworkURL {
 		t.Fatalf("job artwork_url = %q, want %q", got.ArtworkURL, job.ArtworkURL)
 	}
-	listed, err := store.ListJobs(ctx, 10)
+	listed, total, err := store.ListJobs(ctx, JobListFilter{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("total = %d, want 1", total)
 	}
 	if len(listed) != 1 || listed[0].ArtworkURL != job.ArtworkURL {
 		t.Fatalf("listed job artwork_url = %+v, want %q", listed, job.ArtworkURL)
@@ -447,4 +450,270 @@ func TestDeleteJobPersistsOverviewTombstone(t *testing.T) {
 	if _, err := store.GetJob(ctx, job.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("GetJob after delete err = %v, want sql.ErrNoRows", err)
 	}
+}
+
+func TestListJobsFilterPaginationAndSort(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	base := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	jobs := []domain.Job{
+		{ID: "j1", Input: "https://music.apple.com/us/song/one/1", Type: "song", Storefront: "us", Title: "Alpha Song", CanonicalKey: "song|us|1", Status: domain.JobCompleted, CreatedAt: base, UpdatedAt: base.Add(3 * time.Hour)},
+		{ID: "j2", Input: "https://music.apple.com/cn/album/two/2", Type: "album", Storefront: "cn", Title: "Beta Album", CanonicalKey: "album|cn|2", Status: domain.JobFailed, CreatedAt: base.Add(1 * time.Hour), UpdatedAt: base.Add(2 * time.Hour)},
+		{ID: "j3", Input: "https://music.apple.com/jp/playlist/three/3", Type: "playlist", Storefront: "jp", Title: "Gamma Playlist", CanonicalKey: "playlist|jp|3", Status: domain.JobRunning, CreatedAt: base.Add(2 * time.Hour), UpdatedAt: base.Add(4 * time.Hour)},
+		{ID: "j4", Input: "https://music.apple.com/us/artist/four/4", Type: "artist", Storefront: "us", Title: "Delta Artist", CanonicalKey: "artist|us|4", Status: domain.JobQueued, CreatedAt: base.Add(3 * time.Hour), UpdatedAt: base.Add(1 * time.Hour)},
+	}
+	for _, job := range jobs {
+		if err := store.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.CreateItem(ctx, domain.JobItem{
+		ID: "i1", JobID: "j3", AdamID: "1", Kind: "song", Index: 1,
+		Status: domain.ItemCompleted, CreatedAt: base, UpdatedAt: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateItem(ctx, domain.JobItem{
+		ID: "i2", JobID: "j3", AdamID: "2", Kind: "song", Index: 2,
+		Status: domain.ItemFailed, CreatedAt: base, UpdatedAt: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, total, err := store.ListJobs(ctx, JobListFilter{Limit: 2, Offset: 1, Sort: JobListSortCreatedAt, Order: JobListOrderDesc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 4 {
+		t.Fatalf("total = %d, want 4", total)
+	}
+	if len(listed) != 2 || listed[0].ID != "j3" || listed[1].ID != "j2" {
+		t.Fatalf("page = %+v, want j3 then j2", idsOf(listed))
+	}
+	if listed[0].DoneItems != 1 || listed[0].FailedItems != 1 {
+		t.Fatalf("j3 progress done=%d failed=%d, want 1/1", listed[0].DoneItems, listed[0].FailedItems)
+	}
+
+	listed, total, err = store.ListJobs(ctx, JobListFilter{
+		Statuses: []domain.JobStatus{domain.JobFailed, domain.JobCancelled},
+		Limit:    50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(listed) != 1 || listed[0].ID != "j2" {
+		t.Fatalf("status filter = ids=%v total=%d, want [j2]/1", idsOf(listed), total)
+	}
+
+	listed, total, err = store.ListJobs(ctx, JobListFilter{Types: []string{"song", "artist"}, Storefront: "us", Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 || len(listed) != 2 {
+		t.Fatalf("type+storefront = ids=%v total=%d, want 2 us song/artist", idsOf(listed), total)
+	}
+
+	listed, total, err = store.ListJobs(ctx, JobListFilter{Query: "beta", Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || listed[0].ID != "j2" {
+		t.Fatalf("q=beta = ids=%v total=%d, want [j2]", idsOf(listed), total)
+	}
+
+	listed, total, err = store.ListJobs(ctx, JobListFilter{Query: "%", Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 0 {
+		t.Fatalf("literal %% query matched %d jobs, want 0", total)
+	}
+
+	after := base.Add(90 * time.Minute)
+	before := base.Add(150 * time.Minute)
+	listed, total, err = store.ListJobs(ctx, JobListFilter{CreatedAfter: &after, CreatedBefore: &before, Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || listed[0].ID != "j3" {
+		t.Fatalf("created window = ids=%v total=%d, want [j3]", idsOf(listed), total)
+	}
+
+	listed, total, err = store.ListJobs(ctx, JobListFilter{Sort: JobListSortUpdatedAt, Order: JobListOrderAsc, Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 4 || idsOf(listed)[0] != "j4" || idsOf(listed)[3] != "j3" {
+		t.Fatalf("sort updated_at asc = %v, want j4 ... j3", idsOf(listed))
+	}
+}
+
+// TestListJobsWholeSecondBoundaryWithFractionalTimes guards the lexicographic
+// TEXT compare bug: a whole-second filter like created_after=...T12:00:00Z must
+// still include rows stored with sub-second fractions in that same second, and
+// ORDER BY must keep chronological order across whole-second vs fractional rows.
+func TestListJobsWholeSecondBoundaryWithFractionalTimes(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	sec := time.Date(2024, 7, 10, 12, 0, 0, 0, time.UTC)
+	jobs := []domain.Job{
+		{ID: "exact", Input: "song|us|exact", Type: "song", CanonicalKey: "song|us|exact", Status: domain.JobCompleted, CreatedAt: sec, UpdatedAt: sec},
+		{ID: "frac", Input: "song|us|frac", Type: "song", CanonicalKey: "song|us|frac", Status: domain.JobCompleted, CreatedAt: sec.Add(123 * time.Millisecond), UpdatedAt: sec.Add(123 * time.Millisecond)},
+		{ID: "next", Input: "song|us|next", Type: "song", CanonicalKey: "song|us|next", Status: domain.JobCompleted, CreatedAt: sec.Add(time.Second), UpdatedAt: sec.Add(time.Second)},
+	}
+	for _, job := range jobs {
+		if err := store.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Persist via CreateJob uses formatTime; assert fixed-width storage.
+	var stored string
+	if err := store.db.QueryRowContext(ctx, `SELECT created_at FROM jobs WHERE id='frac'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	wantStored := "2024-07-10T12:00:00.123000000Z"
+	if stored != wantStored {
+		t.Fatalf("stored created_at = %q, want fixed-width %q", stored, wantStored)
+	}
+
+	after := sec
+	listed, total, err := store.ListJobs(ctx, JobListFilter{CreatedAfter: &after, Sort: JobListSortCreatedAt, Order: JobListOrderAsc, Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || idsOf(listed)[0] != "exact" || idsOf(listed)[1] != "frac" || idsOf(listed)[2] != "next" {
+		t.Fatalf("created_after whole-second = ids=%v total=%d, want [exact frac next]", idsOf(listed), total)
+	}
+
+	before := sec
+	listed, total, err = store.ListJobs(ctx, JobListFilter{CreatedBefore: &before, Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || listed[0].ID != "exact" {
+		t.Fatalf("created_before whole-second = ids=%v total=%d, want [exact] only (frac must be excluded)", idsOf(listed), total)
+	}
+}
+
+func TestNormalizeTimestampColumnsOnOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "amdl.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmts := []string{
+		`CREATE TABLE jobs (
+			id TEXT PRIMARY KEY, input TEXT NOT NULL, type TEXT NOT NULL, storefront TEXT,
+			title TEXT NOT NULL DEFAULT '', artwork_url TEXT NOT NULL DEFAULT '',
+			canonical_key TEXT NOT NULL, force INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL,
+			total_items INTEGER NOT NULL DEFAULT 0, done_items INTEGER NOT NULL DEFAULT 0,
+			failed_items INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE job_items (
+			id TEXT PRIMARY KEY, job_id TEXT NOT NULL, adam_id TEXT NOT NULL, kind TEXT NOT NULL,
+			idx INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '',
+			album TEXT NOT NULL DEFAULT '', artwork_url TEXT NOT NULL DEFAULT '', status TEXT NOT NULL,
+			progress REAL NOT NULL DEFAULT 0, codec TEXT NOT NULL DEFAULT '',
+			bit_depth INTEGER NOT NULL DEFAULT 0, sample_rate INTEGER NOT NULL DEFAULT 0,
+			bitrate INTEGER NOT NULL DEFAULT 0, retry_kind TEXT NOT NULL DEFAULT '',
+			attempt INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 0,
+			status_message TEXT NOT NULL DEFAULT '', output_path TEXT NOT NULL DEFAULT '',
+			error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE job_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, item_id TEXT NOT NULL DEFAULT '',
+			type TEXT NOT NULL, phase TEXT NOT NULL DEFAULT '', message TEXT NOT NULL DEFAULT '',
+			payload TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+		);`,
+		// Legacy variable-width RFC3339Nano (whole second + trimmed millis).
+		`INSERT INTO jobs(id,input,type,storefront,canonical_key,force,status,created_at,updated_at)
+			VALUES('j1','u','song','us','k',0,'completed','2024-07-10T12:00:00Z','2024-07-10T12:00:00.123Z');`,
+		`INSERT INTO job_items(id,job_id,adam_id,kind,idx,status,created_at,updated_at)
+			VALUES('i1','j1','1','song',1,'completed','2024-07-10T12:00:00.5Z','2024-07-10T12:00:00.5Z');`,
+		`INSERT INTO job_events(job_id,type,created_at) VALUES('j1','job_finished','2024-07-10T12:00:01Z');`,
+	}
+	for _, stmt := range stmts {
+		if _, err := raw.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	checks := []struct {
+		query string
+		want  string
+	}{
+		{`SELECT created_at FROM jobs WHERE id='j1'`, "2024-07-10T12:00:00.000000000Z"},
+		{`SELECT updated_at FROM jobs WHERE id='j1'`, "2024-07-10T12:00:00.123000000Z"},
+		{`SELECT created_at FROM job_items WHERE id='i1'`, "2024-07-10T12:00:00.500000000Z"},
+		{`SELECT created_at FROM job_events WHERE job_id='j1'`, "2024-07-10T12:00:01.000000000Z"},
+	}
+	for _, c := range checks {
+		var got string
+		if err := store.db.QueryRow(c.query).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != c.want {
+			t.Fatalf("%s = %q, want %q", c.query, got, c.want)
+		}
+	}
+
+	// Idempotent: reopen must not fail or change already-normalized rows.
+	store.Close()
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var got string
+	if err := store.db.QueryRow(`SELECT created_at FROM jobs WHERE id='j1'`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "2024-07-10T12:00:00.000000000Z" {
+		t.Fatalf("after reopen created_at = %q", got)
+	}
+}
+
+func TestFormatTimeFixedWidth(t *testing.T) {
+	exact := time.Date(2024, 7, 10, 12, 0, 0, 0, time.UTC)
+	frac := time.Date(2024, 7, 10, 12, 0, 0, 123000000, time.UTC)
+	if got, want := formatTime(exact), "2024-07-10T12:00:00.000000000Z"; got != want {
+		t.Fatalf("formatTime(exact) = %q, want %q", got, want)
+	}
+	if got, want := formatTime(frac), "2024-07-10T12:00:00.123000000Z"; got != want {
+		t.Fatalf("formatTime(frac) = %q, want %q", got, want)
+	}
+	// Lexicographic order must match chronological order across the boundary.
+	if !(formatTime(exact) < formatTime(frac) && formatTime(frac) < formatTime(exact.Add(time.Second))) {
+		t.Fatalf("fixed-width strings are not chronologically ordered: %q %q %q",
+			formatTime(exact), formatTime(frac), formatTime(exact.Add(time.Second)))
+	}
+}
+
+func idsOf(jobs []domain.Job) []string {
+	out := make([]string, len(jobs))
+	for i, job := range jobs {
+		out[i] = job.ID
+	}
+	return out
 }

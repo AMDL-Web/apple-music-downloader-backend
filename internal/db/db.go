@@ -135,7 +135,10 @@ func (s *Store) initSchema(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	// Rewrite variable-width RFC3339Nano timestamps (trailing zeros trimmed)
+	// to a fixed 9-digit fractional form so TEXT ORDER BY / range compares
+	// match chronological order. Idempotent: already-normalized rows are skipped.
+	return s.normalizeTimestampColumns(ctx)
 }
 
 func (s *Store) ensureColumn(ctx context.Context, table, column, decl string) error {
@@ -152,11 +155,74 @@ func (s *Store) ensureColumn(ctx context.Context, table, column, decl string) er
 
 func now() time.Time { return time.Now().UTC().Truncate(time.Millisecond) }
 
-func formatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+// timeLayoutFixed is a fixed-width UTC RFC3339 with exactly 9 fractional
+// digits. Unlike time.RFC3339Nano (which trims trailing zeros / omits the
+// fraction entirely for whole seconds), this keeps lexicographic TEXT order
+// identical to chronological order in SQLite comparisons and ORDER BY.
+const timeLayoutFixed = "2006-01-02T15:04:05.000000000Z07:00"
+
+// fixedTimestampGLOB matches formatTime output in SQLite GLOB syntax
+// (? = one character). Used to skip already-normalized rows on Open.
+const fixedTimestampGLOB = "????-??-??T??:??:??.?????????Z"
+
+func formatTime(t time.Time) string { return t.UTC().Format(timeLayoutFixed) }
 
 func parseTime(v string) time.Time {
+	// Accept both the fixed-width form and legacy variable-width RFC3339Nano
+	// rows that have not yet been rewritten by normalizeTimestampColumns.
+	if t, err := time.Parse(timeLayoutFixed, v); err == nil {
+		return t
+	}
 	t, _ := time.Parse(time.RFC3339Nano, v)
 	return t
+}
+
+// normalizeTimestampColumns rewrites persisted timestamps that are not in
+// fixed-width form (legacy RFC3339Nano with trimmed fractional seconds).
+// Safe to run on every Open: rows already matching fixedTimestampGLOB are
+// left untouched.
+func (s *Store) normalizeTimestampColumns(ctx context.Context) error {
+	rewrites := []struct {
+		table string
+		idCol string
+		col   string
+	}{
+		{"jobs", "id", "created_at"},
+		{"jobs", "id", "updated_at"},
+		{"job_items", "id", "created_at"},
+		{"job_items", "id", "updated_at"},
+		{"job_events", "id", "created_at"},
+	}
+	for _, rw := range rewrites {
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT `+rw.idCol+`, `+rw.col+` FROM `+rw.table+` WHERE `+rw.col+` NOT GLOB '`+fixedTimestampGLOB+`'`)
+		if err != nil {
+			return err
+		}
+		type pair struct{ id, raw string }
+		var batch []pair
+		for rows.Next() {
+			var p pair
+			if err := rows.Scan(&p.id, &p.raw); err != nil {
+				rows.Close()
+				return err
+			}
+			batch = append(batch, p)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, p := range batch {
+			if _, err := s.db.ExecContext(ctx,
+				`UPDATE `+rw.table+` SET `+rw.col+`=? WHERE `+rw.idCol+`=?`,
+				formatTime(parseTime(p.raw)), p.id); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Store) CreateJob(ctx context.Context, job domain.Job) error {
@@ -209,32 +275,153 @@ func (s *Store) GetJob(ctx context.Context, id string) (domain.Job, error) {
 	return scanJob(row)
 }
 
-func (s *Store) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 50
+// JobListFilter controls GET /downloads listing: pagination, status/type/
+// storefront filters, title/input substring search, and created/updated
+// time windows. Zero values mean "no constraint" except Limit, which the
+// store clamps to [1, 200] with a default of 50.
+type JobListFilter struct {
+	Limit          int
+	Offset         int
+	Statuses       []domain.JobStatus
+	Types          []string
+	Storefront     string
+	Query          string
+	CreatedAfter   *time.Time
+	CreatedBefore  *time.Time
+	UpdatedAfter   *time.Time
+	UpdatedBefore  *time.Time
+	Sort           string // created_at (default) or updated_at
+	Order          string // desc (default) or asc
+}
+
+const (
+	JobListSortCreatedAt = "created_at"
+	JobListSortUpdatedAt = "updated_at"
+	JobListOrderAsc      = "asc"
+	JobListOrderDesc     = "desc"
+)
+
+// Normalize clamps pagination and fills default sort/order. ListJobs calls
+// this; API handlers may also call it so response echo fields match the
+// values actually applied.
+func (f *JobListFilter) Normalize() {
+	if f.Limit <= 0 || f.Limit > 200 {
+		f.Limit = 50
 	}
+	if f.Offset < 0 {
+		f.Offset = 0
+	}
+	switch f.Sort {
+	case JobListSortUpdatedAt:
+	default:
+		f.Sort = JobListSortCreatedAt
+	}
+	switch f.Order {
+	case JobListOrderAsc:
+	default:
+		f.Order = JobListOrderDesc
+	}
+}
+
+func (f JobListFilter) whereClause() (string, []any) {
+	var (
+		conds []string
+		args  []any
+	)
+	if len(f.Statuses) > 0 {
+		placeholders := make([]string, len(f.Statuses))
+		for i, st := range f.Statuses {
+			placeholders[i] = "?"
+			args = append(args, string(st))
+		}
+		conds = append(conds, "j.status IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if len(f.Types) > 0 {
+		placeholders := make([]string, len(f.Types))
+		for i, t := range f.Types {
+			placeholders[i] = "?"
+			args = append(args, t)
+		}
+		conds = append(conds, "j.type IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if sf := strings.TrimSpace(f.Storefront); sf != "" {
+		conds = append(conds, "j.storefront=?")
+		args = append(args, sf)
+	}
+	if q := strings.TrimSpace(f.Query); q != "" {
+		like := "%" + escapeLike(q) + "%"
+		conds = append(conds, `(j.title LIKE ? ESCAPE '\' OR j.input LIKE ? ESCAPE '\')`)
+		args = append(args, like, like)
+	}
+	if f.CreatedAfter != nil {
+		conds = append(conds, "j.created_at>=?")
+		args = append(args, formatTime(*f.CreatedAfter))
+	}
+	if f.CreatedBefore != nil {
+		conds = append(conds, "j.created_at<=?")
+		args = append(args, formatTime(*f.CreatedBefore))
+	}
+	if f.UpdatedAfter != nil {
+		conds = append(conds, "j.updated_at>=?")
+		args = append(args, formatTime(*f.UpdatedAfter))
+	}
+	if f.UpdatedBefore != nil {
+		conds = append(conds, "j.updated_at<=?")
+		args = append(args, formatTime(*f.UpdatedBefore))
+	}
+	if len(conds) == 0 {
+		return "", args
+	}
+	return " WHERE " + strings.Join(conds, " AND "), args
+}
+
+func escapeLike(s string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(s)
+}
+
+func (s *Store) ListJobs(ctx context.Context, filter JobListFilter) ([]domain.Job, int, error) {
+	filter.Normalize()
+	where, args := filter.whereClause()
+
+	var total int
+	countQuery := `SELECT COUNT(*) FROM jobs j` + where
+	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
 	// done_items/failed_items are derived live from job_items instead of the
 	// stored jobs columns: the stored counters are only written back when a job
 	// finalizes, so running jobs (or jobs interrupted before finalize) would
 	// report stale counts. Status buckets must mirror domain.CountItemProgress.
+	orderCol := "j.created_at"
+	if filter.Sort == JobListSortUpdatedAt {
+		orderCol = "j.updated_at"
+	}
+	orderDir := "DESC"
+	if filter.Order == JobListOrderAsc {
+		orderDir = "ASC"
+	}
+	listArgs := append([]any{string(domain.ItemCompleted), string(domain.ItemSkipped), string(domain.ItemFailed)}, args...)
+	listArgs = append(listArgs, filter.Limit, filter.Offset)
 	rows, err := s.db.QueryContext(ctx, `SELECT j.id,j.input,j.type,j.storefront,j.title,j.artwork_url,j.canonical_key,j.force,j.status,j.total_items,
 			(SELECT COUNT(*) FROM job_items i WHERE i.job_id=j.id AND i.status IN (?,?)) AS done_items,
 			(SELECT COUNT(*) FROM job_items i WHERE i.job_id=j.id AND i.status=?) AS failed_items,
-			j.error,j.created_at,j.updated_at FROM jobs j ORDER BY j.created_at DESC LIMIT ?`,
-		string(domain.ItemCompleted), string(domain.ItemSkipped), string(domain.ItemFailed), limit)
+			j.error,j.created_at,j.updated_at FROM jobs j`+where+` ORDER BY `+orderCol+` `+orderDir+`, j.id `+orderDir+` LIMIT ? OFFSET ?`,
+		listArgs...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	out := make([]domain.Job, 0)
 	for rows.Next() {
 		job, err := scanJob(rows)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		out = append(out, job)
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }
 
 // DeleteJob removes a terminal (completed/failed/cancelled) job together with

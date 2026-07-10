@@ -201,6 +201,11 @@ paths:
     get:
       tags: [Downloads]
       summary: 列出下载任务
+      description: |
+        返回下载任务列表快照，支持分页、状态/类型/区域筛选、标题与输入 URL
+        子串搜索，以及按创建/更新时间窗口过滤。默认按 created_at 降序。
+        多值参数（status、type）支持重复键或逗号分隔，例如
+        `status=failed&status=cancelled` 与 `status=failed,cancelled` 等价。
       operationId: listDownloads
       parameters:
         - name: limit
@@ -211,6 +216,95 @@ paths:
             minimum: 1
             maximum: 200
             default: 50
+        - name: offset
+          in: query
+          description: 跳过的任务数，用于分页；默认 0。
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: status
+          in: query
+          description: >-
+            按任务状态筛选；可重复或逗号分隔。允许值：queued, running,
+            completed, failed, cancelled。
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [queued, running, completed, failed, cancelled]
+          style: form
+          explode: true
+        - name: type
+          in: query
+          description: >-
+            按任务类型筛选；可重复或逗号分隔。允许值：song, album, playlist,
+            artist。
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [song, album, playlist, artist]
+          style: form
+          explode: true
+        - name: storefront
+          in: query
+          description: 按 Apple Music storefront 精确匹配，例如 us、cn、jp。
+          schema:
+            type: string
+        - name: q
+          in: query
+          description: >-
+            在任务 title 与 input 上做子串搜索（SQLite LIKE；ASCII 字母不区分大小写）。
+            `%` 与 `_` 按字面匹配。
+          schema:
+            type: string
+        - name: created_after
+          in: query
+          description: >-
+            仅返回 created_at >= 该时刻的任务。接受 RFC3339（含可选纳秒）或
+            YYYY-MM-DD（按 UTC 日初 00:00:00）。
+          schema:
+            type: string
+            format: date-time
+        - name: created_before
+          in: query
+          description: >-
+            仅返回 created_at <= 该时刻的任务。接受 RFC3339（含可选纳秒）或
+            YYYY-MM-DD（按 UTC 日末 23:59:59.999999999）。
+          schema:
+            type: string
+            format: date-time
+        - name: updated_after
+          in: query
+          description: >-
+            仅返回 updated_at >= 该时刻的任务。接受 RFC3339（含可选纳秒）或
+            YYYY-MM-DD（按 UTC 日初 00:00:00）。
+          schema:
+            type: string
+            format: date-time
+        - name: updated_before
+          in: query
+          description: >-
+            仅返回 updated_at <= 该时刻的任务。接受 RFC3339（含可选纳秒）或
+            YYYY-MM-DD（按 UTC 日末 23:59:59.999999999）。
+          schema:
+            type: string
+            format: date-time
+        - name: sort
+          in: query
+          description: 排序字段；默认 created_at。
+          schema:
+            type: string
+            enum: [created_at, updated_at]
+            default: created_at
+        - name: order
+          in: query
+          description: 排序方向；默认 desc。
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
       responses:
         '200':
           description: 下载任务列表快照。
@@ -218,6 +312,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DownloadList'
+        '400':
+          description: 查询参数无效（非法枚举、时间格式、limit/offset 越界等）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/InternalError'
     post:
@@ -910,15 +1010,24 @@ components:
         updated_at: {type: string, format: date-time}
     DownloadList:
       type: object
-      required: [downloads, last_event_id]
+      required: [downloads, total, limit, offset, last_event_id]
       properties:
         downloads:
           type: array
           description: >-
-            下载任务列表；每个任务的 done_items/failed_items 按其 job_items 的
-            实时进度计算（而非仅在终态刷新的存储计数）。
+            当前页的下载任务；每个任务的 done_items/failed_items 按其 job_items
+            的实时进度计算（而非仅在终态刷新的存储计数）。
           items:
             $ref: '#/components/schemas/Job'
+        total:
+          type: integer
+          description: 满足当前筛选条件的任务总数（不受 limit/offset 影响）。
+        limit:
+          type: integer
+          description: 本次实际使用的分页大小。
+        offset:
+          type: integer
+          description: 本次实际使用的偏移量。
         last_event_id:
           type: integer
           format: int64
