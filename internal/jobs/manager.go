@@ -277,20 +277,12 @@ func (m *Manager) Retry(ctx context.Context, jobID string) error {
 
 	// Reset unfinished items before the job becomes claimable, so a worker
 	// picking it up right after the enqueue never sees stale failed state.
-	items, err := m.store.ListItems(ctx, jobID)
-	if err != nil {
-		return err
-	}
+	// One batch statement rather than per-item updates: this runs while
+	// holding both scheduling locks, and a large collection must not stall
+	// every other queue operation for hundreds of round-trips.
 	now := time.Now().UTC()
-	for _, item := range items {
-		if item.Finished() {
-			continue
-		}
-		item.ResetForRetry()
-		item.UpdatedAt = now
-		if err := m.store.UpdateItem(ctx, item); err != nil {
-			return err
-		}
+	if err := m.store.ResetUnfinishedItems(ctx, jobID, now); err != nil {
+		return err
 	}
 
 	job.Status = domain.JobQueued
@@ -299,8 +291,13 @@ func (m *Manager) Retry(ctx context.Context, jobID string) error {
 	if err := m.store.UpdateJob(ctx, job); err != nil {
 		return err
 	}
+	// The job row already says queued, so the enqueue below must happen even
+	// if recording the event fails — otherwise the job would be stranded in
+	// queued with no worker ever picking it up (and further retries refused),
+	// until a restart's RecoverUnfinished. Mirrors SubmitBatch, which also
+	// treats the job_queued event as best-effort once the row is committed.
 	if err := m.Event(ctx, domain.Event{JobID: jobID, Type: "job_retried", Message: "job re-queued to retry failed tracks"}); err != nil {
-		return err
+		m.logger.Error("record job_retried event", "job_id", jobID, "error", err)
 	}
 	m.queue <- jobID
 	return nil

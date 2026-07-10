@@ -329,6 +329,22 @@ func (s *Store) UpdateItem(ctx context.Context, item domain.JobItem) error {
 	return err
 }
 
+// ResetUnfinishedItems returns every item of jobID that has not finished
+// (i.e. is neither completed nor skipped_existing) to its pre-download queued
+// state in a single statement, so callers holding scheduling locks don't pay
+// one round-trip per item on large collections. The cleared fields must stay
+// in sync with domain.JobItem.ResetForRetry, which is the per-item form of
+// the same reset.
+func (s *Store) ResetUnfinishedItems(ctx context.Context, jobID string, updatedAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE job_items
+		SET status=?, progress=0, codec='', bit_depth=0, sample_rate=0, bitrate=0,
+			retry_kind='', attempt=0, max_attempts=0, status_message='', error='', updated_at=?
+		WHERE job_id=? AND status NOT IN (?,?)`,
+		string(domain.ItemQueued), formatTime(updatedAt), jobID,
+		string(domain.ItemCompleted), string(domain.ItemSkipped))
+	return err
+}
+
 // DeleteItem removes a single item row. Used when a re-run of a job (retry or
 // post-restart requeue) resolves a collection that no longer contains a track
 // a previous run created an item for, so stale rows don't distort the job's
