@@ -22,11 +22,11 @@ jobs:
     if: vars.CODEX_AUTO_REVIEW != 'false' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
-      - name: Comment "codex review" as An0nCh1hayaa
+      - name: Comment "@codex review" as An0nCh1hayaa
         env:
           GH_TOKEN: ${{ secrets.CODEX_REVIEW_PAT }}
           REVIEW_BODY: |
-            codex review
+            @codex review
 
             请重点关注：
             - 正确性问题（并发、错误处理、边界条件）
