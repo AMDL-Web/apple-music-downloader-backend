@@ -77,6 +77,11 @@ func (d *Downloader) ValidateRequest(ctx context.Context, url string) (jobs.Vali
 }
 
 func (d *Downloader) validateStorefront(ctx context.Context, storefront string) error {
+	if d.cfg.Simulate.Enabled {
+		// Test mode never decrypts, so it must not depend on a running
+		// wrapper/decryptor or its supported-storefront list.
+		return nil
+	}
 	status, err := d.wrapper.Status(ctx)
 	if err != nil {
 		message := fmt.Sprintf("failed to check decryptor status: %v", err)
@@ -134,7 +139,9 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	tracks := resolved.Tracks
 	collectionName := resolved.Name
 	collectionID := resolved.ID
-	if parsed.Type == applemusic.TypePlaylist && d.cfg.Download.SavePlaylistCover && len(tracks) > 0 {
+	// Simulate mode never fetches artwork or writes files, so the standalone
+	// playlist cover is skipped along with the per-track disk writes.
+	if parsed.Type == applemusic.TypePlaylist && d.cfg.Download.SavePlaylistCover && len(tracks) > 0 && !d.cfg.Simulate.Enabled {
 		folder := playlistFolderPath(d.cfg, tracks[0], collectionName, collectionID)
 		if coverErr := d.savePlaylistCover(ctx, resolved.ArtworkURL, folder); coverErr != nil {
 			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, Type: "standalone_cover_failed", Phase: "playlist_cover", Message: coverErr.Error()})
@@ -391,6 +398,13 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	item.Album = song.AlbumName
 	item.ArtworkURL = firstNonEmpty(song.ArtworkURL, song.AlbumArtworkURL, item.ArtworkURL)
 	_ = reporter.UpdateItem(ctx, item)
+
+	if d.cfg.Simulate.Enabled {
+		// Test mode: real catalog metadata was resolved above, but everything
+		// from here on (covers, lyrics, media selection, transfer, decrypt,
+		// disk writes) is simulated with an identical status/event lifecycle.
+		return d.simulateTrack(ctx, job, &item, song, collectionType, collectionName, collectionID, playlistIndex, folderArtist, reporter, set)
+	}
 
 	coverAnchorPath := outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, "", "")
 	if d.cfg.Download.SaveAlbumCover || d.cfg.Download.SaveArtistCover {
