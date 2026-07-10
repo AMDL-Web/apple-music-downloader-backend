@@ -344,7 +344,7 @@ func (s *Server) retryDownload(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, db.ErrJobNotFound):
 			writeError(w, http.StatusNotFound, err)
-		case errors.Is(err, jobs.ErrJobNotRetryable), errors.Is(err, db.ErrDuplicateActive):
+		case errors.Is(err, jobs.ErrJobNotRetryable), errors.Is(err, jobs.ErrJobFinalizing), errors.Is(err, db.ErrDuplicateActive):
 			writeError(w, http.StatusConflict, err)
 		case errors.Is(err, jobs.ErrQueueFull):
 			writeError(w, http.StatusServiceUnavailable, err)

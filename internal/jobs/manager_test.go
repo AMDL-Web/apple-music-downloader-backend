@@ -1024,3 +1024,48 @@ func TestRetryRefusesNonFailedMissingAndDuplicateJobs(t *testing.T) {
 		t.Fatalf("queue length = %d, want 0 after refused retries", len(manager.queue))
 	}
 }
+
+// TestRetryRefusesWhilePreviousRunIsFinalizing covers the window where the
+// job row already reads failed but the old worker's deferred cleanup has not
+// removed its cancels entry yet (or Cancel's queued path is still dispatching
+// hooks under a finalizing mark). Retrying inside that window would let the
+// old worker's deferred delete remove the new run's cancel registration.
+func TestRetryRefusesWhilePreviousRunIsFinalizing(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	job := domain.Job{ID: "job-finalizing", Input: "in", Type: "song", CanonicalKey: "song:cn:fin", Status: domain.JobFailed, CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(store, events.NewHub(), recoveryProcessor{}, 1, slog.Default())
+
+	manager.mu.Lock()
+	manager.cancels[job.ID] = func() {}
+	manager.mu.Unlock()
+	if err := manager.Retry(ctx, job.ID); !errors.Is(err, ErrJobFinalizing) {
+		t.Fatalf("Retry(with lingering cancels entry) = %v, want ErrJobFinalizing", err)
+	}
+
+	manager.mu.Lock()
+	delete(manager.cancels, job.ID)
+	manager.finalizing[job.ID] = true
+	manager.mu.Unlock()
+	if err := manager.Retry(ctx, job.ID); !errors.Is(err, ErrJobFinalizing) {
+		t.Fatalf("Retry(while finalizing) = %v, want ErrJobFinalizing", err)
+	}
+
+	manager.mu.Lock()
+	delete(manager.finalizing, job.ID)
+	manager.mu.Unlock()
+	if err := manager.Retry(ctx, job.ID); err != nil {
+		t.Fatalf("Retry(after finalize finished) = %v, want success", err)
+	}
+	if len(manager.queue) != 1 || <-manager.queue != job.ID {
+		t.Fatal("retry after finalize did not enqueue the job")
+	}
+}

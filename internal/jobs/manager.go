@@ -46,6 +46,14 @@ var ErrQueueFull = errors.New("job queue is full")
 // completed/cancelled jobs have nothing to retry.
 var ErrJobNotRetryable = errors.New("only failed jobs can be retried")
 
+// ErrJobFinalizing is returned by Retry when the job's row already reads
+// failed but its previous run has not fully wound down (the worker's cancel
+// registration is still in place, or a finalize sequence is dispatching
+// hooks). Retrying in that window would let the old worker's deferred
+// cleanup delete the new run's cancel entry. The window is tiny; callers can
+// simply retry shortly.
+var ErrJobFinalizing = errors.New("job is still finalizing its previous run; retry again shortly")
+
 type Reporter interface {
 	SetJob(ctx context.Context, job domain.Job) error
 	AddItem(ctx context.Context, item domain.JobItem) error
@@ -262,6 +270,16 @@ func (m *Manager) Retry(ctx context.Context, jobID string) error {
 	}
 	if job.Status != domain.JobFailed {
 		return ErrJobNotRetryable
+	}
+	// The failed status is persisted before the old worker's deferred cleanup
+	// removes its m.cancels entry (and before Cancel's queued path clears its
+	// finalizing mark), so a retry racing that window could requeue the job,
+	// let a new worker register its cancel func, and then have the old
+	// worker's deferred delete remove the new entry — leaving Cancel/Delete
+	// blind to the running retry. Same guard as Delete: refuse while either
+	// map still knows the job.
+	if m.cancels[jobID] != nil || m.finalizing[jobID] {
+		return ErrJobFinalizing
 	}
 	// The partial unique index on canonical_key allows only one queued/running
 	// job per key; refuse the retry when the same input was already

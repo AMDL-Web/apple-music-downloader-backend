@@ -402,7 +402,10 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: 任务不处于 failed 状态，或相同链接已存在排队/进行中的任务。
+          description: |
+            任务不处于 failed 状态；或相同链接已存在排队/进行中的任务；
+            或上一次运行仍在收尾（终态刚写入、worker 清理/hook 分发还未完成，
+            窗口极短，稍后重试即可）。
           content:
             application/json:
               schema:
