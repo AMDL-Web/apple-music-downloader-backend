@@ -83,12 +83,25 @@ func (f fakeDownloaderCatalog) FetchCover(context.Context, []string, string, str
 }
 
 type recordingReporter struct {
-	events []domain.Event
-	items  []domain.JobItem
+	events   []domain.Event
+	items    []domain.JobItem
+	existing []domain.JobItem
+	added    []domain.JobItem
+	removed  []string
 }
 
-func (*recordingReporter) SetJob(context.Context, domain.Job) error      { return nil }
-func (*recordingReporter) AddItem(context.Context, domain.JobItem) error { return nil }
+func (*recordingReporter) SetJob(context.Context, domain.Job) error { return nil }
+func (r *recordingReporter) AddItem(_ context.Context, item domain.JobItem) error {
+	r.added = append(r.added, item)
+	return nil
+}
+func (r *recordingReporter) RemoveItem(_ context.Context, itemID string) error {
+	r.removed = append(r.removed, itemID)
+	return nil
+}
+func (r *recordingReporter) ListItems(context.Context, string) ([]domain.JobItem, error) {
+	return r.existing, nil
+}
 func (r *recordingReporter) UpdateItem(_ context.Context, item domain.JobItem) error {
 	r.items = append(r.items, item)
 	return nil
@@ -331,4 +344,65 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestSyncJobItemsReusesPreviousRowsAndSkipsFinishedTracks(t *testing.T) {
+	reporter := &recordingReporter{existing: []domain.JobItem{
+		{ID: "item-done", JobID: "job-1", AdamID: "song-1", Kind: "song", Index: 1, Status: domain.ItemCompleted, Progress: 1, Codec: "alac"},
+		{ID: "item-failed", JobID: "job-1", AdamID: "song-2", Kind: "song", Index: 2, Status: domain.ItemFailed, Progress: 0.4, Codec: "alac", RetryKind: "download", Attempt: 3, MaxAttempts: 3, Error: "boom"},
+		{ID: "item-stale", JobID: "job-1", AdamID: "song-gone", Kind: "song", Index: 3, Status: domain.ItemFailed},
+	}}
+	tracks := []applemusic.Song{
+		{ID: "song-1", Name: "One"},
+		{ID: "song-2", Name: "Two"},
+		{ID: "song-3", Name: "Three"},
+	}
+
+	items, finished, err := syncJobItems(context.Background(), domain.Job{ID: "job-1"}, tracks, reporter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !finished[0] || finished[1] || finished[2] {
+		t.Fatalf("finished = %v, want only the completed track flagged", finished)
+	}
+	if items[0].ID != "item-done" || items[0].Status != domain.ItemCompleted {
+		t.Fatalf("completed item = %+v, want reused item-done untouched", items[0])
+	}
+	if items[1].ID != "item-failed" {
+		t.Fatalf("failed track item id = %s, want reused item-failed", items[1].ID)
+	}
+	if items[1].Status != domain.ItemQueued || items[1].Progress != 0 || items[1].Codec != "" || items[1].Error != "" || items[1].Attempt != 0 {
+		t.Fatalf("failed item was not reset for retry: %+v", items[1])
+	}
+	if len(reporter.added) != 1 || reporter.added[0].AdamID != "song-3" || reporter.added[0].Status != domain.ItemQueued {
+		t.Fatalf("added items = %+v, want one fresh queued item for song-3", reporter.added)
+	}
+	if items[2].ID != reporter.added[0].ID {
+		t.Fatalf("new track item id = %s, want the freshly added row", items[2].ID)
+	}
+	if len(reporter.removed) != 1 || reporter.removed[0] != "item-stale" {
+		t.Fatalf("removed items = %v, want [item-stale]", reporter.removed)
+	}
+}
+
+func TestSyncJobItemsFirstRunCreatesAllItems(t *testing.T) {
+	reporter := &recordingReporter{}
+	tracks := []applemusic.Song{{ID: "song-1", Name: "One"}, {ID: "song-2", Name: "Two"}}
+
+	items, finished, err := syncJobItems(context.Background(), domain.Job{ID: "job-1"}, tracks, reporter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || len(reporter.added) != 2 || len(reporter.removed) != 0 {
+		t.Fatalf("items=%d added=%d removed=%d, want 2/2/0", len(items), len(reporter.added), len(reporter.removed))
+	}
+	for i := range items {
+		if finished[i] {
+			t.Fatalf("finished[%d] = true on first run", i)
+		}
+		if items[i].Status != domain.ItemQueued || items[i].Index != i+1 {
+			t.Fatalf("item %d = %+v, want queued at index %d", i, items[i], i+1)
+		}
+	}
 }

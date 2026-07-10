@@ -85,6 +85,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/downloads/{id}", s.getDownload)
 	mux.HandleFunc("DELETE /api/v1/downloads/{id}", s.deleteDownload)
 	mux.HandleFunc("POST /api/v1/downloads/{id}/cancel", s.cancelDownload)
+	mux.HandleFunc("POST /api/v1/downloads/{id}/retry", s.retryDownload)
 	mux.HandleFunc("GET /api/v1/downloads/{id}/events", s.events)
 	mux.HandleFunc("GET /api/v1/downloads/{id}/events/ws", s.eventsWS)
 	return cors(mux)
@@ -333,6 +334,26 @@ func (s *Server) cancelDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+}
+
+// retryDownload re-queues a failed job. Only tracks that did not finish are
+// downloaded again: completed/skipped items are preserved as-is, failed ones
+// are reset to queued and re-processed.
+func (s *Server) retryDownload(w http.ResponseWriter, r *http.Request) {
+	if err := s.manager.Retry(r.Context(), r.PathValue("id")); err != nil {
+		switch {
+		case errors.Is(err, db.ErrJobNotFound):
+			writeError(w, http.StatusNotFound, err)
+		case errors.Is(err, jobs.ErrJobNotRetryable), errors.Is(err, jobs.ErrJobFinalizing), errors.Is(err, db.ErrDuplicateActive):
+			writeError(w, http.StatusConflict, err)
+		case errors.Is(err, jobs.ErrQueueFull):
+			writeError(w, http.StatusServiceUnavailable, err)
+		default:
+			writeError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
 }
 
 func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
