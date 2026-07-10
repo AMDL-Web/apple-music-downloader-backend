@@ -118,7 +118,7 @@ func templateValue(key string, ctx pathTemplateContext) (string, bool) {
 	switch key {
 	case "SongId":
 		return song.ID, true
-	case "SongNumer", "SongNumber":
+	case "SongNumber":
 		return strconv.Itoa(max(1, ctx.playlistIndex)), true
 	case "SongName":
 		return song.Name, true
