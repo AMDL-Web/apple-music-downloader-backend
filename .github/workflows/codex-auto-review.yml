@@ -17,6 +17,10 @@ on:
   pull_request:
     types: [opened]
 
+# 这个 job 不 checkout 代码，也不使用默认 GITHUB_TOKEN（用自定义 PAT 覆盖了），
+# 所以显式收紧成零权限，满足最小权限原则。
+permissions: {}
+
 jobs:
   trigger-codex-review:
     if: vars.CODEX_AUTO_REVIEW != 'false' && !github.event.pull_request.draft
