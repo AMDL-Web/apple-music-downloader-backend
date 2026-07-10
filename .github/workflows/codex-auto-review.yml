@@ -1,0 +1,41 @@
+name: Codex Auto Review Trigger
+
+# 自动触发 Codex 审查开关：仓库变量 CODEX_AUTO_REVIEW
+# - 未设置或设为其他值：开启（默认开）
+# - 设为 "false"：关闭
+# 修改方式：Settings → Secrets and variables → Actions → Variables，
+# 或命令行：gh variable set CODEX_AUTO_REVIEW --body false
+#
+# 原理：Codex 的 GitHub 审查集成只认 An0nCh1hayaa 这个账号发出的评论来触发，
+# 默认的 GITHUB_TOKEN 发出的评论会显示为 github-actions[bot]，Codex 不会响应。
+# 所以这里改用该账号的 Personal Access Token（存为 secret CODEX_REVIEW_PAT）去发评论，
+# 让评论以该账号身份发出。PAT 需要对本仓库具备 Pull requests: Read and write 权限。
+#
+# 只在 PR 创建（opened）时触发一次，后续 push（synchronize）不会重复评论。
+
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  trigger-codex-review:
+    if: vars.CODEX_AUTO_REVIEW != 'false' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment "codex review" as An0nCh1hayaa
+        env:
+          GH_TOKEN: ${{ secrets.CODEX_REVIEW_PAT }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "$(cat <<'EOF'
+codex review
+
+请重点关注：
+- 正确性问题（并发、错误处理、边界条件）
+- 是否符合仓库架构与 CLAUDE.md 中的约定
+- config.yaml / openapi.yaml 是否随改动同步更新
+- 是否混入本地路径、密钥等不适合开源仓库的内容
+- 是否存在破坏性改动（参数名、端口等）
+EOF
+)"
