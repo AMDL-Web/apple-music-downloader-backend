@@ -39,10 +39,7 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 	// mode must not delete a previously real-downloaded file even under force.
 	existingSkip := func(outPath string) bool {
 		item.OutputPath = outPath
-		if _, statErr := os.Stat(outPath); statErr != nil {
-			return false
-		}
-		if !job.Force {
+		if _, statErr := os.Stat(outPath); statErr == nil && !job.Force {
 			item.Status = domain.ItemSkipped
 			item.Progress = 1
 			item.RetryKind = ""
@@ -53,7 +50,11 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_skipped", Message: "already exists"})
 			return true
 		}
-		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_overwrite", Message: "force overwrite enabled"})
+		if job.Force {
+			// The real path deletes stale outputs here; simulate mode only
+			// emits the same event and never touches the disk.
+			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_overwrite", Message: "force overwrite enabled"})
+		}
 		return false
 	}
 	var lastErr error
