@@ -68,7 +68,7 @@ func TestOutputPathPlaylistUsesFlatFolder(t *testing.T) {
 	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
 	cfg.Download.PlaylistFolderFormat = "{PlaylistName}"
-	cfg.Download.PlaylistSongFileFormat = "{SongNumer:02d}. {SongName}"
+	cfg.Download.PlaylistSongFileFormat = "{SongNumber:02d}. {SongName}"
 
 	song := applemusic.Song{ArtistName: "Artist A", AlbumName: "Album X", Name: "Track One"}
 	got := outputPath(cfg, song, applemusic.TypePlaylist, 3, "", "My Playlist", "", "", "")
@@ -149,15 +149,29 @@ func TestOutputPathExpandsCompatibilityMetadataVariables(t *testing.T) {
 	}
 }
 
-func TestOutputPathExpandsPlaylistIdAndSongNumberAlias(t *testing.T) {
+func TestOutputPathExpandsPlaylistIdAndSongNumber(t *testing.T) {
 	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
 	cfg.Download.PlaylistFolderFormat = "{PlaylistName} ({PlaylistId})"
-	cfg.Download.PlaylistSongFileFormat = "{SongNumber:02d}. {SongNumer:02d}. {ArtistName} - {SongName}"
+	cfg.Download.PlaylistSongFileFormat = "{SongNumber:02d}. {ArtistName} - {SongName}"
 
 	song := applemusic.Song{ArtistName: "Artist A", AlbumName: "Album X", Name: "Track One"}
 	got := outputPath(cfg, song, applemusic.TypePlaylist, 7, "", "My Playlist", "pl.123", "", "")
-	want := filepath.Join("downloads", "playlists", "My Playlist (pl.123)", "07. 07. Artist A - Track One.m4a")
+	want := filepath.Join("downloads", "playlists", "My Playlist (pl.123)", "07. Artist A - Track One.m4a")
+	if got != want {
+		t.Fatalf("outputPath() = %q, want %q", got, want)
+	}
+}
+
+func TestOutputPathDoesNotExpandRemovedSongNumerMisspelling(t *testing.T) {
+	cfg := config.Default()
+	cfg.Download.DownloadsDir = "downloads"
+	cfg.Download.PlaylistFolderFormat = "{PlaylistName}"
+	cfg.Download.PlaylistSongFileFormat = "{SongNumer:02d}. {SongName}"
+
+	song := applemusic.Song{ArtistName: "Artist A", AlbumName: "Album X", Name: "Track One"}
+	got := outputPath(cfg, song, applemusic.TypePlaylist, 7, "", "My Playlist", "", "", "")
+	want := filepath.Join("downloads", "playlists", "My Playlist", "{SongNumer_02d}. Track One.m4a")
 	if got != want {
 		t.Fatalf("outputPath() = %q, want %q", got, want)
 	}

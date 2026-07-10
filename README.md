@@ -181,7 +181,7 @@ data/downloads/artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4
 歌单默认保存到：
 
 ```text
-data/downloads/playlists/{PlaylistName}/{SongNumer:02d}. {SongName}.m4a
+data/downloads/playlists/{PlaylistName}/{SongNumber:02d}. {SongName}.m4a
 ```
 
 四个类型目录名可分别通过 `download.songs_folder_name`、`download.albums_folder_name`、`download.playlists_folder_name`、`download.artists_folder_name` 自定义。

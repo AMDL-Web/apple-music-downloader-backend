@@ -152,7 +152,7 @@ func Default() Config {
 			TempDir: "data/tmp", CoverSize: "5000x5000", CoverFormat: "jpg",
 			EmbedCover: true, EmbedLyrics: true, LyricsFormat: "lrc", LyricsType: "lyrics", LyricsExtras: []string{},
 			ArtistFolderFormat: "{ArtistName}", AlbumFolderFormat: "{AlbumName}", SongFileFormat: "{TrackNumber:02d}. {SongName}",
-			PlaylistFolderFormat: "{PlaylistName}", PlaylistSongFileFormat: "{SongNumer:02d}. {ArtistName} - {SongName}",
+			PlaylistFolderFormat: "{PlaylistName}", PlaylistSongFileFormat: "{SongNumber:02d}. {ArtistName} - {SongName}",
 			ALACMaxSampleRate: 192000, ALACMaxBitDepth: 24, CheckIntegrity: true,
 		},
 		Tools:    ToolsConfig{FFmpeg: "ffmpeg"},
@@ -208,6 +208,11 @@ func (c Config) validate() error {
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s cannot be empty", name)
+		}
+		// {SongNumer} was a historical misspelling of {SongNumber}; reject it
+		// loudly instead of leaving it in output paths as a literal string.
+		if strings.Contains(value, "{SongNumer}") || strings.Contains(value, "{SongNumer:") {
+			return fmt.Errorf("%s contains removed template variable {SongNumer}; use {SongNumber} instead", name)
 		}
 	}
 	switch c.Download.CoverFormat {

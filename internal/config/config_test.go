@@ -157,6 +157,24 @@ func TestLoadRejectsExplicitAACLCInPriority(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsRemovedSongNumerMisspelling(t *testing.T) {
+	for name, body := range map[string]string{
+		"playlist_song_file_format padded": "download:\n  playlist_song_file_format: \"{SongNumer:02d}. {SongName}\"\n",
+		"song_file_format bare":            "download:\n  song_file_format: \"{SongNumer}. {SongName}\"\n",
+	} {
+		path := writeConfig(t, body)
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "{SongNumber}") {
+			t.Fatalf("Load(%s) error = %v, want {SongNumer} rejection pointing to {SongNumber}", name, err)
+		}
+	}
+}
+
+func TestDefaultConfigPassesValidation(t *testing.T) {
+	if err := Default().validate(); err != nil {
+		t.Fatalf("Default().validate() error = %v", err)
+	}
+}
+
 func TestLoadRejectsEmptyArtistsFolderName(t *testing.T) {
 	path := writeConfig(t, "download:\n  artists_folder_name: \"\"\n")
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "artists_folder_name") {
