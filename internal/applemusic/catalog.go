@@ -465,7 +465,8 @@ func mapSong(raw catalogSongData) Song {
 		ID: raw.ID, Name: raw.Attributes.Name, ArtistName: raw.Attributes.ArtistName, AlbumName: raw.Attributes.AlbumName,
 		ComposerName: raw.Attributes.ComposerName, GenreNames: raw.Attributes.GenreNames, ReleaseDate: raw.Attributes.ReleaseDate,
 		TrackNumber: raw.Attributes.TrackNumber, DiscNumber: raw.Attributes.DiscNumber, ISRC: raw.Attributes.ISRC,
-		ContentRating: raw.Attributes.ContentRating, HasLyrics: raw.Attributes.HasLyrics || raw.Attributes.HasTimeSyncedLyrics,
+		DurationInMillis: raw.Attributes.DurationInMillis,
+		ContentRating:    raw.Attributes.ContentRating, HasLyrics: raw.Attributes.HasLyrics || raw.Attributes.HasTimeSyncedLyrics,
 		ArtworkURL: raw.Attributes.Artwork.URL, EnhancedHLS: raw.Attributes.ExtendedAssetURLs.EnhancedHLS,
 	}
 	if len(raw.Relationships.Albums.Data) > 0 {

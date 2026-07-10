@@ -399,6 +399,7 @@ func TestOpenAPISpecification(t *testing.T) {
 		"/api/v1/downloads/events/ws":          {"get"},
 		"/api/v1/downloads/{job_id}":           {"get", "delete"},
 		"/api/v1/downloads/{job_id}/cancel":    {"post"},
+		"/api/v1/downloads/{job_id}/retry":     {"post"},
 		"/api/v1/downloads/{job_id}/events":    {"get"},
 		"/api/v1/downloads/{job_id}/events/ws": {"get"},
 	}
@@ -577,12 +578,18 @@ func TestListDownloadsDerivesProgressFromItems(t *testing.T) {
 	var resp struct {
 		Downloads   []domain.Job `json:"downloads"`
 		LastEventID int64        `json:"last_event_id"`
+		Total       int          `json:"total"`
+		Limit       int          `json:"limit"`
+		Offset      int          `json:"offset"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
 	if len(resp.Downloads) != 1 {
 		t.Fatalf("len(downloads) = %d, want 1", len(resp.Downloads))
+	}
+	if resp.Total != 1 || resp.Limit != 50 || resp.Offset != 0 {
+		t.Fatalf("pagination meta total=%d limit=%d offset=%d, want 1/50/0", resp.Total, resp.Limit, resp.Offset)
 	}
 	// completed + skipped = 2 done, 1 failed — the persisted job row still has
 	// DoneItems=0 (never finalized), so the list must count from job_items.
@@ -591,6 +598,135 @@ func TestListDownloadsDerivesProgressFromItems(t *testing.T) {
 	}
 	if resp.Downloads[0].FailedItems != 1 {
 		t.Fatalf("failed_items = %d, want 1", resp.Downloads[0].FailedItems)
+	}
+}
+
+func TestListDownloadsQueryFilters(t *testing.T) {
+	server := newTestServerWithManager(t)
+	ctx := context.Background()
+	base := time.Date(2024, 7, 1, 10, 0, 0, 0, time.UTC)
+	jobs := []domain.Job{
+		{ID: "a", Input: "https://music.apple.com/us/song/alpha/1", Type: "song", Storefront: "us", Title: "Alpha", CanonicalKey: "song|us|1", Status: domain.JobCompleted, CreatedAt: base, UpdatedAt: base.Add(time.Hour)},
+		{ID: "b", Input: "https://music.apple.com/cn/album/beta/2", Type: "album", Storefront: "cn", Title: "Beta", CanonicalKey: "album|cn|2", Status: domain.JobFailed, CreatedAt: base.Add(2 * time.Hour), UpdatedAt: base.Add(3 * time.Hour)},
+		{ID: "c", Input: "https://music.apple.com/us/playlist/gamma/3", Type: "playlist", Storefront: "us", Title: "Gamma", CanonicalKey: "playlist|us|3", Status: domain.JobRunning, CreatedAt: base.Add(4 * time.Hour), UpdatedAt: base.Add(5 * time.Hour)},
+	}
+	for _, job := range jobs {
+		if err := server.store.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads?status=failed,cancelled&limit=10&offset=0", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var resp struct {
+		Downloads []domain.Job `json:"downloads"`
+		Total     int          `json:"total"`
+		Limit     int          `json:"limit"`
+		Offset    int          `json:"offset"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 1 || len(resp.Downloads) != 1 || resp.Downloads[0].ID != "b" || resp.Limit != 10 {
+		t.Fatalf("status filter resp = %+v", resp)
+	}
+
+	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads?type=song&type=playlist&storefront=us&sort=created_at&order=asc", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 2 || len(resp.Downloads) != 2 || resp.Downloads[0].ID != "a" || resp.Downloads[1].ID != "c" {
+		t.Fatalf("type+storefront+sort resp = %+v", resp)
+	}
+
+	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads?q=beta", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 1 || resp.Downloads[0].ID != "b" {
+		t.Fatalf("q filter resp = %+v", resp)
+	}
+
+	recorder = requestJSON(t, server.Routes(), http.MethodGet,
+		"/api/v1/downloads?created_after=2024-07-01T11:00:00Z&created_before=2024-07-01T13:00:00Z", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 1 || resp.Downloads[0].ID != "b" {
+		t.Fatalf("created window resp = %+v", resp)
+	}
+
+	// Whole-second created_after must include a job created later in that same
+	// second (sub-second fraction). This is the lexicographic TEXT-compare bug.
+	fracJob := domain.Job{
+		ID: "frac", Input: "https://music.apple.com/us/song/frac/9", Type: "song", Storefront: "us",
+		Title: "Frac", CanonicalKey: "song|us|9", Status: domain.JobCompleted,
+		CreatedAt: time.Date(2024, 7, 1, 16, 0, 0, 500000000, time.UTC),
+		UpdatedAt: time.Date(2024, 7, 1, 16, 0, 0, 500000000, time.UTC),
+	}
+	if err := server.store.CreateJob(ctx, fracJob); err != nil {
+		t.Fatal(err)
+	}
+	recorder = requestJSON(t, server.Routes(), http.MethodGet,
+		"/api/v1/downloads?created_after=2024-07-01T16:00:00Z&created_before=2024-07-01T16:00:00Z", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 0 {
+		t.Fatalf("created_before=exact-second should exclude frac job, got %+v", resp)
+	}
+	recorder = requestJSON(t, server.Routes(), http.MethodGet,
+		"/api/v1/downloads?created_after=2024-07-01T16:00:00Z&limit=10", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 1 || len(resp.Downloads) != 1 || resp.Downloads[0].ID != "frac" {
+		t.Fatalf("created_after whole-second must include frac job, got %+v", resp)
+	}
+
+	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads?limit=1&offset=1&sort=created_at&order=asc", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	// a,b,c,frac — offset 1 of created_at asc is still b.
+	if resp.Total != 4 || resp.Offset != 1 || len(resp.Downloads) != 1 || resp.Downloads[0].ID != "b" {
+		t.Fatalf("offset page resp = %+v", resp)
+	}
+
+	for _, bad := range []string{
+		"/api/v1/downloads?limit=0",
+		"/api/v1/downloads?offset=-1",
+		"/api/v1/downloads?status=nope",
+		"/api/v1/downloads?type=video",
+		"/api/v1/downloads?sort=title",
+		"/api/v1/downloads?order=up",
+		"/api/v1/downloads?created_after=not-a-date",
+		"/api/v1/downloads?created_after=2024-07-02&created_before=2024-07-01",
+	} {
+		recorder = requestJSON(t, server.Routes(), http.MethodGet, bad, "")
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("%s status = %d, want 400; body = %s", bad, recorder.Code, recorder.Body.String())
+		}
 	}
 }
 
@@ -1438,5 +1574,69 @@ func TestDeveloperTokenSigningError(t *testing.T) {
 	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/developer-token", "")
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestRetryDownloadRequeuesFailedJobAndKeepsFinishedItems(t *testing.T) {
+	server := newTestServerWithManager(t)
+	ctx := context.Background()
+	job := domain.Job{ID: "job1", Input: "album|us|1", Type: "album", CanonicalKey: "album:us:1", Status: domain.JobFailed, Error: "boom"}
+	if err := server.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []domain.JobItem{
+		{ID: "item1", JobID: job.ID, AdamID: "s1", Kind: "song", Index: 1, Status: domain.ItemCompleted, Progress: 1},
+		{ID: "item2", JobID: job.ID, AdamID: "s2", Kind: "song", Index: 2, Status: domain.ItemFailed, Error: "boom"},
+	} {
+		if err := server.store.CreateItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads/"+job.ID+"/retry", "")
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["status"] != "queued" {
+		t.Fatalf("body = %s, want status queued", recorder.Body.String())
+	}
+	got, err := server.store.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.JobQueued || got.Error != "" {
+		t.Fatalf("job after retry = status %s error %q, want queued with empty error", got.Status, got.Error)
+	}
+	items, err := server.store.ListItems(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items[0].Status != domain.ItemCompleted {
+		t.Fatalf("completed item status = %s, want untouched completed", items[0].Status)
+	}
+	if items[1].Status != domain.ItemQueued || items[1].Error != "" {
+		t.Fatalf("failed item after retry = %+v, want queued with empty error", items[1])
+	}
+}
+
+func TestRetryDownloadRejectsNonFailedAndMissingJobs(t *testing.T) {
+	server := newTestServerWithManager(t)
+	ctx := context.Background()
+	completed := domain.Job{ID: "job-done", Input: "song|us|1", Type: "song", CanonicalKey: "song:us:1", Status: domain.JobCompleted}
+	if err := server.store.CreateJob(ctx, completed); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads/"+completed.ID+"/retry", "")
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("retry completed job status = %d, want 409", recorder.Code)
+	}
+	recorder = requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads/no-such-job/retry", "")
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("retry missing job status = %d, want 404", recorder.Code)
 	}
 }

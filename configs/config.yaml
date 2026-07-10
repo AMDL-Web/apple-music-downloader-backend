@@ -126,3 +126,22 @@ tools:
   # now handled in-process via the Go mp4ff/go-mp4tag libraries, so gpac,
   # MP4Box and the Bento4 tools (mp4extract/mp4edit) are no longer required.
   ffmpeg: "ffmpeg"
+
+simulate:
+  # bool: true enables local test mode. The encrypted media transfer, decryption, remux, and disk
+  # writes are simulated: nothing is downloaded or decrypted, ffmpeg is not needed, and no output
+  # file is written. Catalog metadata and enhanced-HLS media selection still run for real, so
+  # titles, albums, artwork, and the reported codec quality (bit depth / sample rate / bitrate) are
+  # authentic values, and selection failures fall back through quality_priority exactly like a real
+  # download. Every API response, job/item status, progress value, status message, and SSE event
+  # matches a real download. The wrapper decryptor status/storefront check is skipped so jobs can be
+  # submitted without a running wrapper; note that with developer-token signing enabled manifests
+  # normally come from the wrapper, so without one selection falls back to a faked AAC-LC.
+  # false runs real downloads.
+  enabled: false
+  # integer KB/s (kilobytes per second): lower bound of the randomized simulated transfer speed.
+  # Must be >= 1 when simulate mode is enabled. Default: 512.
+  min_speed_kbps: 512
+  # integer KB/s (kilobytes per second): upper bound of the randomized simulated transfer speed.
+  # Must be >= min_speed_kbps. Default: 4096.
+  max_speed_kbps: 4096
