@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -331,4 +333,20 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestCleanupFailedOutputRemovesPartFile(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "song.m4a")
+	for _, path := range []string{outPath, outPath + partSuffix, filepath.Join(dir, "song.lrc"), filepath.Join(dir, "song.ttml")} {
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	cleanupFailedOutput(outPath)
+	for _, path := range []string{outPath, outPath + partSuffix, filepath.Join(dir, "song.lrc"), filepath.Join(dir, "song.ttml")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists after cleanupFailedOutput", path)
+		}
+	}
 }
