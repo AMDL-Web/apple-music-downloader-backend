@@ -100,8 +100,13 @@ download:
   # bool: true embeds track cover art into the MP4 metadata; false skips embedded cover art.
   embed_cover: true
   # bool: true saves standalone album cover files for album downloads; false skips them.
+  # The cover is written into the deepest directory segment of the task's path template
+  # that references {AlbumName} or {AlbumId}; if no segment does, it is written next to the tracks.
   save_album_cover: true
   # bool: true saves standalone artist cover files when available; false skips them.
+  # The cover is written into the deepest directory segment of the task's path template
+  # that references {ArtistName}, {UrlArtistName}, {AlbumArtist}, or {ArtistId};
+  # if no directory segment references the artist, the artist cover is skipped.
   save_artist_cover: true
   # bool: true saves standalone playlist cover files for playlist downloads; false skips them.
   save_playlist_cover: true

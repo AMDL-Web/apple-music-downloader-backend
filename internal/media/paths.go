@@ -85,6 +85,57 @@ func playlistFolderPath(cfg config.Config, song applemusic.Song, playlistName, p
 	return filepath.Dir(outputPath(cfg, song, applemusic.TypePlaylist, 1, "", playlistName, playlistID, "", ""))
 }
 
+// standaloneCoverDirs resolves where standalone album and artist covers live.
+// The path templates are free-form, so the directories are located by variable
+// reference instead of by counting levels: the album cover goes into the
+// deepest directory segment referencing the album ({AlbumName} or {AlbumId}),
+// falling back to the track's directory; the artist cover goes into the
+// deepest directory segment referencing the artist ({ArtistName},
+// {UrlArtistName}, {AlbumArtist}, or {ArtistId}), and artistDir is empty when
+// no segment does, in which case the artist cover is skipped.
+func standaloneCoverDirs(cfg config.Config, song applemusic.Song, collectionType applemusic.URLType, folderArtist string) (albumDir, artistDir string) {
+	ctx := pathTemplateContext{song: song}
+	if folderArtist != "" {
+		folderSong := song
+		folderSong.ArtistName = folderArtist
+		ctx.song = folderSong
+	}
+
+	segments := strings.Split(pathPattern(cfg, collectionType), "/")
+	dirSegments := segments[:len(segments)-1]
+	albumIdx, artistIdx := len(dirSegments)-1, -1
+	for i, segment := range dirSegments {
+		if segmentReferences(segment, "AlbumName", "AlbumId") {
+			albumIdx = i
+		}
+		if segmentReferences(segment, "ArtistName", "UrlArtistName", "AlbumArtist", "ArtistId") {
+			artistIdx = i
+		}
+	}
+
+	parts := make([]string, 0, len(dirSegments)+1)
+	parts = append(parts, cfg.Download.DownloadsDir)
+	for _, segment := range dirSegments {
+		parts = append(parts, safeName(formatPattern(segment, ctx)))
+	}
+	albumDir = filepath.Join(parts[:albumIdx+2]...)
+	if artistIdx >= 0 {
+		artistDir = filepath.Join(parts[:artistIdx+2]...)
+	}
+	return albumDir, artistDir
+}
+
+func segmentReferences(segment string, names ...string) bool {
+	for _, match := range templateVariablePattern.FindAllStringSubmatch(segment, -1) {
+		for _, name := range names {
+			if match[1] == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func pathPattern(cfg config.Config, collectionType applemusic.URLType) string {
 	switch collectionType {
 	case applemusic.TypeAlbum:

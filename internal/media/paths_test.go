@@ -162,6 +162,57 @@ func TestOutputPathSanitizesEachSegmentIndependently(t *testing.T) {
 	}
 }
 
+func TestStandaloneCoverDirsFollowTemplateVariables(t *testing.T) {
+	song := applemusic.Song{ArtistName: "Artist", AlbumName: "Album", AlbumRelease: "2024-05-17", Name: "Song"}
+
+	tests := []struct {
+		name       string
+		format     string
+		wantAlbum  string
+		wantArtist string
+	}{
+		{
+			name:       "default layout",
+			format:     "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+			wantAlbum:  filepath.Join("downloads", "albums", "Album Artist", "Album"),
+			wantArtist: filepath.Join("downloads", "albums", "Album Artist"),
+		},
+		{
+			name:       "extra level between artist and album",
+			format:     "albums/{ArtistName}/{ReleaseYear}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+			wantAlbum:  filepath.Join("downloads", "albums", "Album Artist", "2024", "Album"),
+			wantArtist: filepath.Join("downloads", "albums", "Album Artist"),
+		},
+		{
+			name:       "no artist segment skips artist cover",
+			format:     "albums/{AlbumName}/{TrackNumber:02d}. {SongName}",
+			wantAlbum:  filepath.Join("downloads", "albums", "Album"),
+			wantArtist: "",
+		},
+		{
+			name:       "no album segment falls back to track directory",
+			format:     "albums/{ArtistName}/{SongName}",
+			wantAlbum:  filepath.Join("downloads", "albums", "Album Artist"),
+			wantArtist: filepath.Join("downloads", "albums", "Album Artist"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Download.DownloadsDir = "downloads"
+			cfg.Download.AlbumPathFormat = tt.format
+
+			albumDir, artistDir := standaloneCoverDirs(cfg, song, applemusic.TypeAlbum, "Album Artist")
+			if albumDir != tt.wantAlbum {
+				t.Fatalf("album cover dir = %q, want %q", albumDir, tt.wantAlbum)
+			}
+			if artistDir != tt.wantArtist {
+				t.Fatalf("artist cover dir = %q, want %q", artistDir, tt.wantArtist)
+			}
+		})
+	}
+}
+
 func TestPlaylistFolderPathMatchesOutputPathFolder(t *testing.T) {
 	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
