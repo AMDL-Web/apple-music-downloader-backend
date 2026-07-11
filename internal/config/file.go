@@ -18,9 +18,10 @@ const exampleFileName = "config.example.yaml"
 
 // savedFileHeader tops every config file written by Save, pointing readers at
 // the example file since YAML marshaling cannot preserve comments.
-const savedFileHeader = `# Managed by the amdl backend: rewritten on every PUT /api/v1/config, so
-# manual edits survive only until the next API update (they ARE picked up on
-# restart). Key documentation lives in ` + exampleFileName + `.
+const savedFileHeader = `# Managed by the amdl backend: rewritten (comments dropped) on every
+# PUT /api/v1/config. Manual edits take effect on the next
+# GET /api/v1/config or restart; only a PUT issued before either of those
+# overwrites them. Key documentation lives in ` + exampleFileName + `.
 `
 
 // BootstrapFromExample creates the live config file at path from the sibling
