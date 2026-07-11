@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"amdl/internal/config"
 	"amdl/internal/db"
 	"amdl/internal/domain"
 	"amdl/internal/events"
@@ -151,7 +152,12 @@ func (m *Manager) RecoverUnfinished(ctx context.Context) (int, error) {
 // three-layer dedup: request-internal (canonical key seen earlier in this
 // batch), active-job lookup, and the DB's partial unique index as a backstop
 // against races. See docs/multi-link-submit-design.md.
-func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool) domain.BatchSubmitResponse {
+//
+// overrides, when non-nil, is attached to every job created from this batch
+// and overlays the download section of the runtime config while those jobs
+// run. Callers must validate it (apply to the current config and Validate)
+// before submitting.
+func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool, overrides *config.DownloadOverrides) domain.BatchSubmitResponse {
 	results := make([]domain.SubmitResult, len(urls))
 
 	type candidate struct {
@@ -207,7 +213,7 @@ func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool) do
 
 		job := domain.Job{
 			ID: storage.NewID("job"), Input: c.url, Type: c.valid.Type, Storefront: c.valid.Storefront, CanonicalKey: c.key,
-			Force: force, Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now,
+			Force: force, Overrides: overrides, Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now,
 		}
 		if err := m.store.CreateJob(ctx, job); err != nil {
 			if errors.Is(err, db.ErrDuplicateActive) {

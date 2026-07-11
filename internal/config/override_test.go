@@ -1,0 +1,98 @@
+package config
+
+import (
+	"reflect"
+	"testing"
+)
+
+func TestDownloadOverridesApplyNilKeepsBase(t *testing.T) {
+	base := Default()
+	var overrides *DownloadOverrides
+	if got := overrides.Apply(base); !reflect.DeepEqual(got, base) {
+		t.Fatalf("nil overrides changed config: %+v", got)
+	}
+}
+
+func TestDownloadOverridesApplyMergesOnlySetFields(t *testing.T) {
+	base := Default()
+	embed := false
+	format := "png"
+	parallel := 7
+	overrides := &DownloadOverrides{
+		QualityPriority:   []string{"aac"},
+		EmbedCover:        &embed,
+		CoverFormat:       &format,
+		MaxParallelTracks: &parallel,
+	}
+	got := overrides.Apply(base)
+
+	if !reflect.DeepEqual(got.Download.QualityPriority, []string{"aac"}) {
+		t.Fatalf("quality_priority = %v, want [aac]", got.Download.QualityPriority)
+	}
+	if got.Download.EmbedCover != false || got.Download.CoverFormat != "png" || got.Download.MaxParallelTracks != 7 {
+		t.Fatalf("overridden fields not applied: %+v", got.Download)
+	}
+	// Untouched fields keep the base values, including false-able booleans.
+	if got.Download.EmbedLyrics != base.Download.EmbedLyrics || got.Download.SongPathFormat != base.Download.SongPathFormat {
+		t.Fatalf("unset fields changed: %+v", got.Download)
+	}
+	// The base config must not be mutated in place.
+	if base.Download.EmbedCover != true || base.Download.CoverFormat != "jpg" {
+		t.Fatalf("Apply mutated the base config: %+v", base.Download)
+	}
+}
+
+func TestDownloadOverridesApplyThenValidate(t *testing.T) {
+	bad := "gif"
+	overrides := &DownloadOverrides{CoverFormat: &bad}
+	if err := overrides.Apply(Default()).Validate(); err == nil {
+		t.Fatal("expected validation error for cover_format=gif")
+	}
+	good := "png"
+	overrides = &DownloadOverrides{CoverFormat: &good}
+	if err := overrides.Apply(Default()).Validate(); err != nil {
+		t.Fatalf("valid overrides rejected: %v", err)
+	}
+}
+
+func TestRuntimeLockedChanges(t *testing.T) {
+	base := Default()
+
+	if got := RuntimeLockedChanges(base, base); len(got) != 0 {
+		t.Fatalf("no-op change reported locked fields: %v", got)
+	}
+
+	updated := base
+	updated.Download.QualityPriority = []string{"aac"}
+	updated.Download.EmbedLyrics = false
+	updated.Simulate.Enabled = true
+	updated.Simulate.MinSpeedKBps = 10
+	updated.Catalog.AlbumTrackURLMode = "album"
+	if got := RuntimeLockedChanges(base, updated); len(got) != 0 {
+		t.Fatalf("runtime-updatable changes reported as locked: %v", got)
+	}
+
+	updated = base
+	updated.Server.Listen = "0.0.0.0:9999"
+	updated.Download.MaxRunningJobs = base.Download.MaxRunningJobs + 1
+	updated.Wrapper.Address = "10.0.0.1:8080"
+	updated.Catalog.AllowedOrigins = []string{"https://example.com"}
+	got := RuntimeLockedChanges(base, updated)
+	want := []string{"server.listen", "wrapper.address", "catalog.allowed_origins", "download.max_running_jobs"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("locked changes = %v, want %v", got, want)
+	}
+}
+
+func TestStoreGetSet(t *testing.T) {
+	store := NewStore(Default())
+	if got := store.Get(); got.Download.CoverFormat != "jpg" {
+		t.Fatalf("initial snapshot = %+v", got.Download)
+	}
+	updated := Default()
+	updated.Download.CoverFormat = "png"
+	store.Set(updated)
+	if got := store.Get(); got.Download.CoverFormat != "png" {
+		t.Fatalf("snapshot after Set = %+v", got.Download)
+	}
+}

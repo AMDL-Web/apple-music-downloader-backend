@@ -47,6 +47,9 @@ type QualityResult struct {
 }
 
 type QualityService struct {
+	// store is the live runtime config; cfg is the fixed fallback used by
+	// test constructors that don't wire a store.
+	store   *config.Store
 	cfg     config.Config
 	catalog qualityCatalog
 	wrapper qualityWrapper
@@ -61,16 +64,24 @@ type qualityWrapper interface {
 	M3U8(context.Context, string) (string, error)
 }
 
-func NewQualityService(cfg config.Config, catalog *applemusic.CatalogClient, wrapperClient qualityWrapper) *QualityService {
-	return &QualityService{cfg: cfg, catalog: catalog, wrapper: wrapperClient, http: newHTTPClient()}
+func NewQualityService(store *config.Store, catalog *applemusic.CatalogClient, wrapperClient qualityWrapper) *QualityService {
+	return &QualityService{store: store, catalog: catalog, wrapper: wrapperClient, http: newHTTPClient()}
 }
 
 func NewQualityServiceWithCatalog(cfg config.Config, catalog qualityCatalog) *QualityService {
 	return &QualityService{cfg: cfg, catalog: catalog, http: newHTTPClient()}
 }
 
+func (s *QualityService) baseConfig() config.Config {
+	if s.store != nil {
+		return s.store.Get()
+	}
+	return s.cfg
+}
+
 func (s *QualityService) QueryQuality(ctx context.Context, req QualityRequest) (QualityResult, error) {
-	parsed, err := applemusic.ParseWithAlbumTrackMode(strings.TrimSpace(req.URL), s.cfg.Catalog.AlbumTrackURLMode)
+	cfg := s.baseConfig()
+	parsed, err := applemusic.ParseWithAlbumTrackMode(strings.TrimSpace(req.URL), cfg.Catalog.AlbumTrackURLMode)
 	if err != nil {
 		return QualityResult{}, err
 	}
@@ -82,7 +93,7 @@ func (s *QualityService) QueryQuality(ctx context.Context, req QualityRequest) (
 		return QualityResult{}, err
 	}
 	master := song.EnhancedHLS
-	if s.cfg.Catalog.DeveloperTokenSigningEnabled() {
+	if cfg.Catalog.DeveloperTokenSigningEnabled() {
 		// A self-signed developer token cannot read enhancedHls, so quality is
 		// analyzed from the authorized device manifest instead.
 		if s.wrapper == nil {

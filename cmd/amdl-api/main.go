@@ -75,9 +75,15 @@ func main() {
 		logger.Error("sign apple music developer token", "error", err)
 		os.Exit(1)
 	}
+	// cfgStore is the live runtime config shared by the API layer and the
+	// download pipeline; GET/PUT /api/v1/config read and update it. Values
+	// consumed below in main (listen address, database path, wrapper
+	// connection, worker count, catalog client) are startup-bound and the
+	// update endpoint refuses to change them.
+	cfgStore := config.NewStore(cfg)
 	toolChecker := media.NewToolChecker(cfg.Tools)
-	downloader := media.NewDownloader(cfg, catalog, wrapperClient, toolChecker, logger)
-	qualityService := media.NewQualityService(cfg, catalog, wrapperClient)
+	downloader := media.NewDownloader(cfgStore, catalog, wrapperClient, toolChecker, logger)
+	qualityService := media.NewQualityService(cfgStore, catalog, wrapperClient)
 	manager := jobs.NewManager(store, hub, downloader, cfg.Download.MaxRunningJobs, logger)
 	hookDispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, logger)
 	manager.SetHooks(hookDispatcher)
@@ -94,7 +100,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
-		Handler:           api.NewServer(cfg, store, hub, manager, wrapperClient, qualityService, catalog, toolChecker, logger).Routes(),
+		Handler:           api.NewServer(cfgStore, store, hub, manager, wrapperClient, qualityService, catalog, toolChecker, logger).Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

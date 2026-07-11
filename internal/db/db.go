@@ -3,10 +3,12 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
 
+	"amdl/internal/config"
 	"amdl/internal/domain"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -66,6 +68,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 			artwork_url TEXT NOT NULL DEFAULT '',
 			canonical_key TEXT NOT NULL,
 			force INTEGER NOT NULL DEFAULT 0,
+			overrides TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL,
 			total_items INTEGER NOT NULL DEFAULT 0,
 			done_items INTEGER NOT NULL DEFAULT 0,
@@ -128,6 +131,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 	for _, col := range []struct{ table, column, decl string }{
 		{"jobs", "artwork_url", "TEXT NOT NULL DEFAULT ''"},
 		{"jobs", "title", "TEXT NOT NULL DEFAULT ''"},
+		{"jobs", "overrides", "TEXT NOT NULL DEFAULT ''"},
 		{"job_items", "artwork_url", "TEXT NOT NULL DEFAULT ''"},
 		{"job_items", "bit_depth", "INTEGER NOT NULL DEFAULT 0"},
 		{"job_items", "sample_rate", "INTEGER NOT NULL DEFAULT 0"},
@@ -229,9 +233,26 @@ func (s *Store) normalizeTimestampColumns(ctx context.Context) error {
 	return nil
 }
 
+// encodeOverrides serializes a job's download overrides for the jobs row;
+// jobs without overrides store the empty string.
+func encodeOverrides(o *config.DownloadOverrides) (string, error) {
+	if o == nil {
+		return "", nil
+	}
+	raw, err := json.Marshal(o)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
 func (s *Store) CreateJob(ctx context.Context, job domain.Job) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO jobs(id,input,type,storefront,title,artwork_url,canonical_key,force,status,total_items,done_items,failed_items,error,created_at,updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, job.ID, job.Input, job.Type, job.Storefront, job.Title, job.ArtworkURL, job.CanonicalKey, job.Force, string(job.Status), job.TotalItems,
+	overrides, err := encodeOverrides(job.Overrides)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO jobs(id,input,type,storefront,title,artwork_url,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, job.ID, job.Input, job.Type, job.Storefront, job.Title, job.ArtworkURL, job.CanonicalKey, job.Force, overrides, string(job.Status), job.TotalItems,
 		job.DoneItems, job.FailedItems, job.Error, formatTime(job.CreatedAt), formatTime(job.UpdatedAt))
 	if err != nil && isUniqueConstraintErr(err) {
 		return ErrDuplicateActive
@@ -241,7 +262,7 @@ func (s *Store) CreateJob(ctx context.Context, job domain.Job) error {
 
 // FindActiveJobByKey returns the queued/running job matching canonicalKey, if any.
 func (s *Store) FindActiveJobByKey(ctx context.Context, canonicalKey string) (domain.Job, bool, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,canonical_key,force,status,total_items,done_items,failed_items,error,created_at,updated_at
+	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at
 		FROM jobs WHERE canonical_key=? AND status IN (?,?)`, canonicalKey, string(domain.JobQueued), string(domain.JobRunning))
 	job, err := scanJob(row)
 	if err != nil {
@@ -275,7 +296,7 @@ func (s *Store) UpdateJobStatus(ctx context.Context, id string, status domain.Jo
 }
 
 func (s *Store) GetJob(ctx context.Context, id string) (domain.Job, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,canonical_key,force,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE id=?`, id)
 	return scanJob(row)
 }
 
@@ -408,7 +429,7 @@ func (s *Store) ListJobs(ctx context.Context, filter JobListFilter) ([]domain.Jo
 	}
 	listArgs := append([]any{string(domain.ItemCompleted), string(domain.ItemSkipped), string(domain.ItemFailed)}, args...)
 	listArgs = append(listArgs, filter.Limit, filter.Offset)
-	rows, err := s.db.QueryContext(ctx, `SELECT j.id,j.input,j.type,j.storefront,j.title,j.artwork_url,j.canonical_key,j.force,j.status,j.total_items,
+	rows, err := s.db.QueryContext(ctx, `SELECT j.id,j.input,j.type,j.storefront,j.title,j.artwork_url,j.canonical_key,j.force,j.overrides,j.status,j.total_items,
 			(SELECT COUNT(*) FROM job_items i WHERE i.job_id=j.id AND i.status IN (?,?)) AS done_items,
 			(SELECT COUNT(*) FROM job_items i WHERE i.job_id=j.id AND i.status=?) AS failed_items,
 			j.error,j.created_at,j.updated_at FROM jobs j`+where+` ORDER BY `+orderCol+` `+orderDir+`, j.id `+orderDir+` LIMIT ? OFFSET ?`,
@@ -476,7 +497,7 @@ func (s *Store) DeleteJob(ctx context.Context, id string) (domain.Event, error) 
 }
 
 func (s *Store) ListRecoverableJobs(ctx context.Context) ([]domain.Job, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,canonical_key,force,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE status IN (?,?) ORDER BY created_at ASC`,
+	rows, err := s.db.QueryContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE status IN (?,?) ORDER BY created_at ASC`,
 		string(domain.JobQueued), string(domain.JobRunning))
 	if err != nil {
 		return nil, err
@@ -499,8 +520,14 @@ type jobScanner interface {
 
 func scanJob(row jobScanner) (domain.Job, error) {
 	var job domain.Job
-	var status, created, updated string
-	err := row.Scan(&job.ID, &job.Input, &job.Type, &job.Storefront, &job.Title, &job.ArtworkURL, &job.CanonicalKey, &job.Force, &status, &job.TotalItems, &job.DoneItems, &job.FailedItems, &job.Error, &created, &updated)
+	var overrides, status, created, updated string
+	err := row.Scan(&job.ID, &job.Input, &job.Type, &job.Storefront, &job.Title, &job.ArtworkURL, &job.CanonicalKey, &job.Force, &overrides, &status, &job.TotalItems, &job.DoneItems, &job.FailedItems, &job.Error, &created, &updated)
+	if err == nil && overrides != "" {
+		parsed := &config.DownloadOverrides{}
+		if unmarshalErr := json.Unmarshal([]byte(overrides), parsed); unmarshalErr == nil {
+			job.Overrides = parsed
+		}
+	}
 	job.Status = domain.JobStatus(status)
 	job.CreatedAt = parseTime(created)
 	job.UpdatedAt = parseTime(updated)

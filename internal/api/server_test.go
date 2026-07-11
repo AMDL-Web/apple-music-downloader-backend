@@ -1534,7 +1534,7 @@ func (f *fakeDevTokenService) MintDeveloperToken() (string, error) {
 }
 
 func TestDeveloperTokenLegacyModeConflict(t *testing.T) {
-	server := &Server{cfg: config.Default(), devToken: &fakeDevTokenService{}}
+	server := &Server{cfg: config.NewStore(config.Default()), devToken: &fakeDevTokenService{}}
 	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/developer-token", "")
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusConflict)
@@ -1558,7 +1558,7 @@ func signingEnabledConfig() config.Config {
 
 func TestDeveloperTokenSigningMode(t *testing.T) {
 	fake := &fakeDevTokenService{token: "signed.jwt.value"}
-	server := &Server{cfg: signingEnabledConfig(), devToken: fake}
+	server := &Server{cfg: config.NewStore(signingEnabledConfig()), devToken: fake}
 	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/developer-token", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
@@ -1580,7 +1580,7 @@ func TestDeveloperTokenSigningMode(t *testing.T) {
 
 func TestDeveloperTokenSigningError(t *testing.T) {
 	fake := &fakeDevTokenService{err: errors.New("boom")}
-	server := &Server{cfg: signingEnabledConfig(), devToken: fake}
+	server := &Server{cfg: config.NewStore(signingEnabledConfig()), devToken: fake}
 	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/developer-token", "")
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)

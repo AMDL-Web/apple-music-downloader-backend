@@ -173,8 +173,8 @@ func TestLoadRejectsExplicitAACLCInPriority(t *testing.T) {
 }
 
 func TestDefaultConfigPassesValidation(t *testing.T) {
-	if err := Default().validate(); err != nil {
-		t.Fatalf("Default().validate() error = %v", err)
+	if err := Default().Validate(); err != nil {
+		t.Fatalf("Default().Validate() error = %v", err)
 	}
 }
 
