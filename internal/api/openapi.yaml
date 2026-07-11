@@ -49,8 +49,7 @@ paths:
         返回当前生效配置中可运行时修改的部分：download 段（max_running_jobs
         除外）、simulate 段、catalog.album_track_url_mode。仅启动时生效的
         字段（server、database、wrapper、tools、catalog 其它字段）不返回——
-        它们无法通过本 API 修改。通过 PUT 修改后的值只存在于内存中
-        （persisted 恒为 false），重启后恢复为配置文件中的值。
+        它们无法通过本 API 修改，请编辑 configs/config.yaml 并重启。
       operationId: getConfig
       responses:
         '200':
@@ -71,7 +70,9 @@ paths:
         被消费，修改请求会被 422 拒绝——请改 configs/config.yaml 并重启。
 
         修改立即对新请求和新开始的任务生效（运行中的任务继续使用其启动时的
-        配置快照），不会写回配置文件，重启后失效。
+        配置快照），并写回 configs/config.yaml，重启后依然生效。该文件由
+        后端管理（每次 PUT 整体重写，注释不保留）；带完整注释的字段文档在
+        configs/config.example.yaml，首次启动时会以它为模板生成 config.yaml。
       operationId: updateConfig
       requestBody:
         required: true
@@ -944,8 +945,8 @@ components:
       type: object
       description: >-
         可运行时修改的配置子集（字段含义、枚举值和默认行为见
-        configs/config.yaml 内注释）。GET 返回此形状；PUT 时可只提交需要
-        修改的字段，省略的字段保持现值。
+        configs/config.example.yaml 内注释）。GET 返回此形状；PUT 时可只
+        提交需要修改的字段，省略的字段保持现值。
       properties:
         catalog:
           type: object
@@ -999,8 +1000,9 @@ components:
           $ref: '#/components/schemas/RuntimeConfig'
         persisted:
           type: boolean
-          const: false
-          description: 恒为 false：运行时修改不写回配置文件，重启后失效。
+          description: >-
+            配置存储是否有后备文件。正常部署下恒为 true：PUT 的修改写回
+            configs/config.yaml，重启后依然生效。
     SubmitResult:
       type: object
       required: [url, status]

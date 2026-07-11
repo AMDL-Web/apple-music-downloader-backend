@@ -248,11 +248,9 @@ func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 // getConfig returns the runtime-changeable part of the current config
 // (download minus max_running_jobs, simulate, catalog.album_track_url_mode).
 // Startup-bound fields are omitted: clients cannot change them through this
-// API, so they have no reason to see them here. Runtime updates made through
-// updateConfig are reflected but never written back to configs/config.yaml,
-// so the file's values apply again after a restart.
+// API, so they have no reason to see them here.
 func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"config": config.MutableView(s.currentConfig()), "persisted": false})
+	writeJSON(w, http.StatusOK, map[string]any{"config": config.MutableView(s.currentConfig()), "persisted": s.cfg.Persistent()})
 }
 
 // updateConfig merges the request body onto the current runtime config:
@@ -261,8 +259,8 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 // and fields consumed only at startup (server, database, wrapper, tools,
 // catalog client/signing, download.max_running_jobs) are rejected — changing
 // them at runtime would silently do nothing. Accepted changes apply to new
-// requests and newly started jobs immediately, live in memory only, and are
-// lost on restart.
+// requests and newly started jobs immediately and are written back to the
+// live config file, so they survive restarts.
 func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	if s.cfg == nil {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("runtime config store is not configured"))
@@ -284,8 +282,11 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err)
 		return
 	}
-	s.cfg.Set(updated)
-	writeJSON(w, http.StatusOK, map[string]any{"config": config.MutableView(updated), "persisted": false})
+	if err := s.cfg.SetAndSave(updated); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("persist config: %w", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"config": config.MutableView(updated), "persisted": s.cfg.Persistent()})
 }
 
 // developerToken hands out a freshly signed Apple Music developer token. Only

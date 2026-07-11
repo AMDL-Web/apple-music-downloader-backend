@@ -37,7 +37,13 @@ go run ./cmd/amdl-api
 configs/config.yaml
 ```
 
-启动前请按实际环境修改 `configs/config.yaml`，尤其是：
+首次启动时该文件会自动从带完整注释的示例 `configs/config.example.yaml`
+复制生成（字段文档都在示例文件里）。`config.yaml` 本身由后端管理：
+`PUT /api/v1/config` 修改运行时配置时会整体重写它（注释不保留），
+因此它不纳入版本控制；手工编辑仍然可以，重启后生效，但会在下一次
+API 修改时被重写。
+
+启动前请按实际环境修改 `configs/config.yaml`（或先改示例文件再首次启动），尤其是：
 
 - `server.listen`：API 监听地址。
 - `wrapper.address`：`wrapper-manager` gRPC 地址。
@@ -171,7 +177,7 @@ curl -X POST http://localhost:18080/api/v1/downloads/{job_id}/cancel
 data/downloads/albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
 ```
 
-模板变量列表见 `configs/config.yaml` 注释。目录段中的 `{ArtistName}` 使用集合的归档艺术家（优先专辑艺术家），保证同一专辑的曲目落在同一目录；文件名段使用曲目自身的艺术家。
+模板变量列表见 `configs/config.example.yaml` 注释。目录段中的 `{ArtistName}` 使用集合的归档艺术家（优先专辑艺术家），保证同一专辑的曲目落在同一目录；文件名段使用曲目自身的艺术家。
 
 可选择在音频文件外额外保存独立封面：
 

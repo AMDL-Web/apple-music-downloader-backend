@@ -25,3 +25,6 @@ keys/
 coverage.txt
 
 *.local.yaml
+# Live runtime config: bootstrapped from configs/config.example.yaml on first
+# start and rewritten by PUT /api/v1/config, so it must not be tracked.
+configs/config.yaml

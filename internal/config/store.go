@@ -1,6 +1,9 @@
 package config
 
-import "sync/atomic"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // Store holds the live runtime configuration shared by every component that
 // must observe config updates made through the API after startup. Set replaces
@@ -8,10 +11,16 @@ import "sync/atomic"
 // Callers must treat slices inside a returned Config as read-only — mutating
 // them in place would race with concurrent readers of the same snapshot.
 //
-// Runtime updates live only in this store: they are never written back to
-// configs/config.yaml, so the file's values apply again after a restart.
+// A Store created with NewFileStore is backed by the live config file:
+// SetAndSave writes the new snapshot back to it, so runtime updates survive a
+// restart. NewStore creates an in-memory Store for tests.
 type Store struct {
 	current atomic.Pointer[Config]
+	// path is the backing config file; empty for in-memory stores. saveMu
+	// serializes SetAndSave so concurrent updates cannot interleave the file
+	// write and the snapshot swap.
+	path   string
+	saveMu sync.Mutex
 }
 
 func NewStore(cfg Config) *Store {
@@ -20,10 +29,37 @@ func NewStore(cfg Config) *Store {
 	return s
 }
 
+func NewFileStore(cfg Config, path string) *Store {
+	s := NewStore(cfg)
+	s.path = path
+	return s
+}
+
+// Persistent reports whether updates to this store are written back to a
+// config file (and therefore survive a restart).
+func (s *Store) Persistent() bool {
+	return s.path != ""
+}
+
 func (s *Store) Get() Config {
 	return *s.current.Load()
 }
 
 func (s *Store) Set(cfg Config) {
 	s.current.Store(&cfg)
+}
+
+// SetAndSave persists cfg to the backing file first and only then swaps the
+// in-memory snapshot, so a failed write leaves the running config unchanged.
+// For in-memory stores it is equivalent to Set.
+func (s *Store) SetAndSave(cfg Config) error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	if s.path != "" {
+		if err := Save(s.path, cfg); err != nil {
+			return err
+		}
+	}
+	s.Set(cfg)
+	return nil
 }

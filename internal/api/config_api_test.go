@@ -85,6 +85,27 @@ func TestUpdateConfigMergesAndTakesEffect(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigPersistsToBackingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	server := &Server{cfg: config.NewFileStore(config.Default(), path)}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config", `{"download":{"cover_format":"png"}}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"persisted":true`) {
+		t.Fatalf("response does not report persisted=true: %s", recorder.Body.String())
+	}
+	// The change must survive a restart: reloading the file yields it back.
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload persisted config: %v", err)
+	}
+	if loaded.Download.CoverFormat != "png" {
+		t.Fatalf("persisted cover_format = %q, want png", loaded.Download.CoverFormat)
+	}
+}
+
 func TestUpdateConfigRejectsBadInput(t *testing.T) {
 	cases := []struct {
 		name   string
