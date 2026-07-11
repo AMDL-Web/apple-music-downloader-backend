@@ -50,8 +50,11 @@ const (
 	// LyricsPending: not determined yet — the item hasn't reached the lyrics
 	// phase of a download, or predates this field.
 	LyricsPending LyricsStatus = ""
-	// LyricsFetched: lyrics were fetched and converted; they are embedded
-	// in the file and/or saved as a sidecar per the download config.
+	// LyricsFetched: lyrics were fetched and converted successfully; the
+	// download that follows embeds and/or saves them per the config. The
+	// flag reflects the fetch outcome only — whether the file itself was
+	// produced is the item's own status (an item that fails later keeps
+	// lyrics_status=fetched).
 	LyricsFetched LyricsStatus = "fetched"
 	// LyricsFailed: the catalog reported lyrics but fetching or converting
 	// them failed; the download continued without lyrics.
