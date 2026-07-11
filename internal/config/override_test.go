@@ -84,6 +84,27 @@ func TestRuntimeLockedChanges(t *testing.T) {
 	}
 }
 
+func TestMutableViewOmitsStartupBoundFields(t *testing.T) {
+	view := MutableView(Default())
+	if len(view) != 3 {
+		t.Fatalf("view sections = %v, want catalog/download/simulate only", view)
+	}
+	download, ok := view["download"].(map[string]any)
+	if !ok {
+		t.Fatalf("download section = %T, want map", view["download"])
+	}
+	if _, exists := download["max_running_jobs"]; exists {
+		t.Fatal("download section must not expose max_running_jobs")
+	}
+	if download["cover_format"] != "jpg" {
+		t.Fatalf("download.cover_format = %v, want jpg", download["cover_format"])
+	}
+	catalog, ok := view["catalog"].(map[string]any)
+	if !ok || len(catalog) != 1 || catalog["album_track_url_mode"] != "song" {
+		t.Fatalf("catalog section = %v, want only album_track_url_mode", view["catalog"])
+	}
+}
+
 func TestStoreGetSet(t *testing.T) {
 	store := NewStore(Default())
 	if got := store.Get(); got.Download.CoverFormat != "jpg" {

@@ -245,11 +245,14 @@ func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// getConfig returns the current runtime config snapshot. Runtime updates made
-// through updateConfig are reflected here but are never written back to
-// configs/config.yaml, so the file's values apply again after a restart.
+// getConfig returns the runtime-changeable part of the current config
+// (download minus max_running_jobs, simulate, catalog.album_track_url_mode).
+// Startup-bound fields are omitted: clients cannot change them through this
+// API, so they have no reason to see them here. Runtime updates made through
+// updateConfig are reflected but never written back to configs/config.yaml,
+// so the file's values apply again after a restart.
 func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"config": s.currentConfig(), "persisted": false})
+	writeJSON(w, http.StatusOK, map[string]any{"config": config.MutableView(s.currentConfig()), "persisted": false})
 }
 
 // updateConfig merges the request body onto the current runtime config:
@@ -282,7 +285,7 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfg.Set(updated)
-	writeJSON(w, http.StatusOK, map[string]any{"config": updated, "persisted": false})
+	writeJSON(w, http.StatusOK, map[string]any{"config": config.MutableView(updated), "persisted": false})
 }
 
 // developerToken hands out a freshly signed Apple Music developer token. Only

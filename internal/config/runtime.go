@@ -1,6 +1,27 @@
 package config
 
-import "slices"
+import (
+	"encoding/json"
+	"slices"
+)
+
+// MutableView returns only the runtime-changeable part of cfg — the shape
+// GET/PUT /api/v1/config exchange with clients, which have no use for the
+// startup-bound fields the update endpoint refuses to change anyway. The
+// download section is derived from its json tags so a field added to
+// DownloadConfig shows up here automatically; max_running_jobs is dropped to
+// stay in sync with RuntimeLockedChanges below.
+func MutableView(cfg Config) map[string]any {
+	raw, _ := json.Marshal(cfg.Download)
+	download := map[string]any{}
+	_ = json.Unmarshal(raw, &download)
+	delete(download, "max_running_jobs")
+	return map[string]any{
+		"catalog":  map[string]any{"album_track_url_mode": cfg.Catalog.AlbumTrackURLMode},
+		"download": download,
+		"simulate": cfg.Simulate,
+	}
+}
 
 // RuntimeLockedChanges returns the dotted keys of fields that differ between
 // old and updated but are consumed only at process startup (listen address,

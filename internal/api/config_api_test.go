@@ -15,15 +15,15 @@ import (
 	"amdl/internal/jobs"
 )
 
-func TestGetConfigReturnsRuntimeSnapshot(t *testing.T) {
+func TestGetConfigReturnsOnlyMutableFields(t *testing.T) {
 	server := &Server{cfg: config.NewStore(config.Default())}
 	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/config", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	var resp struct {
-		Config    config.Config `json:"config"`
-		Persisted bool          `json:"persisted"`
+		Config    map[string]json.RawMessage `json:"config"`
+		Persisted bool                       `json:"persisted"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
@@ -31,8 +31,32 @@ func TestGetConfigReturnsRuntimeSnapshot(t *testing.T) {
 	if resp.Persisted {
 		t.Fatal("persisted = true, runtime config is never written back to disk")
 	}
-	if resp.Config.Download.CoverFormat != "jpg" || len(resp.Config.Download.QualityPriority) == 0 {
-		t.Fatalf("config snapshot incomplete: %+v", resp.Config.Download)
+	for _, section := range []string{"catalog", "download", "simulate"} {
+		if _, ok := resp.Config[section]; !ok {
+			t.Fatalf("config missing mutable section %q: %s", section, recorder.Body.String())
+		}
+	}
+	for _, section := range []string{"server", "database", "wrapper", "tools"} {
+		if _, ok := resp.Config[section]; ok {
+			t.Fatalf("config exposes startup-bound section %q: %s", section, recorder.Body.String())
+		}
+	}
+	var download map[string]any
+	if err := json.Unmarshal(resp.Config["download"], &download); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := download["max_running_jobs"]; ok {
+		t.Fatal("download section exposes startup-bound max_running_jobs")
+	}
+	if download["cover_format"] != "jpg" {
+		t.Fatalf("download.cover_format = %v, want jpg", download["cover_format"])
+	}
+	var catalog map[string]any
+	if err := json.Unmarshal(resp.Config["catalog"], &catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) != 1 || catalog["album_track_url_mode"] != "song" {
+		t.Fatalf("catalog section = %v, want only album_track_url_mode", catalog)
 	}
 }
 
@@ -44,6 +68,10 @@ func TestUpdateConfigMergesAndTakesEffect(t *testing.T) {
 		`{"download":{"embed_lyrics":false,"cover_format":"png"},"simulate":{"enabled":true,"min_speed_kbps":10,"max_speed_kbps":20}}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	// The response echoes the mutable view only, never startup-bound sections.
+	if strings.Contains(recorder.Body.String(), `"server"`) || strings.Contains(recorder.Body.String(), `"max_running_jobs"`) {
+		t.Fatalf("update response leaks startup-bound fields: %s", recorder.Body.String())
 	}
 
 	got := store.Get()

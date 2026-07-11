@@ -44,15 +44,17 @@ paths:
   /api/v1/config:
     get:
       tags: [System]
-      summary: 读取当前运行时配置
+      summary: 读取当前运行时配置（仅可修改字段）
       description: >-
-        返回后端当前生效的运行时配置快照（与 configs/config.yaml 同构）。
-        通过 PUT 修改后的值只存在于内存中（persisted 恒为 false），
-        重启后恢复为配置文件中的值。
+        返回当前生效配置中可运行时修改的部分：download 段（max_running_jobs
+        除外）、simulate 段、catalog.album_track_url_mode。仅启动时生效的
+        字段（server、database、wrapper、tools、catalog 其它字段）不返回——
+        它们无法通过本 API 修改。通过 PUT 修改后的值只存在于内存中
+        （persisted 恒为 false），重启后恢复为配置文件中的值。
       operationId: getConfig
       responses:
         '200':
-          description: 当前运行时配置。
+          description: 当前可运行时修改的配置。
           content:
             application/json:
               schema:
@@ -64,10 +66,9 @@ paths:
         请求体按合并语义覆盖当前运行时配置：省略的字段保持现值，出现的字段
         （含整段）被替换。合并结果必须通过与配置文件相同的完整校验。
 
-        仅启动后仍然生效的字段可以修改：download 段（max_running_jobs 除外）、
-        simulate 段、catalog.album_track_url_mode。其余字段（server、database、
-        wrapper、tools、catalog 其它字段、download.max_running_jobs）只在进程
-        启动时被消费，修改请求会被 422 拒绝——请改 configs/config.yaml 并重启。
+        仅 GET 返回的字段可以修改：download 段（max_running_jobs 除外）、
+        simulate 段、catalog.album_track_url_mode。其余字段只在进程启动时
+        被消费，修改请求会被 422 拒绝——请改 configs/config.yaml 并重启。
 
         修改立即对新请求和新开始的任务生效（运行中的任务继续使用其启动时的
         配置快照），不会写回配置文件，重启后失效。
@@ -942,53 +943,24 @@ components:
     RuntimeConfig:
       type: object
       description: >-
-        运行时配置，结构与 configs/config.yaml 相同（字段含义、枚举值和默认
-        行为见配置文件内注释）。PUT 时可只提交需要修改的字段。
+        可运行时修改的配置子集（字段含义、枚举值和默认行为见
+        configs/config.yaml 内注释）。GET 返回此形状；PUT 时可只提交需要
+        修改的字段，省略的字段保持现值。
       properties:
-        server:
-          type: object
-          description: 仅启动时生效。
-          properties:
-            listen: {type: string}
-        database:
-          type: object
-          description: 仅启动时生效。
-          properties:
-            path: {type: string}
-        wrapper:
-          type: object
-          description: 仅启动时生效。
-          properties:
-            address: {type: string}
-            insecure: {type: boolean}
-            timeout_seconds: {type: integer}
-            login_timeout_seconds: {type: integer}
         catalog:
           type: object
-          description: 除 album_track_url_mode 外仅启动时生效。
           properties:
-            default_storefront: {type: string}
-            language: {type: string}
-            apple_music_private_key_path: {type: string}
-            apple_music_key_id: {type: string}
-            apple_music_team_id: {type: string}
-            developer_token_ttl_hours: {type: integer}
-            allowed_origins:
-              type: array
-              items: {type: string}
-            token_cache_ttl_hours: {type: integer}
             album_track_url_mode:
               type: string
               enum: [song, album]
         download:
           type: object
-          description: 除 max_running_jobs（仅启动时生效）外均可运行时修改。
+          description: max_running_jobs 仅启动时生效，不在此出现、不可修改。
           properties:
             quality_priority:
               type: array
               items: {type: string}
             codec_alternative: {type: boolean}
-            max_running_jobs: {type: integer}
             max_parallel_tracks: {type: integer}
             max_attempts: {type: integer}
             downloads_dir: {type: string}
@@ -1013,14 +985,8 @@ components:
             alac_max_sample_rate: {type: integer}
             alac_max_bit_depth: {type: integer}
             check_integrity: {type: boolean}
-        tools:
-          type: object
-          description: 仅启动时生效。
-          properties:
-            ffmpeg: {type: string}
         simulate:
           type: object
-          description: 可运行时修改。
           properties:
             enabled: {type: boolean}
             min_speed_kbps: {type: integer}
