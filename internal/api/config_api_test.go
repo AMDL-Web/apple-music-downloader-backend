@@ -217,8 +217,20 @@ func TestCreateDownloadWithOverrides(t *testing.T) {
 	if persisted.Overrides == nil || persisted.Overrides.EmbedLyrics == nil || *persisted.Overrides.EmbedLyrics {
 		t.Fatalf("persisted overrides = %+v, want embed_lyrics=false", persisted.Overrides)
 	}
-	if len(persisted.Overrides.QualityPriority) != 1 || persisted.Overrides.QualityPriority[0] != "aac" {
-		t.Fatalf("persisted quality_priority override = %v, want [aac]", persisted.Overrides.QualityPriority)
+	if qp := persisted.Overrides.QualityPriority; qp == nil || len(*qp) != 1 || (*qp)[0] != "aac" {
+		t.Fatalf("persisted quality_priority override = %v, want [aac]", qp)
+	}
+}
+
+func TestCreateDownloadRejectsUnknownFields(t *testing.T) {
+	server := &Server{cfg: config.NewStore(config.Default())}
+	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads",
+		`{"urls":["song|us|1"],"overrides":{"embedd_lyrics":false}}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s (a typo inside overrides must not be silently ignored)", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "embedd_lyrics") {
+		t.Fatalf("error body %q does not name the unknown field", recorder.Body.String())
 	}
 }
 

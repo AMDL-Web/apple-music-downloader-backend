@@ -10,31 +10,36 @@ package config
 // JSON keys mirror the download section of configs/config.yaml exactly.
 // max_running_jobs is deliberately absent — it sizes the worker pool at
 // startup and cannot apply to a single job.
+// The two slice fields are *[]string rather than []string so an explicit
+// empty list survives the JSON round trip through the jobs table: nil (field
+// absent, keep config) marshals away under omitempty, while a pointer to an
+// empty slice marshals as [] and still means "override to none" after the
+// worker loads the job back.
 type DownloadOverrides struct {
-	QualityPriority    []string `json:"quality_priority,omitempty"`
-	CodecAlternative   *bool    `json:"codec_alternative,omitempty"`
-	MaxParallelTracks  *int     `json:"max_parallel_tracks,omitempty"`
-	MaxAttempts        *int     `json:"max_attempts,omitempty"`
-	DownloadsDir       *string  `json:"downloads_dir,omitempty"`
-	SongPathFormat     *string  `json:"song_path_format,omitempty"`
-	AlbumPathFormat    *string  `json:"album_path_format,omitempty"`
-	ArtistPathFormat   *string  `json:"artist_path_format,omitempty"`
-	PlaylistPathFormat *string  `json:"playlist_path_format,omitempty"`
-	TempDir            *string  `json:"temp_dir,omitempty"`
-	CoverSize          *string  `json:"cover_size,omitempty"`
-	CoverFormat        *string  `json:"cover_format,omitempty"`
-	EmbedCover         *bool    `json:"embed_cover,omitempty"`
-	SaveAlbumCover     *bool    `json:"save_album_cover,omitempty"`
-	SaveArtistCover    *bool    `json:"save_artist_cover,omitempty"`
-	SavePlaylistCover  *bool    `json:"save_playlist_cover,omitempty"`
-	EmbedLyrics        *bool    `json:"embed_lyrics,omitempty"`
-	SaveLyricsFile     *bool    `json:"save_lyrics_file,omitempty"`
-	LyricsFormat       *string  `json:"lyrics_format,omitempty"`
-	LyricsType         *string  `json:"lyrics_type,omitempty"`
-	LyricsExtras       []string `json:"lyrics_extras,omitempty"`
-	ALACMaxSampleRate  *int     `json:"alac_max_sample_rate,omitempty"`
-	ALACMaxBitDepth    *int     `json:"alac_max_bit_depth,omitempty"`
-	CheckIntegrity     *bool    `json:"check_integrity,omitempty"`
+	QualityPriority    *[]string `json:"quality_priority,omitempty"`
+	CodecAlternative   *bool     `json:"codec_alternative,omitempty"`
+	MaxParallelTracks  *int      `json:"max_parallel_tracks,omitempty"`
+	MaxAttempts        *int      `json:"max_attempts,omitempty"`
+	DownloadsDir       *string   `json:"downloads_dir,omitempty"`
+	SongPathFormat     *string   `json:"song_path_format,omitempty"`
+	AlbumPathFormat    *string   `json:"album_path_format,omitempty"`
+	ArtistPathFormat   *string   `json:"artist_path_format,omitempty"`
+	PlaylistPathFormat *string   `json:"playlist_path_format,omitempty"`
+	TempDir            *string   `json:"temp_dir,omitempty"`
+	CoverSize          *string   `json:"cover_size,omitempty"`
+	CoverFormat        *string   `json:"cover_format,omitempty"`
+	EmbedCover         *bool     `json:"embed_cover,omitempty"`
+	SaveAlbumCover     *bool     `json:"save_album_cover,omitempty"`
+	SaveArtistCover    *bool     `json:"save_artist_cover,omitempty"`
+	SavePlaylistCover  *bool     `json:"save_playlist_cover,omitempty"`
+	EmbedLyrics        *bool     `json:"embed_lyrics,omitempty"`
+	SaveLyricsFile     *bool     `json:"save_lyrics_file,omitempty"`
+	LyricsFormat       *string   `json:"lyrics_format,omitempty"`
+	LyricsType         *string   `json:"lyrics_type,omitempty"`
+	LyricsExtras       *[]string `json:"lyrics_extras,omitempty"`
+	ALACMaxSampleRate  *int      `json:"alac_max_sample_rate,omitempty"`
+	ALACMaxBitDepth    *int      `json:"alac_max_bit_depth,omitempty"`
+	CheckIntegrity     *bool     `json:"check_integrity,omitempty"`
 }
 
 // Apply returns base with every non-nil override substituted into its
@@ -45,7 +50,7 @@ func (o *DownloadOverrides) Apply(base Config) Config {
 	}
 	d := &base.Download
 	if o.QualityPriority != nil {
-		d.QualityPriority = o.QualityPriority
+		d.QualityPriority = *o.QualityPriority
 	}
 	if o.CodecAlternative != nil {
 		d.CodecAlternative = *o.CodecAlternative
@@ -105,7 +110,7 @@ func (o *DownloadOverrides) Apply(base Config) Config {
 		d.LyricsType = *o.LyricsType
 	}
 	if o.LyricsExtras != nil {
-		d.LyricsExtras = o.LyricsExtras
+		d.LyricsExtras = *o.LyricsExtras
 	}
 	if o.ALACMaxSampleRate != nil {
 		d.ALACMaxSampleRate = *o.ALACMaxSampleRate

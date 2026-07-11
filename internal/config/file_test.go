@@ -155,3 +155,61 @@ func TestStoreReload(t *testing.T) {
 		t.Fatalf("in-memory reload = %v", err)
 	}
 }
+
+func TestReloadPreservesLockedFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	store := NewFileStore(Default(), path)
+
+	// A manual edit changes one mutable and several startup-bound fields.
+	edited := Default()
+	edited.Download.CoverFormat = "png"
+	edited.Catalog.AlbumTrackURLMode = "album"
+	edited.Tools.FFmpeg = "/opt/other/ffmpeg"
+	edited.Wrapper.Address = "10.0.0.9:8080"
+	edited.Download.MaxRunningJobs = 42
+	if err := Save(path, edited); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	got := store.Get()
+	if got.Download.CoverFormat != "png" || got.Catalog.AlbumTrackURLMode != "album" {
+		t.Fatalf("mutable edits not reloaded: %+v", got.Download)
+	}
+	base := Default()
+	if got.Tools.FFmpeg != base.Tools.FFmpeg || got.Wrapper.Address != base.Wrapper.Address || got.Download.MaxRunningJobs != base.Download.MaxRunningJobs {
+		t.Fatalf("startup-bound file edits leaked into the live snapshot: tools=%+v wrapper=%+v max_running_jobs=%d", got.Tools, got.Wrapper, got.Download.MaxRunningJobs)
+	}
+}
+
+func TestStoreUpdateAndSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	store := NewFileStore(Default(), path)
+
+	updated, err := store.UpdateAndSave(func(current Config) (Config, error) {
+		current.Download.CoverFormat = "png"
+		return current, nil
+	})
+	if err != nil || updated.Download.CoverFormat != "png" {
+		t.Fatalf("update = (%+v, %v)", updated.Download, err)
+	}
+	if store.Get().Download.CoverFormat != "png" {
+		t.Fatal("snapshot not updated")
+	}
+	if loaded, err := Load(path); err != nil || loaded.Download.CoverFormat != "png" {
+		t.Fatalf("file not updated: %v", err)
+	}
+
+	// A mutate error leaves snapshot and file untouched.
+	wantErr := os.ErrInvalid
+	if _, err := store.UpdateAndSave(func(current Config) (Config, error) {
+		current.Download.CoverFormat = "jpeg"
+		return current, wantErr
+	}); err != wantErr {
+		t.Fatalf("err = %v, want %v", err, wantErr)
+	}
+	if store.Get().Download.CoverFormat != "png" {
+		t.Fatal("failed update changed the snapshot")
+	}
+}

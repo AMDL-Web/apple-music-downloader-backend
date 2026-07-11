@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -524,9 +525,13 @@ func scanJob(row jobScanner) (domain.Job, error) {
 	err := row.Scan(&job.ID, &job.Input, &job.Type, &job.Storefront, &job.Title, &job.ArtworkURL, &job.CanonicalKey, &job.Force, &overrides, &status, &job.TotalItems, &job.DoneItems, &job.FailedItems, &job.Error, &created, &updated)
 	if err == nil && overrides != "" {
 		parsed := &config.DownloadOverrides{}
-		if unmarshalErr := json.Unmarshal([]byte(overrides), parsed); unmarshalErr == nil {
-			job.Overrides = parsed
+		// A corrupt overrides column must fail loudly: silently dropping it
+		// would run the job with the global config instead of the settings
+		// it was submitted with.
+		if unmarshalErr := json.Unmarshal([]byte(overrides), parsed); unmarshalErr != nil {
+			return job, fmt.Errorf("job %s: decode overrides: %w", job.ID, unmarshalErr)
 		}
+		job.Overrides = parsed
 	}
 	job.Status = domain.JobStatus(status)
 	job.CreatedAt = parseTime(created)

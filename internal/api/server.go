@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -263,23 +265,41 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("runtime config store is not configured"))
 		return
 	}
-	current := s.cfg.Get()
-	updated := current
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&updated); err != nil {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if locked := config.RuntimeLockedChanges(current, updated); len(locked) > 0 {
-		writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("fields can only be changed in the config file and require a restart: %s", strings.Join(locked, ", ")))
-		return
-	}
-	if err := updated.Validate(); err != nil {
-		writeError(w, http.StatusUnprocessableEntity, err)
-		return
-	}
-	if err := s.cfg.SetAndSave(updated); err != nil {
+	// Decode, merge, and validate inside the store's atomic update, so two
+	// concurrent PUTs can never merge onto the same stale snapshot and
+	// silently drop each other's changes. rejectStatus/rejectErr carry the
+	// request-level failure out of the closure; any other error is a
+	// persistence failure.
+	var rejectStatus int
+	var rejectErr error
+	updated, err := s.cfg.UpdateAndSave(func(current config.Config) (config.Config, error) {
+		merged := current
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&merged); err != nil {
+			rejectStatus, rejectErr = http.StatusBadRequest, err
+			return config.Config{}, err
+		}
+		if locked := config.RuntimeLockedChanges(current, merged); len(locked) > 0 {
+			rejectStatus, rejectErr = http.StatusUnprocessableEntity, fmt.Errorf("fields can only be changed in the config file and require a restart: %s", strings.Join(locked, ", "))
+			return config.Config{}, rejectErr
+		}
+		if err := merged.Validate(); err != nil {
+			rejectStatus, rejectErr = http.StatusUnprocessableEntity, err
+			return config.Config{}, err
+		}
+		return merged, nil
+	})
+	if err != nil {
+		if rejectErr != nil {
+			writeError(w, rejectStatus, rejectErr)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("persist config: %w", err))
 		return
 	}
@@ -304,7 +324,12 @@ func (s *Server) developerToken(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 	var req domain.DownloadRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// Unknown fields are rejected rather than ignored: a typo inside
+	// overrides would otherwise submit successfully and run the whole batch
+	// without the intended settings.
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}

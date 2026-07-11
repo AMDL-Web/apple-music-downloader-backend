@@ -53,24 +53,43 @@ func (s *Store) Set(cfg Config) {
 // in-memory snapshot, so a failed write leaves the running config unchanged.
 // For in-memory stores it is equivalent to Set.
 func (s *Store) SetAndSave(cfg Config) error {
+	_, err := s.UpdateAndSave(func(Config) (Config, error) { return cfg, nil })
+	return err
+}
+
+// UpdateAndSave atomically applies mutate to the current snapshot, persists
+// the result to the backing file, and swaps it in, returning the new config.
+// saveMu is held across the whole read-modify-write, so two concurrent
+// merge-style updates can never both derive from the same stale snapshot and
+// silently drop each other's changes. A mutate error or a failed write
+// leaves the running config unchanged.
+func (s *Store) UpdateAndSave(mutate func(current Config) (Config, error)) (Config, error) {
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
+	updated, err := mutate(s.Get())
+	if err != nil {
+		return Config{}, err
+	}
 	if s.path != "" {
-		if err := Save(s.path, cfg); err != nil {
-			return err
+		if err := Save(s.path, updated); err != nil {
+			return Config{}, err
 		}
 	}
-	s.Set(cfg)
-	return nil
+	s.Set(updated)
+	return updated, nil
 }
 
 // Reload re-reads the backing file into the snapshot, picking up manual
-// edits made while the backend is running. On a read or validation error the
-// snapshot is left unchanged so callers can keep serving the last good
-// config. No-op for in-memory stores. It shares saveMu with SetAndSave:
-// without it, a reload that read the file just before a concurrent update
-// wrote it could swap the pre-update values back in and silently drop that
-// update.
+// edits made while the backend is running. Only the runtime-mutable part is
+// taken from the file: startup-bound fields keep their in-memory values,
+// because the components built from them (listener, wrapper connection,
+// catalog client, tool checker, worker pool) cannot follow a live change —
+// those file edits apply on the next restart, as documented. On a read or
+// validation error the snapshot is left unchanged so callers can keep
+// serving the last good config. No-op for in-memory stores. It shares
+// saveMu with UpdateAndSave: without it, a reload that read the file just
+// before a concurrent update wrote it could swap the pre-update values back
+// in and silently drop that update.
 func (s *Store) Reload() error {
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
@@ -81,6 +100,6 @@ func (s *Store) Reload() error {
 	if err != nil {
 		return err
 	}
-	s.Set(cfg)
+	s.Set(preserveRuntimeLocked(cfg, s.Get()))
 	return nil
 }

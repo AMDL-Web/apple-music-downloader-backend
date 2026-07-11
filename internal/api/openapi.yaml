@@ -40,9 +40,10 @@ paths:
         它们无法通过本 API 修改，请编辑 configs/config.yaml 并重启。
 
         每次 GET 会先重读 configs/config.yaml 再返回，因此运行期间手工编辑
-        的文件改动在下一次 GET 后即生效、无需重启。文件当前不可读或校验
-        失败时（例如正编辑到一半），继续返回上一份有效配置，并附
-        reload_error 字段说明原因。
+        的可修改字段在下一次 GET 后即生效、无需重启；文件中仅启动时生效
+        字段的改动不会被载入内存（进程内组件无法跟随变化），仍需重启。
+        文件当前不可读或校验失败时（例如正编辑到一半），继续返回上一份
+        有效配置，并附 reload_error 字段说明原因。
       operationId: getConfig
       responses:
         '200':
@@ -398,7 +399,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/BatchSubmitResponse'
         '400':
-          description: 请求体无法解析、urls 为空或超过单次上限（100 条）。
+          description: >-
+            请求体无法解析、包含未知字段（例如 overrides 内的键拼写错误）、
+            urls 为空或超过单次上限（100 条）。
           content:
             application/json:
               schema:

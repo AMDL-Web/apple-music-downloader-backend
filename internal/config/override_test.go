@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -18,8 +19,9 @@ func TestDownloadOverridesApplyMergesOnlySetFields(t *testing.T) {
 	embed := false
 	format := "png"
 	parallel := 7
+	quality := []string{"aac"}
 	overrides := &DownloadOverrides{
-		QualityPriority:   []string{"aac"},
+		QualityPriority:   &quality,
 		EmbedCover:        &embed,
 		CoverFormat:       &format,
 		MaxParallelTracks: &parallel,
@@ -52,6 +54,33 @@ func TestDownloadOverridesApplyThenValidate(t *testing.T) {
 	overrides = &DownloadOverrides{CoverFormat: &good}
 	if err := overrides.Apply(Default()).Validate(); err != nil {
 		t.Fatalf("valid overrides rejected: %v", err)
+	}
+}
+
+func TestOverridesEmptyListSurvivesJSONRoundTrip(t *testing.T) {
+	extras := []string{}
+	overrides := &DownloadOverrides{LyricsExtras: &extras}
+	raw, err := json.Marshal(overrides)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded := &DownloadOverrides{}
+	if err := json.Unmarshal(raw, decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.LyricsExtras == nil || len(*decoded.LyricsExtras) != 0 {
+		t.Fatalf("empty lyrics_extras override lost in round trip: %s -> %+v", raw, decoded.LyricsExtras)
+	}
+
+	// An explicitly empty override must clear the base list, while an absent
+	// one keeps it.
+	base := Default()
+	base.Download.LyricsExtras = []string{"translation"}
+	if got := decoded.Apply(base); len(got.Download.LyricsExtras) != 0 {
+		t.Fatalf("empty override did not clear lyrics_extras: %v", got.Download.LyricsExtras)
+	}
+	if got := (&DownloadOverrides{}).Apply(base); len(got.Download.LyricsExtras) != 1 {
+		t.Fatalf("absent override changed lyrics_extras: %v", got.Download.LyricsExtras)
 	}
 }
 

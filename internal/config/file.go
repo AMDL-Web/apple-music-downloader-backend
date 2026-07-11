@@ -19,9 +19,11 @@ const exampleFileName = "config.example.yaml"
 // savedFileHeader tops every config file written by Save, pointing readers at
 // the example file since YAML marshaling cannot preserve comments.
 const savedFileHeader = `# Managed by the amdl backend: rewritten (comments dropped) on every
-# PUT /api/v1/config. Manual edits take effect on the next
-# GET /api/v1/config or restart; only a PUT issued before either of those
-# overwrites them. Key documentation lives in ` + exampleFileName + `.
+# PUT /api/v1/config. Manual edits to runtime-mutable fields (download,
+# simulate, catalog.album_track_url_mode) take effect on the next
+# GET /api/v1/config; edits to startup-bound fields require a restart. A PUT
+# issued before either of those overwrites manual edits. Key documentation
+# lives in ` + exampleFileName + `.
 `
 
 // BootstrapFromExample creates the live config file at path from the sibling

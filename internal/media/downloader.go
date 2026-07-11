@@ -154,8 +154,24 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	return d.withConfig(cfg).processJob(ctx, job, reporter)
 }
 
+// parseJobInput reconstructs the submission-time parse result from the job's
+// canonical key ("type:storefront:id", written by the manager after
+// ValidateRequest). Re-parsing the raw input here instead would apply the
+// CURRENT catalog.album_track_url_mode, so an album?i= link submitted as a
+// song could silently turn into a whole-album job (or vice versa) if that
+// mode changed while the job sat in the queue — diverging from the dedup key
+// and metadata stored at submission. Jobs without a well-formed key fall
+// back to re-parsing.
+func parseJobInput(job domain.Job, albumTrackURLMode string) (applemusic.ParsedURL, error) {
+	parts := strings.SplitN(job.CanonicalKey, ":", 3)
+	if len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != "" {
+		return applemusic.ParsedURL{Raw: job.Input, Type: applemusic.URLType(parts[0]), Storefront: parts[1], ID: parts[2]}, nil
+	}
+	return applemusic.ParseWithAlbumTrackMode(job.Input, albumTrackURLMode)
+}
+
 func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jobs.Reporter) error {
-	parsed, err := applemusic.ParseWithAlbumTrackMode(job.Input, d.cfg.Catalog.AlbumTrackURLMode)
+	parsed, err := parseJobInput(job, d.cfg.Catalog.AlbumTrackURLMode)
 	if err != nil {
 		return err
 	}

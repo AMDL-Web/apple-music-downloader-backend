@@ -57,3 +57,21 @@ func RuntimeLockedChanges(old, updated Config) []string {
 	lock("tools.ffmpeg", old.Tools.FFmpeg != updated.Tools.FFmpeg)
 	return changed
 }
+
+// preserveRuntimeLocked returns loaded with every startup-bound field forced
+// back to current's values, leaving only the runtime-mutable part (download
+// minus max_running_jobs, simulate, catalog.album_track_url_mode) from
+// loaded. Store.Reload uses it so a manual file edit to a locked field never
+// half-applies to a running process. Must cover the same field set as
+// RuntimeLockedChanges above.
+func preserveRuntimeLocked(loaded, current Config) Config {
+	albumTrackURLMode := loaded.Catalog.AlbumTrackURLMode
+	loaded.Server = current.Server
+	loaded.Database = current.Database
+	loaded.Wrapper = current.Wrapper
+	loaded.Tools = current.Tools
+	loaded.Catalog = current.Catalog
+	loaded.Catalog.AlbumTrackURLMode = albumTrackURLMode
+	loaded.Download.MaxRunningJobs = current.Download.MaxRunningJobs
+	return loaded
+}

@@ -1,6 +1,6 @@
 server:
   # string: API listen address in "host:port" form, for example "127.0.0.1:18080" or ":18080".
-  listen: "0.0.0.0:18080"
+  listen: "127.0.0.1:18080"
 
 database:
   # string: SQLite database file path. Relative paths are resolved from the backend working directory.
@@ -29,6 +29,11 @@ catalog:
   #     (enhancedHls is not accessible with a self-signed token).
   # - only some set: startup fails with a configuration error.
   # string: filesystem path to the Apple Media Services .p8 private key (PKCS#8 ECDSA). Empty disables signing.
+  apple_music_private_key_path: ""
+  # string: the 10-character Key ID (kid) for the .p8 key. Empty disables signing.
+  apple_music_key_id: ""
+  # string: the 10-character Apple developer Team ID used as the token issuer (iss). Empty disables signing.
+  apple_music_team_id: ""
   # integer hours: validity of developer tokens minted for external clients via GET /api/v1/developer-token.
   # Values <= 0 fall back to 1 hour. Only meaningful when signing is enabled (the endpoint returns 409 in legacy mode);
   # the backend's internal token always lasts 24h regardless of this value.
@@ -55,7 +60,7 @@ download:
   # AAC-LC does not need to be listed; it is always appended as the final fallback.
   quality_priority: ["alac"]
   # bool: true tries the next codec in quality_priority after failure; false only tries the first codec.
-  codec_alternative: false
+  codec_alternative: true
   # integer: maximum concurrently running jobs. Values <= 0 currently behave as the downloader manager default.
   max_running_jobs: 3
   # integer: maximum tracks downloaded in parallel per collection. Values <= 0 fall back to 1.
