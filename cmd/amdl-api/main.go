@@ -28,6 +28,15 @@ func main() {
 	if cfgPath == "" {
 		cfgPath = "configs/config.yaml"
 	}
+	// First start: create the live config from the committed, commented
+	// config.example.yaml next to it. The live file is machine-managed —
+	// PUT /api/v1/config rewrites it — so it stays out of version control.
+	if created, err := config.BootstrapFromExample(cfgPath); err != nil {
+		logger.Error("bootstrap config", "error", err)
+		os.Exit(1)
+	} else if created {
+		logger.Info("created config from example", "path", cfgPath)
+	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		logger.Error("load config", "error", err)
@@ -75,9 +84,16 @@ func main() {
 		logger.Error("sign apple music developer token", "error", err)
 		os.Exit(1)
 	}
+	// cfgStore is the live runtime config shared by the API layer and the
+	// download pipeline; GET/PUT /api/v1/config read and update it, and
+	// updates are written back to cfgPath so they survive restarts. Values
+	// consumed below in main (listen address, database path, wrapper
+	// connection, worker count, catalog client) are startup-bound and the
+	// update endpoint refuses to change them.
+	cfgStore := config.NewFileStore(cfg, cfgPath)
 	toolChecker := media.NewToolChecker(cfg.Tools)
-	downloader := media.NewDownloader(cfg, catalog, wrapperClient, toolChecker, logger)
-	qualityService := media.NewQualityService(cfg, catalog, wrapperClient)
+	downloader := media.NewDownloader(cfgStore, catalog, wrapperClient, toolChecker, logger)
+	qualityService := media.NewQualityService(cfgStore, catalog, wrapperClient)
 	manager := jobs.NewManager(store, hub, downloader, cfg.Download.MaxRunningJobs, logger)
 	hookDispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, logger)
 	manager.SetHooks(hookDispatcher)
@@ -94,7 +110,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
-		Handler:           api.NewServer(cfg, store, hub, manager, wrapperClient, qualityService, catalog, toolChecker, logger).Routes(),
+		Handler:           api.NewServer(cfgStore, store, hub, manager, wrapperClient, qualityService, catalog, logger).Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

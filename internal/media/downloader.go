@@ -22,6 +22,12 @@ import (
 )
 
 type Downloader struct {
+	// store is the live runtime config; every ProcessJob/ValidateRequest call
+	// reads a fresh snapshot from it. cfg is the effective config the current
+	// operation runs under (snapshot plus the job's overrides — see
+	// withConfig); it doubles as the fallback when store is nil in unit tests
+	// that build a Downloader literal around a fixed config.
+	store   *config.Store
 	cfg     config.Config
 	catalog downloaderCatalog
 	wrapper downloaderWrapper
@@ -54,11 +60,36 @@ type selectedDownloadMedia struct {
 	raw  []byte
 }
 
-func NewDownloader(cfg config.Config, catalog *applemusic.CatalogClient, wrapperClient *wrapper.Client, tools *ToolChecker, logger *slog.Logger) *Downloader {
-	return &Downloader{cfg: cfg, catalog: catalog, wrapper: wrapperClient, tools: tools, http: newHTTPClient(), mp4: newMP4Processor(cfg), logger: logger}
+func NewDownloader(store *config.Store, catalog *applemusic.CatalogClient, wrapperClient *wrapper.Client, tools *ToolChecker, logger *slog.Logger) *Downloader {
+	cfg := store.Get()
+	return &Downloader{store: store, cfg: cfg, catalog: catalog, wrapper: wrapperClient, tools: tools, http: newHTTPClient(), mp4: newMP4Processor(cfg), logger: logger}
+}
+
+// baseConfig returns the current runtime config, falling back to the fixed
+// cfg field for test Downloaders constructed without a store.
+func (d *Downloader) baseConfig() config.Config {
+	if d.store != nil {
+		return d.store.Get()
+	}
+	return d.cfg
+}
+
+// withConfig returns a shallow copy of d bound to cfg, so one operation's
+// effective config (runtime snapshot plus per-job overrides) never leaks into
+// other jobs running concurrently on the shared Downloader. The MP4 processor
+// is rebuilt because it captures config (temp dir, embed_cover) itself.
+func (d *Downloader) withConfig(cfg config.Config) *Downloader {
+	clone := *d
+	clone.cfg = cfg
+	clone.mp4 = newMP4Processor(cfg)
+	return &clone
 }
 
 func (d *Downloader) ValidateRequest(ctx context.Context, url string) (jobs.ValidationResult, error) {
+	return d.withConfig(d.baseConfig()).validateRequest(ctx, url)
+}
+
+func (d *Downloader) validateRequest(ctx context.Context, url string) (jobs.ValidationResult, error) {
 	parsed, err := applemusic.ParseWithAlbumTrackMode(url, d.cfg.Catalog.AlbumTrackURLMode)
 	if err != nil {
 		if strings.Contains(err.Error(), "album_track_url_mode") {
@@ -106,7 +137,41 @@ func (d *Downloader) validateStorefront(ctx context.Context, storefront string) 
 }
 
 func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jobs.Reporter) error {
-	parsed, err := applemusic.ParseWithAlbumTrackMode(job.Input, d.cfg.Catalog.AlbumTrackURLMode)
+	// Bind this job to its effective config: the live runtime snapshot with
+	// the job's submission-time overrides layered on top. Read once here so
+	// a concurrent runtime-config update never changes behavior mid-job.
+	cfg := job.Overrides.Apply(d.baseConfig())
+	if !cfg.Simulate.Enabled {
+		// The runtime config or the job's overrides may point at directories
+		// that main() did not create at startup.
+		if err := os.MkdirAll(cfg.Download.DownloadsDir, 0o755); err != nil {
+			return fmt.Errorf("create downloads dir: %w", err)
+		}
+		if err := os.MkdirAll(cfg.Download.TempDir, 0o755); err != nil {
+			return fmt.Errorf("create temp dir: %w", err)
+		}
+	}
+	return d.withConfig(cfg).processJob(ctx, job, reporter)
+}
+
+// parseJobInput reconstructs the submission-time parse result from the job's
+// canonical key ("type:storefront:id", written by the manager after
+// ValidateRequest). Re-parsing the raw input here instead would apply the
+// CURRENT catalog.album_track_url_mode, so an album?i= link submitted as a
+// song could silently turn into a whole-album job (or vice versa) if that
+// mode changed while the job sat in the queue — diverging from the dedup key
+// and metadata stored at submission. Jobs without a well-formed key fall
+// back to re-parsing.
+func parseJobInput(job domain.Job, albumTrackURLMode string) (applemusic.ParsedURL, error) {
+	parts := strings.SplitN(job.CanonicalKey, ":", 3)
+	if len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != "" {
+		return applemusic.ParsedURL{Raw: job.Input, Type: applemusic.URLType(parts[0]), Storefront: parts[1], ID: parts[2]}, nil
+	}
+	return applemusic.ParseWithAlbumTrackMode(job.Input, albumTrackURLMode)
+}
+
+func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jobs.Reporter) error {
+	parsed, err := parseJobInput(job, d.cfg.Catalog.AlbumTrackURLMode)
 	if err != nil {
 		return err
 	}

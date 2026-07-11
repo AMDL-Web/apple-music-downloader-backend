@@ -168,13 +168,16 @@ func Load(path string) (Config, error) {
 	if err := decoder.Decode(&cfg); err != nil {
 		return cfg, err
 	}
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
 }
 
-func (c Config) validate() error {
+// Validate checks the semantic rules every Config must satisfy, whether it
+// was loaded from YAML at startup or assembled at runtime (config update API,
+// per-request download overrides applied to a base config).
+func (c Config) Validate() error {
 	if c.Catalog.AlbumTrackURLMode != "song" && c.Catalog.AlbumTrackURLMode != "album" {
 		return fmt.Errorf("catalog.album_track_url_mode must be song or album")
 	}

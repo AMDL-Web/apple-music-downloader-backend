@@ -33,11 +33,11 @@ This backend is the **download core**. It intentionally has NO authentication la
 # 3. Development Rules
 
 - This repository is in the stable development phase. Stability and backward compatibility now take priority over architectural experimentation.
-- Do NOT break existing API contracts, config file formats (`configs/config.yaml` keys and template variables), database schemas, or output path conventions unless the change is explicitly requested or clearly necessary.
+- Do NOT break existing API contracts, config file formats (`configs/config.example.yaml` keys and template variables; the live `configs/config.yaml` is bootstrapped from it on first start and rewritten by the runtime config API), database schemas, or output path conventions unless the change is explicitly requested or clearly necessary.
 - Destructive schema and data changes are no longer allowed by default. Any database schema change requires a migration path that preserves existing data; explain the migration impact and get confirmation before applying.
 - Prefer small, incremental, well-scoped changes. Avoid large refactors and architecture-level rewrites unless explicitly requested.
 - When a breaking change is genuinely necessary, call it out explicitly, document what breaks and how to migrate, and update all affected modules consistently in the same change.
-- When adding or modifying any `configs/config.yaml` configuration item, keep the sample config comments complete: document all allowed enum values, valid boolean values, numeric units/default behavior, list item options, and supported template variables next to the relevant key.
+- When adding or modifying any configuration item, keep the sample config comments in `configs/config.example.yaml` complete: document all allowed enum values, valid boolean values, numeric units/default behavior, list item options, and supported template variables next to the relevant key.
 
 ---
 

@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"amdl/internal/config"
+)
 
 type JobStatus string
 
@@ -70,21 +74,26 @@ const (
 )
 
 type Job struct {
-	ID           string    `json:"id"`
-	Input        string    `json:"input"`
-	Type         string    `json:"type"`
-	Storefront   string    `json:"storefront,omitempty"`
-	Title        string    `json:"title,omitempty"`
-	ArtworkURL   string    `json:"artwork_url,omitempty"`
-	CanonicalKey string    `json:"-"`
-	Force        bool      `json:"force"`
-	Status       JobStatus `json:"status"`
-	TotalItems   int       `json:"total_items"`
-	DoneItems    int       `json:"done_items"`
-	FailedItems  int       `json:"failed_items"`
-	Error        string    `json:"error,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           string `json:"id"`
+	Input        string `json:"input"`
+	Type         string `json:"type"`
+	Storefront   string `json:"storefront,omitempty"`
+	Title        string `json:"title,omitempty"`
+	ArtworkURL   string `json:"artwork_url,omitempty"`
+	CanonicalKey string `json:"-"`
+	Force        bool   `json:"force"`
+	// Overrides is the per-request download config overlay attached at
+	// submission; nil for jobs submitted without one. It is persisted with
+	// the job and applied on top of the live runtime config each time the
+	// job runs (including retries and post-restart requeues).
+	Overrides   *config.DownloadOverrides `json:"overrides,omitempty"`
+	Status      JobStatus                 `json:"status"`
+	TotalItems  int                       `json:"total_items"`
+	DoneItems   int                       `json:"done_items"`
+	FailedItems int                       `json:"failed_items"`
+	Error       string                    `json:"error,omitempty"`
+	CreatedAt   time.Time                 `json:"created_at"`
+	UpdatedAt   time.Time                 `json:"updated_at"`
 }
 
 type JobItem struct {
@@ -285,6 +294,10 @@ type DownloadFeedMessage struct {
 type DownloadRequest struct {
 	URLs  []string `json:"urls"`
 	Force bool     `json:"force"`
+	// Overrides optionally overlays the download section of the runtime
+	// config for every job created from this request only. Omitted fields
+	// keep the runtime config's values.
+	Overrides *config.DownloadOverrides `json:"overrides,omitempty"`
 }
 
 type SubmitStatus string

@@ -29,18 +29,75 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
-  /api/v1/capabilities:
+  /api/v1/config:
     get:
       tags: [System]
-      summary: 查询下载能力和外部工具
-      operationId: getCapabilities
+      summary: 读取当前运行时配置（仅可修改字段）
+      description: >-
+        返回当前生效配置中可运行时修改的部分：download 段（max_running_jobs
+        除外）、simulate 段、catalog.album_track_url_mode。仅启动时生效的
+        字段（server、database、wrapper、tools、catalog 其它字段）不返回——
+        它们无法通过本 API 修改，请编辑 configs/config.yaml 并重启。
+
+        每次 GET 会先重读 configs/config.yaml 再返回，因此运行期间手工编辑
+        的可修改字段在下一次 GET 后即生效、无需重启；文件中仅启动时生效
+        字段的改动不会被载入内存（进程内组件无法跟随变化），仍需重启。
+        文件当前不可读或校验失败时（例如正编辑到一半），继续返回上一份
+        有效配置，并附 reload_error 字段说明原因。
+      operationId: getConfig
       responses:
         '200':
-          description: 当前配置与工具可用性。
+          description: 当前可运行时修改的配置。
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CapabilitiesResponse'
+                $ref: '#/components/schemas/ConfigResponse'
+    put:
+      tags: [System]
+      summary: 更新运行时配置
+      description: >-
+        请求体按合并语义覆盖当前运行时配置：省略的字段保持现值，出现的字段
+        （含整段）被替换。合并结果必须通过与配置文件相同的完整校验。
+
+        仅 GET 返回的字段可以修改：download 段（max_running_jobs 除外）、
+        simulate 段、catalog.album_track_url_mode。其余字段只在进程启动时
+        被消费，修改请求会被 422 拒绝——请改 configs/config.yaml 并重启。
+
+        修改立即对新请求和新开始的任务生效（运行中的任务继续使用其启动时的
+        配置快照），并写回 configs/config.yaml，重启后依然生效。该文件由
+        后端管理（每次 PUT 整体重写，注释不保留）；带完整注释的字段文档在
+        configs/config.example.yaml，首次启动时会以它为模板生成 config.yaml。
+
+        前端注意：确认写入前请先 GET 一次并基于其返回值构造请求体。PUT 的
+        合并基准是后端内存中的当前配置，而 GET 会先重读配置文件、把运行
+        期间的手工文件编辑同步进内存——跳过 GET 直接 PUT，可能基于过期
+        视图覆盖掉别处（其它页面或手工编辑）刚改过的值。
+      operationId: updateConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuntimeConfig'
+      responses:
+        '200':
+          description: 更新后的运行时配置。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigResponse'
+        '400':
+          description: 请求体不是合法 JSON 或包含未知字段。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: 合并结果未通过配置校验，或试图修改仅启动时生效的字段。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api/v1/developer-token:
     get:
       tags: [System]
@@ -323,7 +380,10 @@ paths:
     post:
       tags: [Downloads]
       summary: 批量创建下载任务
-      description: 提交一批 URL，逐条返回入队结果；重复、不支持或队列已满的 URL 在 results 中单独标记，不影响其他 URL 入队。
+      description: >-
+        提交一批 URL，逐条返回入队结果；重复、不支持或队列已满的 URL 在
+        results 中单独标记，不影响其他 URL 入队。可选的 overrides 字段
+        对本次请求创建的所有任务生效，覆盖运行时配置的 download 段。
       operationId: createDownload
       requestBody:
         required: true
@@ -339,17 +399,23 @@ paths:
               schema:
                 $ref: '#/components/schemas/BatchSubmitResponse'
         '400':
-          description: 请求体无法解析、urls 为空或超过单次上限（100 条）。
+          description: >-
+            请求体无法解析、包含未知字段（例如 overrides 内的键拼写错误）、
+            urls 为空或超过单次上限（100 条）。
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: 所有 URL 均被拒绝；逐条原因见 results。
+          description: >-
+            所有 URL 均被拒绝（响应体为 BatchSubmitResponse，逐条原因见
+            results），或 overrides 未通过配置校验（响应体为 ErrorResponse）。
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/BatchSubmitResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/BatchSubmitResponse'
+                  - $ref: '#/components/schemas/ErrorResponse'
   /api/v1/downloads/events:
     get:
       tags: [Downloads]
@@ -714,48 +780,6 @@ components:
           enum: [ok, degraded]
         database_error:
           type: string
-    ToolCapability:
-      type: object
-      required: [name, available]
-      properties:
-        name:
-          type: string
-        available:
-          type: boolean
-        path:
-          type: string
-        error:
-          type: string
-    CapabilitiesResponse:
-      type: object
-      required: [api, supported_inputs, unsupported_inputs, quality_priority, codec_alternative, fallback_codec, album_track_url_mode, tools]
-      properties:
-        api:
-          type: string
-        supported_inputs:
-          type: array
-          items:
-            type: string
-          example: [song_url, album_url, playlist_url, artist_url]
-        unsupported_inputs:
-          type: array
-          items:
-            type: string
-          example: [music_video, station, search]
-        quality_priority:
-          type: array
-          items:
-            type: string
-        codec_alternative:
-          type: boolean
-        fallback_codec:
-          type: string
-        album_track_url_mode:
-          type: string
-        tools:
-          type: array
-          items:
-            $ref: '#/components/schemas/ToolCapability'
     LoginRequest:
       type: object
       required: [username, password]
@@ -825,6 +849,142 @@ components:
           type: boolean
           default: false
           description: 是否强制重新下载已存在的文件。
+        overrides:
+          $ref: '#/components/schemas/DownloadOverrides'
+          description: >-
+            可选：仅对本次请求创建的任务生效的下载配置覆盖。省略的字段沿用
+            当前运行时配置。覆盖随任务持久化，重试和重启恢复后依然生效，
+            不影响其它任务。
+    DownloadOverrides:
+      type: object
+      description: >-
+        下载配置的按需覆盖层，字段与运行时配置 download 段一一对应
+        （max_running_jobs 除外——工作池大小在启动时确定，无法按任务覆盖）。
+        所有字段可选；提交时会以“当前运行时配置 + 覆盖”做完整校验。
+      properties:
+        quality_priority:
+          type: array
+          items:
+            type: string
+            enum: [alac, aac, aac-binaural, aac-downmix, ec3, ac3]
+        codec_alternative: {type: boolean}
+        max_parallel_tracks: {type: integer}
+        max_attempts: {type: integer}
+        downloads_dir: {type: string}
+        song_path_format: {type: string}
+        album_path_format: {type: string}
+        artist_path_format: {type: string}
+        playlist_path_format: {type: string}
+        temp_dir: {type: string}
+        cover_size: {type: string}
+        cover_format:
+          type: string
+          enum: [jpg, jpeg, png]
+        embed_cover: {type: boolean}
+        save_album_cover: {type: boolean}
+        save_artist_cover: {type: boolean}
+        save_playlist_cover: {type: boolean}
+        embed_lyrics: {type: boolean}
+        save_lyrics_file: {type: boolean}
+        lyrics_format:
+          type: string
+          enum: [lrc, ttml]
+        lyrics_type:
+          type: string
+          enum: [lyrics, syllable-lyrics]
+        lyrics_extras:
+          type: array
+          items:
+            type: string
+            enum: [translation, pronunciation]
+        alac_max_sample_rate: {type: integer}
+        alac_max_bit_depth: {type: integer}
+        check_integrity: {type: boolean}
+    RuntimeConfig:
+      type: object
+      description: >-
+        可运行时修改的配置子集（字段含义、枚举值和默认行为见
+        configs/config.example.yaml 内注释）。GET 返回此形状；PUT 时可只
+        提交需要修改的字段，省略的字段保持现值。
+      properties:
+        catalog:
+          type: object
+          properties:
+            album_track_url_mode:
+              type: string
+              enum: [song, album]
+        download:
+          type: object
+          description: max_running_jobs 仅启动时生效，不在此出现、不可修改。
+          properties:
+            quality_priority:
+              type: array
+              minItems: 1
+              items:
+                type: string
+                enum: [alac, aac, aac-binaural, aac-downmix, ec3, ac3]
+            codec_alternative: {type: boolean}
+            max_parallel_tracks: {type: integer}
+            max_attempts: {type: integer}
+            downloads_dir: {type: string}
+            song_path_format: {type: string}
+            album_path_format: {type: string}
+            artist_path_format: {type: string}
+            playlist_path_format: {type: string}
+            temp_dir: {type: string}
+            cover_size:
+              type: string
+              description: >-
+                "{width}x{height}"，例如 5000x5000、3000x3000、1400x1400、600x600。
+            cover_format:
+              type: string
+              enum: [jpg, jpeg, png]
+            embed_cover: {type: boolean}
+            save_album_cover: {type: boolean}
+            save_artist_cover: {type: boolean}
+            save_playlist_cover: {type: boolean}
+            embed_lyrics: {type: boolean}
+            save_lyrics_file: {type: boolean}
+            lyrics_format:
+              type: string
+              enum: [lrc, ttml]
+            lyrics_type:
+              type: string
+              enum: [lyrics, syllable-lyrics]
+            lyrics_extras:
+              type: array
+              items:
+                type: string
+                enum: [translation, pronunciation]
+            alac_max_sample_rate:
+              type: integer
+              description: Hz；常见取值 44100、48000、96000、192000。
+            alac_max_bit_depth:
+              type: integer
+              description: 常见取值 16、24。
+            check_integrity: {type: boolean}
+        simulate:
+          type: object
+          properties:
+            enabled: {type: boolean}
+            min_speed_kbps: {type: integer}
+            max_speed_kbps: {type: integer}
+    ConfigResponse:
+      type: object
+      required: [config, persisted]
+      properties:
+        config:
+          $ref: '#/components/schemas/RuntimeConfig'
+        persisted:
+          type: boolean
+          description: >-
+            配置存储是否有后备文件。正常部署下恒为 true：PUT 的修改写回
+            configs/config.yaml，重启后依然生效。
+        reload_error:
+          type: string
+          description: >-
+            仅 GET 且重读配置文件失败时出现：说明文件为何不可用（不可读或
+            校验失败），此时 config 为最后一份有效配置。
     SubmitResult:
       type: object
       required: [url, status]
@@ -947,6 +1107,9 @@ components:
             absent for jobs created before this field existed.
         force:
           type: boolean
+        overrides:
+          $ref: '#/components/schemas/DownloadOverrides'
+          description: 提交时附带的下载配置覆盖；未附带时省略。
         status:
           type: string
           enum: [queued, running, completed, failed, cancelled]

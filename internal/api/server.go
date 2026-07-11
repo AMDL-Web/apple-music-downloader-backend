@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -34,14 +36,15 @@ const maxBatchSubmitURLs = 100
 var urlSplitPattern = regexp.MustCompile(`[\r\n\s,;，；]+`)
 
 type Server struct {
-	cfg      config.Config
+	// cfg is the live runtime config store shared with the download pipeline;
+	// GET/PUT /api/v1/config read and replace its snapshot.
+	cfg      *config.Store
 	store    *db.Store
 	hub      *events.Hub
 	manager  *jobs.Manager
 	wrapper  wrapperService
 	quality  qualityService
 	devToken developerTokenService
-	tools    *media.ToolChecker
 	logger   *slog.Logger
 }
 
@@ -60,8 +63,17 @@ type developerTokenService interface {
 	MintDeveloperToken() (string, error)
 }
 
-func NewServer(cfg config.Config, store *db.Store, hub *events.Hub, manager *jobs.Manager, wrapperClient wrapperService, qualityClient qualityService, devToken developerTokenService, tools *media.ToolChecker, logger *slog.Logger) *Server {
-	return &Server{cfg: cfg, store: store, hub: hub, manager: manager, wrapper: wrapperClient, quality: qualityClient, devToken: devToken, tools: tools, logger: logger}
+func NewServer(cfg *config.Store, store *db.Store, hub *events.Hub, manager *jobs.Manager, wrapperClient wrapperService, qualityClient qualityService, devToken developerTokenService, logger *slog.Logger) *Server {
+	return &Server{cfg: cfg, store: store, hub: hub, manager: manager, wrapper: wrapperClient, quality: qualityClient, devToken: devToken, logger: logger}
+}
+
+// currentConfig returns the live runtime config snapshot; nil-safe for test
+// Servers constructed without a config store.
+func (s *Server) currentConfig() config.Config {
+	if s.cfg == nil {
+		return config.Config{}
+	}
+	return s.cfg.Get()
 }
 
 func (s *Server) Routes() http.Handler {
@@ -69,7 +81,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /docs", swaggerUI)
 	mux.HandleFunc("GET /api/openapi.yaml", openAPI)
 	mux.HandleFunc("GET /api/v1/health", s.health)
-	mux.HandleFunc("GET /api/v1/capabilities", s.capabilities)
+	mux.HandleFunc("GET /api/v1/config", s.getConfig)
+	mux.HandleFunc("PUT /api/v1/config", s.updateConfig)
 	mux.HandleFunc("GET /api/v1/developer-token", s.developerToken)
 	mux.HandleFunc("GET /api/v1/wrapper/status", s.wrapperStatus)
 	mux.HandleFunc("POST /api/v1/wrapper/login", s.wrapperLogin)
@@ -196,7 +209,7 @@ func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -218,24 +231,86 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
-func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"api":                  "v1",
-		"supported_inputs":     []string{"song_url", "album_url", "playlist_url", "artist_url"},
-		"unsupported_inputs":   []string{"music_video", "station", "search"},
-		"quality_priority":     s.cfg.Download.QualityPriority,
-		"codec_alternative":    s.cfg.Download.CodecAlternative,
-		"fallback_codec":       "aac-lc",
-		"album_track_url_mode": s.cfg.Catalog.AlbumTrackURLMode,
-		"tools":                s.tools.Check(r.Context()),
+// getConfig returns the runtime-changeable part of the current config
+// (download minus max_running_jobs, simulate, catalog.album_track_url_mode).
+// Startup-bound fields are omitted: clients cannot change them through this
+// API, so they have no reason to see them here.
+//
+// The backing file is re-read first, so manual edits made while the backend
+// is running take effect on the next GET instead of requiring a restart. If
+// the file is currently unreadable or invalid (e.g. an edit in progress),
+// the last good snapshot is served and reload_error reports why.
+func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]any{"persisted": false}
+	if s.cfg != nil {
+		resp["persisted"] = s.cfg.Persistent()
+		if err := s.cfg.Reload(); err != nil {
+			resp["reload_error"] = err.Error()
+		}
+	}
+	resp["config"] = config.MutableView(s.currentConfig())
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// updateConfig merges the request body onto the current runtime config:
+// omitted fields keep their current values, present fields (including whole
+// sections) are replaced. The merged result must pass full config validation,
+// and fields consumed only at startup (server, database, wrapper, tools,
+// catalog client/signing, download.max_running_jobs) are rejected — changing
+// them at runtime would silently do nothing. Accepted changes apply to new
+// requests and newly started jobs immediately and are written back to the
+// live config file, so they survive restarts.
+func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
+	if s.cfg == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("runtime config store is not configured"))
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	// Decode, merge, and validate inside the store's atomic update, so two
+	// concurrent PUTs can never merge onto the same stale snapshot and
+	// silently drop each other's changes. rejectStatus/rejectErr carry the
+	// request-level failure out of the closure; any other error is a
+	// persistence failure.
+	var rejectStatus int
+	var rejectErr error
+	updated, err := s.cfg.UpdateAndSave(func(current config.Config) (config.Config, error) {
+		merged := current
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&merged); err != nil {
+			rejectStatus, rejectErr = http.StatusBadRequest, err
+			return config.Config{}, err
+		}
+		if locked := config.RuntimeLockedChanges(current, merged); len(locked) > 0 {
+			rejectStatus, rejectErr = http.StatusUnprocessableEntity, fmt.Errorf("fields can only be changed in the config file and require a restart: %s", strings.Join(locked, ", "))
+			return config.Config{}, rejectErr
+		}
+		if err := merged.Validate(); err != nil {
+			rejectStatus, rejectErr = http.StatusUnprocessableEntity, err
+			return config.Config{}, err
+		}
+		return merged, nil
 	})
+	if err != nil {
+		if rejectErr != nil {
+			writeError(w, rejectStatus, rejectErr)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("persist config: %w", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"config": config.MutableView(updated), "persisted": s.cfg.Persistent()})
 }
 
 // developerToken hands out a freshly signed Apple Music developer token. Only
 // local signing mode can serve it: the legacy web-discovered token is
 // origin-locked to music.apple.com and would be rejected anywhere else.
 func (s *Server) developerToken(w http.ResponseWriter, r *http.Request) {
-	if s.devToken == nil || !s.cfg.Catalog.DeveloperTokenSigningEnabled() {
+	if s.devToken == nil || !s.currentConfig().Catalog.DeveloperTokenSigningEnabled() {
 		writeError(w, http.StatusConflict, fmt.Errorf("developer token endpoint requires local signing mode (catalog.apple_music_* keys); the web-discovered token is origin-restricted and cannot be shared"))
 		return
 	}
@@ -249,7 +324,12 @@ func (s *Server) developerToken(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 	var req domain.DownloadRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// Unknown fields are rejected rather than ignored: a typo inside
+	// overrides would otherwise submit successfully and run the whole batch
+	// without the intended settings.
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -270,7 +350,15 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("too many urls: max %d per request", maxBatchSubmitURLs))
 		return
 	}
-	resp := s.manager.SubmitBatch(r.Context(), urls, req.Force)
+	if req.Overrides != nil {
+		// Validate the overlay against the same rules the runtime config must
+		// satisfy, applied to the config these jobs would actually run under.
+		if err := req.Overrides.Apply(s.currentConfig()).Validate(); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("invalid overrides: %w", err))
+			return
+		}
+	}
+	resp := s.manager.SubmitBatch(r.Context(), urls, req.Force, req.Overrides)
 	status := http.StatusUnprocessableEntity
 	if resp.Accepted > 0 {
 		status = http.StatusAccepted
