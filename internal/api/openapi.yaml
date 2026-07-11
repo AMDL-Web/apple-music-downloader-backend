@@ -916,7 +916,10 @@ components:
           properties:
             quality_priority:
               type: array
-              items: {type: string}
+              minItems: 1
+              items:
+                type: string
+                enum: [alac, aac, aac-binaural, aac-downmix, ec3, ac3]
             codec_alternative: {type: boolean}
             max_parallel_tracks: {type: integer}
             max_attempts: {type: integer}
@@ -926,21 +929,36 @@ components:
             artist_path_format: {type: string}
             playlist_path_format: {type: string}
             temp_dir: {type: string}
-            cover_size: {type: string}
-            cover_format: {type: string}
+            cover_size:
+              type: string
+              description: >-
+                "{width}x{height}"，例如 5000x5000、3000x3000、1400x1400、600x600。
+            cover_format:
+              type: string
+              enum: [jpg, jpeg, png]
             embed_cover: {type: boolean}
             save_album_cover: {type: boolean}
             save_artist_cover: {type: boolean}
             save_playlist_cover: {type: boolean}
             embed_lyrics: {type: boolean}
             save_lyrics_file: {type: boolean}
-            lyrics_format: {type: string}
-            lyrics_type: {type: string}
+            lyrics_format:
+              type: string
+              enum: [lrc, ttml]
+            lyrics_type:
+              type: string
+              enum: [lyrics, syllable-lyrics]
             lyrics_extras:
               type: array
-              items: {type: string}
-            alac_max_sample_rate: {type: integer}
-            alac_max_bit_depth: {type: integer}
+              items:
+                type: string
+                enum: [translation, pronunciation]
+            alac_max_sample_rate:
+              type: integer
+              description: Hz；常见取值 44100、48000、96000、192000。
+            alac_max_bit_depth:
+              type: integer
+              description: 常见取值 16、24。
             check_integrity: {type: boolean}
         simulate:
           type: object
