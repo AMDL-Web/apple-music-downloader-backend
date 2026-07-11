@@ -78,6 +78,11 @@ paths:
         配置快照），并写回 configs/config.yaml，重启后依然生效。该文件由
         后端管理（每次 PUT 整体重写，注释不保留）；带完整注释的字段文档在
         configs/config.example.yaml，首次启动时会以它为模板生成 config.yaml。
+
+        前端注意：确认写入前请先 GET 一次并基于其返回值构造请求体。PUT 的
+        合并基准是后端内存中的当前配置，而 GET 会先重读配置文件、把运行
+        期间的手工文件编辑同步进内存——跳过 GET 直接 PUT，可能基于过期
+        视图覆盖掉别处（其它页面或手工编辑）刚改过的值。
       operationId: updateConfig
       requestBody:
         required: true
