@@ -93,8 +93,17 @@ func playlistFolderPath(cfg config.Config, song applemusic.Song, playlistName, p
 // deepest directory segment referencing the artist ({ArtistName},
 // {UrlArtistName}, {AlbumArtist}, or {ArtistId}), and artistDir is empty when
 // no segment does, in which case the artist cover is skipped.
-func standaloneCoverDirs(cfg config.Config, song applemusic.Song, collectionType applemusic.URLType, folderArtist string) (albumDir, artistDir string) {
-	ctx := pathTemplateContext{song: song}
+//
+// Segments expand with the same context as outputPath's directory segments so
+// covers land next to the audio files; codec and quality stay empty because
+// covers are saved once per collection, before any codec attempt.
+func standaloneCoverDirs(cfg config.Config, song applemusic.Song, collectionType applemusic.URLType, playlistIndex int, folderArtist, playlistName, playlistID string) (albumDir, artistDir string) {
+	ctx := pathTemplateContext{
+		song:          song,
+		playlistIndex: playlistIndex,
+		playlistName:  playlistName,
+		playlistID:    playlistID,
+	}
 	if folderArtist != "" {
 		folderSong := song
 		folderSong.ArtistName = folderArtist

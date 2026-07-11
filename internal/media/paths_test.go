@@ -202,7 +202,7 @@ func TestStandaloneCoverDirsFollowTemplateVariables(t *testing.T) {
 			cfg.Download.DownloadsDir = "downloads"
 			cfg.Download.AlbumPathFormat = tt.format
 
-			albumDir, artistDir := standaloneCoverDirs(cfg, song, applemusic.TypeAlbum, "Album Artist")
+			albumDir, artistDir := standaloneCoverDirs(cfg, song, applemusic.TypeAlbum, 1, "Album Artist", "", "")
 			if albumDir != tt.wantAlbum {
 				t.Fatalf("album cover dir = %q, want %q", albumDir, tt.wantAlbum)
 			}
@@ -210,6 +210,19 @@ func TestStandaloneCoverDirsFollowTemplateVariables(t *testing.T) {
 				t.Fatalf("artist cover dir = %q, want %q", artistDir, tt.wantArtist)
 			}
 		})
+	}
+}
+
+func TestStandaloneCoverDirsShareOutputPathContext(t *testing.T) {
+	cfg := config.Default()
+	cfg.Download.DownloadsDir = "downloads"
+	cfg.Download.AlbumPathFormat = "albums/{ArtistName}/{AlbumName} (disc {DiscNumber}, item {SongNumber})/{SongName}"
+
+	song := applemusic.Song{ArtistName: "Artist", AlbumName: "Album", Name: "Song", DiscNumber: 2}
+	albumDir, _ := standaloneCoverDirs(cfg, song, applemusic.TypeAlbum, 5, "Album Artist", "Collection", "col.1")
+	track := outputPath(cfg, song, applemusic.TypeAlbum, 5, "Album Artist", "Collection", "col.1", "", "")
+	if want := filepath.Dir(track); albumDir != want {
+		t.Fatalf("album cover dir = %q, want %q (audio file directory)", albumDir, want)
 	}
 }
 

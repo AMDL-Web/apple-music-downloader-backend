@@ -406,7 +406,7 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 		return d.simulateTrack(ctx, job, &item, song, collectionType, collectionName, collectionID, playlistIndex, folderArtist, reporter, set)
 	}
 
-	albumCoverDir, artistCoverDir := standaloneCoverDirs(d.cfg, song, collectionType, folderArtist)
+	albumCoverDir, artistCoverDir := standaloneCoverDirs(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID)
 	if d.cfg.Download.SaveAlbumCover || d.cfg.Download.SaveArtistCover {
 		if coverErr := d.saveStandaloneCovers(ctx, song, collectionType, storefront, albumCoverDir, artistCoverDir); coverErr != nil {
 			item.StatusMessage = "Standalone cover save failed; continuing download: " + coverErr.Error()
