@@ -4,7 +4,7 @@
 
 This repository is the **primary backend implementation** of an Apple Music download and wrapper-manager system.
 
-It is actively evolving and serves as the **single source of truth for production behavior**.
+It has entered the **stable development phase** and serves as the **single source of truth for production behavior**.
 
 ---
 
@@ -18,36 +18,7 @@ All implementation work MUST stay in the root backend module unless explicitly s
 
 ---
 
-# 2. Reference Systems (Read-Only, Design Guidance Only)
-
-These repositories are NOT to be modified. They are used for architectural and behavioral reference only.
-
----
-
-## Reference A — explore/amdl-myversion
-
-Python + Go hybrid system:
-
-- Python orchestration layer
-- Go downloader module
-- Web UI frontend
-- Multi-user architecture
-
----
-
-## Reference B — explore/apple-music-downloader-main
-
-Original Go CLI implementation (Sorrow / zhaarey)
-
----
-
-## Reference C — explore/AppleMusicDecrypt-2
-
-Python-based system (WorldObservationLog)
-
----
-
-# 3. Architecture Boundaries
+# 2. Architecture Boundaries
 
 ## Authentication is out of scope
 
@@ -59,18 +30,18 @@ This backend is the **download core**. It intentionally has NO authentication la
 
 ---
 
-# 4. Development Rules
+# 3. Development Rules
 
-- This repository is in active development.
-- Destructive schema and data changes are allowed when necessary for iteration and refactoring.
-- Prefer correctness and architecture improvement over backward compatibility.
-- When making breaking changes, ensure all affected modules are updated consistently.
-- If database schema changes are required, explain migration impact before applying.
+- This repository is in the stable development phase. Stability and backward compatibility now take priority over architectural experimentation.
+- Do NOT break existing API contracts, config file formats (`configs/config.yaml` keys and template variables), database schemas, or output path conventions unless the change is explicitly requested or clearly necessary.
+- Destructive schema and data changes are no longer allowed by default. Any database schema change requires a migration path that preserves existing data; explain the migration impact and get confirmation before applying.
+- Prefer small, incremental, well-scoped changes. Avoid large refactors and architecture-level rewrites unless explicitly requested.
+- When a breaking change is genuinely necessary, call it out explicitly, document what breaks and how to migrate, and update all affected modules consistently in the same change.
 - When adding or modifying any `configs/config.yaml` configuration item, keep the sample config comments complete: document all allowed enum values, valid boolean values, numeric units/default behavior, list item options, and supported template variables next to the relevant key.
 
 ---
 
-# 5. Commit Requirements
+# 4. Commit Requirements
 
 ## Developer Certificate of Origin (DCO)
 
@@ -92,11 +63,10 @@ This footer instruction applies only to Codex. Claude Code and other agents/tool
 
 ---
 
-# 6. Implementation Constraints
+# 5. Implementation Constraints
 
 - The root Go module is the only writable production codebase
-- Reference repositories are read-only
-- Do not copy code blindly; always adapt to the root backend architecture
+- The `explore/` directory contains legacy reference repositories: read-only, not part of the build, and no longer used for design guidance
 - Keep changes minimal and consistent with existing patterns
 - Avoid unnecessary refactoring unless explicitly requested
 
