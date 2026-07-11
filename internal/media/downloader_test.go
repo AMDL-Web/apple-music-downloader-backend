@@ -461,7 +461,7 @@ func TestSyncJobItemsReusesPreviousRowsAndSkipsFinishedTracks(t *testing.T) {
 		{ID: "item-stale", JobID: "job-1", AdamID: "song-gone", Kind: "song", Index: 3, Status: domain.ItemFailed},
 	}}
 	tracks := []applemusic.Song{
-		{ID: "song-1", Name: "One"},
+		{ID: "song-1", Name: "One", HasLyrics: true},
 		{ID: "song-2", Name: "Two"},
 		{ID: "song-3", Name: "Three"},
 	}
@@ -476,6 +476,21 @@ func TestSyncJobItemsReusesPreviousRowsAndSkipsFinishedTracks(t *testing.T) {
 	}
 	if items[0].ID != "item-done" || items[0].Status != domain.ItemCompleted {
 		t.Fatalf("completed item = %+v, want reused item-done untouched", items[0])
+	}
+	// Reused rows take the fresh catalog has_lyrics at resolve time — even
+	// finished ones, which never reach the per-track metadata refresh — and
+	// the correction is persisted.
+	if !items[0].HasLyrics {
+		t.Fatalf("completed item = %+v, want has_lyrics refreshed from the resolved track", items[0])
+	}
+	var persistedDone bool
+	for _, updated := range reporter.items {
+		if updated.ID == "item-done" && updated.HasLyrics {
+			persistedDone = true
+		}
+	}
+	if !persistedDone {
+		t.Fatalf("updates = %+v, want the finished item's has_lyrics refresh persisted", reporter.items)
 	}
 	if items[1].ID != "item-failed" {
 		t.Fatalf("failed track item id = %s, want reused item-failed", items[1].ID)

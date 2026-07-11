@@ -284,14 +284,20 @@ func syncJobItems(ctx context.Context, job domain.Job, tracks []applemusic.Song,
 	for i, track := range tracks {
 		if prev, ok := takePrevious(track.ID); ok {
 			indexChanged := prev.Index != i+1
+			lyricsChanged := prev.HasLyrics != track.HasLyrics
 			prev.Index = i + 1
+			// has_lyrics is documented as set at collection resolve, so reused
+			// rows (retries, requeues, rows predating the field) take the fresh
+			// catalog value instead of exposing a stale flag until the per-track
+			// metadata refresh — which finished items never reach.
+			prev.HasLyrics = track.HasLyrics
 			if prev.Finished() {
 				finished[i] = true
 			} else {
 				prev.ResetForRetry()
 			}
 			items[i] = prev
-			if !finished[i] || indexChanged {
+			if !finished[i] || indexChanged || lyricsChanged {
 				if err := reporter.UpdateItem(ctx, prev); err != nil {
 					return nil, nil, err
 				}

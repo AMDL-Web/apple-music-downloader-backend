@@ -1141,14 +1141,21 @@ components:
             Durable outcome of this download attempt's lyrics fetch,
             complementing has_lyrics (the catalog's claim) with what
             actually happened. `fetched`: lyrics were fetched and
-            converted (embedded and/or saved per the download config);
-            `failed`: the catalog reported lyrics but fetching or
-            converting them failed and the download continued without
-            lyrics; `none`: the catalog reports no lyrics for this track;
-            `disabled`: lyrics exist but neither embed_lyrics nor
-            save_lyrics_file is enabled. Absent while undetermined (item
-            not yet processed, or created before this field existed) and
-            cleared when a retry re-processes the item.
+            converted successfully (the download that follows embeds
+            and/or saves them per the config — the flag reflects the
+            fetch outcome only; whether the file was produced is the
+            item's own status); `failed`: the catalog reported lyrics but
+            fetching or converting them failed and the download continued
+            without lyrics; `none`: the catalog reports no lyrics for
+            this track; `disabled`: lyrics exist but neither embed_lyrics
+            nor save_lyrics_file is enabled. Absent while undetermined
+            (item not yet processed, or created before this field
+            existed) and cleared when a retry re-processes the item.
+            For finished (completed/skipped) items the value keeps
+            describing the download that produced the file on disk,
+            while has_lyrics may be refreshed by a later re-resolve —
+            e.g. has_lyrics=true with lyrics_status=none means the file
+            predates lyrics becoming available in the catalog.
         status:
           type: string
           enum: [queued, resolving, downloading, decrypting, remuxing, tagging, saving, completed, failed, skipped_existing, cancelled]
