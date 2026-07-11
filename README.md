@@ -67,10 +67,10 @@ OpenAPI 3.1 规范：
 http://localhost:18080/api/openapi.yaml
 ```
 
-检查外部能力：
+读取运行时配置：
 
 ```bash
-curl http://localhost:18080/api/v1/capabilities
+curl http://localhost:18080/api/v1/config
 ```
 
 检查 `wrapper-manager` 状态：

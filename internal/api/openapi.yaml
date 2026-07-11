@@ -29,18 +29,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
-  /api/v1/capabilities:
-    get:
-      tags: [System]
-      summary: 查询下载能力和外部工具
-      operationId: getCapabilities
-      responses:
-        '200':
-          description: 当前配置与工具可用性。
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CapabilitiesResponse'
   /api/v1/config:
     get:
       tags: [System]
@@ -789,48 +777,6 @@ components:
           enum: [ok, degraded]
         database_error:
           type: string
-    ToolCapability:
-      type: object
-      required: [name, available]
-      properties:
-        name:
-          type: string
-        available:
-          type: boolean
-        path:
-          type: string
-        error:
-          type: string
-    CapabilitiesResponse:
-      type: object
-      required: [api, supported_inputs, unsupported_inputs, quality_priority, codec_alternative, fallback_codec, album_track_url_mode, tools]
-      properties:
-        api:
-          type: string
-        supported_inputs:
-          type: array
-          items:
-            type: string
-          example: [song_url, album_url, playlist_url, artist_url]
-        unsupported_inputs:
-          type: array
-          items:
-            type: string
-          example: [music_video, station, search]
-        quality_priority:
-          type: array
-          items:
-            type: string
-        codec_alternative:
-          type: boolean
-        fallback_codec:
-          type: string
-        album_track_url_mode:
-          type: string
-        tools:
-          type: array
-          items:
-            $ref: '#/components/schemas/ToolCapability'
     LoginRequest:
       type: object
       required: [username, password]

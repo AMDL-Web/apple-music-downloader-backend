@@ -110,7 +110,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
-		Handler:           api.NewServer(cfgStore, store, hub, manager, wrapperClient, qualityService, catalog, toolChecker, logger).Routes(),
+		Handler:           api.NewServer(cfgStore, store, hub, manager, wrapperClient, qualityService, catalog, logger).Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

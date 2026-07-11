@@ -43,7 +43,6 @@ type Server struct {
 	wrapper  wrapperService
 	quality  qualityService
 	devToken developerTokenService
-	tools    *media.ToolChecker
 	logger   *slog.Logger
 }
 
@@ -62,8 +61,8 @@ type developerTokenService interface {
 	MintDeveloperToken() (string, error)
 }
 
-func NewServer(cfg *config.Store, store *db.Store, hub *events.Hub, manager *jobs.Manager, wrapperClient wrapperService, qualityClient qualityService, devToken developerTokenService, tools *media.ToolChecker, logger *slog.Logger) *Server {
-	return &Server{cfg: cfg, store: store, hub: hub, manager: manager, wrapper: wrapperClient, quality: qualityClient, devToken: devToken, tools: tools, logger: logger}
+func NewServer(cfg *config.Store, store *db.Store, hub *events.Hub, manager *jobs.Manager, wrapperClient wrapperService, qualityClient qualityService, devToken developerTokenService, logger *slog.Logger) *Server {
+	return &Server{cfg: cfg, store: store, hub: hub, manager: manager, wrapper: wrapperClient, quality: qualityClient, devToken: devToken, logger: logger}
 }
 
 // currentConfig returns the live runtime config snapshot; nil-safe for test
@@ -80,7 +79,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /docs", swaggerUI)
 	mux.HandleFunc("GET /api/openapi.yaml", openAPI)
 	mux.HandleFunc("GET /api/v1/health", s.health)
-	mux.HandleFunc("GET /api/v1/capabilities", s.capabilities)
 	mux.HandleFunc("GET /api/v1/config", s.getConfig)
 	mux.HandleFunc("PUT /api/v1/config", s.updateConfig)
 	mux.HandleFunc("GET /api/v1/developer-token", s.developerToken)
@@ -229,20 +227,6 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
-}
-
-func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
-	cfg := s.currentConfig()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"api":                  "v1",
-		"supported_inputs":     []string{"song_url", "album_url", "playlist_url", "artist_url"},
-		"unsupported_inputs":   []string{"music_video", "station", "search"},
-		"quality_priority":     cfg.Download.QualityPriority,
-		"codec_alternative":    cfg.Download.CodecAlternative,
-		"fallback_codec":       "aac-lc",
-		"album_track_url_mode": cfg.Catalog.AlbumTrackURLMode,
-		"tools":                s.tools.Check(r.Context()),
-	})
 }
 
 // getConfig returns the runtime-changeable part of the current config

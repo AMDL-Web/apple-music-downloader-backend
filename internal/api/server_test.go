@@ -73,10 +73,6 @@ func (f *fakeQualityService) QueryQuality(_ context.Context, req media.QualityRe
 	return f.result, f.err
 }
 
-func configureTestTools() config.ToolsConfig {
-	return config.ToolsConfig{FFmpeg: "true"}
-}
-
 func requestJSON(t *testing.T, handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
@@ -325,36 +321,6 @@ func TestQualityEndpointValidatesURL(t *testing.T) {
 	}
 }
 
-func TestCapabilitiesAdvertisesArtistDownloads(t *testing.T) {
-	server := &Server{tools: media.NewToolChecker(configureTestTools())}
-	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/capabilities", "")
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
-	}
-	var body struct {
-		SupportedInputs   []string `json:"supported_inputs"`
-		UnsupportedInputs []string `json:"unsupported_inputs"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	if !containsString(body.SupportedInputs, "artist_url") {
-		t.Fatalf("supported_inputs = %#v, want artist_url", body.SupportedInputs)
-	}
-	if containsString(body.UnsupportedInputs, "artist") {
-		t.Fatalf("unsupported_inputs = %#v, did not want artist", body.UnsupportedInputs)
-	}
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
-}
-
 func TestSwaggerUI(t *testing.T) {
 	server := &Server{}
 	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/docs", "")
@@ -393,7 +359,7 @@ func TestOpenAPISpecification(t *testing.T) {
 	}
 	wantOperations := map[string][]string{
 		"/api/v1/health":                       {"get"},
-		"/api/v1/capabilities":                 {"get"},
+		"/api/v1/config":                       {"get", "put"},
 		"/api/v1/wrapper/status":               {"get"},
 		"/api/v1/wrapper/login":                {"post"},
 		"/api/v1/wrapper/login/{login_id}/2fa": {"post"},
