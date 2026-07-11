@@ -63,3 +63,24 @@ func (s *Store) SetAndSave(cfg Config) error {
 	s.Set(cfg)
 	return nil
 }
+
+// Reload re-reads the backing file into the snapshot, picking up manual
+// edits made while the backend is running. On a read or validation error the
+// snapshot is left unchanged so callers can keep serving the last good
+// config. No-op for in-memory stores. It shares saveMu with SetAndSave:
+// without it, a reload that read the file just before a concurrent update
+// wrote it could swap the pre-update values back in and silently drop that
+// update.
+func (s *Store) Reload() error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	if s.path == "" {
+		return nil
+	}
+	cfg, err := Load(s.path)
+	if err != nil {
+		return err
+	}
+	s.Set(cfg)
+	return nil
+}

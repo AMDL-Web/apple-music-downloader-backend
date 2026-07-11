@@ -249,8 +249,21 @@ func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 // (download minus max_running_jobs, simulate, catalog.album_track_url_mode).
 // Startup-bound fields are omitted: clients cannot change them through this
 // API, so they have no reason to see them here.
+//
+// The backing file is re-read first, so manual edits made while the backend
+// is running take effect on the next GET instead of requiring a restart. If
+// the file is currently unreadable or invalid (e.g. an edit in progress),
+// the last good snapshot is served and reload_error reports why.
 func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"config": config.MutableView(s.currentConfig()), "persisted": s.cfg.Persistent()})
+	resp := map[string]any{"persisted": false}
+	if s.cfg != nil {
+		resp["persisted"] = s.cfg.Persistent()
+		if err := s.cfg.Reload(); err != nil {
+			resp["reload_error"] = err.Error()
+		}
+	}
+	resp["config"] = config.MutableView(s.currentConfig())
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // updateConfig merges the request body onto the current runtime config:

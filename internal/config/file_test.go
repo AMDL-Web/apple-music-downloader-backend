@@ -123,3 +123,35 @@ func TestStoreSetAndSave(t *testing.T) {
 		t.Fatal("in-memory snapshot not updated")
 	}
 }
+
+func TestStoreReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	store := NewFileStore(Default(), path)
+	edited := Default()
+	edited.Download.CoverFormat = "png"
+	if err := Save(path, edited); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if store.Get().Download.CoverFormat != "png" {
+		t.Fatalf("reload did not pick up file edit: %+v", store.Get().Download)
+	}
+
+	// A broken file leaves the snapshot untouched.
+	if err := os.WriteFile(path, []byte("download: ["), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reload(); err == nil {
+		t.Fatal("expected reload error for broken file")
+	}
+	if store.Get().Download.CoverFormat != "png" {
+		t.Fatalf("failed reload changed the snapshot: %+v", store.Get().Download)
+	}
+
+	// In-memory stores are a no-op.
+	if err := NewStore(Default()).Reload(); err != nil {
+		t.Fatalf("in-memory reload = %v", err)
+	}
+}

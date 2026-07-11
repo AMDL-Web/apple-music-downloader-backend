@@ -50,6 +50,11 @@ paths:
         除外）、simulate 段、catalog.album_track_url_mode。仅启动时生效的
         字段（server、database、wrapper、tools、catalog 其它字段）不返回——
         它们无法通过本 API 修改，请编辑 configs/config.yaml 并重启。
+
+        每次 GET 会先重读 configs/config.yaml 再返回，因此运行期间手工编辑
+        的文件改动在下一次 GET 后即生效、无需重启。文件当前不可读或校验
+        失败时（例如正编辑到一半），继续返回上一份有效配置，并附
+        reload_error 字段说明原因。
       operationId: getConfig
       responses:
         '200':
@@ -1003,6 +1008,11 @@ components:
           description: >-
             配置存储是否有后备文件。正常部署下恒为 true：PUT 的修改写回
             configs/config.yaml，重启后依然生效。
+        reload_error:
+          type: string
+          description: >-
+            仅 GET 且重读配置文件失败时出现：说明文件为何不可用（不可读或
+            校验失败），此时 config 为最后一份有效配置。
     SubmitResult:
       type: object
       required: [url, status]

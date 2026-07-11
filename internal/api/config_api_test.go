@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -82,6 +83,51 @@ func TestUpdateConfigMergesAndTakesEffect(t *testing.T) {
 	base := config.Default()
 	if got.Download.SongPathFormat != base.Download.SongPathFormat || got.Server.Listen != base.Server.Listen {
 		t.Fatalf("omitted fields changed: %+v", got)
+	}
+}
+
+func TestGetConfigReloadsManualFileEdits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	base := config.Default()
+	if err := config.Save(path, base); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{cfg: config.NewFileStore(base, path)}
+
+	// Edit the file behind the running store, as a user would with an editor.
+	edited := base
+	edited.Download.CoverFormat = "png"
+	if err := config.Save(path, edited); err != nil {
+		t.Fatal(err)
+	}
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/config", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"cover_format":"png"`) {
+		t.Fatalf("GET did not pick up the manual file edit: %s", recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "reload_error") {
+		t.Fatalf("unexpected reload_error: %s", recorder.Body.String())
+	}
+	if got := server.cfg.Get(); got.Download.CoverFormat != "png" {
+		t.Fatalf("store snapshot not refreshed: %+v", got.Download)
+	}
+
+	// A broken file (edit in progress) must not break GET: the last good
+	// snapshot is served and reload_error reports the problem.
+	if err := os.WriteFile(path, []byte("download: ["), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/config", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "reload_error") {
+		t.Fatalf("missing reload_error for broken file: %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"cover_format":"png"`) {
+		t.Fatalf("broken file must keep serving the last good snapshot: %s", recorder.Body.String())
 	}
 }
 
