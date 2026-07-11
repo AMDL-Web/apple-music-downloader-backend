@@ -39,9 +39,24 @@ func TestDefaultLyricsOptions(t *testing.T) {
 	}
 }
 
-func TestDefaultArtistsFolderName(t *testing.T) {
-	if got := Default().Download.ArtistsFolderName; got != "artists" {
-		t.Fatalf("default artists folder name = %q, want artists", got)
+func TestDefaultPathFormats(t *testing.T) {
+	defaults := Default().Download
+	want := map[string]string{
+		"song":     "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+		"album":    "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+		"artist":   "artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+		"playlist": "playlists/{PlaylistName}/{SongNumber:02d}. {SongName}",
+	}
+	got := map[string]string{
+		"song":     defaults.SongPathFormat,
+		"album":    defaults.AlbumPathFormat,
+		"artist":   defaults.ArtistPathFormat,
+		"playlist": defaults.PlaylistPathFormat,
+	}
+	for kind, wantFormat := range want {
+		if got[kind] != wantFormat {
+			t.Fatalf("default %s path format = %q, want %q", kind, got[kind], wantFormat)
+		}
 	}
 }
 
@@ -157,9 +172,15 @@ func TestLoadRejectsExplicitAACLCInPriority(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsEmptyArtistsFolderName(t *testing.T) {
-	path := writeConfig(t, "download:\n  artists_folder_name: \"\"\n")
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "artists_folder_name") {
-		t.Fatalf("Load() error = %v, want artists_folder_name validation error", err)
+func TestDefaultConfigPassesValidation(t *testing.T) {
+	if err := Default().validate(); err != nil {
+		t.Fatalf("Default().validate() error = %v", err)
+	}
+}
+
+func TestLoadRejectsEmptyPathFormat(t *testing.T) {
+	path := writeConfig(t, "download:\n  artist_path_format: \"\"\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "artist_path_format") {
+		t.Fatalf("Load() error = %v, want artist_path_format validation error", err)
 	}
 }

@@ -11,9 +11,7 @@ import (
 func TestOutputPathUsesAlbumFolderArtistWithoutChangingTrackMetadata(t *testing.T) {
 	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
-	cfg.Download.ArtistFolderFormat = "{ArtistName}"
-	cfg.Download.AlbumFolderFormat = "{AlbumName}"
-	cfg.Download.SongFileFormat = "{TrackNumber:02d}. {SongName}"
+	cfg.Download.AlbumPathFormat = "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}"
 
 	song := applemusic.Song{
 		ArtistName:  "Guest Artist",
@@ -36,9 +34,7 @@ func TestOutputPathUsesAlbumFolderArtistWithoutChangingTrackMetadata(t *testing.
 func TestOutputPathKeepsTrackArtistWhenNoAlbumFolderArtist(t *testing.T) {
 	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
-	cfg.Download.ArtistFolderFormat = "{ArtistName}"
-	cfg.Download.AlbumFolderFormat = "{AlbumName}"
-	cfg.Download.SongFileFormat = "{SongName}"
+	cfg.Download.SongPathFormat = "songs/{ArtistName}/{AlbumName}/{SongName}"
 
 	song := applemusic.Song{ArtistName: "Track Artist", AlbumName: "Album", Name: "Song"}
 	got := outputPath(cfg, song, applemusic.TypeSong, 1, "", "", "", "", "")
@@ -67,8 +63,7 @@ func TestCollectionFolderArtistOnlyGroupsAlbums(t *testing.T) {
 func TestOutputPathPlaylistUsesFlatFolder(t *testing.T) {
 	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
-	cfg.Download.PlaylistFolderFormat = "{PlaylistName}"
-	cfg.Download.PlaylistSongFileFormat = "{SongNumer:02d}. {SongName}"
+	cfg.Download.PlaylistPathFormat = "playlists/{PlaylistName}/{SongNumber:02d}. {SongName}"
 
 	song := applemusic.Song{ArtistName: "Artist A", AlbumName: "Album X", Name: "Track One"}
 	got := outputPath(cfg, song, applemusic.TypePlaylist, 3, "", "My Playlist", "", "", "")
@@ -85,18 +80,13 @@ func TestCollectionFolderArtistFallsBackToFirstTrack(t *testing.T) {
 	}
 }
 
-func TestOutputPathUsesConfiguredTypeFolderNames(t *testing.T) {
+func TestOutputPathUsesConfiguredPathFormats(t *testing.T) {
 	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
-	cfg.Download.SongsFolderName = "single tracks"
-	cfg.Download.AlbumsFolderName = "records"
-	cfg.Download.PlaylistsFolderName = "lists"
-	cfg.Download.ArtistsFolderName = "artists"
-	cfg.Download.ArtistFolderFormat = "{ArtistName}"
-	cfg.Download.AlbumFolderFormat = "{AlbumName}"
-	cfg.Download.SongFileFormat = "{SongName}"
-	cfg.Download.PlaylistFolderFormat = "{PlaylistName}"
-	cfg.Download.PlaylistSongFileFormat = "{SongName}"
+	cfg.Download.SongPathFormat = "single tracks/{ArtistName}/{AlbumName}/{SongName}"
+	cfg.Download.AlbumPathFormat = "records/{ArtistName}/{AlbumName}/{SongName}"
+	cfg.Download.ArtistPathFormat = "artists/{ArtistName}/{AlbumName}/{SongName}"
+	cfg.Download.PlaylistPathFormat = "lists/{PlaylistName}/{SongName}"
 	song := applemusic.Song{ArtistName: "Artist", AlbumName: "Album", Name: "Song"}
 
 	tests := []struct {
@@ -119,9 +109,7 @@ func TestOutputPathUsesConfiguredTypeFolderNames(t *testing.T) {
 func TestOutputPathExpandsCompatibilityMetadataVariables(t *testing.T) {
 	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
-	cfg.Download.ArtistFolderFormat = "{UrlArtistName} [{ArtistId}]"
-	cfg.Download.AlbumFolderFormat = "{ReleaseYear} - {AlbumName} ({AlbumId}) [{UPC}] {RecordLabel} {Copyright}"
-	cfg.Download.SongFileFormat = "{DiscNumber:02d}-{TrackNumber:02d} of {DiscCount}-{TrackCount} {AlbumArtist} - {SongName} [{Codec}] [{Quality}] {UnknownVar}"
+	cfg.Download.AlbumPathFormat = "albums/{UrlArtistName} [{ArtistId}]/{ReleaseYear} - {AlbumName} ({AlbumId}) [{UPC}] {RecordLabel} {Copyright}/{DiscNumber:02d}-{TrackNumber:02d} of {DiscCount}-{TrackCount} {AlbumArtist} - {SongName} [{Codec}] [{Quality}] {UnknownVar}"
 
 	song := applemusic.Song{
 		ID:           "song-123",
@@ -149,24 +137,111 @@ func TestOutputPathExpandsCompatibilityMetadataVariables(t *testing.T) {
 	}
 }
 
-func TestOutputPathExpandsPlaylistIdAndSongNumberAlias(t *testing.T) {
+func TestOutputPathExpandsPlaylistIdAndSongNumber(t *testing.T) {
 	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
-	cfg.Download.PlaylistFolderFormat = "{PlaylistName} ({PlaylistId})"
-	cfg.Download.PlaylistSongFileFormat = "{SongNumber:02d}. {SongNumer:02d}. {ArtistName} - {SongName}"
+	cfg.Download.PlaylistPathFormat = "playlists/{PlaylistName} ({PlaylistId})/{SongNumber:02d}. {ArtistName} - {SongName}"
 
 	song := applemusic.Song{ArtistName: "Artist A", AlbumName: "Album X", Name: "Track One"}
 	got := outputPath(cfg, song, applemusic.TypePlaylist, 7, "", "My Playlist", "pl.123", "", "")
-	want := filepath.Join("downloads", "playlists", "My Playlist (pl.123)", "07. 07. Artist A - Track One.m4a")
+	want := filepath.Join("downloads", "playlists", "My Playlist (pl.123)", "07. Artist A - Track One.m4a")
 	if got != want {
 		t.Fatalf("outputPath() = %q, want %q", got, want)
+	}
+}
+
+func TestOutputPathSanitizesEachSegmentIndependently(t *testing.T) {
+	cfg := config.Default()
+	cfg.Download.DownloadsDir = "downloads"
+
+	song := applemusic.Song{ArtistName: "AC/DC", AlbumName: "Back in Black", Name: "Hells: Bells?", TrackNumber: 4}
+	got := outputPath(cfg, song, applemusic.TypeAlbum, 1, "", "", "", "", "")
+	want := filepath.Join("downloads", "albums", "AC_DC", "Back in Black", "04. Hells_ Bells_.m4a")
+	if got != want {
+		t.Fatalf("outputPath() = %q, want %q", got, want)
+	}
+}
+
+func TestStandaloneCoverDirsFollowTemplateVariables(t *testing.T) {
+	song := applemusic.Song{ArtistName: "Artist", AlbumName: "Album", AlbumRelease: "2024-05-17", Name: "Song"}
+
+	tests := []struct {
+		name       string
+		format     string
+		wantAlbum  string
+		wantArtist string
+	}{
+		{
+			name:       "default layout",
+			format:     "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+			wantAlbum:  filepath.Join("downloads", "albums", "Album Artist", "Album"),
+			wantArtist: filepath.Join("downloads", "albums", "Album Artist"),
+		},
+		{
+			name:       "extra level between artist and album",
+			format:     "albums/{ArtistName}/{ReleaseYear}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+			wantAlbum:  filepath.Join("downloads", "albums", "Album Artist", "2024", "Album"),
+			wantArtist: filepath.Join("downloads", "albums", "Album Artist"),
+		},
+		{
+			name:       "no artist segment skips artist cover",
+			format:     "albums/{AlbumName}/{TrackNumber:02d}. {SongName}",
+			wantAlbum:  filepath.Join("downloads", "albums", "Album"),
+			wantArtist: "",
+		},
+		{
+			name:       "no album segment falls back to track directory",
+			format:     "albums/{ArtistName}/{SongName}",
+			wantAlbum:  filepath.Join("downloads", "albums", "Album Artist"),
+			wantArtist: filepath.Join("downloads", "albums", "Album Artist"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Download.DownloadsDir = "downloads"
+			cfg.Download.AlbumPathFormat = tt.format
+
+			albumDir, artistDir := standaloneCoverDirs(cfg, song, applemusic.TypeAlbum, 1, "Album Artist", "", "")
+			if albumDir != tt.wantAlbum {
+				t.Fatalf("album cover dir = %q, want %q", albumDir, tt.wantAlbum)
+			}
+			if artistDir != tt.wantArtist {
+				t.Fatalf("artist cover dir = %q, want %q", artistDir, tt.wantArtist)
+			}
+		})
+	}
+}
+
+func TestStandaloneCoverDirsShareOutputPathContext(t *testing.T) {
+	cfg := config.Default()
+	cfg.Download.DownloadsDir = "downloads"
+	cfg.Download.AlbumPathFormat = "albums/{ArtistName}/{AlbumName} (disc {DiscNumber}, item {SongNumber})/{SongName}"
+
+	song := applemusic.Song{ArtistName: "Artist", AlbumName: "Album", Name: "Song", DiscNumber: 2}
+	albumDir, _ := standaloneCoverDirs(cfg, song, applemusic.TypeAlbum, 5, "Album Artist", "Collection", "col.1")
+	track := outputPath(cfg, song, applemusic.TypeAlbum, 5, "Album Artist", "Collection", "col.1", "", "")
+	if want := filepath.Dir(track); albumDir != want {
+		t.Fatalf("album cover dir = %q, want %q (audio file directory)", albumDir, want)
+	}
+}
+
+func TestPlaylistFolderPathMatchesOutputPathFolder(t *testing.T) {
+	cfg := config.Default()
+	cfg.Download.DownloadsDir = "downloads"
+
+	song := applemusic.Song{ArtistName: "Artist", AlbumName: "Album", Name: "Song"}
+	folder := playlistFolderPath(cfg, song, "My Playlist", "pl.123")
+	track := outputPath(cfg, song, applemusic.TypePlaylist, 1, "", "My Playlist", "pl.123", "", "")
+	if want := filepath.Dir(track); folder != want {
+		t.Fatalf("playlistFolderPath() = %q, want %q", folder, want)
 	}
 }
 
 func TestOutputPathUsesCodecQualityPerAttempt(t *testing.T) {
 	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
-	cfg.Download.SongFileFormat = "{SongName} [{Codec}] [{Quality}]"
+	cfg.Download.SongPathFormat = "songs/{ArtistName}/{AlbumName}/{SongName} [{Codec}] [{Quality}]"
 
 	song := applemusic.Song{ArtistName: "Artist", AlbumName: "Album", Name: "Song"}
 	alac := outputPath(cfg, song, applemusic.TypeSong, 1, "", "", "", "alac", "24-bit/96 kHz")

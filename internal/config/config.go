@@ -88,36 +88,31 @@ func (c CatalogConfig) DeveloperTokenSigningEnabled() bool {
 }
 
 type DownloadConfig struct {
-	QualityPriority        []string `yaml:"quality_priority" json:"quality_priority"`
-	CodecAlternative       bool     `yaml:"codec_alternative" json:"codec_alternative"`
-	MaxRunningJobs         int      `yaml:"max_running_jobs" json:"max_running_jobs"`
-	MaxParallelTracks      int      `yaml:"max_parallel_tracks" json:"max_parallel_tracks"`
-	MaxAttempts            int      `yaml:"max_attempts" json:"max_attempts"`
-	DownloadsDir           string   `yaml:"downloads_dir" json:"downloads_dir"`
-	SongsFolderName        string   `yaml:"songs_folder_name" json:"songs_folder_name"`
-	AlbumsFolderName       string   `yaml:"albums_folder_name" json:"albums_folder_name"`
-	PlaylistsFolderName    string   `yaml:"playlists_folder_name" json:"playlists_folder_name"`
-	ArtistsFolderName      string   `yaml:"artists_folder_name" json:"artists_folder_name"`
-	TempDir                string   `yaml:"temp_dir" json:"temp_dir"`
-	CoverSize              string   `yaml:"cover_size" json:"cover_size"`
-	CoverFormat            string   `yaml:"cover_format" json:"cover_format"`
-	EmbedCover             bool     `yaml:"embed_cover" json:"embed_cover"`
-	SaveAlbumCover         bool     `yaml:"save_album_cover" json:"save_album_cover"`
-	SaveArtistCover        bool     `yaml:"save_artist_cover" json:"save_artist_cover"`
-	SavePlaylistCover      bool     `yaml:"save_playlist_cover" json:"save_playlist_cover"`
-	EmbedLyrics            bool     `yaml:"embed_lyrics" json:"embed_lyrics"`
-	SaveLyricsFile         bool     `yaml:"save_lyrics_file" json:"save_lyrics_file"`
-	LyricsFormat           string   `yaml:"lyrics_format" json:"lyrics_format"`
-	LyricsType             string   `yaml:"lyrics_type" json:"lyrics_type"`
-	LyricsExtras           []string `yaml:"lyrics_extras" json:"lyrics_extras"`
-	ArtistFolderFormat     string   `yaml:"artist_folder_format" json:"artist_folder_format"`
-	AlbumFolderFormat      string   `yaml:"album_folder_format" json:"album_folder_format"`
-	SongFileFormat         string   `yaml:"song_file_format" json:"song_file_format"`
-	PlaylistFolderFormat   string   `yaml:"playlist_folder_format" json:"playlist_folder_format"`
-	PlaylistSongFileFormat string   `yaml:"playlist_song_file_format" json:"playlist_song_file_format"`
-	ALACMaxSampleRate      int      `yaml:"alac_max_sample_rate" json:"alac_max_sample_rate"`
-	ALACMaxBitDepth        int      `yaml:"alac_max_bit_depth" json:"alac_max_bit_depth"`
-	CheckIntegrity         bool     `yaml:"check_integrity" json:"check_integrity"`
+	QualityPriority    []string `yaml:"quality_priority" json:"quality_priority"`
+	CodecAlternative   bool     `yaml:"codec_alternative" json:"codec_alternative"`
+	MaxRunningJobs     int      `yaml:"max_running_jobs" json:"max_running_jobs"`
+	MaxParallelTracks  int      `yaml:"max_parallel_tracks" json:"max_parallel_tracks"`
+	MaxAttempts        int      `yaml:"max_attempts" json:"max_attempts"`
+	DownloadsDir       string   `yaml:"downloads_dir" json:"downloads_dir"`
+	SongPathFormat     string   `yaml:"song_path_format" json:"song_path_format"`
+	AlbumPathFormat    string   `yaml:"album_path_format" json:"album_path_format"`
+	ArtistPathFormat   string   `yaml:"artist_path_format" json:"artist_path_format"`
+	PlaylistPathFormat string   `yaml:"playlist_path_format" json:"playlist_path_format"`
+	TempDir            string   `yaml:"temp_dir" json:"temp_dir"`
+	CoverSize          string   `yaml:"cover_size" json:"cover_size"`
+	CoverFormat        string   `yaml:"cover_format" json:"cover_format"`
+	EmbedCover         bool     `yaml:"embed_cover" json:"embed_cover"`
+	SaveAlbumCover     bool     `yaml:"save_album_cover" json:"save_album_cover"`
+	SaveArtistCover    bool     `yaml:"save_artist_cover" json:"save_artist_cover"`
+	SavePlaylistCover  bool     `yaml:"save_playlist_cover" json:"save_playlist_cover"`
+	EmbedLyrics        bool     `yaml:"embed_lyrics" json:"embed_lyrics"`
+	SaveLyricsFile     bool     `yaml:"save_lyrics_file" json:"save_lyrics_file"`
+	LyricsFormat       string   `yaml:"lyrics_format" json:"lyrics_format"`
+	LyricsType         string   `yaml:"lyrics_type" json:"lyrics_type"`
+	LyricsExtras       []string `yaml:"lyrics_extras" json:"lyrics_extras"`
+	ALACMaxSampleRate  int      `yaml:"alac_max_sample_rate" json:"alac_max_sample_rate"`
+	ALACMaxBitDepth    int      `yaml:"alac_max_bit_depth" json:"alac_max_bit_depth"`
+	CheckIntegrity     bool     `yaml:"check_integrity" json:"check_integrity"`
 }
 
 type ToolsConfig struct {
@@ -148,11 +143,13 @@ func Default() Config {
 		Download: DownloadConfig{
 			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true,
 			MaxRunningJobs: 2, MaxParallelTracks: 3, MaxAttempts: 4,
-			DownloadsDir: "data/downloads", SongsFolderName: "songs", AlbumsFolderName: "albums", PlaylistsFolderName: "playlists", ArtistsFolderName: "artists",
-			TempDir: "data/tmp", CoverSize: "5000x5000", CoverFormat: "jpg",
+			DownloadsDir:       "data/downloads",
+			SongPathFormat:     "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+			AlbumPathFormat:    "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+			ArtistPathFormat:   "artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+			PlaylistPathFormat: "playlists/{PlaylistName}/{SongNumber:02d}. {SongName}",
+			TempDir:            "data/tmp", CoverSize: "5000x5000", CoverFormat: "jpg",
 			EmbedCover: true, EmbedLyrics: true, LyricsFormat: "lrc", LyricsType: "lyrics", LyricsExtras: []string{},
-			ArtistFolderFormat: "{ArtistName}", AlbumFolderFormat: "{AlbumName}", SongFileFormat: "{TrackNumber:02d}. {SongName}",
-			PlaylistFolderFormat: "{PlaylistName}", PlaylistSongFileFormat: "{SongNumer:02d}. {ArtistName} - {SongName}",
 			ALACMaxSampleRate: 192000, ALACMaxBitDepth: 24, CheckIntegrity: true,
 		},
 		Tools:    ToolsConfig{FFmpeg: "ffmpeg"},
@@ -196,15 +193,10 @@ func (c Config) validate() error {
 		}
 	}
 	for name, value := range map[string]string{
-		"download.songs_folder_name":         c.Download.SongsFolderName,
-		"download.albums_folder_name":        c.Download.AlbumsFolderName,
-		"download.playlists_folder_name":     c.Download.PlaylistsFolderName,
-		"download.artists_folder_name":       c.Download.ArtistsFolderName,
-		"download.artist_folder_format":      c.Download.ArtistFolderFormat,
-		"download.album_folder_format":       c.Download.AlbumFolderFormat,
-		"download.song_file_format":          c.Download.SongFileFormat,
-		"download.playlist_folder_format":    c.Download.PlaylistFolderFormat,
-		"download.playlist_song_file_format": c.Download.PlaylistSongFileFormat,
+		"download.song_path_format":     c.Download.SongPathFormat,
+		"download.album_path_format":    c.Download.AlbumPathFormat,
+		"download.artist_path_format":   c.Download.ArtistPathFormat,
+		"download.playlist_path_format": c.Download.PlaylistPathFormat,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s cannot be empty", name)

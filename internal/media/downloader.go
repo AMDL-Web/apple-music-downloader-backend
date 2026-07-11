@@ -124,9 +124,6 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	if err := reporter.SetJob(ctx, job); err != nil {
 		return err
 	}
-	if err := reporter.Event(ctx, domain.Event{JobID: job.ID, Type: "resolved_input", Message: string(parsed.Type)}); err != nil {
-		return err
-	}
 
 	resolved, _, err := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(int) (resolvedCollection, error) {
 		return d.resolveCollection(ctx, parsed)
@@ -151,6 +148,11 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	job.Title = resolved.Name
 	job.ArtworkURL = resolved.ArtworkURL
 	if err := reporter.SetJob(ctx, job); err != nil {
+		return err
+	}
+	// Emit after title/total_items/artwork are persisted so the overview feed
+	// can push a download_upserted with the real name (not just the URL).
+	if err := reporter.Event(ctx, domain.Event{JobID: job.ID, Type: "resolved_input", Message: string(parsed.Type)}); err != nil {
 		return err
 	}
 	if len(tracks) == 0 {
@@ -233,14 +235,20 @@ func syncJobItems(ctx context.Context, job domain.Job, tracks []applemusic.Song,
 	for i, track := range tracks {
 		if prev, ok := takePrevious(track.ID); ok {
 			indexChanged := prev.Index != i+1
+			lyricsChanged := prev.HasLyrics != track.HasLyrics
 			prev.Index = i + 1
+			// has_lyrics is documented as set at collection resolve, so reused
+			// rows (retries, requeues, rows predating the field) take the fresh
+			// catalog value instead of exposing a stale flag until the per-track
+			// metadata refresh — which finished items never reach.
+			prev.HasLyrics = track.HasLyrics
 			if prev.Finished() {
 				finished[i] = true
 			} else {
 				prev.ResetForRetry()
 			}
 			items[i] = prev
-			if !finished[i] || indexChanged {
+			if !finished[i] || indexChanged || lyricsChanged {
 				if err := reporter.UpdateItem(ctx, prev); err != nil {
 					return nil, nil, err
 				}
@@ -250,7 +258,8 @@ func syncJobItems(ctx context.Context, job domain.Job, tracks []applemusic.Song,
 		items[i] = domain.JobItem{
 			ID: storage.NewID("item"), JobID: job.ID, AdamID: track.ID, Kind: "song", Index: i + 1,
 			Title: track.Name, Artist: track.ArtistName, Album: track.AlbumName,
-			ArtworkURL: firstNonEmpty(track.ArtworkURL, track.AlbumArtworkURL), Status: domain.ItemQueued,
+			ArtworkURL: firstNonEmpty(track.ArtworkURL, track.AlbumArtworkURL), HasLyrics: track.HasLyrics,
+			Status: domain.ItemQueued,
 		}
 		if err := reporter.AddItem(ctx, items[i]); err != nil {
 			return nil, nil, err
@@ -397,6 +406,7 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	item.Artist = song.ArtistName
 	item.Album = song.AlbumName
 	item.ArtworkURL = firstNonEmpty(song.ArtworkURL, song.AlbumArtworkURL, item.ArtworkURL)
+	item.HasLyrics = song.HasLyrics
 	_ = reporter.UpdateItem(ctx, item)
 
 	if d.cfg.Simulate.Enabled {
@@ -406,9 +416,9 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 		return d.simulateTrack(ctx, job, &item, song, collectionType, collectionName, collectionID, playlistIndex, folderArtist, reporter, set)
 	}
 
-	coverAnchorPath := outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, "", "")
+	albumCoverDir, artistCoverDir := standaloneCoverDirs(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID)
 	if d.cfg.Download.SaveAlbumCover || d.cfg.Download.SaveArtistCover {
-		if coverErr := d.saveStandaloneCovers(ctx, song, collectionType, storefront, coverAnchorPath); coverErr != nil {
+		if coverErr := d.saveStandaloneCovers(ctx, song, collectionType, storefront, albumCoverDir, artistCoverDir); coverErr != nil {
 			item.StatusMessage = "Standalone cover save failed; continuing download: " + coverErr.Error()
 			_ = reporter.UpdateItem(ctx, item)
 			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "standalone_cover_failed", Message: coverErr.Error()})
@@ -451,11 +461,21 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 		})
 		if lyricsErr == nil {
 			converted, convertErr := convertLyrics(raw, d.cfg.Download.LyricsFormat, d.cfg.Download.LyricsExtras)
-			if convertErr != nil {
+			switch {
+			case convertErr != nil:
+				item.LyricsStatus = domain.LyricsFailed
 				item.StatusMessage = "Lyrics conversion failed; continuing without embedded lyrics: " + convertErr.Error()
 				_ = reporter.UpdateItem(ctx, item)
-			} else {
+			case converted == "":
+				// The wrapper answered with an empty document (possible in ttml
+				// mode, where convertLyrics passes it through without error).
+				item.LyricsStatus = domain.LyricsFailed
+				item.StatusMessage = "Lyrics fetch returned an empty document; continuing without embedded lyrics"
+				_ = reporter.UpdateItem(ctx, item)
+			default:
 				lyrics = converted
+				item.LyricsStatus = domain.LyricsFetched
+				_ = reporter.UpdateItem(ctx, item)
 				if lyricsAttempts > 1 {
 					d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "lyrics", "", lyricsAttempts)
 				}
@@ -464,9 +484,17 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			item.LyricsStatus = domain.LyricsFailed
 			item.StatusMessage = "Lyrics fetch retries exhausted; continuing without embedded lyrics: " + lyricsErr.Error()
 			_ = reporter.UpdateItem(ctx, item)
 		}
+	} else {
+		if song.HasLyrics {
+			item.LyricsStatus = domain.LyricsDisabled
+		} else {
+			item.LyricsStatus = domain.LyricsNone
+		}
+		_ = reporter.UpdateItem(ctx, item)
 	}
 
 	if err := d.tools.Require(ctx); err != nil {

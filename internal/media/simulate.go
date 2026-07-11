@@ -27,9 +27,17 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 	if d.cfg.Download.EmbedCover {
 		d.setItemAttempt(ctx, reporter, item, "cover", 1, maxAttempts, fmt.Sprintf("Fetching cover (1/%d)", maxAttempts))
 	}
+	// Simulated lyrics always "fetch" successfully; the disabled/none outcomes
+	// mirror the real path so lyrics_status behaves identically in test mode.
 	if (d.cfg.Download.EmbedLyrics || d.cfg.Download.SaveLyricsFile) && song.HasLyrics {
 		d.setItemAttempt(ctx, reporter, item, "lyrics", 1, maxAttempts, fmt.Sprintf("Fetching lyrics (1/%d)", maxAttempts))
+		item.LyricsStatus = domain.LyricsFetched
+	} else if song.HasLyrics {
+		item.LyricsStatus = domain.LyricsDisabled
+	} else {
+		item.LyricsStatus = domain.LyricsNone
 	}
+	_ = reporter.UpdateItem(ctx, *item)
 
 	codecs, err := configuredCodecs(d.cfg.Download)
 	if err != nil {

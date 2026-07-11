@@ -42,8 +42,13 @@ func safeName(v string) string {
 	return v
 }
 
+// outputPath expands the task type's path template into the final .m4a path.
+// The template is split on "/"; every segment is expanded and sanitized
+// independently, so template values can never introduce extra directories.
+// Directory segments use folderArtist (the collection's grouping artist) for
+// {ArtistName} so all tracks of a collection land in one folder; the filename
+// segment always uses the track's own metadata.
 func outputPath(cfg config.Config, song applemusic.Song, collectionType applemusic.URLType, playlistIndex int, folderArtist, playlistName, playlistID, codec, quality string) string {
-	typeDir := filepath.Join(cfg.Download.DownloadsDir, downloadTypeFolder(cfg, collectionType))
 	ctx := pathTemplateContext{
 		song:          song,
 		playlistIndex: playlistIndex,
@@ -52,48 +57,105 @@ func outputPath(cfg config.Config, song applemusic.Song, collectionType applemus
 		codec:         codec,
 		quality:       quality,
 	}
-	if collectionType == applemusic.TypePlaylist && playlistName != "" {
-		folderPattern := cfg.Download.PlaylistFolderFormat
-		filePattern := cfg.Download.PlaylistSongFileFormat
-		folder := formatPattern(folderPattern, ctx)
-		file := formatPattern(filePattern, ctx)
-		return filepath.Join(typeDir, safeName(folder), safeName(file)+".m4a")
+	folderCtx := ctx
+	if folderArtist != "" {
+		folderSong := song
+		folderSong.ArtistName = folderArtist
+		folderCtx.song = folderSong
 	}
 
-	folderSong := song
-	if folderArtist != "" {
-		folderSong.ArtistName = folderArtist
+	segments := strings.Split(pathPattern(cfg, collectionType), "/")
+	parts := make([]string, 0, len(segments)+1)
+	parts = append(parts, cfg.Download.DownloadsDir)
+	for i, segment := range segments {
+		segCtx := folderCtx
+		if i == len(segments)-1 {
+			segCtx = ctx
+		}
+		name := safeName(formatPattern(segment, segCtx))
+		if i == len(segments)-1 {
+			name += ".m4a"
+		}
+		parts = append(parts, name)
 	}
-	artistCtx := ctx
-	artistCtx.song = folderSong
-	artist := formatPattern(cfg.Download.ArtistFolderFormat, artistCtx)
-	album := formatPattern(cfg.Download.AlbumFolderFormat, ctx)
-	file := formatPattern(cfg.Download.SongFileFormat, ctx)
-	return filepath.Join(typeDir, safeName(artist), safeName(album), safeName(file)+".m4a")
+	return filepath.Join(parts...)
 }
 
 func playlistFolderPath(cfg config.Config, song applemusic.Song, playlistName, playlistID string) string {
-	typeDir := filepath.Join(cfg.Download.DownloadsDir, downloadTypeFolder(cfg, applemusic.TypePlaylist))
-	folder := formatPattern(cfg.Download.PlaylistFolderFormat, pathTemplateContext{
-		song:          song,
-		playlistIndex: 1,
-		playlistName:  playlistName,
-		playlistID:    playlistID,
-	})
-	return filepath.Join(typeDir, safeName(folder))
+	return filepath.Dir(outputPath(cfg, song, applemusic.TypePlaylist, 1, "", playlistName, playlistID, "", ""))
 }
 
-func downloadTypeFolder(cfg config.Config, collectionType applemusic.URLType) string {
-	name := cfg.Download.SongsFolderName
+// standaloneCoverDirs resolves where standalone album and artist covers live.
+// The path templates are free-form, so the directories are located by variable
+// reference instead of by counting levels: the album cover goes into the
+// deepest directory segment referencing the album ({AlbumName} or {AlbumId}),
+// falling back to the track's directory; the artist cover goes into the
+// deepest directory segment referencing the artist ({ArtistName},
+// {UrlArtistName}, {AlbumArtist}, or {ArtistId}), and artistDir is empty when
+// no segment does, in which case the artist cover is skipped.
+//
+// Segments expand with the same context as outputPath's directory segments so
+// covers land next to the audio files; codec and quality stay empty because
+// covers are saved once per collection, before any codec attempt.
+func standaloneCoverDirs(cfg config.Config, song applemusic.Song, collectionType applemusic.URLType, playlistIndex int, folderArtist, playlistName, playlistID string) (albumDir, artistDir string) {
+	ctx := pathTemplateContext{
+		song:          song,
+		playlistIndex: playlistIndex,
+		playlistName:  playlistName,
+		playlistID:    playlistID,
+	}
+	if folderArtist != "" {
+		folderSong := song
+		folderSong.ArtistName = folderArtist
+		ctx.song = folderSong
+	}
+
+	segments := strings.Split(pathPattern(cfg, collectionType), "/")
+	dirSegments := segments[:len(segments)-1]
+	albumIdx, artistIdx := len(dirSegments)-1, -1
+	for i, segment := range dirSegments {
+		if segmentReferences(segment, "AlbumName", "AlbumId") {
+			albumIdx = i
+		}
+		if segmentReferences(segment, "ArtistName", "UrlArtistName", "AlbumArtist", "ArtistId") {
+			artistIdx = i
+		}
+	}
+
+	parts := make([]string, 0, len(dirSegments)+1)
+	parts = append(parts, cfg.Download.DownloadsDir)
+	for _, segment := range dirSegments {
+		parts = append(parts, safeName(formatPattern(segment, ctx)))
+	}
+	albumDir = filepath.Join(parts[:albumIdx+2]...)
+	if artistIdx >= 0 {
+		artistDir = filepath.Join(parts[:artistIdx+2]...)
+	}
+	return albumDir, artistDir
+}
+
+func segmentReferences(segment string, names ...string) bool {
+	for _, match := range templateVariablePattern.FindAllStringSubmatch(segment, -1) {
+		for _, name := range names {
+			if match[1] == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func pathPattern(cfg config.Config, collectionType applemusic.URLType) string {
 	switch collectionType {
 	case applemusic.TypeAlbum:
-		name = cfg.Download.AlbumsFolderName
+		return cfg.Download.AlbumPathFormat
 	case applemusic.TypePlaylist:
-		name = cfg.Download.PlaylistsFolderName
+		return cfg.Download.PlaylistPathFormat
 	case applemusic.TypeArtist:
-		name = cfg.Download.ArtistsFolderName
+		return cfg.Download.ArtistPathFormat
+	default:
+		return cfg.Download.SongPathFormat
 	}
-	return safeName(name)
 }
 
 func formatPattern(pattern string, ctx pathTemplateContext) string {
@@ -118,7 +180,7 @@ func templateValue(key string, ctx pathTemplateContext) (string, bool) {
 	switch key {
 	case "SongId":
 		return song.ID, true
-	case "SongNumer", "SongNumber":
+	case "SongNumber":
 		return strconv.Itoa(max(1, ctx.playlistIndex)), true
 	case "SongName":
 		return song.Name, true
