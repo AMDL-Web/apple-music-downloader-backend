@@ -30,13 +30,11 @@ func (d *Downloader) savePlaylistCover(ctx context.Context, artworkURL, playlist
 	return nil
 }
 
-func (d *Downloader) saveStandaloneCovers(ctx context.Context, song applemusic.Song, collectionType applemusic.URLType, storefront, outputPath string) error {
+func (d *Downloader) saveStandaloneCovers(ctx context.Context, song applemusic.Song, collectionType applemusic.URLType, storefront, albumDir, artistDir string) error {
 	if collectionType == applemusic.TypePlaylist {
 		return nil
 	}
 
-	albumDir := filepath.Dir(outputPath)
-	artistDir := filepath.Dir(albumDir)
 	ext, err := standaloneCoverExt(d.cfg.Download.CoverFormat)
 	if err != nil {
 		return err
@@ -50,7 +48,7 @@ func (d *Downloader) saveStandaloneCovers(ctx context.Context, song applemusic.S
 			saveErrors = append(saveErrors, fmt.Errorf("save album cover: %w", err))
 		}
 	}
-	if d.cfg.Download.SaveArtistCover {
+	if d.cfg.Download.SaveArtistCover && artistDir != "" {
 		if err := d.ensureStandaloneCover(ctx, filepath.Join(artistDir, "artist."+ext), func(ctx context.Context) (string, error) {
 			artistID := song.ArtistID
 			artworkURL := song.ArtistArtworkURL
