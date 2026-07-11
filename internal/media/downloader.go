@@ -124,9 +124,6 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	if err := reporter.SetJob(ctx, job); err != nil {
 		return err
 	}
-	if err := reporter.Event(ctx, domain.Event{JobID: job.ID, Type: "resolved_input", Message: string(parsed.Type)}); err != nil {
-		return err
-	}
 
 	resolved, _, err := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(int) (resolvedCollection, error) {
 		return d.resolveCollection(ctx, parsed)
@@ -151,6 +148,11 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	job.Title = resolved.Name
 	job.ArtworkURL = resolved.ArtworkURL
 	if err := reporter.SetJob(ctx, job); err != nil {
+		return err
+	}
+	// Emit after title/total_items/artwork are persisted so the overview feed
+	// can push a download_upserted with the real name (not just the URL).
+	if err := reporter.Event(ctx, domain.Event{JobID: job.ID, Type: "resolved_input", Message: string(parsed.Type)}); err != nil {
 		return err
 	}
 	if len(tracks) == 0 {
