@@ -1009,6 +1009,11 @@ components:
             nor save_lyrics_file is enabled. Absent while undetermined
             (item not yet processed, or created before this field
             existed) and cleared when a retry re-processes the item.
+            For finished (completed/skipped) items the value keeps
+            describing the download that produced the file on disk,
+            while has_lyrics may be refreshed by a later re-resolve —
+            e.g. has_lyrics=true with lyrics_status=none means the file
+            predates lyrics becoming available in the catalog.
         status:
           type: string
           enum: [queued, resolving, downloading, decrypting, remuxing, tagging, saving, completed, failed, skipped_existing, cancelled]
