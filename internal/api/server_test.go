@@ -292,7 +292,7 @@ func TestWrapperLogoutValidatesUsername(t *testing.T) {
 func TestQualityEndpointReturnsOptions(t *testing.T) {
 	fake := &fakeQualityService{result: media.QualityResult{
 		Input: "https://music.apple.com/cn/album/example/1?i=2", Storefront: "cn", Type: "song", AdamID: "2",
-		Song:      media.QualitySong{ID: "2", Name: "One Last Kiss", Artist: "Hikaru Utada", Album: "One Last Kiss"},
+		Song:      media.QualitySong{ID: "2", Name: "One Last Kiss", Artist: "Hikaru Utada", Album: "One Last Kiss", HasLyrics: true},
 		Qualities: []media.QualityOption{{ID: "alac", Label: "Lossless", Available: true, CodecID: "audio-alac-stereo-44100-16", BitDepth: 16, SampleRate: 44100}},
 	}}
 	server := &Server{quality: fake}
@@ -309,6 +309,11 @@ func TestQualityEndpointReturnsOptions(t *testing.T) {
 	}
 	if body.AdamID != "2" || len(body.Qualities) != 1 || body.Qualities[0].ID != "alac" {
 		t.Fatalf("unexpected quality response: %#v", body)
+	}
+	// Raw-body check so a renamed/mistyped json tag can't slip through the
+	// struct round-trip above.
+	if !strings.Contains(recorder.Body.String(), `"has_lyrics":true`) {
+		t.Fatalf("quality body missing \"has_lyrics\":true: %s", recorder.Body.String())
 	}
 }
 
@@ -739,7 +744,7 @@ func TestDownloadResponsesIncludeArtworkURLTemplate(t *testing.T) {
 	if err := server.store.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	item := domain.JobItem{ID: "item1", JobID: job.ID, Index: 1, ArtworkURL: itemArt, Status: domain.ItemQueued}
+	item := domain.JobItem{ID: "item1", JobID: job.ID, Index: 1, ArtworkURL: itemArt, HasLyrics: true, Status: domain.ItemQueued}
 	if err := server.store.CreateItem(ctx, item); err != nil {
 		t.Fatal(err)
 	}
@@ -760,6 +765,11 @@ func TestDownloadResponsesIncludeArtworkURLTemplate(t *testing.T) {
 	}
 	if len(detail.Items) != 1 || detail.Items[0].ArtworkURL != itemArt {
 		t.Fatalf("items = %+v, want one item with artwork_url %q", detail.Items, itemArt)
+	}
+	// Raw-body check so a renamed/mistyped json tag can't slip through the
+	// struct round-trip above.
+	if !strings.Contains(recorder.Body.String(), `"has_lyrics":true`) {
+		t.Fatalf("detail body missing \"has_lyrics\":true: %s", recorder.Body.String())
 	}
 
 	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads", "")

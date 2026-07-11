@@ -17,10 +17,11 @@ type QualityRequest struct {
 }
 
 type QualitySong struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Artist string `json:"artist"`
-	Album  string `json:"album"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Artist    string `json:"artist"`
+	Album     string `json:"album"`
+	HasLyrics bool   `json:"has_lyrics"`
 }
 
 type QualityOption struct {
@@ -102,7 +103,7 @@ func (s *QualityService) QueryQuality(ctx context.Context, req QualityRequest) (
 	}
 	return QualityResult{
 		Input: req.URL, Storefront: parsed.Storefront, Type: string(parsed.Type), AdamID: song.ID,
-		Song:      QualitySong{ID: song.ID, Name: song.Name, Artist: song.ArtistName, Album: song.AlbumName},
+		Song:      QualitySong{ID: song.ID, Name: song.Name, Artist: song.ArtistName, Album: song.AlbumName, HasLyrics: song.HasLyrics},
 		Qualities: SummarizeQualities(variants),
 	}, nil
 }

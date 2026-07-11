@@ -39,6 +39,30 @@ const (
 	ItemCancelled   ItemStatus = "cancelled"
 )
 
+// LyricsStatus records the durable outcome of one download attempt's lyrics
+// fetch, complementing JobItem.HasLyrics: HasLyrics is the catalog's claim
+// that lyrics exist, LyricsStatus is what actually happened when the backend
+// tried to get them. Cleared on retry (see ResetForRetry) because the next
+// attempt may succeed where this one failed.
+type LyricsStatus string
+
+const (
+	// LyricsPending: not determined yet — the item hasn't reached the lyrics
+	// phase of a download, or predates this field.
+	LyricsPending LyricsStatus = ""
+	// LyricsFetched: lyrics were fetched and converted; they are embedded
+	// in the file and/or saved as a sidecar per the download config.
+	LyricsFetched LyricsStatus = "fetched"
+	// LyricsFailed: the catalog reported lyrics but fetching or converting
+	// them failed; the download continued without lyrics.
+	LyricsFailed LyricsStatus = "failed"
+	// LyricsNone: the catalog reports no lyrics for this track.
+	LyricsNone LyricsStatus = "none"
+	// LyricsDisabled: lyrics exist but neither embed_lyrics nor
+	// save_lyrics_file is enabled, so no fetch was attempted.
+	LyricsDisabled LyricsStatus = "disabled"
+)
+
 type Job struct {
 	ID           string    `json:"id"`
 	Input        string    `json:"input"`
@@ -58,29 +82,31 @@ type Job struct {
 }
 
 type JobItem struct {
-	ID            string     `json:"id"`
-	JobID         string     `json:"job_id"`
-	AdamID        string     `json:"adam_id"`
-	Kind          string     `json:"kind"`
-	Index         int        `json:"index"`
-	Title         string     `json:"title,omitempty"`
-	Artist        string     `json:"artist,omitempty"`
-	Album         string     `json:"album,omitempty"`
-	ArtworkURL    string     `json:"artwork_url,omitempty"`
-	Status        ItemStatus `json:"status"`
-	Progress      float64    `json:"progress"`
-	Codec         string     `json:"codec,omitempty"`
-	BitDepth      int        `json:"bit_depth,omitempty"`
-	SampleRate    int        `json:"sample_rate,omitempty"`
-	Bitrate       int        `json:"bitrate,omitempty"`
-	RetryKind     string     `json:"retry_kind,omitempty"`
-	Attempt       int        `json:"attempt,omitempty"`
-	MaxAttempts   int        `json:"max_attempts,omitempty"`
-	StatusMessage string     `json:"status_message,omitempty"`
-	OutputPath    string     `json:"-"`
-	Error         string     `json:"error,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID            string       `json:"id"`
+	JobID         string       `json:"job_id"`
+	AdamID        string       `json:"adam_id"`
+	Kind          string       `json:"kind"`
+	Index         int          `json:"index"`
+	Title         string       `json:"title,omitempty"`
+	Artist        string       `json:"artist,omitempty"`
+	Album         string       `json:"album,omitempty"`
+	ArtworkURL    string       `json:"artwork_url,omitempty"`
+	HasLyrics     bool         `json:"has_lyrics"`
+	LyricsStatus  LyricsStatus `json:"lyrics_status,omitempty"`
+	Status        ItemStatus   `json:"status"`
+	Progress      float64      `json:"progress"`
+	Codec         string       `json:"codec,omitempty"`
+	BitDepth      int          `json:"bit_depth,omitempty"`
+	SampleRate    int          `json:"sample_rate,omitempty"`
+	Bitrate       int          `json:"bitrate,omitempty"`
+	RetryKind     string       `json:"retry_kind,omitempty"`
+	Attempt       int          `json:"attempt,omitempty"`
+	MaxAttempts   int          `json:"max_attempts,omitempty"`
+	StatusMessage string       `json:"status_message,omitempty"`
+	OutputPath    string       `json:"-"`
+	Error         string       `json:"error,omitempty"`
+	CreatedAt     time.Time    `json:"created_at"`
+	UpdatedAt     time.Time    `json:"updated_at"`
 }
 
 // Finished reports whether the item ended in a state that a job retry must
@@ -99,6 +125,7 @@ func (i *JobItem) ResetForRetry() {
 	i.Progress = 0
 	i.Codec = ""
 	i.BitDepth, i.SampleRate, i.Bitrate = 0, 0, 0
+	i.LyricsStatus = LyricsPending
 	i.RetryKind = ""
 	i.Attempt = 0
 	i.MaxAttempts = 0

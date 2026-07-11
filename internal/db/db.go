@@ -87,6 +87,8 @@ func (s *Store) initSchema(ctx context.Context) error {
 			artist TEXT NOT NULL DEFAULT '',
 			album TEXT NOT NULL DEFAULT '',
 			artwork_url TEXT NOT NULL DEFAULT '',
+			has_lyrics INTEGER NOT NULL DEFAULT 0,
+			lyrics_status TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL,
 			progress REAL NOT NULL DEFAULT 0,
 			codec TEXT NOT NULL DEFAULT '',
@@ -130,6 +132,8 @@ func (s *Store) initSchema(ctx context.Context) error {
 		{"job_items", "bit_depth", "INTEGER NOT NULL DEFAULT 0"},
 		{"job_items", "sample_rate", "INTEGER NOT NULL DEFAULT 0"},
 		{"job_items", "bitrate", "INTEGER NOT NULL DEFAULT 0"},
+		{"job_items", "has_lyrics", "INTEGER NOT NULL DEFAULT 0"},
+		{"job_items", "lyrics_status", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := s.ensureColumn(ctx, col.table, col.column, col.decl); err != nil {
 			return err
@@ -504,15 +508,15 @@ func scanJob(row jobScanner) (domain.Job, error) {
 }
 
 func (s *Store) CreateItem(ctx context.Context, item domain.JobItem) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO job_items(id,job_id,adam_id,kind,idx,title,artist,album,artwork_url,status,progress,codec,bit_depth,sample_rate,bitrate,retry_kind,attempt,max_attempts,status_message,output_path,error,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, item.ID, item.JobID, item.AdamID, item.Kind, item.Index, item.Title, item.Artist, item.Album, item.ArtworkURL,
+	_, err := s.db.ExecContext(ctx, `INSERT INTO job_items(id,job_id,adam_id,kind,idx,title,artist,album,artwork_url,has_lyrics,lyrics_status,status,progress,codec,bit_depth,sample_rate,bitrate,retry_kind,attempt,max_attempts,status_message,output_path,error,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, item.ID, item.JobID, item.AdamID, item.Kind, item.Index, item.Title, item.Artist, item.Album, item.ArtworkURL, item.HasLyrics, string(item.LyricsStatus),
 		string(item.Status), item.Progress, item.Codec, item.BitDepth, item.SampleRate, item.Bitrate, item.RetryKind, item.Attempt, item.MaxAttempts, item.StatusMessage, item.OutputPath, item.Error, formatTime(item.CreatedAt), formatTime(item.UpdatedAt))
 	return err
 }
 
 func (s *Store) UpdateItem(ctx context.Context, item domain.JobItem) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE job_items SET title=?,artist=?,album=?,artwork_url=?,status=?,progress=?,codec=?,bit_depth=?,sample_rate=?,bitrate=?,retry_kind=?,attempt=?,max_attempts=?,status_message=?,output_path=?,error=?,updated_at=? WHERE id=?`,
-		item.Title, item.Artist, item.Album, item.ArtworkURL, string(item.Status), item.Progress, item.Codec, item.BitDepth, item.SampleRate, item.Bitrate, item.RetryKind, item.Attempt, item.MaxAttempts, item.StatusMessage, item.OutputPath, item.Error, formatTime(item.UpdatedAt), item.ID)
+	_, err := s.db.ExecContext(ctx, `UPDATE job_items SET title=?,artist=?,album=?,artwork_url=?,has_lyrics=?,lyrics_status=?,status=?,progress=?,codec=?,bit_depth=?,sample_rate=?,bitrate=?,retry_kind=?,attempt=?,max_attempts=?,status_message=?,output_path=?,error=?,updated_at=? WHERE id=?`,
+		item.Title, item.Artist, item.Album, item.ArtworkURL, item.HasLyrics, string(item.LyricsStatus), string(item.Status), item.Progress, item.Codec, item.BitDepth, item.SampleRate, item.Bitrate, item.RetryKind, item.Attempt, item.MaxAttempts, item.StatusMessage, item.OutputPath, item.Error, formatTime(item.UpdatedAt), item.ID)
 	return err
 }
 
@@ -525,7 +529,7 @@ func (s *Store) UpdateItem(ctx context.Context, item domain.JobItem) error {
 func (s *Store) ResetUnfinishedItems(ctx context.Context, jobID string, updatedAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE job_items
 		SET status=?, progress=0, codec='', bit_depth=0, sample_rate=0, bitrate=0,
-			retry_kind='', attempt=0, max_attempts=0, status_message='', error='', updated_at=?
+			lyrics_status='', retry_kind='', attempt=0, max_attempts=0, status_message='', error='', updated_at=?
 		WHERE job_id=? AND status NOT IN (?,?)`,
 		string(domain.ItemQueued), formatTime(updatedAt), jobID,
 		string(domain.ItemCompleted), string(domain.ItemSkipped))
@@ -542,7 +546,7 @@ func (s *Store) DeleteItem(ctx context.Context, id string) error {
 }
 
 func (s *Store) ListItems(ctx context.Context, jobID string) ([]domain.JobItem, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,job_id,adam_id,kind,idx,title,artist,album,artwork_url,status,progress,codec,bit_depth,sample_rate,bitrate,retry_kind,attempt,max_attempts,status_message,output_path,error,created_at,updated_at FROM job_items WHERE job_id=? ORDER BY idx`, jobID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,job_id,adam_id,kind,idx,title,artist,album,artwork_url,has_lyrics,lyrics_status,status,progress,codec,bit_depth,sample_rate,bitrate,retry_kind,attempt,max_attempts,status_message,output_path,error,created_at,updated_at FROM job_items WHERE job_id=? ORDER BY idx`, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -560,9 +564,10 @@ func (s *Store) ListItems(ctx context.Context, jobID string) ([]domain.JobItem, 
 
 func scanItem(row jobScanner) (domain.JobItem, error) {
 	var item domain.JobItem
-	var status, created, updated string
-	err := row.Scan(&item.ID, &item.JobID, &item.AdamID, &item.Kind, &item.Index, &item.Title, &item.Artist, &item.Album, &item.ArtworkURL, &status,
+	var lyricsStatus, status, created, updated string
+	err := row.Scan(&item.ID, &item.JobID, &item.AdamID, &item.Kind, &item.Index, &item.Title, &item.Artist, &item.Album, &item.ArtworkURL, &item.HasLyrics, &lyricsStatus, &status,
 		&item.Progress, &item.Codec, &item.BitDepth, &item.SampleRate, &item.Bitrate, &item.RetryKind, &item.Attempt, &item.MaxAttempts, &item.StatusMessage, &item.OutputPath, &item.Error, &created, &updated)
+	item.LyricsStatus = domain.LyricsStatus(lyricsStatus)
 	item.Status = domain.ItemStatus(status)
 	item.CreatedAt = parseTime(created)
 	item.UpdatedAt = parseTime(updated)

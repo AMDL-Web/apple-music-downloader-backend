@@ -252,7 +252,8 @@ func syncJobItems(ctx context.Context, job domain.Job, tracks []applemusic.Song,
 		items[i] = domain.JobItem{
 			ID: storage.NewID("item"), JobID: job.ID, AdamID: track.ID, Kind: "song", Index: i + 1,
 			Title: track.Name, Artist: track.ArtistName, Album: track.AlbumName,
-			ArtworkURL: firstNonEmpty(track.ArtworkURL, track.AlbumArtworkURL), Status: domain.ItemQueued,
+			ArtworkURL: firstNonEmpty(track.ArtworkURL, track.AlbumArtworkURL), HasLyrics: track.HasLyrics,
+			Status: domain.ItemQueued,
 		}
 		if err := reporter.AddItem(ctx, items[i]); err != nil {
 			return nil, nil, err
@@ -399,6 +400,7 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	item.Artist = song.ArtistName
 	item.Album = song.AlbumName
 	item.ArtworkURL = firstNonEmpty(song.ArtworkURL, song.AlbumArtworkURL, item.ArtworkURL)
+	item.HasLyrics = song.HasLyrics
 	_ = reporter.UpdateItem(ctx, item)
 
 	if d.cfg.Simulate.Enabled {
@@ -453,11 +455,21 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 		})
 		if lyricsErr == nil {
 			converted, convertErr := convertLyrics(raw, d.cfg.Download.LyricsFormat, d.cfg.Download.LyricsExtras)
-			if convertErr != nil {
+			switch {
+			case convertErr != nil:
+				item.LyricsStatus = domain.LyricsFailed
 				item.StatusMessage = "Lyrics conversion failed; continuing without embedded lyrics: " + convertErr.Error()
 				_ = reporter.UpdateItem(ctx, item)
-			} else {
+			case converted == "":
+				// The wrapper answered with an empty document (possible in ttml
+				// mode, where convertLyrics passes it through without error).
+				item.LyricsStatus = domain.LyricsFailed
+				item.StatusMessage = "Lyrics fetch returned an empty document; continuing without embedded lyrics"
+				_ = reporter.UpdateItem(ctx, item)
+			default:
 				lyrics = converted
+				item.LyricsStatus = domain.LyricsFetched
+				_ = reporter.UpdateItem(ctx, item)
 				if lyricsAttempts > 1 {
 					d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "lyrics", "", lyricsAttempts)
 				}
@@ -466,9 +478,17 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			item.LyricsStatus = domain.LyricsFailed
 			item.StatusMessage = "Lyrics fetch retries exhausted; continuing without embedded lyrics: " + lyricsErr.Error()
 			_ = reporter.UpdateItem(ctx, item)
 		}
+	} else {
+		if song.HasLyrics {
+			item.LyricsStatus = domain.LyricsDisabled
+		} else {
+			item.LyricsStatus = domain.LyricsNone
+		}
+		_ = reporter.UpdateItem(ctx, item)
 	}
 
 	if err := d.tools.Require(ctx); err != nil {

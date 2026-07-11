@@ -69,7 +69,7 @@ audio.m3u8
 	defer manifest.Close()
 
 	service := NewQualityServiceWithCatalog(config.Default(), fakeQualityCatalog{song: applemusic.Song{
-		ID: "song-1", Name: "Song", ArtistName: "Artist", AlbumName: "Album", EnhancedHLS: manifest.URL + "/master.m3u8",
+		ID: "song-1", Name: "Song", ArtistName: "Artist", AlbumName: "Album", HasLyrics: true, EnhancedHLS: manifest.URL + "/master.m3u8",
 	}})
 
 	result, err := service.QueryQuality(context.Background(), QualityRequest{URL: "https://music.apple.com/cn/song/example/song-1"})
@@ -78,5 +78,8 @@ audio.m3u8
 	}
 	if len(result.Qualities) == 0 || !result.Qualities[0].Available {
 		t.Fatalf("expected catalog manifest qualities, got %#v", result.Qualities)
+	}
+	if !result.Song.HasLyrics {
+		t.Fatalf("song = %+v, want has_lyrics propagated from catalog", result.Song)
 	}
 }

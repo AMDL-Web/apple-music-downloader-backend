@@ -869,12 +869,18 @@ components:
           example: https://music.apple.com/cn/album/one-last-kiss/1542953969?i=1542953977
     QualitySong:
       type: object
-      required: [id, name, artist, album]
+      required: [id, name, artist, album, has_lyrics]
       properties:
         id: {type: string}
         name: {type: string}
         artist: {type: string}
         album: {type: string}
+        has_lyrics:
+          type: boolean
+          description: >-
+            Whether the Apple Music catalog reports lyrics for this track
+            (regular or time-synced). Catalog metadata only — it does not
+            guarantee the lyrics can actually be fetched at download time.
     QualityOption:
       type: object
       required: [id, label, available]
@@ -960,7 +966,7 @@ components:
           format: date-time
     JobItem:
       type: object
-      required: [id, job_id, adam_id, kind, index, status, progress, created_at, updated_at]
+      required: [id, job_id, adam_id, kind, index, has_lyrics, status, progress, created_at, updated_at]
       properties:
         id: {type: string}
         job_id: {type: string}
@@ -976,6 +982,31 @@ components:
             Track cover artwork URL template with {w}x{h} (and optionally {f})
             placeholders; substitute the desired pixel size client-side,
             e.g. 600x600. Absent for items created before this field existed.
+        has_lyrics:
+          type: boolean
+          description: >-
+            Whether the Apple Music catalog reports lyrics for this track
+            (regular or time-synced). Set when the collection resolves and
+            refreshed when the track's own metadata is fetched. Catalog
+            metadata only — it does not guarantee the lyrics can actually
+            be fetched at download time. Defaults to false for items
+            created before this field existed, until the item is next
+            re-processed (e.g. by a retry).
+        lyrics_status:
+          type: string
+          enum: [fetched, failed, none, disabled]
+          description: >-
+            Durable outcome of this download attempt's lyrics fetch,
+            complementing has_lyrics (the catalog's claim) with what
+            actually happened. `fetched`: lyrics were fetched and
+            converted (embedded and/or saved per the download config);
+            `failed`: the catalog reported lyrics but fetching or
+            converting them failed and the download continued without
+            lyrics; `none`: the catalog reports no lyrics for this track;
+            `disabled`: lyrics exist but neither embed_lyrics nor
+            save_lyrics_file is enabled. Absent while undetermined (item
+            not yet processed, or created before this field existed) and
+            cleared when a retry re-processes the item.
         status:
           type: string
           enum: [queued, resolving, downloading, decrypting, remuxing, tagging, saving, completed, failed, skipped_existing, cancelled]

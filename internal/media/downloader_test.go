@@ -18,7 +18,9 @@ import (
 )
 
 type fakeDownloaderWrapper struct {
-	status wrapper.Status
+	status    wrapper.Status
+	lyrics    string
+	lyricsErr error
 }
 
 func (f fakeDownloaderWrapper) Status(context.Context) (wrapper.Status, error) {
@@ -30,7 +32,7 @@ func (f fakeDownloaderWrapper) M3U8(context.Context, string) (string, error) {
 }
 
 func (f fakeDownloaderWrapper) Lyrics(context.Context, string, wrapper.LyricsRequestOptions) (string, error) {
-	return "", nil
+	return f.lyrics, f.lyricsErr
 }
 
 func (f fakeDownloaderWrapper) WebPlayback(context.Context, string) (string, error) {
@@ -239,6 +241,94 @@ func TestProcessTrackItemProgressEventOmitsArtworkURL(t *testing.T) {
 	}
 }
 
+// TestProcessTrackRefreshesHasLyricsFromCatalogSong drives processTrack past a
+// successful per-track metadata fetch (simulate mode with an empty
+// quality_priority stops it right after the refresh) and verifies the catalog
+// data corrects the item's has_lyrics flag, as the OpenAPI contract documents.
+func TestProcessTrackRefreshesHasLyricsFromCatalogSong(t *testing.T) {
+	cfg := config.Default()
+	cfg.Download.MaxAttempts = 1
+	cfg.Simulate.Enabled = true
+	cfg.Download.QualityPriority = nil
+	downloader := &Downloader{
+		cfg:     cfg,
+		catalog: fakeDownloaderCatalog{song: applemusic.Song{ID: "song-1", Name: "One", HasLyrics: true}},
+	}
+	reporter := &recordingReporter{}
+	item := domain.JobItem{ID: "item-1", JobID: "job-1", AdamID: "song-1"}
+	job := domain.Job{ID: "job-1"}
+
+	if err := downloader.processTrack(context.Background(), job, item, applemusic.Song{ID: "song-1"}, "cn", applemusic.TypeAlbum, "Album", "album-1", 1, "", reporter); err == nil {
+		t.Fatal("expected error from empty quality_priority")
+	}
+
+	var refreshed bool
+	for _, updated := range reporter.items {
+		if updated.HasLyrics {
+			if updated.Title != "One" {
+				t.Fatalf("update carrying has_lyrics=true has title %q, want the refreshed catalog title", updated.Title)
+			}
+			refreshed = true
+			break
+		}
+	}
+	if !refreshed {
+		t.Fatalf("no UpdateItem call carried has_lyrics=true after the metadata refresh; items = %+v", reporter.items)
+	}
+}
+
+// TestProcessTrackRecordsLyricsStatus exercises the real (non-simulate)
+// lyrics phase for every outcome. A ToolChecker pointing at a nonexistent
+// ffmpeg stops processTrack right after the lyrics block, so no network or
+// disk activity follows; the last persisted item update must carry the
+// durable lyrics_status for that outcome.
+func TestProcessTrackRecordsLyricsStatus(t *testing.T) {
+	cases := []struct {
+		name      string
+		embed     bool
+		hasLyrics bool
+		lyrics    string
+		lyricsErr error
+		want      domain.LyricsStatus
+	}{
+		{name: "fetched", embed: true, hasLyrics: true, lyrics: "<tt>line</tt>", want: domain.LyricsFetched},
+		{name: "fetch failed", embed: true, hasLyrics: true, lyricsErr: errors.New("region mismatch"), want: domain.LyricsFailed},
+		{name: "empty document", embed: true, hasLyrics: true, lyrics: "", want: domain.LyricsFailed},
+		{name: "catalog has none", embed: true, hasLyrics: false, want: domain.LyricsNone},
+		{name: "disabled in config", embed: false, hasLyrics: true, want: domain.LyricsDisabled},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Download.MaxAttempts = 1
+			cfg.Download.EmbedCover = false
+			cfg.Download.EmbedLyrics = tc.embed
+			cfg.Download.SaveLyricsFile = false
+			cfg.Download.LyricsFormat = "ttml" // pass the fetched raw through unconverted
+			cfg.Tools.FFmpeg = "amdl-test-missing-ffmpeg"
+			downloader := &Downloader{
+				cfg:     cfg,
+				catalog: fakeDownloaderCatalog{song: applemusic.Song{ID: "song-1", Name: "One", HasLyrics: tc.hasLyrics}},
+				wrapper: fakeDownloaderWrapper{lyrics: tc.lyrics, lyricsErr: tc.lyricsErr},
+				tools:   NewToolChecker(cfg.Tools),
+			}
+			reporter := &recordingReporter{}
+			item := domain.JobItem{ID: "item-1", JobID: "job-1", AdamID: "song-1"}
+
+			if err := downloader.processTrack(context.Background(), domain.Job{ID: "job-1"}, item, applemusic.Song{ID: "song-1"}, "cn", applemusic.TypeAlbum, "Album", "album-1", 1, "", reporter); err == nil {
+				t.Fatal("expected the missing-ffmpeg error to stop processing after the lyrics phase")
+			}
+			if len(reporter.items) == 0 {
+				t.Fatal("no item updates recorded")
+			}
+			last := reporter.items[len(reporter.items)-1]
+			if last.LyricsStatus != tc.want {
+				t.Fatalf("lyrics_status = %q, want %q (updates: %+v)", last.LyricsStatus, tc.want, reporter.items)
+			}
+		})
+	}
+}
+
 func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 	var encryptedMediaHits atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -406,7 +496,7 @@ func TestSyncJobItemsReusesPreviousRowsAndSkipsFinishedTracks(t *testing.T) {
 
 func TestSyncJobItemsFirstRunCreatesAllItems(t *testing.T) {
 	reporter := &recordingReporter{}
-	tracks := []applemusic.Song{{ID: "song-1", Name: "One"}, {ID: "song-2", Name: "Two"}}
+	tracks := []applemusic.Song{{ID: "song-1", Name: "One", HasLyrics: true}, {ID: "song-2", Name: "Two"}}
 
 	items, finished, err := syncJobItems(context.Background(), domain.Job{ID: "job-1"}, tracks, reporter)
 	if err != nil {
@@ -421,6 +511,9 @@ func TestSyncJobItemsFirstRunCreatesAllItems(t *testing.T) {
 		}
 		if items[i].Status != domain.ItemQueued || items[i].Index != i+1 {
 			t.Fatalf("item %d = %+v, want queued at index %d", i, items[i], i+1)
+		}
+		if items[i].HasLyrics != tracks[i].HasLyrics {
+			t.Fatalf("item %d has_lyrics = %v, want %v from the resolved track", i, items[i].HasLyrics, tracks[i].HasLyrics)
 		}
 	}
 }
