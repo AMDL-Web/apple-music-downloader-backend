@@ -70,14 +70,27 @@ download:
   max_attempts: 3
   # string path: root download directory. Relative paths are resolved from the backend working directory.
   downloads_dir: "data/downloads"
-  # string folder name: directory under downloads_dir for single-song tasks. Must be non-empty.
-  songs_folder_name: "songs"
-  # string folder name: directory under downloads_dir for album tasks. Must be non-empty.
-  albums_folder_name: "albums"
-  # string folder name: directory under downloads_dir for playlist tasks. Must be non-empty.
-  playlists_folder_name: "playlists"
-  # string folder name: directory under downloads_dir for artist tasks. Must be non-empty.
-  artists_folder_name: "artists"
+  # Per-task-type output path templates, relative to downloads_dir. Each is a single
+  # "/"-separated path template, non-empty; the last segment is the file name and gets
+  # the .m4a extension appended automatically. Every segment is sanitized independently,
+  # so template values cannot create extra directories.
+  # Variables: {SongId}, {SongNumber}, {SongName}, {ArtistName}, {UrlArtistName}, {ArtistId},
+  # {AlbumName}, {AlbumId}, {AlbumArtist}, {ReleaseDate}, {ReleaseYear}, {UPC}, {Copyright},
+  # {RecordLabel}, {DiscNumber}, {DiscCount}, {TrackNumber}, {TrackCount}, {PlaylistName},
+  # {PlaylistId}, {Quality}, {Codec}, {Tag}. Numeric variables {SongNumber}, {DiscNumber},
+  # {DiscCount}, {TrackNumber}, and {TrackCount} also support :02d padding, for example
+  # {TrackNumber:02d}. Unknown variables are preserved literally.
+  # In directory segments, {ArtistName} resolves to the collection's grouping artist
+  # (album artist when available) so all tracks of a collection share one folder; in the
+  # file-name segment it resolves to the track's own artist.
+  # string template: output path for single-song tasks.
+  song_path_format: "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}"
+  # string template: output path for album tasks.
+  album_path_format: "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}"
+  # string template: output path for artist tasks (expanded album/song lists).
+  artist_path_format: "artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}"
+  # string template: output path for playlist tasks. {SongNumber} is the 1-based position in the playlist.
+  playlist_path_format: "playlists/{PlaylistName}/{SongNumber:02d}. {SongName}"
   # string path: temporary media working directory. Relative paths are resolved from the backend working directory.
   temp_dir: "data/tmp"
   # string: cover artwork size as "{width}x{height}", for example "5000x5000", "3000x3000", "1400x1400".
@@ -102,16 +115,6 @@ download:
   lyrics_type: "lyrics"
   # list enum: translation, pronunciation. Empty list disables extra localized lines.
   lyrics_extras: []
-  # string template, non-empty. Variables: {SongId}, {SongNumber}, {SongName}, {ArtistName}, {UrlArtistName}, {ArtistId}, {AlbumName}, {AlbumId}, {AlbumArtist}, {ReleaseDate}, {ReleaseYear}, {UPC}, {Copyright}, {RecordLabel}, {DiscNumber}, {DiscCount}, {TrackNumber}, {TrackCount}, {PlaylistName}, {PlaylistId}, {Quality}, {Codec}, {Tag}. Numeric variables {SongNumber}, {DiscNumber}, {DiscCount}, {TrackNumber}, and {TrackCount} also support :02d padding, for example {TrackNumber:02d}. Unknown variables are preserved literally, except the removed misspelling {SongNumer}, which is rejected at startup — use {SongNumber}.
-  artist_folder_format: "{ArtistName}"
-  # string template, non-empty. Variables: {SongId}, {SongNumber}, {SongName}, {ArtistName}, {UrlArtistName}, {ArtistId}, {AlbumName}, {AlbumId}, {AlbumArtist}, {ReleaseDate}, {ReleaseYear}, {UPC}, {Copyright}, {RecordLabel}, {DiscNumber}, {DiscCount}, {TrackNumber}, {TrackCount}, {PlaylistName}, {PlaylistId}, {Quality}, {Codec}, {Tag}. Numeric variables {SongNumber}, {DiscNumber}, {DiscCount}, {TrackNumber}, and {TrackCount} also support :02d padding, for example {TrackNumber:02d}. Unknown variables are preserved literally, except the removed misspelling {SongNumer}, which is rejected at startup — use {SongNumber}.
-  album_folder_format: "{AlbumName}"
-  # string template, non-empty. Variables: {SongId}, {SongNumber}, {SongName}, {ArtistName}, {UrlArtistName}, {ArtistId}, {AlbumName}, {AlbumId}, {AlbumArtist}, {ReleaseDate}, {ReleaseYear}, {UPC}, {Copyright}, {RecordLabel}, {DiscNumber}, {DiscCount}, {TrackNumber}, {TrackCount}, {PlaylistName}, {PlaylistId}, {Quality}, {Codec}, {Tag}. Numeric variables {SongNumber}, {DiscNumber}, {DiscCount}, {TrackNumber}, and {TrackCount} also support :02d padding, for example {TrackNumber:02d}. Unknown variables are preserved literally, except the removed misspelling {SongNumer}, which is rejected at startup — use {SongNumber}.
-  song_file_format: "{TrackNumber:02d}. {SongName}"
-  # string template, non-empty. Variables: {SongId}, {SongNumber}, {SongName}, {ArtistName}, {UrlArtistName}, {ArtistId}, {AlbumName}, {AlbumId}, {AlbumArtist}, {ReleaseDate}, {ReleaseYear}, {UPC}, {Copyright}, {RecordLabel}, {DiscNumber}, {DiscCount}, {TrackNumber}, {TrackCount}, {PlaylistName}, {PlaylistId}, {Quality}, {Codec}, {Tag}. Numeric variables {SongNumber}, {DiscNumber}, {DiscCount}, {TrackNumber}, and {TrackCount} also support :02d padding, for example {TrackNumber:02d}. Unknown variables are preserved literally, except the removed misspelling {SongNumer}, which is rejected at startup — use {SongNumber}.
-  playlist_folder_format: "{PlaylistName}"
-  # string template, non-empty. Variables: {SongId}, {SongNumber}, {SongName}, {ArtistName}, {UrlArtistName}, {ArtistId}, {AlbumName}, {AlbumId}, {AlbumArtist}, {ReleaseDate}, {ReleaseYear}, {UPC}, {Copyright}, {RecordLabel}, {DiscNumber}, {DiscCount}, {TrackNumber}, {TrackCount}, {PlaylistName}, {PlaylistId}, {Quality}, {Codec}, {Tag}. Numeric variables {SongNumber}, {DiscNumber}, {DiscCount}, {TrackNumber}, and {TrackCount} also support :02d padding, for example {TrackNumber:02d}. Unknown variables are preserved literally, except the removed misspelling {SongNumer}, which is rejected at startup — use {SongNumber}.
-  playlist_song_file_format: "{SongNumber:02d}. {SongName}"
   # integer Hz: maximum selected ALAC sample rate. Use 192000 for up to 192 kHz.
   alac_max_sample_rate: 192000
   # integer bits: maximum selected ALAC bit depth. Use 24 for up to 24-bit.

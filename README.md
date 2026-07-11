@@ -158,33 +158,20 @@ curl -X POST http://localhost:18080/api/v1/downloads/{job_id}/cancel
 
 ## 保存格式
 
-不同下载任务会保存到 `download.downloads_dir` 下独立的类型目录。
+每种任务类型的完整保存路径由一行模板配置，相对 `download.downloads_dir` 解析，末段为文件名（自动追加 `.m4a` 扩展名）：
 
-单曲默认保存到：
+- `download.song_path_format`，默认 `songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}`
+- `download.album_path_format`，默认 `albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}`
+- `download.artist_path_format`，默认 `artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}`（艺术家任务会展开为该艺术家的专辑/单曲列表）
+- `download.playlist_path_format`，默认 `playlists/{PlaylistName}/{SongNumber:02d}. {SongName}`（`{SongNumber}` 为歌曲在歌单中的序号）
 
-```text
-data/downloads/songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
-```
-
-专辑默认保存到：
+以默认配置为例，专辑曲目会保存到：
 
 ```text
 data/downloads/albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
 ```
 
-艺术家任务会展开为该艺术家的专辑/单曲列表，并保存到 artists 类型目录：
-
-```text
-data/downloads/artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
-```
-
-歌单默认保存到：
-
-```text
-data/downloads/playlists/{PlaylistName}/{SongNumber:02d}. {SongName}.m4a
-```
-
-四个类型目录名可分别通过 `download.songs_folder_name`、`download.albums_folder_name`、`download.playlists_folder_name`、`download.artists_folder_name` 自定义。
+模板变量列表见 `configs/config.yaml` 注释。目录段中的 `{ArtistName}` 使用集合的归档艺术家（优先专辑艺术家），保证同一专辑的曲目落在同一目录；文件名段使用曲目自身的艺术家。
 
 可选择在音频文件外额外保存独立封面：
 
