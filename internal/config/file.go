@@ -23,11 +23,14 @@ const savedFileHeader = `# Managed by the amdl backend: rewritten on every PUT /
 # restart). Key documentation lives in ` + exampleFileName + `.
 `
 
-// BootstrapFromExample creates the live config file at path by copying the
-// sibling config.example.yaml, so a fresh checkout starts with the documented
-// defaults. It reports whether it created the file; an existing file is left
-// untouched, and a missing example next to a missing config is an error the
-// caller surfaces (nothing to start from).
+// BootstrapFromExample creates the live config file at path from the sibling
+// config.example.yaml, so a fresh checkout starts with the documented
+// defaults. The values are loaded from the example and written back in the
+// same machine-managed format every later Save produces — the example's
+// comments are not carried over, since the first PUT /api/v1/config would
+// drop them anyway. It reports whether it created the file; an existing file
+// is left untouched, and a missing example next to a missing config is an
+// error the caller surfaces (nothing to start from).
 func BootstrapFromExample(path string) (bool, error) {
 	if _, err := os.Stat(path); err == nil {
 		return false, nil
@@ -35,14 +38,14 @@ func BootstrapFromExample(path string) (bool, error) {
 		return false, err
 	}
 	examplePath := filepath.Join(filepath.Dir(path), exampleFileName)
-	raw, err := os.ReadFile(examplePath)
+	cfg, err := Load(examplePath)
 	if err != nil {
 		return false, fmt.Errorf("config file %s does not exist and bootstrapping from %s failed: %w", path, examplePath, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
+	if err := Save(path, cfg); err != nil {
 		return false, err
 	}
 	return true, nil

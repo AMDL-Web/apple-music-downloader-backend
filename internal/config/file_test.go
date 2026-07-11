@@ -32,6 +32,15 @@ func TestBootstrapFromExample(t *testing.T) {
 	if cfg.Server.Listen != "127.0.0.1:19999" {
 		t.Fatalf("bootstrapped listen = %q", cfg.Server.Listen)
 	}
+	// The live file is written in the machine-managed format from the start;
+	// the example's comments are not copied over.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(raw), "# Managed by the amdl backend") {
+		t.Fatalf("bootstrapped file missing managed-file header: %q", string(raw)[:60])
+	}
 
 	// An existing config is left untouched.
 	if err := os.WriteFile(path, []byte("server:\n  listen: \"127.0.0.1:20000\"\n"), 0o644); err != nil {

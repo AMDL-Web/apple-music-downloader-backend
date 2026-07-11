@@ -37,9 +37,9 @@ go run ./cmd/amdl-api
 configs/config.yaml
 ```
 
-首次启动时该文件会自动从带完整注释的示例 `configs/config.example.yaml`
-复制生成（字段文档都在示例文件里）。`config.yaml` 本身由后端管理：
-`PUT /api/v1/config` 修改运行时配置时会整体重写它（注释不保留），
+首次启动时该文件会自动以示例 `configs/config.example.yaml` 的值为模板
+生成（只取配置值，不带注释；字段文档都在示例文件里）。`config.yaml`
+本身由后端管理：`PUT /api/v1/config` 修改运行时配置时会整体重写它，
 因此它不纳入版本控制；手工编辑仍然可以，重启后生效，但会在下一次
 API 修改时被重写。
 
