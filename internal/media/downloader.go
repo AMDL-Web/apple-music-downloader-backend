@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
@@ -908,30 +911,34 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	}
 
 	set(domain.ItemRemuxing, 0.90, "remuxing")
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		return fmt.Errorf("create output directory: %w", err)
-	}
-	// Write to a .part name and only rename onto outPath once metadata is in
-	// place: handleExistingOutput trusts bare existence at the final path when
-	// deciding to skip, so a crash between the audio write and tagging must
-	// never leave a truncated or untagged file there.
-	//
 	// Flatten the decrypted fragmented MP4 into a regular progressive MP4 (also
-	// normalises the ftyp brand) straight from the decrypt temp file onto the
-	// .part file — nothing round-trips through a []byte. The decoder configuration
-	// is carried over from the original init segment, so no esds fixup is needed.
-	partPath := outPath + partSuffix
-	if err := d.mp4.flattenFileToFile(ctx, decPath, partPath); err != nil {
+	// normalises the ftyp brand) on temp storage, then verify and tag it there,
+	// and only move the finished file to its final path. Keeping the flatten
+	// write, the integrity read-back, and the tag rewrite on temp (typically
+	// fast local disk) means a possibly-slow downloads volume sees just one
+	// sequential write; see finalizeToOutput. The decoder configuration is
+	// carried over from the original init segment, so no esds fixup is needed.
+	flatFile, err := os.CreateTemp(d.cfg.Download.TempDir, "flat-*.m4a")
+	if err != nil {
+		return fmt.Errorf("create flatten output: %w", err)
+	}
+	flatPath := flatFile.Name()
+	flatFile.Close()
+	defer os.Remove(flatPath)
+	if err := d.mp4.flattenFileToFile(ctx, decPath, flatPath); err != nil {
 		return fmt.Errorf("fix encapsulation: %w", err)
 	}
 	set(domain.ItemSaving, 0.94, "saving")
-	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrityFile(ctx, partPath) {
+	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrityFile(ctx, flatPath) {
 		if codec != "alac" {
 			return fmt.Errorf("integrity check failed")
 		}
-		if err := d.repairALACFile(ctx, job, item, partPath, codec, reporter); err != nil {
+		if err := d.repairALACFile(ctx, job, item, flatPath, codec, reporter); err != nil {
 			return err
 		}
+	}
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return fmt.Errorf("create output directory: %w", err)
 	}
 	if d.cfg.Download.SaveLyricsFile && lyrics != "" {
 		ext := ".lrc"
@@ -943,10 +950,14 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 		}
 	}
 	set(domain.ItemTagging, 0.97, "writing metadata")
-	if err := d.mp4.writeMetadata(ctx, partPath, song, lyrics, cover, songInfo{Codec: codec}); err != nil {
+	if err := d.mp4.writeMetadata(ctx, flatPath, song, lyrics, cover, songInfo{Codec: codec}); err != nil {
 		return fmt.Errorf("write metadata: %w", err)
 	}
-	if err := os.Rename(partPath, outPath); err != nil {
+	// Only ever expose a complete, tagged file at outPath: finalizeToOutput
+	// renames (same filesystem) or copies through a .part then renames
+	// (cross-filesystem), so handleExistingOutput's "bare existence = done" skip
+	// stays correct even if the process dies mid-move.
+	if err := finalizeToOutput(flatPath, outPath); err != nil {
 		return fmt.Errorf("finalize output file: %w", err)
 	}
 	item.Status = domain.ItemCompleted
@@ -1034,23 +1045,29 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 	}
 
 	set(domain.ItemSaving, 0.94, "saving AAC-LC")
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		return fmt.Errorf("create output directory: %w", err)
-	}
-	// Same .part-then-rename finalize as downloadEnhancedCodec: the final path
-	// must only ever hold a complete, tagged file.
+	// Flatten, verify, and tag on temp storage, then move the finished file to
+	// its final path, same as downloadEnhancedCodec (see finalizeToOutput).
 	//
 	// Normalise the container (flatten + M4A brand + create the
-	// moov.udta.meta.ilst structure that go-mp4tag writes into) straight onto the
-	// .part file. The decrypted WebPlayback asset has no udta box, so tagging
-	// would otherwise fail. The flattened bytes are not read back into memory.
-	partPath := outPath + partSuffix
-	if err := d.mp4.flattenToFile(ctx, decrypted, partPath); err != nil {
+	// moov.udta.meta.ilst structure that go-mp4tag writes into). The decrypted
+	// WebPlayback asset has no udta box, so tagging would otherwise fail. The
+	// flattened bytes are not read back into memory.
+	flatFile, err := os.CreateTemp(d.cfg.Download.TempDir, "flat-*.m4a")
+	if err != nil {
+		return fmt.Errorf("create flatten output: %w", err)
+	}
+	flatPath := flatFile.Name()
+	flatFile.Close()
+	defer os.Remove(flatPath)
+	if err := d.mp4.flattenToFile(ctx, decrypted, flatPath); err != nil {
 		return fmt.Errorf("normalize AAC-LC container: %w", err)
 	}
 	decrypted = nil
-	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrityFile(ctx, partPath) {
+	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrityFile(ctx, flatPath) {
 		return fmt.Errorf("AAC-LC integrity check failed")
+	}
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return fmt.Errorf("create output directory: %w", err)
 	}
 	if d.cfg.Download.SaveLyricsFile && lyrics != "" {
 		ext := ".lrc"
@@ -1062,10 +1079,10 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 		}
 	}
 	set(domain.ItemTagging, 0.97, "writing AAC-LC metadata")
-	if err := d.mp4.writeMetadata(ctx, partPath, song, lyrics, cover, songInfo{Codec: "aac-lc"}); err != nil {
+	if err := d.mp4.writeMetadata(ctx, flatPath, song, lyrics, cover, songInfo{Codec: "aac-lc"}); err != nil {
 		return fmt.Errorf("write AAC-LC metadata: %w", err)
 	}
-	if err := os.Rename(partPath, outPath); err != nil {
+	if err := finalizeToOutput(flatPath, outPath); err != nil {
 		return fmt.Errorf("finalize AAC-LC output file: %w", err)
 	}
 	item.Status = domain.ItemCompleted
@@ -1150,6 +1167,60 @@ func cleanupTempFile(path string) {
 	if path != "" {
 		_ = os.Remove(path)
 	}
+}
+
+// finalizeToOutput moves the finished, tagged file at src (staged on temp
+// storage) to its final path dst. When src and dst share a filesystem this is a
+// cheap atomic rename; when they don't (e.g. temp on SSD, downloads on HDD),
+// os.Rename fails with EXDEV and it falls back to copying through a dst-side
+// .part file that is then renamed into place. Either way dst only ever appears
+// as a complete file, so handleExistingOutput's "bare existence = done" skip
+// stays correct even if the process dies mid-move. On the copy path src is left
+// in place for the caller's temp cleanup to remove.
+func finalizeToOutput(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	} else if !errors.Is(err, syscall.EXDEV) {
+		return err
+	}
+	return copyIntoPlace(src, dst)
+}
+
+// copyIntoPlace materialises src at dst across a filesystem boundary: copy to a
+// dst-side .part, flush, then atomically rename into place. dst never appears as
+// a partial file. src is left for the caller to remove.
+func copyIntoPlace(src, dst string) error {
+	partPath := dst + partSuffix
+	if err := copyFile(src, partPath); err != nil {
+		_ = os.Remove(partPath)
+		return err
+	}
+	if err := os.Rename(partPath, dst); err != nil {
+		_ = os.Remove(partPath)
+		return err
+	}
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func cleanupFailedOutput(outPath string) {

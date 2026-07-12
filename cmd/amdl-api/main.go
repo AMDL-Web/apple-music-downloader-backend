@@ -59,6 +59,10 @@ func main() {
 		logger.Error("create temp dir", "error", err)
 		os.Exit(1)
 	}
+	// Remove scratch files a previous run left behind (a crash mid-download can
+	// leak encrypted/decrypted/flatten temp files). Safe to do unconditionally
+	// at startup: the temp dir is single-writer and no job has started yet.
+	media.CleanupStaleTemp(cfg.Download.TempDir, logger)
 	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o755); err != nil {
 		logger.Error("create database dir", "error", err)
 		os.Exit(1)
