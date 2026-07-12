@@ -134,3 +134,4 @@ jobs:
       packages: write
     with:
       tag: ${{ github.event.inputs.version }}
+      latest: true

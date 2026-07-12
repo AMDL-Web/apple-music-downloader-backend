@@ -23,12 +23,24 @@ on:
         description: '要构建的版本标签 (例如: v1.0.0)'
         required: true
         type: string
+      # 手动补发/重发旧版本镜像时不应移动 latest,默认关闭;
+      # 只有重发的就是最新版本时才勾选。
+      latest:
+        description: '同时把 latest 指向该版本'
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       tag:
         description: '要构建的版本标签'
         required: true
         type: string
+      latest:
+        description: '同时把 latest 指向该版本'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -64,7 +76,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 从版本标签展开镜像 tag:v1.2.3 → 1.2.3、1.2、latest。
+      # 从版本标签展开镜像 tag:v1.2.3 → 1.2.3、1.2,以及(视情况)latest。
+      # latest 仅在以下情况移动:release.yml 发版调用(workflow_call 默认
+      # latest=true)、页面手工发布非预发布 release、手动 dispatch 且勾选
+      # 了 latest。手动补发旧版本镜像默认不会把 latest 拉回旧版。
       # metadata-action 会自动把仓库名转小写,并写入 OCI 标签
       # (org.opencontainers.image.source 等),让 GHCR package 关联到本仓库。
       - name: Docker metadata
@@ -75,7 +90,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}},value=${{ steps.ref.outputs.tag }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.ref.outputs.tag }}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ inputs.latest == true || (github.event_name == 'release' && !github.event.release.prerelease) }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
