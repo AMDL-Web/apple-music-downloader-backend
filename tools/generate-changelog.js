@@ -130,9 +130,9 @@ function parseCategory(message) {
 function getCommits(latest = null) {
   let gitCommand;
   if (latest) {
-    gitCommand = `git log ${latest}..HEAD --pretty=format:"%H%n%aN%n%s"`;
+    gitCommand = `git log ${latest}..HEAD --pretty=format:"%H%n%aN%n%aE%n%s"`;
   } else {
-    gitCommand = 'git log --pretty=format:"%H%n%aN%n%s" -n 50';
+    gitCommand = 'git log --pretty=format:"%H%n%aN%n%aE%n%s" -n 50';
   }
 
   const output = callCommand(gitCommand);
@@ -141,16 +141,37 @@ function getCommits(latest = null) {
   const commits = [];
   const lines = output.split('\n');
 
-  for (let i = 0; i < lines.length; i += 3) {
-    if (i + 2 >= lines.length) break;
+  for (let i = 0; i < lines.length; i += 4) {
+    if (i + 3 >= lines.length) break;
     commits.push({
       hash: lines[i],
       author: lines[i + 1],
-      message: lines[i + 2],
+      email: lines[i + 2],
+      message: lines[i + 3],
     });
   }
 
   return commits;
+}
+
+// 把 git 作者转成 changelog 里的署名。只有能可靠对应到 GitHub 账号时才加
+// "@" 产生提及;否则输出纯文本名字。直接 "@" + git 显示名会让 GitHub 把
+// "@Yangjunwei Liang" 这类带空格的名字解析成对无关账号 @Yangjunwei 的
+// 提及(v1.0.0 首次发布时实际发生过)。
+function formatAuthor(author, email) {
+  // GitHub noreply 邮箱可确定性还原登录名:
+  // "153256373+LYJW131@users.noreply.github.com"(网页操作产生的提交)
+  // 或旧格式 "LYJW131@users.noreply.github.com"。
+  const noreply = /^(?:\d+\+)?([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)@users\.noreply\.github\.com$/.exec(email || '');
+  if (noreply) {
+    return `@${noreply[1]}`;
+  }
+  // 名字本身是合法 GitHub 用户名形状(无空格)且不是机器人的 noreply
+  // 邮箱(如 Claude <noreply@anthropic.com>)时,沿用 "@名字" 的旧约定。
+  if (/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(author) && !/^no-?reply@/i.test(email || '')) {
+    return `@${author}`;
+  }
+  return author;
 }
 
 function classifyCommits(commits, withCommitizen = false) {
@@ -189,6 +210,7 @@ function classifyCommits(commits, withCommitizen = false) {
     result[category].push({
       message,
       author: commit.author,
+      email: commit.email,
       hash: commit.hash.slice(0, 8),
     });
   }
@@ -251,11 +273,7 @@ function generateMd(classifiedData, tagName, latest, withHash = false) {
       }*/
       // 添加提交者信息
       if (item.author && item.author !== 'web-flow') {
-        if (repoUrl) {
-          line += ` @${item.author}`;
-        } else {
-          line += ` @${item.author}`;
-        }
+        line += ` ${formatAuthor(item.author, item.email)}`;
       }
       lines.push(line);
     }
