@@ -226,7 +226,7 @@ func TestCodecRoundTripThroughRealEncryption(t *testing.T) {
 			p := newMP4Processor(cfg)
 			ctx := context.Background()
 
-			info, err := p.extractSong(ctx, fixture.raw, tc.codec)
+			info, err := p.extractSong(ctx, bytes.NewReader(fixture.raw), tc.codec)
 			if err != nil {
 				t.Fatalf("extractSong: %v", err)
 			}

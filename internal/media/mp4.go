@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -52,8 +53,10 @@ func newMP4Processor(cfg config.Config) *MP4Processor {
 // per-fragment sample-description index used to select the decryption key.
 // This replaces the previous gpac/MP4Box/mp4extract pipeline with pure-Go mp4ff
 // box parsing.
-func (p *MP4Processor) extractSong(_ context.Context, raw []byte, codec string) (songInfo, error) {
-	r := bytes.NewReader(raw)
+func (p *MP4Processor) extractSong(_ context.Context, raw io.Reader, codec string) (songInfo, error) {
+	// Buffer the reader so the many small mp4ff box reads don't each hit the
+	// underlying *os.File; a bytes.Reader passed by tests is wrapped harmlessly.
+	r := bufio.NewReaderSize(raw, 1<<20)
 	var offset uint64
 	init, offset, err := readInitSegment(r, offset)
 	if err != nil {
@@ -201,16 +204,20 @@ func (p *MP4Processor) encapsulate(_ context.Context, info songInfo, decrypted [
 	return buf.Bytes(), nil
 }
 
-func (p *MP4Processor) fixEncapsulate(ctx context.Context, song []byte) ([]byte, error) {
+// flattenToFile flattens the fragmented MP4 in `song` into a regular progressive
+// MP4 written directly to outPath, without reading the flattened result back
+// into memory. The download path uses this so a whole track's flattened bytes
+// never exist in RAM; fixEncapsulate keeps the byte-returning form for tests and
+// the ALAC-repair fallback.
+func (p *MP4Processor) flattenToFile(ctx context.Context, song []byte, outPath string) error {
 	dir, err := os.MkdirTemp(p.cfg.Download.TempDir, "fix-*")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer os.RemoveAll(dir)
 	inPath := filepath.Join(dir, "in.m4a")
-	outPath := filepath.Join(dir, "out.m4a")
 	if err := os.WriteFile(inPath, song, 0o644); err != nil {
-		return nil, err
+		return err
 	}
 	// -f mp4 is required: ffmpeg infers the muxer from the .m4a extension
 	// otherwise, which selects the "ipod" muxer. That muxer's codec tag table
@@ -220,7 +227,17 @@ func (p *MP4Processor) fixEncapsulate(ctx context.Context, song []byte) ([]byte,
 	// mp4 muxer supports the same tags plus ec-3; -brand "M4A " keeps the
 	// ftyp major_brand the ipod muxer would have written (its default is
 	// "isom" otherwise), matching the M4A brand callers document below.
-	if err := run(ctx, p.cfg.Tools.FFmpeg, "-y", "-i", inPath, "-fflags", "+bitexact", "-map_metadata", "0", "-c:a", "copy", "-c:v", "copy", "-f", "mp4", "-brand", "M4A ", outPath); err != nil {
+	return run(ctx, p.cfg.Tools.FFmpeg, "-y", "-i", inPath, "-fflags", "+bitexact", "-map_metadata", "0", "-c:a", "copy", "-c:v", "copy", "-f", "mp4", "-brand", "M4A ", outPath)
+}
+
+func (p *MP4Processor) fixEncapsulate(ctx context.Context, song []byte) ([]byte, error) {
+	dir, err := os.MkdirTemp(p.cfg.Download.TempDir, "fix-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	outPath := filepath.Join(dir, "out.m4a")
+	if err := p.flattenToFile(ctx, song, outPath); err != nil {
 		return nil, err
 	}
 	return os.ReadFile(outPath)
@@ -234,7 +251,14 @@ func (p *MP4Processor) checkIntegrity(ctx context.Context, song []byte) bool {
 	defer os.RemoveAll(dir)
 	inPath := filepath.Join(dir, "song.m4a")
 	_ = os.WriteFile(inPath, song, 0o644)
-	cmd := exec.CommandContext(ctx, p.cfg.Tools.FFmpeg, "-y", "-v", "error", "-i", inPath, "-c:a", "pcm_s16le", "-f", "null", "/dev/null")
+	return p.checkIntegrityFile(ctx, inPath)
+}
+
+// checkIntegrityFile runs the same full-decode ffmpeg check as checkIntegrity
+// directly against a file on disk, so the download path can verify the flattened
+// .part file without first reading it back into memory.
+func (p *MP4Processor) checkIntegrityFile(ctx context.Context, path string) bool {
+	cmd := exec.CommandContext(ctx, p.cfg.Tools.FFmpeg, "-y", "-v", "error", "-i", path, "-c:a", "pcm_s16le", "-f", "null", "/dev/null")
 	out, err := cmd.CombinedOutput()
 	return err == nil && len(out) == 0
 }

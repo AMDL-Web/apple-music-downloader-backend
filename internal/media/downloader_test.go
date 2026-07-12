@@ -351,8 +351,10 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 	}))
 	defer server.Close()
 
+	cfg := config.Default()
+	cfg.Download.TempDir = t.TempDir()
 	downloader := &Downloader{
-		cfg:  config.Default(),
+		cfg:  cfg,
 		http: server.Client(),
 	}
 	item := &domain.JobItem{ID: "item-1"}
@@ -372,8 +374,8 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 	if encryptedMediaHits.Load() != 0 {
 		t.Fatalf("selectEnhancedMedia downloaded encrypted media %d time(s), want 0", encryptedMediaHits.Load())
 	}
-	if len(selected.raw) != 0 {
-		t.Fatalf("selected.raw length = %d, want 0 before download step", len(selected.raw))
+	if selected.rawPath != "" {
+		t.Fatalf("selected.rawPath = %q, want empty before download step", selected.rawPath)
 	}
 	if got, want := qualityLabel(selected.info), "24-bit/96 kHz"; got != want {
 		t.Fatalf("qualityLabel = %q, want %q", got, want)
@@ -396,8 +398,15 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 	if encryptedMediaHits.Load() != 1 {
 		t.Fatalf("downloadSelectedEnhancedMedia downloaded encrypted media %d time(s), want 1", encryptedMediaHits.Load())
 	}
-	if string(selected.raw) != "encrypted media bytes" {
-		t.Fatalf("selected.raw = %q, want encrypted media bytes", string(selected.raw))
+	if selected.rawPath == "" {
+		t.Fatal("downloadSelectedEnhancedMedia did not set rawPath after download step")
+	}
+	gotRaw, err := os.ReadFile(selected.rawPath)
+	if err != nil {
+		t.Fatalf("read downloaded media file: %v", err)
+	}
+	if string(gotRaw) != "encrypted media bytes" {
+		t.Fatalf("downloaded media = %q, want encrypted media bytes", string(gotRaw))
 	}
 }
 

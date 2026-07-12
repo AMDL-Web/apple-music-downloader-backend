@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -280,6 +281,71 @@ func downloadBytes(ctx context.Context, client *http.Client, uri string, onProgr
 		}
 	}
 	return buf.Bytes(), nil
+}
+
+// downloadToFile streams uri into a newly created temp file under dir and
+// returns its path, so a large encrypted track never has to sit in memory as a
+// single []byte. onProgress follows the same contract as downloadBytes. The
+// caller owns the returned file and must remove it; on any error the partial
+// file is removed and no path is returned.
+func downloadToFile(ctx context.Context, client *http.Client, uri, dir string, onProgress func(float64)) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("download %s failed: %s", uri, resp.Status)
+	}
+
+	total, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
+	if total <= 0 {
+		total, _ = strconv.ParseInt(resp.Header.Get("X-Apple-MS-Content-Length"), 10, 64)
+	}
+
+	f, err := os.CreateTemp(dir, "raw-*.mp4")
+	if err != nil {
+		return "", err
+	}
+	path := f.Name()
+	fail := func(e error) (string, error) {
+		f.Close()
+		os.Remove(path)
+		return "", e
+	}
+
+	if onProgress != nil && total <= 0 {
+		onProgress(-1)
+	}
+	chunk := make([]byte, 32*1024)
+	var downloaded int64
+	for {
+		n, readErr := resp.Body.Read(chunk)
+		if n > 0 {
+			if _, werr := f.Write(chunk[:n]); werr != nil {
+				return fail(werr)
+			}
+			downloaded += int64(n)
+			if onProgress != nil && total > 0 {
+				onProgress(float64(downloaded) / float64(total))
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return fail(readErr)
+		}
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return "", err
+	}
+	return path, nil
 }
 
 func absURL(base, ref string) string {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -488,6 +489,13 @@ func (m *Manager) run(parent context.Context, jobID string) {
 	_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_started", Message: "job started"})
 
 	err = m.processor.ProcessJob(ctx, job, m)
+	// A download's decrypt/remux pipeline allocates on the order of a track's
+	// size per parallel track; once the job returns, that memory is garbage but
+	// Go's scavenger only hands it back to the OS lazily (MADV_FREE), so RSS
+	// appears stuck at the peak long after the download finished. Force a
+	// scavenge here so a machine idling between jobs actually reclaims it. Jobs
+	// are coarse-grained and not latency-sensitive, so the full-GC cost is fine.
+	defer debug.FreeOSMemory()
 	if latest, loadErr := m.store.GetJob(context.Background(), job.ID); loadErr == nil {
 		job = latest
 	}

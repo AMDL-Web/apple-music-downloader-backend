@@ -57,7 +57,11 @@ type downloaderWrapper interface {
 
 type selectedDownloadMedia struct {
 	info selectedMediaInfo
-	raw  []byte
+	// rawPath is the on-disk location of the still-encrypted media downloaded by
+	// downloadSelectedEnhancedMedia. It is kept on disk (not in memory) so a
+	// whole Hi-Res track's encrypted bytes aren't pinned across the decrypt
+	// phase, and so a decrypt-phase retry can re-read them without re-fetching.
+	rawPath string
 }
 
 func NewDownloader(store *config.Store, catalog *applemusic.CatalogClient, wrapperClient *wrapper.Client, tools *ToolChecker, logger *slog.Logger) *Downloader {
@@ -671,6 +675,11 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 			d.setRetryFailure(ctx, reporter, &item, "decrypt", strings.ToUpper(codec), failure)
 			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "decrypt", codec, failure)
 		})
+		// The encrypted media on disk is no longer needed once the decrypt phase
+		// has run (whether it succeeded or exhausted its retries); a fallback
+		// codec re-fetches its own. aac-lc keeps its bytes in memory, so its
+		// rawPath is empty and this is a no-op.
+		cleanupTempFile(enhanced.rawPath)
 		if decryptErr != nil {
 			lastErr = decryptErr
 			d.reportCodecFailed(ctx, reporter, job, item, codec, "decrypt", codecMaxAttempts, decryptAttempts, decryptErr)
@@ -828,8 +837,10 @@ func (d *Downloader) selectEnhancedMedia(ctx context.Context, job domain.Job, it
 func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected selectedDownloadMedia, codec string, set func(domain.ItemStatus, float64, string)) (selectedDownloadMedia, error) {
 	codecName := strings.ToUpper(codec)
 	set(domain.ItemDownloading, 0.05, fmt.Sprintf("Downloading %s encrypted media", codecName))
-	// Stream-download with per-chunk progress from 5% → 55%
-	raw, err := downloadBytes(ctx, d.http, selected.info.MediaURI, func(p float64) {
+	// Stream-download to a temp file with per-chunk progress from 5% → 55%. The
+	// encrypted bytes stay on disk and are streamed back in during decrypt, so
+	// they never occupy a full-track []byte in memory.
+	rawPath, err := downloadToFile(ctx, d.http, selected.info.MediaURI, d.cfg.Download.TempDir, func(p float64) {
 		if p < 0 {
 			return // Content-Length unknown, stay at 5%
 		}
@@ -839,15 +850,21 @@ func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected
 	if err != nil {
 		return selectedDownloadMedia{}, fmt.Errorf("download encrypted media: %w", err)
 	}
-	selected.raw = raw
+	selected.rawPath = rawPath
 	return selected, nil
 }
 
 func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, codec, lyrics string, cover []byte, outPath string, selected selectedDownloadMedia, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) error {
 	info := selected.info
-	raw := selected.raw
 	set(domain.ItemDecrypting, 0.55, "extracting samples")
-	extracted, err := d.mp4.extractSong(ctx, raw, codec)
+	rawFile, err := os.Open(selected.rawPath)
+	if err != nil {
+		return fmt.Errorf("open downloaded media: %w", err)
+	}
+	// Stream the still-encrypted bytes off disk rather than holding them as a
+	// full-track []byte alongside the parsed samples.
+	extracted, err := d.mp4.extractSong(ctx, rawFile, codec)
+	rawFile.Close()
 	if err != nil {
 		return fmt.Errorf("extract encrypted samples: %w", err)
 	}
@@ -871,37 +888,18 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	if err != nil {
 		return fmt.Errorf("decrypt samples: %w", err)
 	}
+	samples = nil // the DecryptSample wrappers alias extracted's data; drop them
 	set(domain.ItemRemuxing, 0.90, "remuxing")
 	outBytes, err := d.mp4.encapsulate(ctx, extracted, decryptedSamples)
 	if err != nil {
 		return fmt.Errorf("encapsulate decrypted media: %w", err)
 	}
-	// Flatten the fragmented MP4 produced by mp4ff into a regular progressive
-	// MP4 (also normalises the ftyp brand). The decoder configuration is carried
-	// over from the original init segment, so no esds fixup is required.
-	fixed, err := d.mp4.fixEncapsulate(ctx, outBytes)
-	if err != nil {
-		return fmt.Errorf("fix encapsulation: %w", err)
-	}
-	outBytes = fixed
-	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrity(ctx, outBytes) {
-		if codec != "alac" {
-			return fmt.Errorf("integrity check failed")
-		}
-		repaired, patched, err := repairALACTerminators(outBytes)
-		if err != nil {
-			return fmt.Errorf("integrity check failed; alac repair failed: %w", err)
-		}
-		if patched == 0 {
-			return fmt.Errorf("integrity check failed; alac repair found no malformed packets")
-		}
-		payload, _ := json.Marshal(map[string]any{"patched_packets": patched})
-		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "alac_repaired", Phase: codec, Payload: string(payload)})
-		if !d.mp4.checkIntegrity(ctx, repaired) {
-			return fmt.Errorf("integrity check failed after alac repair")
-		}
-		outBytes = repaired
-	}
+	// The parsed encrypted samples and the decrypted payloads are fully consumed
+	// once muxed into outBytes. Release them before the ffmpeg flatten so a whole
+	// track's worth of sample data isn't pinned in memory while ffmpeg runs.
+	extracted.Samples, extracted.fragments = nil, nil
+	decryptedSamples = nil
+
 	set(domain.ItemSaving, 0.94, "saving")
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
@@ -910,9 +908,23 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	// place: handleExistingOutput trusts bare existence at the final path when
 	// deciding to skip, so a crash between the audio write and tagging must
 	// never leave a truncated or untagged file there.
+	//
+	// Flatten the fragmented MP4 produced by mp4ff into a regular progressive
+	// MP4 (also normalises the ftyp brand) straight onto the .part file — the
+	// flattened bytes are never read back into memory. The decoder configuration
+	// is carried over from the original init segment, so no esds fixup is needed.
 	partPath := outPath + partSuffix
-	if err := os.WriteFile(partPath, outBytes, 0o644); err != nil {
-		return fmt.Errorf("write output file: %w", err)
+	if err := d.mp4.flattenToFile(ctx, outBytes, partPath); err != nil {
+		return fmt.Errorf("fix encapsulation: %w", err)
+	}
+	outBytes = nil // the muxed track (~1x file size) is now on disk; free it
+	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrityFile(ctx, partPath) {
+		if codec != "alac" {
+			return fmt.Errorf("integrity check failed")
+		}
+		if err := d.repairALACFile(ctx, job, item, partPath, codec, reporter); err != nil {
+			return err
+		}
 	}
 	if d.cfg.Download.SaveLyricsFile && lyrics != "" {
 		ext := ".lrc"
@@ -934,6 +946,33 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	item.Progress = 1
 	item.OutputPath = outPath
 	item.Codec = codec
+	return nil
+}
+
+// repairALACFile is the ALAC integrity-repair fallback, run only when the
+// flattened file fails the decode check. It reads the file back, patches
+// malformed ALAC packet terminators, re-verifies, and writes the repaired bytes
+// in place — keeping the whole-file read off the common (already-valid) path.
+func (d *Downloader) repairALACFile(ctx context.Context, job domain.Job, item *domain.JobItem, path, codec string, reporter jobs.Reporter) error {
+	outBytes, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("integrity check failed; read for alac repair: %w", err)
+	}
+	repaired, patched, err := repairALACTerminators(outBytes)
+	if err != nil {
+		return fmt.Errorf("integrity check failed; alac repair failed: %w", err)
+	}
+	if patched == 0 {
+		return fmt.Errorf("integrity check failed; alac repair found no malformed packets")
+	}
+	payload, _ := json.Marshal(map[string]any{"patched_packets": patched})
+	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "alac_repaired", Phase: codec, Payload: string(payload)})
+	if err := os.WriteFile(path, repaired, 0o644); err != nil {
+		return fmt.Errorf("integrity check failed; write repaired alac: %w", err)
+	}
+	if !d.mp4.checkIntegrityFile(ctx, path) {
+		return fmt.Errorf("integrity check failed after alac repair")
+	}
 	return nil
 }
 
@@ -986,16 +1025,6 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 	if err != nil {
 		return err
 	}
-	// Normalise the container (flatten + M4A brand + create the
-	// moov.udta.meta.ilst structure that go-mp4tag writes into). The decrypted
-	// WebPlayback asset has no udta box, so tagging would otherwise fail.
-	decrypted, err = d.mp4.fixEncapsulate(ctx, decrypted)
-	if err != nil {
-		return fmt.Errorf("normalize AAC-LC container: %w", err)
-	}
-	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrity(ctx, decrypted) {
-		return fmt.Errorf("AAC-LC integrity check failed")
-	}
 
 	set(domain.ItemSaving, 0.94, "saving AAC-LC")
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
@@ -1003,9 +1032,18 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 	}
 	// Same .part-then-rename finalize as downloadEnhancedCodec: the final path
 	// must only ever hold a complete, tagged file.
+	//
+	// Normalise the container (flatten + M4A brand + create the
+	// moov.udta.meta.ilst structure that go-mp4tag writes into) straight onto the
+	// .part file. The decrypted WebPlayback asset has no udta box, so tagging
+	// would otherwise fail. The flattened bytes are not read back into memory.
 	partPath := outPath + partSuffix
-	if err := os.WriteFile(partPath, decrypted, 0o644); err != nil {
-		return fmt.Errorf("write AAC-LC output file: %w", err)
+	if err := d.mp4.flattenToFile(ctx, decrypted, partPath); err != nil {
+		return fmt.Errorf("normalize AAC-LC container: %w", err)
+	}
+	decrypted = nil
+	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrityFile(ctx, partPath) {
+		return fmt.Errorf("AAC-LC integrity check failed")
 	}
 	if d.cfg.Download.SaveLyricsFile && lyrics != "" {
 		ext := ".lrc"
@@ -1098,6 +1136,14 @@ func marshalPayload(value any) string {
 // finalize step renames it onto the bare outPath only after metadata is in,
 // so existence at the final path always implies a complete, tagged file.
 const partSuffix = ".part"
+
+// cleanupTempFile removes a temp file created during processing, tolerating an
+// empty path (e.g. the aac-lc codec, which keeps its media in memory).
+func cleanupTempFile(path string) {
+	if path != "" {
+		_ = os.Remove(path)
+	}
+}
 
 func cleanupFailedOutput(outPath string) {
 	_ = os.Remove(outPath)
