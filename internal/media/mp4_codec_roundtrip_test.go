@@ -257,6 +257,41 @@ func TestCodecRoundTripThroughRealEncryption(t *testing.T) {
 			}
 			t.Logf("encapsulated size: %d bytes", len(out))
 
+			// The production download path (downloadEnhancedCodec) does not use
+			// the buffered extractSong+encapsulate pair above; it streams the
+			// decrypt fragment by fragment via streamDecryptToFile so peak memory
+			// is one fragment rather than a whole track. Drive that path over the
+			// same fixture, decrypting each fragment's samples with the IVs used
+			// at encryption time, and assert it produces byte-identical output to
+			// the buffered path already validated below (flatten + integrity +
+			// tagging). This covers the streaming read/key-select/encode loop for
+			// both single- and multi-fragment inputs across every codec.
+			streamedPath := filepath.Join(tmp, "streamed.mp4")
+			fragIdx := 0
+			streamErr := p.streamDecryptToFile(ctx, bytes.NewReader(fixture.raw), streamedPath, []string{"unused-key"},
+				func(_ string, samples [][]byte) ([][]byte, error) {
+					ivs := fixture.fragmentIVs[fragIdx]
+					fragIdx++
+					got := make([][]byte, len(samples))
+					for i := range samples {
+						got[i] = decryptCTR(t, key, ivs[i], samples[i])
+					}
+					return got, nil
+				}, nil)
+			if streamErr != nil {
+				t.Fatalf("streamDecryptToFile: %v", streamErr)
+			}
+			if fragIdx != len(fixture.fragmentIVs) {
+				t.Fatalf("streaming decrypted %d fragments, want %d", fragIdx, len(fixture.fragmentIVs))
+			}
+			streamed, err := os.ReadFile(streamedPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(streamed, out) {
+				t.Fatalf("streamed output (%d bytes) differs from buffered encapsulate (%d bytes)", len(streamed), len(out))
+			}
+
 			flat, err := p.fixEncapsulate(ctx, out)
 			if err != nil {
 				t.Fatalf("fixEncapsulate: %v", err)

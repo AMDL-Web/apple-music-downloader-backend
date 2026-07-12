@@ -65,10 +65,16 @@ type Status struct {
 	AccountsSupported bool     `json:"accounts_supported"`
 }
 
-type DecryptSample struct {
-	Key   string
-	Index int
-	Data  []byte
+// DecryptSession is a live decrypt stream to the wrapper for a single track.
+// Samples are decrypted in fragment-sized batches so a whole track's plaintext
+// never has to be materialised in memory at once.
+type DecryptSession interface {
+	// DecryptFragment sends one fragment's still-encrypted samples (all of which
+	// share key) and returns their plaintext in the same order. It blocks until
+	// every sample in the batch has come back.
+	DecryptFragment(key string, samples [][]byte) ([][]byte, error)
+	// Close finishes the send side of the stream and releases its resources.
+	Close() error
 }
 
 type LyricsRequestOptions struct {
@@ -344,58 +350,79 @@ func (c *Client) License(ctx context.Context, adamID, challenge, uri string) (st
 	return resp.GetData().GetLicense(), nil
 }
 
-// Decrypt sends all samples to the wrapper for decryption and returns them in
-// order. onSample, if non-nil, is called after each sample is received with
-// (receivedCount, totalCount) so callers can track decryption progress.
-func (c *Client) Decrypt(ctx context.Context, adamID string, samples []DecryptSample, onSample func(received, total int)) ([][]byte, error) {
+// NewDecryptSession opens a bidirectional decrypt stream for one track. The
+// stream is fed one fragment at a time (DecryptFragment) and torn down with
+// Close, so the caller can decrypt a whole track without ever holding all of
+// its samples in memory. The configured timeout bounds the whole session.
+func (c *Client) NewDecryptSession(ctx context.Context, adamID string) (DecryptSession, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout())
-	defer cancel()
 	stream, err := c.api.Decrypt(ctx)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
+	return &grpcDecryptSession{stream: stream, cancel: cancel, adamID: adamID}, nil
+}
+
+type grpcDecryptSession struct {
+	stream pb.WrapperManagerService_DecryptClient
+	cancel context.CancelFunc
+	adamID string
+	// next is the monotonically increasing sample index used to correlate
+	// requests with their replies. It spans the whole track (not reset per
+	// fragment) so indices stay unique across every batch on the one stream.
+	next int
+}
+
+func (s *grpcDecryptSession) DecryptFragment(key string, samples [][]byte) ([][]byte, error) {
+	n := len(samples)
+	if n == 0 {
+		return nil, nil
+	}
+	base := s.next
+	s.next += n
+	// Send in the background while receiving: a fragment can carry more sample
+	// bytes than the gRPC flow-control window, so sending everything before
+	// reading the first reply could deadlock.
 	sendErr := make(chan error, 1)
 	go func() {
-		for _, sample := range samples {
-			err := stream.Send(&pb.DecryptRequest{Data: &pb.DecryptData{
-				AdamId: adamID, Key: sample.Key, SampleIndex: int32(sample.Index), Sample: sample.Data,
-			}})
-			if err != nil {
+		for i, data := range samples {
+			if err := s.stream.Send(&pb.DecryptRequest{Data: &pb.DecryptData{
+				AdamId: s.adamID, Key: key, SampleIndex: int32(base + i), Sample: data,
+			}}); err != nil {
 				sendErr <- err
 				return
 			}
 		}
-		sendErr <- stream.CloseSend()
+		sendErr <- nil
 	}()
 
-	out := make([][]byte, len(samples))
-	received := 0
-	for received < len(samples) {
-		resp, err := stream.Recv()
+	out := make([][]byte, n)
+	for received := 0; received < n; received++ {
+		resp, err := s.stream.Recv()
 		if err != nil {
 			if err == io.EOF {
-				break
+				return nil, fmt.Errorf("wrapper decrypt stream ended after %d/%d samples", received, n)
 			}
 			return nil, err
 		}
 		if resp.GetHeader().GetCode() != 0 {
 			return nil, fmt.Errorf("wrapper decrypt: %s", resp.GetHeader().GetMsg())
 		}
-		idx := int(resp.GetData().GetSampleIndex())
-		if idx < 0 || idx >= len(out) {
-			return nil, fmt.Errorf("wrapper decrypt returned invalid sample index %d", idx)
+		idx := int(resp.GetData().GetSampleIndex()) - base
+		if idx < 0 || idx >= n {
+			return nil, fmt.Errorf("wrapper decrypt returned out-of-range sample index %d", resp.GetData().GetSampleIndex())
 		}
 		out[idx] = resp.GetData().GetSample()
-		received++
-		if onSample != nil {
-			onSample(received, len(samples))
-		}
 	}
 	if err := <-sendErr; err != nil {
 		return nil, err
 	}
-	if received != len(samples) {
-		return nil, fmt.Errorf("wrapper decrypt returned %d/%d samples", received, len(samples))
-	}
 	return out, nil
+}
+
+func (s *grpcDecryptSession) Close() error {
+	err := s.stream.CloseSend()
+	s.cancel()
+	return err
 }

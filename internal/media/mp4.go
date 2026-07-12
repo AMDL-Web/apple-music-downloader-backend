@@ -124,6 +124,12 @@ func (p *MP4Processor) extractSong(_ context.Context, raw io.Reader, codec strin
 // (alac/mp4a/ec-3) is preserved from the original init segment, so no external
 // muxer is required. The fragmented output is flattened to a regular MP4 by the
 // subsequent ffmpeg copy pass (fixEncapsulate).
+//
+// The download path streams fragment-by-fragment via streamDecryptToFile
+// instead; encapsulate (with extractSong) is retained as the buffered reference
+// the round-trip tests decrypt and encode in one shot, and against which the
+// streaming output is asserted byte-for-byte identical. Both share
+// prepareDecryptedInit and encodeDecryptedFragment, so they cannot drift.
 func (p *MP4Processor) encapsulate(_ context.Context, info songInfo, decrypted [][]byte) ([]byte, error) {
 	if info.init == nil || info.init.Moov == nil {
 		return nil, errors.New("missing init segment")
@@ -132,23 +138,9 @@ func (p *MP4Processor) encapsulate(_ context.Context, info songInfo, decrypted [
 		return nil, fmt.Errorf("decrypted sample count mismatch: got %d, want %d", len(decrypted), len(info.Samples))
 	}
 
-	// Convert encrypted sample entries (enca -> alac/mp4a/ec-3), drop sinf and
-	// moov-level pssh boxes.
-	if _, err := mp4.DecryptInit(info.init); err != nil {
-		return nil, fmt.Errorf("decrypt init: %w", err)
+	if err := prepareDecryptedInit(info.init); err != nil {
+		return nil, err
 	}
-	// Drop encryption sample groups (seig) left in the sample table.
-	for _, trak := range info.init.Moov.Traks {
-		if trak.Mdia != nil && trak.Mdia.Minf != nil && trak.Mdia.Minf.Stbl != nil {
-			stbl := trak.Mdia.Minf.Stbl
-			stbl.Children = filterEncryptionSampleGroups(stbl.Children)
-		}
-	}
-	// Apple Music encrypts with two identical sample entries (two IVs); after
-	// decryption they are identical, so collapse to a single entry and point
-	// every fragment at it.
-	collapseSampleEntries(info.init)
-
 	var buf bytes.Buffer
 	if err := info.init.Encode(&buf); err != nil {
 		return nil, fmt.Errorf("encode init segment: %w", err)
@@ -157,51 +149,205 @@ func (p *MP4Processor) encapsulate(_ context.Context, info songInfo, decrypted [
 	sampleIdx := 0
 	for fi, frag := range info.fragments {
 		n := info.fragSampleCounts[fi]
-		var mdatData []byte
-		for k := 0; k < n; k++ {
-			mdatData = append(mdatData, decrypted[sampleIdx]...)
-			sampleIdx++
+		if err := encodeDecryptedFragment(&buf, fi, frag, decrypted[sampleIdx:sampleIdx+n]); err != nil {
+			return nil, err
 		}
-		if frag.Mdat == nil {
-			return nil, fmt.Errorf("fragment %d has no mdat box", fi)
-		}
-		frag.Mdat.Data = mdatData
-
-		// Strip per-fragment encryption boxes (senc/saiz/saio) and pssh, then
-		// shrink trun.data_offset by the removed byte count. mp4ff Encode does
-		// NOT recompute data_offset when it is already non-zero — leaving the
-		// pre-strip value makes ffmpeg flatten read past the real mdat payload
-		// (observed as leading zeroed ALAC packets after fixEncapsulate).
-		var bytesRemoved uint64
-		for _, traf := range frag.Moof.Trafs {
-			bytesRemoved += traf.RemoveEncryptionBoxes()
-			// Normalise the sample-description index to the single retained entry.
-			if traf.Tfhd != nil && traf.Tfhd.HasSampleDescriptionIndex() {
-				traf.Tfhd.SampleDescriptionIndex = 1
-			}
-		}
-		_, psshRemoved := frag.Moof.RemovePsshs()
-		bytesRemoved += psshRemoved
-		if bytesRemoved > math.MaxInt32 {
-			return nil, fmt.Errorf("fragment %d removed too many bytes for trun.data_offset adjustment: %d", fi, bytesRemoved)
-		}
-		removed := int32(bytesRemoved)
-		for _, traf := range frag.Moof.Trafs {
-			for _, trun := range traf.Truns {
-				if trun.HasDataOffset() {
-					trun.DataOffset -= removed
-				}
-			}
-		}
-
-		if err := frag.Encode(&buf); err != nil {
-			return nil, fmt.Errorf("encode fragment %d: %w", fi, err)
-		}
+		sampleIdx += n
 	}
 	if sampleIdx != len(decrypted) {
 		return nil, fmt.Errorf("consumed %d of %d decrypted samples", sampleIdx, len(decrypted))
 	}
 	return buf.Bytes(), nil
+}
+
+// prepareDecryptedInit rewrites an init segment for plaintext output: it converts
+// the encrypted sample entries (enca -> alac/mp4a/ec-3) and drops sinf/pssh via
+// mp4ff's DecryptInit, removes the encryption sample groups (seig) left in the
+// sample table, and collapses Apple's two identical (post-decryption) sample
+// entries down to one. Shared by the buffered (encapsulate) and streaming
+// (streamDecryptToFile) paths so both emit an identical container.
+func prepareDecryptedInit(init *mp4.InitSegment) error {
+	if _, err := mp4.DecryptInit(init); err != nil {
+		return fmt.Errorf("decrypt init: %w", err)
+	}
+	for _, trak := range init.Moov.Traks {
+		if trak.Mdia != nil && trak.Mdia.Minf != nil && trak.Mdia.Minf.Stbl != nil {
+			stbl := trak.Mdia.Minf.Stbl
+			stbl.Children = filterEncryptionSampleGroups(stbl.Children)
+		}
+	}
+	// Apple Music encrypts with two identical sample entries (two IVs); after
+	// decryption they are identical, so collapse to a single entry and point
+	// every fragment at it.
+	collapseSampleEntries(init)
+	return nil
+}
+
+// encodeDecryptedFragment writes the fragment's plaintext sample data back into
+// its mdat, strips the per-fragment encryption boxes (senc/saiz/saio) and pssh,
+// fixes trun.data_offset for the removed bytes, and encodes the fragment to w.
+// len(decrypted) must equal the fragment's sample count. fi is used only for
+// error messages.
+func encodeDecryptedFragment(w io.Writer, fi int, frag *mp4.Fragment, decrypted [][]byte) error {
+	if frag.Mdat == nil {
+		return fmt.Errorf("fragment %d has no mdat box", fi)
+	}
+	var mdatData []byte
+	for _, d := range decrypted {
+		mdatData = append(mdatData, d...)
+	}
+	frag.Mdat.Data = mdatData
+
+	// Strip per-fragment encryption boxes (senc/saiz/saio) and pssh, then shrink
+	// trun.data_offset by the removed byte count. mp4ff Encode does NOT recompute
+	// data_offset when it is already non-zero — leaving the pre-strip value makes
+	// the ffmpeg flatten read past the real mdat payload (observed as leading
+	// zeroed ALAC packets after flattening).
+	var bytesRemoved uint64
+	for _, traf := range frag.Moof.Trafs {
+		bytesRemoved += traf.RemoveEncryptionBoxes()
+		// Normalise the sample-description index to the single retained entry.
+		if traf.Tfhd != nil && traf.Tfhd.HasSampleDescriptionIndex() {
+			traf.Tfhd.SampleDescriptionIndex = 1
+		}
+	}
+	_, psshRemoved := frag.Moof.RemovePsshs()
+	bytesRemoved += psshRemoved
+	if bytesRemoved > math.MaxInt32 {
+		return fmt.Errorf("fragment %d removed too many bytes for trun.data_offset adjustment: %d", fi, bytesRemoved)
+	}
+	removed := int32(bytesRemoved)
+	for _, traf := range frag.Moof.Trafs {
+		for _, trun := range traf.Truns {
+			if trun.HasDataOffset() {
+				trun.DataOffset -= removed
+			}
+		}
+	}
+	if err := frag.Encode(w); err != nil {
+		return fmt.Errorf("encode fragment %d: %w", fi, err)
+	}
+	return nil
+}
+
+// streamDecryptToFile reads the encrypted fragmented MP4 from r one fragment at
+// a time, decrypts each fragment's samples via decrypt, and writes the plaintext
+// fragmented MP4 to outPath. Only a single fragment's samples are held in memory
+// at once, so peak memory is independent of track length. All samples in a
+// fragment share one key, selected by the fragment's tfhd sample-description
+// index (falling back to the trex default). onProgress, if non-nil, is called
+// after each fragment with the number of encrypted input bytes consumed so far.
+func (p *MP4Processor) streamDecryptToFile(
+	ctx context.Context,
+	r io.Reader,
+	outPath string,
+	keys []string,
+	decrypt func(key string, samples [][]byte) ([][]byte, error),
+	onProgress func(consumed uint64),
+) error {
+	out, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			out.Close()
+		}
+	}()
+	bw := bufio.NewWriterSize(out, 1<<20)
+	br := bufio.NewReaderSize(r, 1<<20)
+
+	var offset uint64
+	init, offset, err := readInitSegment(br, offset)
+	if err != nil {
+		return fmt.Errorf("read init segment: %w", err)
+	}
+	if init == nil || init.Moov == nil {
+		return errors.New("no moov box in init segment")
+	}
+
+	// Capture trex and the default sample-description index BEFORE
+	// prepareDecryptedInit runs: collapseSampleEntries rewrites the trex default
+	// index to 1, but the per-fragment key selection below needs the original
+	// value so it picks the same key the buffered path would.
+	var trex *mp4.TrexBox
+	if init.Moov.Mvex != nil && len(init.Moov.Mvex.Trexs) > 0 {
+		trex = init.Moov.Mvex.Trexs[0]
+	}
+	defaultDescIndex := 1
+	if trex != nil && trex.DefaultSampleDescriptionIndex > 0 {
+		defaultDescIndex = int(trex.DefaultSampleDescriptionIndex)
+	}
+
+	if err := prepareDecryptedInit(init); err != nil {
+		return err
+	}
+	if err := init.Encode(bw); err != nil {
+		return fmt.Errorf("encode init segment: %w", err)
+	}
+
+	fragCount := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var frag *mp4.Fragment
+		frag, offset, err = readNextFragment(br, offset)
+		if err != nil {
+			return fmt.Errorf("read fragment: %w", err)
+		}
+		if frag == nil {
+			break
+		}
+		full, err := frag.GetFullSamples(trex)
+		if err != nil {
+			return fmt.Errorf("get fragment samples: %w", err)
+		}
+
+		descIndex := defaultDescIndex
+		if len(frag.Moof.Trafs) > 0 {
+			tfhd := frag.Moof.Trafs[0].Tfhd
+			if tfhd != nil && tfhd.HasSampleDescriptionIndex() {
+				descIndex = int(tfhd.SampleDescriptionIndex)
+			}
+		}
+		keyIndex := max(0, descIndex-1)
+		if keyIndex >= len(keys) {
+			keyIndex = 0
+		}
+		key := ""
+		if len(keys) > 0 {
+			key = keys[keyIndex]
+		}
+
+		sampleData := make([][]byte, len(full))
+		for i := range full {
+			sampleData[i] = full[i].Data
+		}
+		decrypted, err := decrypt(key, sampleData)
+		if err != nil {
+			return err
+		}
+		if len(decrypted) != len(full) {
+			return fmt.Errorf("fragment %d: decrypted %d samples, want %d", fragCount, len(decrypted), len(full))
+		}
+		if err := encodeDecryptedFragment(bw, fragCount, frag, decrypted); err != nil {
+			return err
+		}
+		fragCount++
+		if onProgress != nil {
+			onProgress(offset)
+		}
+	}
+	if fragCount == 0 {
+		return errors.New("no fragments extracted from media")
+	}
+	if err := bw.Flush(); err != nil {
+		return err
+	}
+	closed = true
+	return out.Close()
 }
 
 // flattenToFile flattens the fragmented MP4 in `song` into a regular progressive
@@ -219,6 +365,14 @@ func (p *MP4Processor) flattenToFile(ctx context.Context, song []byte, outPath s
 	if err := os.WriteFile(inPath, song, 0o644); err != nil {
 		return err
 	}
+	return p.flattenFileToFile(ctx, inPath, outPath)
+}
+
+// flattenFileToFile flattens the fragmented MP4 at inPath into a regular
+// progressive MP4 at outPath. The streaming decrypt path writes its fragmented
+// output to a file and feeds it here directly, so nothing round-trips through a
+// []byte.
+func (p *MP4Processor) flattenFileToFile(ctx context.Context, inPath, outPath string) error {
 	// -f mp4 is required: ffmpeg infers the muxer from the .m4a extension
 	// otherwise, which selects the "ipod" muxer. That muxer's codec tag table
 	// has no entry for eac3 (EC-3/Dolby Atmos), so it refuses to write the

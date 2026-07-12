@@ -51,7 +51,7 @@ type downloaderWrapper interface {
 	M3U8(context.Context, string) (string, error)
 	Lyrics(context.Context, string, wrapper.LyricsRequestOptions) (string, error)
 	WebPlayback(context.Context, string) (string, error)
-	Decrypt(context.Context, string, []wrapper.DecryptSample, func(int, int)) ([][]byte, error)
+	NewDecryptSession(context.Context, string) (wrapper.DecryptSession, error)
 	License(context.Context, string, string, string) (string, error)
 }
 
@@ -856,51 +856,58 @@ func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected
 
 func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, codec, lyrics string, cover []byte, outPath string, selected selectedDownloadMedia, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) error {
 	info := selected.info
-	set(domain.ItemDecrypting, 0.55, "extracting samples")
 	rawFile, err := os.Open(selected.rawPath)
 	if err != nil {
 		return fmt.Errorf("open downloaded media: %w", err)
 	}
-	// Stream the still-encrypted bytes off disk rather than holding them as a
-	// full-track []byte alongside the parsed samples.
-	extracted, err := d.mp4.extractSong(ctx, rawFile, codec)
-	rawFile.Close()
-	if err != nil {
-		return fmt.Errorf("extract encrypted samples: %w", err)
+	defer rawFile.Close()
+	var rawSize int64
+	if fi, statErr := rawFile.Stat(); statErr == nil {
+		rawSize = fi.Size()
 	}
-	samples := make([]wrapper.DecryptSample, 0, len(extracted.Samples))
-	for i, sample := range extracted.Samples {
-		keyIndex := sample.DescIndex
-		if keyIndex < 0 || keyIndex >= len(info.Keys) {
-			keyIndex = 0
-		}
-		samples = append(samples, wrapper.DecryptSample{Key: info.Keys[keyIndex], Index: i, Data: sample.Data})
-	}
-	// Decrypt with per-sample progress from 55% → 90%
-	decryptedSamples, err := d.wrapper.Decrypt(ctx, song.ID, samples, func(received, total int) {
-		if total <= 0 {
-			return
-		}
-		p := float64(received) / float64(total)
-		// map [0,1] → [0.55, 0.90]
-		set(domain.ItemDecrypting, 0.55+p*0.35, fmt.Sprintf("decrypting %d/%d samples", received, total))
-	})
-	if err != nil {
-		return fmt.Errorf("decrypt samples: %w", err)
-	}
-	samples = nil // the DecryptSample wrappers alias extracted's data; drop them
-	set(domain.ItemRemuxing, 0.90, "remuxing")
-	outBytes, err := d.mp4.encapsulate(ctx, extracted, decryptedSamples)
-	if err != nil {
-		return fmt.Errorf("encapsulate decrypted media: %w", err)
-	}
-	// The parsed encrypted samples and the decrypted payloads are fully consumed
-	// once muxed into outBytes. Release them before the ffmpeg flatten so a whole
-	// track's worth of sample data isn't pinned in memory while ffmpeg runs.
-	extracted.Samples, extracted.fragments = nil, nil
-	decryptedSamples = nil
 
-	set(domain.ItemSaving, 0.94, "saving")
+	// The decrypted, still-fragmented MP4 is written fragment-by-fragment to a
+	// temp file, then flattened onto the .part file. Neither the encrypted input
+	// nor the decrypted output is ever fully resident in memory: peak memory is
+	// one fragment, not one track.
+	decFile, err := os.CreateTemp(d.cfg.Download.TempDir, "dec-*.mp4")
+	if err != nil {
+		return fmt.Errorf("create decrypt output: %w", err)
+	}
+	decPath := decFile.Name()
+	decFile.Close()
+	defer os.Remove(decPath)
+
+	session, err := d.wrapper.NewDecryptSession(ctx, song.ID)
+	if err != nil {
+		return fmt.Errorf("open decrypt session: %w", err)
+	}
+	set(domain.ItemDecrypting, 0.55, "decrypting")
+	// Progress tracks encrypted bytes consumed (55% → 90%); the total sample
+	// count isn't known until the last fragment is read.
+	streamErr := d.mp4.streamDecryptToFile(ctx, rawFile, decPath, info.Keys,
+		func(key string, samples [][]byte) ([][]byte, error) {
+			return session.DecryptFragment(key, samples)
+		},
+		func(consumed uint64) {
+			if rawSize <= 0 {
+				return
+			}
+			p := float64(consumed) / float64(rawSize)
+			if p > 1 {
+				p = 1
+			}
+			set(domain.ItemDecrypting, 0.55+p*0.35, fmt.Sprintf("decrypting %.0f%%", p*100))
+		})
+	closeErr := session.Close()
+	if streamErr != nil {
+		return fmt.Errorf("decrypt media: %w", streamErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close decrypt session: %w", closeErr)
+	}
+
+	set(domain.ItemRemuxing, 0.90, "remuxing")
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
@@ -909,15 +916,15 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	// deciding to skip, so a crash between the audio write and tagging must
 	// never leave a truncated or untagged file there.
 	//
-	// Flatten the fragmented MP4 produced by mp4ff into a regular progressive
-	// MP4 (also normalises the ftyp brand) straight onto the .part file — the
-	// flattened bytes are never read back into memory. The decoder configuration
+	// Flatten the decrypted fragmented MP4 into a regular progressive MP4 (also
+	// normalises the ftyp brand) straight from the decrypt temp file onto the
+	// .part file — nothing round-trips through a []byte. The decoder configuration
 	// is carried over from the original init segment, so no esds fixup is needed.
 	partPath := outPath + partSuffix
-	if err := d.mp4.flattenToFile(ctx, outBytes, partPath); err != nil {
+	if err := d.mp4.flattenFileToFile(ctx, decPath, partPath); err != nil {
 		return fmt.Errorf("fix encapsulation: %w", err)
 	}
-	outBytes = nil // the muxed track (~1x file size) is now on disk; free it
+	set(domain.ItemSaving, 0.94, "saving")
 	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrityFile(ctx, partPath) {
 		if codec != "alac" {
 			return fmt.Errorf("integrity check failed")
@@ -936,7 +943,7 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 		}
 	}
 	set(domain.ItemTagging, 0.97, "writing metadata")
-	if err := d.mp4.writeMetadata(ctx, partPath, song, lyrics, cover, extracted); err != nil {
+	if err := d.mp4.writeMetadata(ctx, partPath, song, lyrics, cover, songInfo{Codec: codec}); err != nil {
 		return fmt.Errorf("write metadata: %w", err)
 	}
 	if err := os.Rename(partPath, outPath); err != nil {

@@ -39,9 +39,19 @@ func (f fakeDownloaderWrapper) WebPlayback(context.Context, string) (string, err
 	return "", nil
 }
 
-func (f fakeDownloaderWrapper) Decrypt(context.Context, string, []wrapper.DecryptSample, func(int, int)) ([][]byte, error) {
-	return nil, nil
+func (f fakeDownloaderWrapper) NewDecryptSession(context.Context, string) (wrapper.DecryptSession, error) {
+	return identityDecryptSession{}, nil
 }
+
+// identityDecryptSession returns each sample unchanged, standing in for a
+// wrapper that "decrypts" test fixtures that were never encrypted.
+type identityDecryptSession struct{}
+
+func (identityDecryptSession) DecryptFragment(_ string, samples [][]byte) ([][]byte, error) {
+	return samples, nil
+}
+
+func (identityDecryptSession) Close() error { return nil }
 
 func (f fakeDownloaderWrapper) License(context.Context, string, string, string) (string, error) {
 	return "", nil
