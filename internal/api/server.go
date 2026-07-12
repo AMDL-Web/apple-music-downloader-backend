@@ -642,9 +642,14 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 	// confirms nothing (job event or hook event) will ever be published for
 	// this job again (job.Status and its terminal event are written atomically
 	// — see Store.FinalizeJob — so observing it here guarantees the terminal
-	// event is already visible to the ListEventsAfter call below).
+	// event is already visible to the ListEventsAfter call below). The
+	// exhausted snapshot is taken BEFORE the backlog read: hook events are
+	// committed before HooksPending drops (see hooks.Dispatcher.donePending),
+	// so exhausted-then-read can never miss an event, while read-then-check
+	// could reject a client whose undelivered hook event landed in between.
+	exhausted := s.eventsExhausted(job)
 	var ch <-chan domain.Event
-	if !s.eventsExhausted(job) {
+	if !exhausted {
 		var cancel func()
 		ch, cancel = s.hub.Subscribe(id)
 		defer cancel()
@@ -655,7 +660,7 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if len(pending) == 0 && s.eventsExhausted(job) {
+	if len(pending) == 0 && exhausted {
 		// Nothing left to replay and the job will never emit another event:
 		// refuse the subscription instead of holding a socket open forever.
 		writeError(w, http.StatusConflict, fmt.Errorf("job %s is already %s: no further events will be emitted", id, job.Status))
@@ -700,7 +705,12 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 	if s.eventsExhausted(job) {
 		// Backlog has been delivered in full and nothing more will ever
 		// arrive (job event or hook event), so close instead of idling
-		// forever.
+		// forever. A hook may have recorded its terminal event after the
+		// backlog read but before the HooksPending check just above; that
+		// event is committed before Pending drops (see
+		// hooks.Dispatcher.donePending), so one final drain is guaranteed to
+		// deliver it before the connection closes.
+		_ = drain()
 		return
 	}
 
@@ -717,7 +727,10 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 			if s.eventsExhausted(job) {
 				// A pending hook (the reason this loop was entered instead of
 				// closing right after the initial backlog) has now recorded
-				// its terminal event: nothing more will ever arrive.
+				// its terminal event: nothing more will ever arrive. That
+				// event may have been committed after drain's read, so drain
+				// once more before closing.
+				_ = drain()
 				return
 			}
 		case <-ticker.C:
@@ -725,6 +738,7 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if s.eventsExhausted(job) {
+				_ = drain()
 				return
 			}
 			pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -770,9 +784,14 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	// confirms nothing (job event or hook event) will ever be published for
 	// this job again (job.Status and its terminal event are written atomically
 	// — see Store.FinalizeJob — so observing it here guarantees the terminal
-	// event is already visible to the ListEventsAfter call below).
+	// event is already visible to the ListEventsAfter call below). The
+	// exhausted snapshot is taken BEFORE the backlog read: hook events are
+	// committed before HooksPending drops (see hooks.Dispatcher.donePending),
+	// so exhausted-then-read can never miss an event, while read-then-check
+	// could reject a client whose undelivered hook event landed in between.
+	exhausted := s.eventsExhausted(job)
 	var ch <-chan domain.Event
-	if !s.eventsExhausted(job) {
+	if !exhausted {
 		var cancel func()
 		ch, cancel = s.hub.Subscribe(id)
 		defer cancel()
@@ -783,7 +802,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if len(pending) == 0 && s.eventsExhausted(job) {
+	if len(pending) == 0 && exhausted {
 		// Nothing left to replay and the job will never emit another event:
 		// refuse the subscription instead of holding a connection open forever.
 		writeError(w, http.StatusConflict, fmt.Errorf("job %s is already %s: no further events will be emitted", id, job.Status))
@@ -824,7 +843,12 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	if s.eventsExhausted(job) {
 		// Backlog has been delivered in full and nothing more will ever
 		// arrive (job event or hook event), so close instead of idling
-		// forever.
+		// forever. A hook may have recorded its terminal event after the
+		// backlog read but before the HooksPending check just above; that
+		// event is committed before Pending drops (see
+		// hooks.Dispatcher.donePending), so one final drain is guaranteed to
+		// deliver it before the stream closes.
+		drain()
 		return
 	}
 
@@ -839,12 +863,16 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			if s.eventsExhausted(job) {
 				// A pending hook (the reason this loop was entered instead of
 				// closing right after the initial backlog) has now recorded
-				// its terminal event: nothing more will ever arrive.
+				// its terminal event: nothing more will ever arrive. That
+				// event may have been committed after drain's read, so drain
+				// once more before closing.
+				drain()
 				return
 			}
 		case <-ticker.C:
 			drain()
 			if s.eventsExhausted(job) {
+				drain()
 				return
 			}
 			fmt.Fprint(w, ": keepalive\n\n")
