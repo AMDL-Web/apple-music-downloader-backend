@@ -114,6 +114,24 @@ func (m *Manager) HooksPending(jobID string) bool {
 	return m.hooks.Pending(jobID)
 }
 
+// FinalizeInFlight reports whether jobID's finalize sequence (terminal event
+// + hook dispatch) may still be in flight even though its status row already
+// reads terminal. In that window hook dispatch has not necessarily
+// incremented the dispatcher's pending count yet, so HooksPending alone can
+// misreport that no more events will ever arrive. run()'s window is covered
+// by the job's m.cancels entry (held until finalizeLogged returns, i.e.
+// after dispatch); Cancel's queued path is covered by m.finalizing. Both
+// marks are also held during the whole run, which is harmless to callers
+// that gate on a terminal status first. Nil-safe like HooksPending.
+func (m *Manager) FinalizeInFlight(jobID string) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cancels[jobID] != nil || m.finalizing[jobID]
+}
+
 func (m *Manager) Start(ctx context.Context) {
 	for i := 0; i < m.workers; i++ {
 		go m.worker(ctx, i)

@@ -668,6 +668,46 @@ func TestHooksPendingIsNilSafe(t *testing.T) {
 	}
 }
 
+// TestFinalizeInFlightTracksFinalizeMarks pins the contract eventsExhausted
+// (internal/api) relies on to close the pre-dispatch gap: a job's terminal
+// status becomes visible before hook dispatch increments the dispatcher's
+// pending count, and in that window the job is still covered by either its
+// m.cancels entry (run's finalize path) or its m.finalizing mark (Cancel's
+// queued path). FinalizeInFlight must report true for both.
+func TestFinalizeInFlightTracksFinalizeMarks(t *testing.T) {
+	var nilManager *Manager
+	if nilManager.FinalizeInFlight("job-1") {
+		t.Fatal("nil *Manager FinalizeInFlight = true, want false")
+	}
+
+	manager := newTestManager(t)
+	if manager.FinalizeInFlight("job-1") {
+		t.Fatal("FinalizeInFlight with no marks = true, want false")
+	}
+
+	manager.mu.Lock()
+	manager.cancels["job-1"] = func() {}
+	manager.mu.Unlock()
+	if !manager.FinalizeInFlight("job-1") {
+		t.Fatal("FinalizeInFlight with a cancels entry = false, want true")
+	}
+
+	manager.mu.Lock()
+	delete(manager.cancels, "job-1")
+	manager.finalizing["job-1"] = true
+	manager.mu.Unlock()
+	if !manager.FinalizeInFlight("job-1") {
+		t.Fatal("FinalizeInFlight with a finalizing mark = false, want true")
+	}
+
+	manager.mu.Lock()
+	delete(manager.finalizing, "job-1")
+	manager.mu.Unlock()
+	if manager.FinalizeInFlight("job-1") {
+		t.Fatal("FinalizeInFlight after marks cleared = true, want false")
+	}
+}
+
 // cancelThenReturnNilProcessor blocks until its context is cancelled and then
 // returns nil, simulating a processor that finishes "successfully" right as a
 // cancel arrives (or one that doesn't surface ctx errors).

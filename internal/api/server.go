@@ -613,9 +613,17 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 // another event. A terminal job.Status alone is not enough: post-download
 // hook dispatch is fire-and-forget and can keep recording hook_started/
 // hook_succeeded/hook_failed events well after the job itself reached a
-// terminal status (see jobs.Manager.HooksPending), so both must hold.
+// terminal status (see jobs.Manager.HooksPending). And HooksPending alone
+// still has a gap: the terminal status becomes visible (Store.FinalizeJob)
+// before hook dispatch increments the pending count, so FinalizeInFlight
+// must be consulted too — and strictly before HooksPending. Dispatch
+// increments pending before the manager drops its finalize marks, so
+// observing "not finalizing" guarantees pending already reflects any hooks
+// that will fire; the reverse order could read pending before the increment
+// and the finalize mark after its removal, wrongly concluding exhausted
+// while hook events are still coming.
 func (s *Server) eventsExhausted(job domain.Job) bool {
-	return job.Status.IsTerminal() && !s.manager.HooksPending(job.ID)
+	return job.Status.IsTerminal() && !s.manager.FinalizeInFlight(job.ID) && !s.manager.HooksPending(job.ID)
 }
 
 // eventsWS is the WebSocket twin of events: it streams the same persisted job
