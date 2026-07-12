@@ -44,6 +44,18 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	database.SetMaxOpenConns(1)
+	// WAL avoids a full journal+fsync cycle per statement; NORMAL still syncs
+	// at WAL checkpoints, which is durable enough for resumable download state.
+	for _, pragma := range []string{
+		`PRAGMA journal_mode=WAL`,
+		`PRAGMA synchronous=NORMAL`,
+		`PRAGMA busy_timeout=5000`,
+	} {
+		if _, err := database.Exec(pragma); err != nil {
+			_ = database.Close()
+			return nil, fmt.Errorf("apply %s: %w", pragma, err)
+		}
+	}
 	s := &Store{db: database}
 	if err := s.initSchema(context.Background()); err != nil {
 		_ = database.Close()

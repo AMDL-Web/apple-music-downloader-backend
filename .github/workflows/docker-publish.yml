@@ -1,0 +1,104 @@
+name: Docker Publish
+
+# 构建多架构镜像(linux/amd64 + linux/arm64)并推送到 GHCR:
+#   ghcr.io/amdl-web/apple-music-downloader-backend
+#
+# 触发方式(三选一):
+#   - workflow_call:release.yml 发版成功后调用,这是主路径。release.yml
+#     用 GITHUB_TOKEN 创建 tag 和 release,GitHub 不会让这类事件级联触发
+#     其他 workflow,所以靠下面的 release 触发器接不到自动发版,必须由
+#     release.yml 显式调用。
+#   - release published:手工在 GitHub 页面创建并发布 release 时触发。
+#   - workflow_dispatch:对已存在的 tag 手动补发/重发镜像。
+#
+# 首次推送会在 GHCR 创建私有 package,如需公开拉取,到 GitHub 的
+# Packages 设置里把该 package 改为 public。
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要构建的版本标签 (例如: v1.0.0)'
+        required: true
+        type: string
+      # 手动补发/重发旧版本镜像时不应移动 latest,默认关闭;
+      # 只有重发的就是最新版本时才勾选。
+      latest:
+        description: '同时把 latest 指向该版本'
+        required: false
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      tag:
+        description: '要构建的版本标签'
+        required: true
+        type: string
+      latest:
+        description: '同时把 latest 指向该版本'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: ref
+        run: echo "tag=${{ inputs.tag || github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.ref.outputs.tag }}
+          fetch-depth: 1
+
+      # Dockerfile 的构建阶段在构建平台上交叉编译 Go,但运行阶段
+      # (alpine + apk)要在目标平台执行,arm64 需要 QEMU 仿真。
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 从版本标签展开镜像 tag:v1.2.3 → 1.2.3、1.2,以及(视情况)latest。
+      # latest 仅在以下情况移动:release.yml 发版调用(workflow_call 默认
+      # latest=true)、页面手工发布非预发布 release、手动 dispatch 且勾选
+      # 了 latest。手动补发旧版本镜像默认不会把 latest 拉回旧版。
+      # metadata-action 会自动把仓库名转小写,并写入 OCI 标签
+      # (org.opencontainers.image.source 等),让 GHCR package 关联到本仓库。
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ steps.ref.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ref.outputs.tag }}
+            type=raw,value=latest,enable=${{ inputs.latest == true || (github.event_name == 'release' && !github.event.release.prerelease) }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

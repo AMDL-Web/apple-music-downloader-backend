@@ -425,20 +425,24 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	// except artwork_url: cover art doesn't change during a download, so it's
 	// stripped from the event to keep progress/status pushes lightweight — the
 	// frontend already has it from the initial REST response.
-	// To avoid flooding the stream, we only emit when status changes or
-	// progress moves by at least 1 percentage point.
+	// To avoid flooding the stream — and hammering SQLite with one UPDATE per
+	// 32KB download chunk — both the DB write and the event are gated on the
+	// same threshold: status changed or progress moved by at least 1
+	// percentage point. Intermediate progress has no durability value anyway
+	// (unfinished items are reset to queued on resume); persisting it at 1pp
+	// granularity only serves REST polling.
 	var lastEmittedStatus domain.ItemStatus
 	var lastEmittedProgress float64 = -1
 	set := func(status domain.ItemStatus, progress float64, message string) {
 		item.Status = status
 		item.Progress = progress
 		item.StatusMessage = message
-		_ = reporter.UpdateItem(ctx, item)
 		progPct := math.Round(progress * 100)
 		lastPct := math.Round(lastEmittedProgress * 100)
 		if status != lastEmittedStatus || progPct != lastPct {
 			lastEmittedStatus = status
 			lastEmittedProgress = progress
+			_ = reporter.UpdateItem(ctx, item)
 			eventItem := item
 			eventItem.ArtworkURL = ""
 			_ = reporter.Event(ctx, domain.Event{

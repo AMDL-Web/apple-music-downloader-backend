@@ -120,3 +120,18 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 发版成功后构建并推送 Docker 镜像到 GHCR。必须在这里显式调用:
+  # 上面的 release 用 GITHUB_TOKEN 创建 tag,不会级联触发 docker-publish
+  # 的 release/push 触发器。没有新提交时 release job 以失败结束,本 job
+  # 随之跳过。
+  docker:
+    name: Publish Docker image
+    needs: release
+    uses: ./.github/workflows/docker-publish.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      tag: ${{ github.event.inputs.version }}
+      latest: true

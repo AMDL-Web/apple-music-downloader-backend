@@ -1,0 +1,36 @@
+# 构建上下文只需要 Go 源码和示例配置;其余一律排除,
+# 避免把运行数据、密钥或本地产物打进镜像。
+.git
+.github
+.claude
+.worktrees
+.idea
+.vscode
+.DS_Store
+
+# 参考仓库与本地运行数据。
+explore/
+data/
+test/
+docs/
+
+# 密钥永远不进镜像,需要时用卷挂载。
+keys/
+*.p8
+
+# 本地构建产物与覆盖率文件。
+/amdl-api
+*.out
+coverage.txt
+
+# 本地/运行时配置;镜像里只保留 config.example.yaml 和 hooks.yaml。
+*.local.yaml
+configs/config.yaml
+
+# 发版脚本等与镜像无关的工具。
+tools/
+
+# Docker 自身的文件不需要进上下文。
+Dockerfile
+docker-compose.yml
+.dockerignore
