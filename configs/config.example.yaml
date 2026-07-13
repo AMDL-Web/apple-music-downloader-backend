@@ -30,7 +30,7 @@ logging:
   include_source: false
   # bool: true emits one structured record per completed HTTP request; false disables HTTP access records.
   # Panic recovery and X-Request-ID propagation remain active when false. Runtime-mutable; no restart required.
-  access_log: true
+  access_log: false
   # integer records: number of recent structured records retained for GET /api/v1/logs and its SSE stream.
   # 0 disables in-memory retention and the log APIs return an empty history; valid range: 0-100000. Requires a restart.
   buffer_size: 2000

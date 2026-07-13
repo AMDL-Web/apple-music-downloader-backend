@@ -18,6 +18,7 @@ func newObservedServer(t *testing.T) (*Server, *logging.System) {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Logging.Console = false
+	cfg.Logging.AccessLog = true
 	system, err := logging.New(cfg.Logging)
 	if err != nil {
 		t.Fatal(err)

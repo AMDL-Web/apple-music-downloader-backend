@@ -155,7 +155,7 @@ func Default() Config {
 		Server:   ServerConfig{Listen: "127.0.0.1:18080"},
 		Database: DatabaseConfig{Path: "data/db/amdl.db"},
 		Logging: LoggingConfig{
-			Level: "info", Format: "text", Console: true, AccessLog: true,
+			Level: "info", Format: "text", Console: true, AccessLog: false,
 			BufferSize: 2000, FilePath: "data/logs/amdl.log", MaxSizeMB: 100,
 			MaxBackups: 7, MaxAgeDays: 30, Compress: true,
 		},

@@ -136,7 +136,7 @@ func TestMutableViewOmitsStartupBoundFields(t *testing.T) {
 		t.Fatalf("catalog section = %v, want only album_track_url_mode", view["catalog"])
 	}
 	logging, ok := view["logging"].(map[string]any)
-	if !ok || len(logging) != 2 || logging["level"] != "info" || logging["access_log"] != true {
+	if !ok || len(logging) != 2 || logging["level"] != "info" || logging["access_log"] != false {
 		t.Fatalf("logging section = %v, want only level/access_log", view["logging"])
 	}
 }

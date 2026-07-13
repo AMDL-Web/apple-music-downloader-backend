@@ -41,7 +41,7 @@ func TestDefaultLyricsOptions(t *testing.T) {
 
 func TestDefaultLogging(t *testing.T) {
 	logging := Default().Logging
-	if logging.Level != "info" || logging.Format != "text" || !logging.Console || !logging.AccessLog {
+	if logging.Level != "info" || logging.Format != "text" || !logging.Console || logging.AccessLog {
 		t.Fatalf("default logging = %+v", logging)
 	}
 	if logging.FileEnabled || logging.BufferSize != 2000 {

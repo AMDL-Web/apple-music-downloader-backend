@@ -64,7 +64,7 @@ func TestGetConfigReturnsOnlyMutableFields(t *testing.T) {
 	if err := json.Unmarshal(resp.Config["logging"], &logging); err != nil {
 		t.Fatal(err)
 	}
-	if len(logging) != 2 || logging["level"] != "info" || logging["access_log"] != true {
+	if len(logging) != 2 || logging["level"] != "info" || logging["access_log"] != false {
 		t.Fatalf("logging section = %v, want only level/access_log", logging)
 	}
 }
