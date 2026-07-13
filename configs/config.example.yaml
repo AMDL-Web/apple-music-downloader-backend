@@ -97,9 +97,10 @@ download:
   # moved to downloads_dir. If temp_dir shares a filesystem with downloads_dir the
   # move is a cheap rename; if not, the finished file is copied across once. Put
   # temp_dir on fast local storage (e.g. SSD) to keep the flatten/verify/tag work
-  # off a slower downloads volume. Peak usage is up to roughly twice one track's
-  # size per parallel track (see max_parallel_tracks). Assumed single-writer:
-  # stale scratch is swept on startup.
+  # off a slower downloads volume. Peak usage is up to roughly three times one
+  # track's size per parallel track (see max_parallel_tracks): during flatten the
+  # encrypted download, the decrypted fragmented MP4, and the flattened output
+  # briefly coexist. Assumed single-writer: stale scratch is swept on startup.
   temp_dir: "data/tmp"
   # string: cover artwork size as "{width}x{height}", for example "5000x5000", "3000x3000", "1400x1400".
   cover_size: "5000x5000"
