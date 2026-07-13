@@ -47,13 +47,30 @@ API 修改时被重写。
 
 - `server.listen`：API 监听地址。
 - `wrapper.address`：`wrapper-manager` gRPC 地址。
-- `database.path`：SQLite 数据库路径。
+- `database.path`：SQLite 数据库路径（默认 `data/db/amdl.db`）。
 - `download.downloads_dir`：下载文件保存目录。
 - `tools.*`：外部媒体工具命令路径或命令名。
 
+### 环境变量覆盖
+
+任何配置项都可以用环境变量覆盖，变量名为 `AMDL_<大写段名>_<大写键名>`，
+例如 `AMDL_SERVER_LISTEN`、`AMDL_WRAPPER_ADDRESS`、`AMDL_DATABASE_PATH`、
+`AMDL_DOWNLOAD_QUALITY_PRIORITY`。规则：
+
+- 环境变量优先于 `config.yaml`，每次启动（以及每次配置重载）都生效，加载
+  时不会写回文件——取消设置后下次启动即恢复文件里的值（注意
+  `PUT /api/v1/config` 重写整份文件时，写入的是包含环境变量在内的当前
+  生效值）。
+- 值的写法：字符串原样填写；布尔用 `true`/`false`；整数直接写数字；
+  字符串列表用逗号分隔（如 `alac,aac`），空值表示空列表。
+- 无法识别的 `AMDL_*` 变量会让启动失败，避免拼写错误被静默忽略
+  （`AMDL_CONFIG`、`AMDL_HOOKS_CONFIG` 除外）。
+- 被环境变量覆盖的字段无法再通过 `PUT /api/v1/config` 修改（返回 422），
+  请改环境变量并重启。
+
 ## Docker 部署
 
-仓库根目录提供 `Dockerfile` 与 `docker-compose.yml`。镜像为多阶段构建：构建阶段产出静态二进制（纯 Go SQLite，无 CGO），运行阶段基于 Alpine 并内置 `ffmpeg`。容器以 root 启动入口脚本，完成配置播种和卷属主修正后，通过 `su-exec` 降权到 `PUID:PGID`（默认 `1000:1000`）运行后端进程。
+仓库根目录提供 `Dockerfile` 与 `docker-compose.yml`。镜像为多阶段构建：构建阶段产出静态二进制（纯 Go SQLite，无 CGO），运行阶段基于 Alpine 并内置 `ffmpeg`。容器以 root 启动入口脚本，完成配置播种和挂载目录属主修正后，通过 `su-exec` 降权到 `PUID:PGID`（默认 `1000:1000`）运行后端进程。
 
 ```bash
 docker compose up -d --build
@@ -73,49 +90,61 @@ docker pull ghcr.io/amdl-web/apple-music-downloader-backend:latest
 docker build -t amdl-backend .
 docker run -d --name amdl-backend \
   -p 18080:18080 \
-  -v amdl-configs:/app/configs \
-  -v amdl-data:/app/data \
+  -v ./configs:/app/configs \
+  -v ./data/db:/app/data/db \
+  -v ./data/downloads:/app/data/downloads \
   --add-host host.docker.internal:host-gateway \
   amdl-backend
 ```
 
 ### 配置播种
 
-首次启动时入口脚本会把镜像内置的示例配置播种到配置卷 `/app/configs`：
+首次启动时入口脚本会把镜像内置的示例配置播种到配置目录 `/app/configs`：
 
 - `config.example.yaml`：原样复制（后端的 bootstrap 逻辑要求它与 `config.yaml` 同目录，同时充当字段文档）。
-- `config.yaml`：从示例生成（只取配置值，不带注释，与后端 `PUT /api/v1/config` 重写后的机器管理格式一致），并改写两个容器内不可用的默认值——`server.listen` 改为 `AMDL_LISTEN`（默认 `:18080`，容器内必须监听非回环地址），`wrapper.address` 改为 `AMDL_WRAPPER_ADDR`（默认 `host.docker.internal:8080`）。
 - `hooks.yaml`：复制注释完整的模板（默认禁用）。
+
+`config.yaml` 由后端自己在首次启动时从示例生成（只取配置值，不带注释，与 `PUT /api/v1/config` 重写后的机器管理格式一致）。两个容器内不可用的仓库默认值不再写进文件，而是由入口脚本通过环境变量覆盖机制在每次启动时改写：`server.listen` 覆盖为 `AMDL_SERVER_LISTEN`（默认 `:18080`，容器内必须监听非回环地址），`wrapper.address` 覆盖为 `AMDL_WRAPPER_ADDRESS`（默认 `host.docker.internal:8080`）。
 
 已存在的文件永远不会被覆盖，因此 `PUT /api/v1/config` 写回的配置在容器重建后保持不变。
 
 ### 环境变量
+
+任何配置项都可以用 `AMDL_<大写段名>_<大写键名>` 环境变量覆盖（见上文
+[环境变量覆盖](#环境变量覆盖)），例如 `AMDL_DOWNLOAD_QUALITY_PRIORITY: "alac,aac"`、
+`AMDL_SIMULATE_ENABLED: "true"`。容器相关的其它变量：
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `PUID` | `1000` | 后端进程的运行用户 UID。每次启动生效：配置目录每次整体修正属主；数据目录仅在顶层属主不匹配时递归修正一次（首次绑定挂载或变更 `PUID`/`PGID` 后的启动可能因此稍慢）。 |
 | `PGID` | `1000` | 后端进程的运行用户 GID。行为同 `PUID`。 |
 | `TZ` | UTC | 容器时区（IANA 名称，如 `Asia/Shanghai`），影响日志时间戳与 exec hooks 命令看到的本地时间。镜像已内置 tzdata，Go 运行时自动识别。 |
-| `AMDL_LISTEN` | `:18080` | API 监听地址。仅在首次生成 `config.yaml` 时写入；健康检查端口也从它推导，改端口时请保持该变量与实际配置一致。 |
-| `AMDL_WRAPPER_ADDR` | `host.docker.internal:8080` | `wrapper-manager` gRPC 地址。仅在首次生成 `config.yaml` 时写入。 |
+| `AMDL_SERVER_LISTEN` | `:18080`（入口脚本的容器默认值） | API 监听地址，每次启动覆盖 `server.listen`。健康检查端口也从它推导。 |
+| `AMDL_WRAPPER_ADDRESS` | `host.docker.internal:8080`（入口脚本的容器默认值） | `wrapper-manager` gRPC 地址，每次启动覆盖 `wrapper.address`。 |
 | `AMDL_CONFIG` | `/app/configs/config.yaml` | 主配置文件路径（后端原生支持）。 |
 | `AMDL_HOOKS_CONFIG` | `/app/configs/hooks.yaml` | hooks 配置文件路径（后端原生支持）。 |
 
-首次启动之后要修改监听地址、wrapper 地址等启动期字段，请直接编辑配置卷内的 `config.yaml` 并重启容器；运行期字段用 `PUT /api/v1/config` 修改即可。
+修改配置的三种方式：运行期字段用 `PUT /api/v1/config`，立即生效；任意字段用环境变量覆盖后 `docker compose up -d`；或编辑挂载目录里的 `config.yaml` 后重启容器（启动期字段需重启，且监听地址与 wrapper 地址在容器内始终以环境变量为准）。
 
-如果偏好完全不以 root 启动容器，也可以用 `docker run --user <uid>:<gid>`（或 compose 的 `user:`）直接指定运行用户：此时入口脚本跳过降权与属主修正，忽略 `PUID`/`PGID`，卷目录对该用户可写需自行保证。
+> **破坏性变更**：旧变量名 `AMDL_LISTEN`、`AMDL_WRAPPER_ADDR` 已移除。仍设置它们会因「未知配置环境变量」导致启动失败，请改用 `AMDL_SERVER_LISTEN`、`AMDL_WRAPPER_ADDRESS`。
 
-### 卷与文件
+如果偏好完全不以 root 启动容器，也可以用 `docker run --user <uid>:<gid>`（或 compose 的 `user:`）直接指定运行用户：此时入口脚本跳过降权与属主修正，忽略 `PUID`/`PGID`，挂载目录对该用户可写需自行保证。
 
-- `/app/configs`：配置卷（`config.yaml`、`config.example.yaml`、`hooks.yaml`）。
-- `/app/data`：数据卷（SQLite 数据库、`downloads/` 下载产物、`tmp/` 临时目录）。想直接在宿主机上访问音乐文件，可把宿主机目录绑定挂载到 `/app/data/downloads`。
+### 挂载目录
+
+`docker-compose.yml` 默认把三个目录绑定挂载到宿主机：
+
+- `./configs` → `/app/configs`：配置目录（`config.yaml`、`config.example.yaml`、`hooks.yaml`）。
+- `./data/db` → `/app/data/db`：SQLite 数据库目录（`database.path` 默认 `data/db/amdl.db`）。
+- `./data/downloads` → `/app/data/downloads`：下载产物目录。想放到宿主机其它位置，改冒号左边的宿主机路径即可（例如 `/path/to/music:/app/data/downloads`）。
+- 临时目录 `data/tmp` 留在容器内，无需挂载。
 - 启用开发者令牌签名时，把 `.p8` 私钥以只读方式挂载进容器（例如 `-v ./keys:/app/keys:ro`），并将 `catalog.apple_music_private_key_path` 指向容器内路径。密钥不会也不应打进镜像（`.dockerignore` 已排除 `keys/` 与 `*.p8`）。
-- 使用绑定挂载（而非命名卷）时，把 `PUID`/`PGID` 设成宿主机目录属主的 uid/gid 即可，入口脚本会自动修正容器内的属主。
+- 把 `PUID`/`PGID` 设成宿主机目录属主的 uid/gid 即可，入口脚本会自动修正容器内挂载目录的属主。
 
 ### wrapper-manager 地址
 
 - wrapper 跑在宿主机：保持默认 `host.docker.internal:8080`（compose 文件已通过 `extra_hosts: host-gateway` 让 Linux 容器也能解析该域名）。
-- wrapper 也是 compose 服务：将 `AMDL_WRAPPER_ADDR` 设为 `<服务名>:8080`。
+- wrapper 也是 compose 服务：将 `AMDL_WRAPPER_ADDRESS` 设为 `<服务名>:8080`。
 - gRPC 连接是懒建立的，后端启动不要求 wrapper 在线；可用 `GET /api/v1/wrapper/status` 验证连通性。
 
 容器健康检查使用 `GET /api/v1/health`。

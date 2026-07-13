@@ -42,8 +42,9 @@ paths:
         每次 GET 会先重读 configs/config.yaml 再返回，因此运行期间手工编辑
         的可修改字段在下一次 GET 后即生效、无需重启；文件中仅启动时生效
         字段的改动不会被载入内存（进程内组件无法跟随变化），仍需重启。
-        文件当前不可读或校验失败时（例如正编辑到一半），继续返回上一份
-        有效配置，并附 reload_error 字段说明原因。
+        AMDL_<大写段名>_<大写键名> 环境变量覆盖在每次重读时同样生效并
+        优先于文件值。文件当前不可读或校验失败时（例如正编辑到一半），
+        继续返回上一份有效配置，并附 reload_error 字段说明原因。
       operationId: getConfig
       responses:
         '200':
@@ -62,6 +63,9 @@ paths:
         仅 GET 返回的字段可以修改：download 段（max_running_jobs 除外）、
         simulate 段、catalog.album_track_url_mode。其余字段只在进程启动时
         被消费，修改请求会被 422 拒绝——请改 configs/config.yaml 并重启。
+        被 AMDL_<大写段名>_<大写键名> 环境变量覆盖的字段同样返回 422：
+        写入会在下一次配置重载时被环境变量的值重新遮盖，请改环境变量并
+        重启。
 
         修改立即对新请求和新开始的任务生效（运行中的任务继续使用其启动时的
         配置快照），并写回 configs/config.yaml，重启后依然生效。该文件由
@@ -93,7 +97,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '422':
-          description: 合并结果未通过配置校验，或试图修改仅启动时生效的字段。
+          description: >-
+            合并结果未通过配置校验，或试图修改仅启动时生效的字段，
+            或试图修改被 AMDL_* 环境变量覆盖的字段。
           content:
             application/json:
               schema:
