@@ -398,27 +398,44 @@ func (s *grpcDecryptSession) DecryptFragment(key string, samples [][]byte) ([][]
 	}()
 
 	out := make([][]byte, n)
-	for received := 0; received < n; received++ {
-		resp, err := s.stream.Recv()
-		if err != nil {
-			if err == io.EOF {
-				return nil, fmt.Errorf("wrapper decrypt stream ended after %d/%d samples", received, n)
-			}
-			return nil, err
-		}
-		if resp.GetHeader().GetCode() != 0 {
-			return nil, fmt.Errorf("wrapper decrypt: %s", resp.GetHeader().GetMsg())
-		}
-		idx := int(resp.GetData().GetSampleIndex()) - base
-		if idx < 0 || idx >= n {
-			return nil, fmt.Errorf("wrapper decrypt returned out-of-range sample index %d", resp.GetData().GetSampleIndex())
-		}
-		out[idx] = resp.GetData().GetSample()
+	recvErr := s.receiveBatch(out, base)
+	if recvErr != nil {
+		// The receive failed partway, so the sender may still be blocked on Send.
+		// Cancel the stream to unblock it and wait for it to exit before
+		// returning: the caller runs Close (CloseSend) next, which must not race
+		// a concurrent Send on this stream. The session is unusable after an
+		// error anyway, so cancelling here is fine.
+		s.cancel()
+		<-sendErr
+		return nil, recvErr
 	}
 	if err := <-sendErr; err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// receiveBatch reads exactly len(out) decrypt replies into out, correlating each
+// reply's sample index against base.
+func (s *grpcDecryptSession) receiveBatch(out [][]byte, base int) error {
+	for received := 0; received < len(out); received++ {
+		resp, err := s.stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				return fmt.Errorf("wrapper decrypt stream ended after %d/%d samples", received, len(out))
+			}
+			return err
+		}
+		if resp.GetHeader().GetCode() != 0 {
+			return fmt.Errorf("wrapper decrypt: %s", resp.GetHeader().GetMsg())
+		}
+		idx := int(resp.GetData().GetSampleIndex()) - base
+		if idx < 0 || idx >= len(out) {
+			return fmt.Errorf("wrapper decrypt returned out-of-range sample index %d", resp.GetData().GetSampleIndex())
+		}
+		out[idx] = resp.GetData().GetSample()
+	}
+	return nil
 }
 
 func (s *grpcDecryptSession) Close() error {

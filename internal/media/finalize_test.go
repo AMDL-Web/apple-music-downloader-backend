@@ -14,7 +14,9 @@ func TestFinalizeToOutputSameFilesystemRenames(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []byte("finished tagged audio")
-	if err := os.WriteFile(src, want, 0o644); err != nil {
+	// Staging uses os.CreateTemp (0600); write src with that mode so the test
+	// proves finalizeToOutput upgrades the finished file to world-readable 0644.
+	if err := os.WriteFile(src, want, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -32,6 +34,7 @@ func TestFinalizeToOutputSameFilesystemRenames(t *testing.T) {
 	if _, err := os.Stat(src); !os.IsNotExist(err) {
 		t.Fatalf("src still present after rename (err=%v)", err)
 	}
+	assertMode0644(t, dst)
 }
 
 func TestCopyIntoPlaceLeavesCompleteFileAndKeepsSource(t *testing.T) {
@@ -65,6 +68,17 @@ func TestCopyIntoPlaceLeavesCompleteFileAndKeepsSource(t *testing.T) {
 	// The copy path leaves the source for the caller's temp cleanup to remove.
 	if _, err := os.Stat(src); err != nil {
 		t.Fatalf("src should remain after copy, got err=%v", err)
+	}
+}
+
+func assertMode0644(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Fatalf("%s mode = %o, want 0644", path, perm)
 	}
 }
 

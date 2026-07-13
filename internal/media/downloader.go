@@ -1177,13 +1177,20 @@ func cleanupTempFile(path string) {
 // as a complete file, so handleExistingOutput's "bare existence = done" skip
 // stays correct even if the process dies mid-move. On the copy path src is left
 // in place for the caller's temp cleanup to remove.
+//
+// The finished file is forced to 0644 either way: staging goes through
+// os.CreateTemp (0600) and ffmpeg, so without this the download could inherit an
+// owner-only mode instead of the world-readable one the direct-write path used.
 func finalizeToOutput(src, dst string) error {
-	if err := os.Rename(src, dst); err == nil {
-		return nil
-	} else if !errors.Is(err, syscall.EXDEV) {
-		return err
+	if err := os.Rename(src, dst); err != nil {
+		if !errors.Is(err, syscall.EXDEV) {
+			return err
+		}
+		if err := copyIntoPlace(src, dst); err != nil {
+			return err
+		}
 	}
-	return copyIntoPlace(src, dst)
+	return os.Chmod(dst, 0o644)
 }
 
 // copyIntoPlace materialises src at dst across a filesystem boundary: copy to a
