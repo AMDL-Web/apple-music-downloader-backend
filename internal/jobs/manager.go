@@ -16,6 +16,7 @@ import (
 	"amdl/internal/domain"
 	"amdl/internal/events"
 	"amdl/internal/hooks"
+	"amdl/internal/logging"
 	"amdl/internal/storage"
 )
 
@@ -259,6 +260,7 @@ func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool, ov
 		// deliveries, so a fast job's terminal webhook may still arrive first.
 		m.hooks.Dispatch("job_queued", job, nil)
 		m.queue <- job.ID
+		logging.FromContext(ctx, m.logger).Info("job queued", "job_id", job.ID, "job_type", job.Type, "storefront", job.Storefront)
 		accepted := job
 		results[c.index] = domain.SubmitResult{URL: c.url, Status: domain.SubmitAccepted, Job: &accepted}
 	}
@@ -348,6 +350,7 @@ func (m *Manager) Retry(ctx context.Context, jobID string) error {
 		m.logger.Error("record job_retried event", "job_id", jobID, "error", err)
 	}
 	m.queue <- jobID
+	logging.FromContext(ctx, m.logger).Info("job retry queued", "job_id", jobID)
 	return nil
 }
 
@@ -369,6 +372,7 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 		// Writing the terminal state here too would race with that write
 		// and double-fire the job_cancelled hook.
 		cancel()
+		logging.FromContext(ctx, m.logger).Info("job cancellation requested", "job_id", jobID)
 		return nil
 	}
 
@@ -410,6 +414,7 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 	m.mu.Lock()
 	delete(m.finalizing, jobID)
 	m.mu.Unlock()
+	logging.FromContext(ctx, m.logger).Info("queued job cancelled", "job_id", jobID)
 	return nil
 }
 
@@ -435,6 +440,7 @@ func (m *Manager) Delete(ctx context.Context, jobID string) error {
 	// Broadcast the persisted tombstone so live overview subscribers can drop the
 	// job immediately; missed broadcasts are replayed from job_events by cursor.
 	m.hub.Publish(deleted)
+	logging.FromContext(ctx, m.logger).Info("job deleted", "job_id", jobID)
 	return nil
 }
 
@@ -483,6 +489,10 @@ func (m *Manager) run(parent context.Context, jobID string) {
 	}
 	m.cancels[jobID] = cancel
 	m.mu.Unlock()
+	started := time.Now()
+	jobLogger := m.logger.With("job_id", job.ID, "job_type", job.Type, "storefront", job.Storefront)
+	ctx = logging.NewContext(ctx, jobLogger)
+	jobLogger.Info("job started")
 
 	defer func() {
 		cancel()
@@ -535,6 +545,21 @@ func (m *Manager) run(parent context.Context, jobID string) {
 			job.Status = domain.JobCompleted
 		}
 		m.finalizeLogged(job, "job_finished", string(job.Status))
+	}
+	attrs := []any{
+		"status", string(job.Status), "duration_ms", time.Since(started).Milliseconds(),
+		"total_items", job.TotalItems, "done_items", job.DoneItems, "failed_items", job.FailedItems,
+	}
+	if err != nil {
+		attrs = append(attrs, "error", err)
+	}
+	switch job.Status {
+	case domain.JobFailed:
+		jobLogger.Error("job finished", attrs...)
+	case domain.JobCancelled:
+		jobLogger.Warn("job finished", attrs...)
+	default:
+		jobLogger.Info("job finished", attrs...)
 	}
 }
 

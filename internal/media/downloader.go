@@ -20,6 +20,7 @@ import (
 	"amdl/internal/config"
 	"amdl/internal/domain"
 	"amdl/internal/jobs"
+	"amdl/internal/logging"
 	"amdl/internal/storage"
 	"amdl/internal/wrapper"
 )
@@ -261,7 +262,7 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 			defer wg.Done()
 			defer func() { <-sem }()
 			if err := d.processTrack(ctx, job, items[i], tracks[i], parsed.Storefront, parsed.Type, collectionName, collectionID, i+1, folderArtist, reporter); err != nil {
-				d.logger.Error("track failed", "adam_id", tracks[i].ID, "error", err)
+				logging.FromContext(ctx, d.logger).Error("track failed", "item_id", items[i].ID, "adam_id", tracks[i].ID, "error", err)
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err

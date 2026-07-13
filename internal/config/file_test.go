@@ -166,6 +166,8 @@ func TestReloadPreservesLockedFields(t *testing.T) {
 	edited.Catalog.AlbumTrackURLMode = "album"
 	edited.Tools.FFmpeg = "/opt/other/ffmpeg"
 	edited.Wrapper.Address = "10.0.0.9:8080"
+	edited.Logging.Level = "debug"
+	edited.Logging.Format = "json"
 	edited.Download.MaxRunningJobs = 42
 	if err := Save(path, edited); err != nil {
 		t.Fatal(err)
@@ -174,12 +176,12 @@ func TestReloadPreservesLockedFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := store.Get()
-	if got.Download.CoverFormat != "png" || got.Catalog.AlbumTrackURLMode != "album" {
+	if got.Download.CoverFormat != "png" || got.Catalog.AlbumTrackURLMode != "album" || got.Logging.Level != "debug" {
 		t.Fatalf("mutable edits not reloaded: %+v", got.Download)
 	}
 	base := Default()
-	if got.Tools.FFmpeg != base.Tools.FFmpeg || got.Wrapper.Address != base.Wrapper.Address || got.Download.MaxRunningJobs != base.Download.MaxRunningJobs {
-		t.Fatalf("startup-bound file edits leaked into the live snapshot: tools=%+v wrapper=%+v max_running_jobs=%d", got.Tools, got.Wrapper, got.Download.MaxRunningJobs)
+	if got.Tools.FFmpeg != base.Tools.FFmpeg || got.Wrapper.Address != base.Wrapper.Address || got.Logging.Format != base.Logging.Format || got.Download.MaxRunningJobs != base.Download.MaxRunningJobs {
+		t.Fatalf("startup-bound file edits leaked into the live snapshot: tools=%+v wrapper=%+v logging=%+v max_running_jobs=%d", got.Tools, got.Wrapper, got.Logging, got.Download.MaxRunningJobs)
 	}
 }
 

@@ -97,17 +97,20 @@ func TestRuntimeLockedChanges(t *testing.T) {
 	updated.Simulate.Enabled = true
 	updated.Simulate.MinSpeedKBps = 10
 	updated.Catalog.AlbumTrackURLMode = "album"
+	updated.Logging.Level = "debug"
+	updated.Logging.AccessLog = false
 	if got := RuntimeLockedChanges(base, updated); len(got) != 0 {
 		t.Fatalf("runtime-updatable changes reported as locked: %v", got)
 	}
 
 	updated = base
 	updated.Server.Listen = "0.0.0.0:9999"
+	updated.Logging.Format = "json"
 	updated.Download.MaxRunningJobs = base.Download.MaxRunningJobs + 1
 	updated.Wrapper.Address = "10.0.0.1:8080"
 	updated.Catalog.AllowedOrigins = []string{"https://example.com"}
 	got := RuntimeLockedChanges(base, updated)
-	want := []string{"server.listen", "wrapper.address", "catalog.allowed_origins", "download.max_running_jobs"}
+	want := []string{"server.listen", "logging.format", "wrapper.address", "catalog.allowed_origins", "download.max_running_jobs"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("locked changes = %v, want %v", got, want)
 	}
@@ -115,8 +118,8 @@ func TestRuntimeLockedChanges(t *testing.T) {
 
 func TestMutableViewOmitsStartupBoundFields(t *testing.T) {
 	view := MutableView(Default())
-	if len(view) != 3 {
-		t.Fatalf("view sections = %v, want catalog/download/simulate only", view)
+	if len(view) != 4 {
+		t.Fatalf("view sections = %v, want catalog/download/logging/simulate only", view)
 	}
 	download, ok := view["download"].(map[string]any)
 	if !ok {
@@ -131,6 +134,10 @@ func TestMutableViewOmitsStartupBoundFields(t *testing.T) {
 	catalog, ok := view["catalog"].(map[string]any)
 	if !ok || len(catalog) != 1 || catalog["album_track_url_mode"] != "song" {
 		t.Fatalf("catalog section = %v, want only album_track_url_mode", view["catalog"])
+	}
+	logging, ok := view["logging"].(map[string]any)
+	if !ok || len(logging) != 2 || logging["level"] != "info" || logging["access_log"] != false {
+		t.Fatalf("logging section = %v, want only level/access_log", view["logging"])
 	}
 }
 

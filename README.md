@@ -14,6 +14,7 @@ AMDL Backend 是 Apple Music 下载系统的核心后端服务。它负责解析
 - 支持 Enhanced HLS 编码回退链和 AAC-LC 保底格式。
 - 支持歌词嵌入、歌词边车文件、封面嵌入和独立封面保存。
 - 支持任务生命周期 hooks（`configs/hooks.yaml`）：在任务排队或进入终态时触发 webhook 或本地命令。
+- 提供结构化日志、敏感字段脱敏、请求/任务关联、可选压缩轮转文件，以及带过滤和断线续接的日志查询/SSE API。
 - 支持本地模拟（simulate）模式：不实际下载/解密，用于联调和压测下载流水线（配置文件顶层 `simulate` 段）。
 - 提供 Swagger UI 与 OpenAPI 3.1 规范。
 - 使用 GitHub Actions 在发版时自动生成 Release changelog。
@@ -50,6 +51,7 @@ API 修改时被重写。
 - `server.listen`：API 监听地址。
 - `wrapper.address`：`wrapper-manager` gRPC 地址。
 - `database.path`：SQLite 数据库路径（默认 `data/db/amdl.db`）。
+- `logging.*`：日志级别、格式、内存保留和可选轮转文件（字段完整说明见示例配置）。
 - `download.downloads_dir`：下载文件保存目录。
 - `tools.*`：外部媒体工具命令路径或命令名。
 
@@ -57,6 +59,7 @@ API 修改时被重写。
 
 任何配置项都可以用环境变量覆盖，变量名为 `AMDL_<大写段名>_<大写键名>`，
 例如 `AMDL_SERVER_LISTEN`、`AMDL_WRAPPER_ADDRESS`、`AMDL_DATABASE_PATH`、
+`AMDL_LOGGING_LEVEL`、
 `AMDL_DOWNLOAD_QUALITY_PRIORITY`。规则：
 
 - 环境变量优先于 `config.yaml`，每次启动（以及每次配置重载）都生效，加载
@@ -96,6 +99,7 @@ docker run -d --name amdl-backend \
   -p 18080:18080 \
   -v ./configs:/app/configs \
   -v ./data/db:/app/data/db \
+  -v ./data/logs:/app/data/logs \
   -v ./data/downloads:/app/data/downloads \
   --add-host host.docker.internal:host-gateway \
   amdl-backend
@@ -136,10 +140,11 @@ docker run -d --name amdl-backend \
 
 ### 挂载目录
 
-`docker-compose.yml` 默认把三个目录绑定挂载到宿主机：
+`docker-compose.yml` 默认把四个目录绑定挂载到宿主机：
 
 - `./configs` → `/app/configs`：配置目录（`config.yaml`、`config.example.yaml`、`hooks.yaml`）。
 - `./data/db` → `/app/data/db`：SQLite 数据库目录（`database.path` 默认 `data/db/amdl.db`）。
+- `./data/logs` → `/app/data/logs`：轮转日志目录；仅在 `logging.file_enabled: true` 时写入。
 - `./data/downloads` → `/app/data/downloads`：下载产物目录。想放到宿主机其它位置，改冒号左边的宿主机路径即可（例如 `/path/to/music:/app/data/downloads`）。
 - 临时目录 `data/tmp` 默认留在容器内，无需挂载。它承担下载/解密/转封装/校验/打标签这几步的落盘中转（见 `configs/config.example.yaml` 里 `download.temp_dir` 的注释），如果容器存储驱动较慢，可以把它单独挂载到宿主机的快速磁盘（如 SSD）上，与 `data/downloads` 分开。
 - 启用开发者令牌签名时，把 `.p8` 私钥以只读方式挂载进容器（例如 `-v ./keys:/app/keys:ro`），并将 `catalog.apple_music_private_key_path` 指向容器内路径。密钥不会也不应打进镜像（`.dockerignore` 已排除 `keys/` 与 `*.p8`）。
@@ -174,6 +179,26 @@ http://localhost:18080/api/openapi.yaml
 ```bash
 curl http://localhost:18080/api/v1/config
 ```
+
+查询最近的错误日志：
+
+```bash
+curl 'http://localhost:18080/api/v1/logs?level=error&limit=100'
+```
+
+按任务过滤并实时订阅日志（SSE `id` 可作为重连时的 `Last-Event-ID`）：
+
+```bash
+curl -N 'http://localhost:18080/api/v1/logs/stream?job_id=job_01JZ0000000000000000000000'
+```
+
+每个 HTTP 响应都带 `X-Request-ID`。调用方也可以在请求中传入同名头，随后用
+`GET /api/v1/logs?request_id=<id>` 聚合同一请求的访问日志与同步任务操作日志。
+日志 API 的内存保留量由 `logging.buffer_size` 控制；设为 `0` 时不保留历史，
+实时 SSE 仍会推送新记录。文件输出默认关闭，启用后按 `max_size_mb`、
+`max_backups`、`max_age_days` 自动轮转，并可用 `compress` 压缩旧文件。
+`logging.level` 与 `logging.access_log` 可通过 `PUT /api/v1/config` 即时调整；
+格式、输出目标、缓冲容量和轮转参数修改后需要重启。
 
 检查 `wrapper-manager` 状态：
 

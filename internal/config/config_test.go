@@ -39,6 +39,33 @@ func TestDefaultLyricsOptions(t *testing.T) {
 	}
 }
 
+func TestDefaultLogging(t *testing.T) {
+	logging := Default().Logging
+	if logging.Level != "info" || logging.Format != "text" || !logging.Console || logging.AccessLog {
+		t.Fatalf("default logging = %+v", logging)
+	}
+	if logging.FileEnabled || logging.BufferSize != 2000 {
+		t.Fatalf("default logging outputs = %+v", logging)
+	}
+}
+
+func TestLoadValidatesLogging(t *testing.T) {
+	for name, body := range map[string]string{
+		"level":        "logging:\n  level: trace\n",
+		"format":       "logging:\n  format: xml\n",
+		"buffer":       "logging:\n  buffer_size: -1\n",
+		"file path":    "logging:\n  file_enabled: true\n  file_path: \"\"\n",
+		"max size":     "logging:\n  max_size_mb: 0\n",
+		"all disabled": "logging:\n  console: false\n  file_enabled: false\n  buffer_size: 0\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(writeConfig(t, body)); err == nil || !strings.Contains(err.Error(), "logging") {
+				t.Fatalf("Load() error = %v, want logging validation error", err)
+			}
+		})
+	}
+}
+
 func TestDefaultPathFormats(t *testing.T) {
 	defaults := Default().Download
 	want := map[string]string{
