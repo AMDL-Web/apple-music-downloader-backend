@@ -1,6 +1,9 @@
 # AMDL Backend 容器化部署。
 #
-#   docker compose up -d --build
+#   docker compose up -d
+#
+# 默认拉取 GHCR 上的多架构预构建镜像,无需本地构建。想从源码构建见下方
+# amdl-backend.image 附近的说明。
 #
 # 首次启动会在 ./configs 里生成 config.yaml(后端从 config.example.yaml
 # 引导,带注释的字段文档见同目录示例文件),之后修改配置:
@@ -11,8 +14,12 @@
 #     (启动期字段需重启,且被环境变量覆盖的字段以环境变量为准)。
 services:
   amdl-backend:
-    build: .
-    image: amdl-backend
+    # 默认拉取 GHCR 上的预构建镜像(多架构 linux/amd64 + linux/arm64)。
+    # 想固定版本就把 latest 换成具体 tag,例如 :1.1 或 :1.1.0。
+    image: ghcr.io/amdl-web/apple-music-downloader-backend:latest
+    # 想从源码本地构建而不是拉镜像:取消下面 build 的注释(此时 image 行会
+    # 变成本地构建镜像的 tag),然后 docker compose up -d --build。
+    # build: .
     container_name: amdl-backend
     restart: unless-stopped
     ports:

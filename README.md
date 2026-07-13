@@ -70,19 +70,19 @@ API 修改时被重写。
 
 ## Docker 部署
 
-仓库根目录提供 `Dockerfile` 与 `docker-compose.yml`。镜像为多阶段构建：构建阶段产出静态二进制（纯 Go SQLite，无 CGO），运行阶段基于 Alpine 并内置 `ffmpeg`。容器以 root 启动入口脚本，完成配置播种和挂载目录属主修正后，通过 `su-exec` 降权到 `PUID:PGID`（默认 `1000:1000`）运行后端进程。
+仓库根目录提供 `Dockerfile` 与 `docker-compose.yml`。发版时 GitHub Actions 会自动构建多架构镜像（linux/amd64 + linux/arm64）并推送到 GHCR（镜像 tag 与版本对应，如 `v1.2.3` → `1.2.3`、`1.2`、`latest`），`docker-compose.yml` 默认就直接拉取该镜像，无需本地构建：
+
+```bash
+docker compose up -d
+```
+
+想固定版本，把 compose 里的 `:latest` 换成具体 tag（如 `:1.1`）。
+
+若想从源码本地构建（镜像为多阶段构建：构建阶段产出静态二进制——纯 Go SQLite，无 CGO；运行阶段基于 Alpine 并内置 `ffmpeg`。容器以 root 启动入口脚本，完成配置播种和挂载目录属主修正后，通过 `su-exec` 降权到 `PUID:PGID`（默认 `1000:1000`）运行后端进程），取消 `docker-compose.yml` 里 `build: .` 的注释后：
 
 ```bash
 docker compose up -d --build
 ```
-
-发版时 GitHub Actions 会自动构建多架构镜像（linux/amd64 + linux/arm64）并推送到 GHCR，可以直接拉取而无需本地构建（镜像 tag 与版本对应，如 `v1.2.3` → `1.2.3`、`1.2`、`latest`）：
-
-```bash
-docker pull ghcr.io/amdl-web/apple-music-downloader-backend:latest
-```
-
-使用 compose 时把 `build: .` 换成 `image: ghcr.io/amdl-web/apple-music-downloader-backend:latest` 即可。
 
 或者不用 compose：
 
