@@ -10,9 +10,11 @@ AMDL Backend 是 Apple Music 下载系统的核心后端服务。它负责解析
 - 不会支持 Apple Music MV 下载；受 L3 限制，当前链路只能获取低分辨率视频，不符合本项目的下载质量目标。
 - 通过 `wrapper-manager` gRPC 获取账号状态、播放清单和媒体数据。
 - 使用 SQLite 持久化任务、任务项和事件。
-- 通过 SSE 推送下载进度。
+- 通过 SSE 或 WebSocket 推送下载进度，支持单任务订阅与跨任务总览 feed。
 - 支持 Enhanced HLS 编码回退链和 AAC-LC 保底格式。
 - 支持歌词嵌入、歌词边车文件、封面嵌入和独立封面保存。
+- 支持任务生命周期 hooks（`configs/hooks.yaml`）：在任务排队或进入终态时触发 webhook 或本地命令。
+- 支持本地模拟（simulate）模式：不实际下载/解密，用于联调和压测下载流水线（配置文件顶层 `simulate` 段）。
 - 提供 Swagger UI 与 OpenAPI 3.1 规范。
 - 使用 GitHub Actions 在发版时自动生成 Release changelog。
 
@@ -139,7 +141,7 @@ docker run -d --name amdl-backend \
 - `./configs` → `/app/configs`：配置目录（`config.yaml`、`config.example.yaml`、`hooks.yaml`）。
 - `./data/db` → `/app/data/db`：SQLite 数据库目录（`database.path` 默认 `data/db/amdl.db`）。
 - `./data/downloads` → `/app/data/downloads`：下载产物目录。想放到宿主机其它位置，改冒号左边的宿主机路径即可（例如 `/path/to/music:/app/data/downloads`）。
-- 临时目录 `data/tmp` 留在容器内，无需挂载。
+- 临时目录 `data/tmp` 默认留在容器内，无需挂载。它承担下载/解密/转封装/校验/打标签这几步的落盘中转（见 `configs/config.example.yaml` 里 `download.temp_dir` 的注释），如果容器存储驱动较慢，可以把它单独挂载到宿主机的快速磁盘（如 SSD）上，与 `data/downloads` 分开。
 - 启用开发者令牌签名时，把 `.p8` 私钥以只读方式挂载进容器（例如 `-v ./keys:/app/keys:ro`），并将 `catalog.apple_music_private_key_path` 指向容器内路径。密钥不会也不应打进镜像（`.dockerignore` 已排除 `keys/` 与 `*.p8`）。
 - 把 `PUID`/`PGID` 设成宿主机目录属主的 uid/gid 即可，入口脚本会自动修正容器内挂载目录的属主。
 
@@ -239,6 +241,26 @@ curl -N http://localhost:18080/api/v1/downloads/{job_id}/events
 curl -X POST http://localhost:18080/api/v1/downloads/{job_id}/cancel
 ```
 
+重试失败任务（仅 `failed` 状态的任务可重试；非失败状态、仍在收尾上一次运行、或已有同 key 任务在跑时返回 409）：
+
+```bash
+curl -X POST http://localhost:18080/api/v1/downloads/{job_id}/retry
+```
+
+删除已结束（终态）的任务及其记录：
+
+```bash
+curl -X DELETE http://localhost:18080/api/v1/downloads/{job_id}
+```
+
+任务事件也可通过 WebSocket 订阅（`GET /api/v1/downloads/{job_id}/events/ws`），与上面的 SSE 端点等价，供偏好 WS 的客户端使用。
+
+其它端点（详细请求/响应结构见 Swagger UI）：
+
+- `GET /api/v1/downloads/events`（及 `/events/ws`）：跨任务的总览 feed，推送任务列表增删改，无需分别订阅每个任务。
+- `POST /api/v1/quality`：不创建任务，仅探测某个 URL 当前可用的编码与画质信息。
+- `GET /api/v1/developer-token`：签发可共享的 Apple Music developer token；仅在启用本地签名模式（`catalog.apple_music_*` 三个 key 配置齐全）时可用，否则返回 409。
+
 ## 下载行为
 
 仅音频下载是受支持目标。Apple Music MV 下载不会支持，因为 L3 限制下只能获取低分辨率视频。
@@ -306,7 +328,7 @@ go test ./... -count=1
 
 ## 发版
 
-推送 `v*` tag 或手动运行 `Release` workflow 时，GitHub Actions 会先执行完整 Go 测试，再创建 GitHub Release。
+手动运行 `Release` workflow（`workflow_dispatch`，指定版本号）时，GitHub Actions 会先执行完整 Go 测试，再创建 GitHub Release；本仓库不通过推送 tag 触发发版。
 
 Release changelog 由 GitHub generated release notes 自动生成，分类规则位于：
 
