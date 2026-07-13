@@ -31,23 +31,22 @@ RUN apk add --no-cache ca-certificates ffmpeg tzdata su-exec \
 
 WORKDIR /app
 
-# 示例配置内置到 /opt/amdl,入口脚本首次启动时播种到配置卷 /app/configs。
+# 示例配置内置到 /opt/amdl,入口脚本首次启动时播种到配置目录 /app/configs。
 COPY configs/config.example.yaml configs/hooks.yaml /opt/amdl/
 COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY --from=build /out/amdl-api /app/amdl-api
 
-# 预建配置与数据目录并交给默认运行用户(uid 1000),命名卷初始化时会
-# 继承属主。容器以 root 启动入口脚本,由脚本按 PUID/PGID(默认
-# 1000:1000)修正卷属主后降权运行后端;也可用 docker run --user 直接
-# 指定非 root 用户,此时跳过降权逻辑。
+# 预建配置与数据目录并交给默认运行用户(uid 1000)。容器以 root 启动
+# 入口脚本,由脚本按 PUID/PGID(默认 1000:1000)修正挂载目录属主后降权
+# 运行后端;也可用 docker run --user 直接指定非 root 用户,此时跳过
+# 降权逻辑。
 RUN mkdir -p /app/configs /app/data && chown -R amdl:amdl /app
 
 EXPOSE 18080
 
-# 端口跟随 AMDL_LISTEN(仅首次启动生成 config.yaml 时生效,默认 :18080)。
-# 若之后在配置卷里改了 server.listen 端口,请同步覆盖 AMDL_LISTEN 环境变量,
-# 健康检查从它推导端口。
+# 端口跟随 AMDL_SERVER_LISTEN(环境变量覆盖 server.listen,每次启动生效,
+# 默认 :18080)。改监听端口请直接改该环境变量,健康检查从它推导端口。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD p="${AMDL_LISTEN:-:18080}"; wget -qO /dev/null "http://127.0.0.1:${p##*:}/api/v1/health" || exit 1
+    CMD p="${AMDL_SERVER_LISTEN:-:18080}"; wget -qO /dev/null "http://127.0.0.1:${p##*:}/api/v1/health" || exit 1
 
 ENTRYPOINT ["docker-entrypoint.sh"]

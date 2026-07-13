@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"amdl/internal/config"
@@ -81,6 +83,10 @@ type Manager struct {
 	finalizing map[string]bool
 	workers    int
 	hooks      *hooks.Dispatcher
+	// active counts jobs currently in ProcessJob. It gates the post-job memory
+	// scavenge so only the last-finishing job of a busy burst triggers it (see
+	// run).
+	active atomic.Int32
 }
 
 func NewManager(store *db.Store, hub *events.Hub, processor Processor, workers int, logger *slog.Logger) *Manager {
@@ -483,6 +489,22 @@ func (m *Manager) run(parent context.Context, jobID string) {
 		m.mu.Lock()
 		delete(m.cancels, jobID)
 		m.mu.Unlock()
+	}()
+
+	// A download's decrypt/remux pipeline allocates on the order of a track's
+	// size per parallel track; once the job returns, that memory is garbage but
+	// Go's scavenger only hands it back to the OS lazily (MADV_FREE), so RSS
+	// appears stuck at the peak long after the download finished. Force a
+	// scavenge once the worker pool goes idle so a machine idling between jobs
+	// actually reclaims it. Gating on the active count (rather than an
+	// unconditional per-job call) means a burst of concurrent completions under
+	// max_running_jobs>1 triggers a single stop-the-world GC when the last job
+	// finishes, not one per job that would stall the others still downloading.
+	m.active.Add(1)
+	defer func() {
+		if m.active.Add(-1) == 0 {
+			debug.FreeOSMemory()
+		}
 	}()
 
 	_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_started", Message: "job started"})

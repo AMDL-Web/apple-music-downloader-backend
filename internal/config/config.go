@@ -133,7 +133,7 @@ type SimulateConfig struct {
 func Default() Config {
 	return Config{
 		Server:   ServerConfig{Listen: "127.0.0.1:18080"},
-		Database: DatabaseConfig{Path: "data/amdl.db"},
+		Database: DatabaseConfig{Path: "data/db/amdl.db"},
 		Wrapper: WrapperConfig{
 			Address: "127.0.0.1:8080", Insecure: true, TimeoutSeconds: 30, LoginTimeoutSeconds: 120,
 		},
@@ -157,7 +157,17 @@ func Default() Config {
 	}
 }
 
+// Load reads the config file at path, overlays any AMDL_* environment
+// variable overrides on top (see env.go), and validates the result. The
+// environment is re-applied on every call, so Store.Reload keeps overridden
+// values pinned across file re-reads.
 func Load(path string) (Config, error) {
+	return load(path, os.Environ())
+}
+
+// load is Load with an explicit environment, so tests can inject one and
+// BootstrapFromExample can read the example file without any overrides.
+func load(path string, environ []string) (Config, error) {
 	cfg := Default()
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -166,6 +176,9 @@ func Load(path string) (Config, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(raw))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&cfg); err != nil {
+		return cfg, err
+	}
+	if err := applyEnvOverrides(&cfg, environ); err != nil {
 		return cfg, err
 	}
 	if err := cfg.Validate(); err != nil {

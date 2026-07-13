@@ -59,6 +59,10 @@ func main() {
 		logger.Error("create temp dir", "error", err)
 		os.Exit(1)
 	}
+	// Remove scratch files a previous run left behind (a crash mid-download can
+	// leak encrypted/decrypted/flatten temp files). Safe to do unconditionally
+	// at startup: the temp dir is single-writer and no job has started yet.
+	media.CleanupStaleTemp(cfg.Download.TempDir, logger)
 	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o755); err != nil {
 		logger.Error("create database dir", "error", err)
 		os.Exit(1)
@@ -105,6 +109,23 @@ func main() {
 		os.Exit(1)
 	} else if recovered > 0 {
 		logger.Info("recovered unfinished jobs", "count", recovered)
+	}
+	// A job may stage its scratch under a per-request temp_dir override, which
+	// the configured-dir sweep above doesn't cover. Jobs that were queued or
+	// running at the last shutdown are exactly the ones whose in-flight scratch
+	// could have leaked on a crash; sweep their override dirs too. Still before
+	// the worker pool starts, so nothing is writing to them.
+	if recoverable, err := store.ListRecoverableJobs(ctx); err == nil {
+		swept := map[string]bool{cfg.Download.TempDir: true}
+		for _, job := range recoverable {
+			if job.Overrides == nil || job.Overrides.TempDir == nil {
+				continue
+			}
+			if dir := *job.Overrides.TempDir; dir != "" && !swept[dir] {
+				swept[dir] = true
+				media.CleanupStaleTemp(dir, logger)
+			}
+		}
 	}
 	manager.Start(ctx)
 

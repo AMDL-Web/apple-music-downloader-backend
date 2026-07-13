@@ -1,10 +1,22 @@
+# Every key in this file can be overridden with an environment variable named
+# AMDL_<SECTION>_<KEY> (the yaml path uppercased, "_" as separator), for
+# example AMDL_SERVER_LISTEN, AMDL_WRAPPER_ADDRESS, AMDL_DATABASE_PATH,
+# AMDL_DOWNLOAD_QUALITY_PRIORITY. Overrides sit on top of the config file on
+# every start and are not written back by the loader, so unsetting a variable
+# restores the file value on the next start (PUT /api/v1/config still
+# rewrites the whole file with the effective values, environment overrides
+# included). Value syntax: strings verbatim, booleans true/false,
+# integers as digits, string lists as comma-separated items (an empty value
+# means an empty list). Unknown AMDL_* variables fail startup; fields pinned
+# by an environment variable are rejected by PUT /api/v1/config with 422.
+
 server:
   # string: API listen address in "host:port" form, for example "127.0.0.1:18080" or ":18080".
   listen: "127.0.0.1:18080"
 
 database:
   # string: SQLite database file path. Relative paths are resolved from the backend working directory.
-  path: "data/amdl.db"
+  path: "data/db/amdl.db"
 
 wrapper:
   # string: wrapper-manager gRPC address in "host:port" form.
@@ -92,6 +104,15 @@ download:
   # string template: output path for playlist tasks. {SongNumber} is the 1-based position in the playlist.
   playlist_path_format: "playlists/{PlaylistName}/{SongNumber:02d}. {SongName}"
   # string path: temporary media working directory. Relative paths are resolved from the backend working directory.
+  # All per-track scratch (encrypted download, streamed decrypt output, and the
+  # flattened/verified/tagged file) is staged here and only the finished file is
+  # moved to downloads_dir. If temp_dir shares a filesystem with downloads_dir the
+  # move is a cheap rename; if not, the finished file is copied across once. Put
+  # temp_dir on fast local storage (e.g. SSD) to keep the flatten/verify/tag work
+  # off a slower downloads volume. Peak usage is up to roughly three times one
+  # track's size per parallel track (see max_parallel_tracks): during flatten the
+  # encrypted download, the decrypted fragmented MP4, and the flattened output
+  # briefly coexist. Assumed single-writer: stale scratch is swept on startup.
   temp_dir: "data/tmp"
   # string: cover artwork size as "{width}x{height}", for example "5000x5000", "3000x3000", "1400x1400".
   cover_size: "5000x5000"

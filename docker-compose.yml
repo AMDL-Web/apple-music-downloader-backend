@@ -2,11 +2,13 @@
 #
 #   docker compose up -d --build
 #
-# 首次启动会在 amdl-configs 卷里生成带注释的 configs/config.yaml
-# (监听地址与 wrapper 地址已按下方环境变量改写),之后修改配置:
+# 首次启动会在 ./configs 里生成 config.yaml(后端从 config.example.yaml
+# 引导,带注释的字段文档见同目录示例文件),之后修改配置:
 #   - 运行期字段:PUT /api/v1/config,立即生效;
-#   - 启动期字段(listen / wrapper.address / database.path 等):
-#     编辑卷内 config.yaml 后 docker compose restart。
+#   - 任意字段:用 AMDL_<大写段名>_<大写键名> 环境变量覆盖(优先于
+#     config.yaml,每次启动生效,不写回文件),改完 docker compose up -d;
+#   - 或直接编辑 ./configs/config.yaml 后 docker compose restart
+#     (启动期字段需重启,且被环境变量覆盖的字段以环境变量为准)。
 services:
   amdl-backend:
     build: .
@@ -16,45 +18,46 @@ services:
     ports:
       - "18080:18080"
     environment:
-      # 运行用户:容器以 root 启动入口脚本,修正卷属主后降权到
-      # PUID:PGID 运行后端,默认 1000:1000。使用绑定挂载时设成宿主机
-      # 目录属主的 uid/gid 即可。每次启动都生效,变更后数据卷会自动
-      # 递归修正一次属主。
+      # 运行用户:容器以 root 启动入口脚本,修正挂载目录属主后降权到
+      # PUID:PGID 运行后端,默认 1000:1000。设成宿主机目录属主的 uid/gid
+      # 即可。每次启动都生效,变更后挂载目录会自动递归修正一次属主。
       # PUID: "1000"
       # PGID: "1000"
       # 时区,影响日志时间戳与 exec hooks 里命令看到的本地时间,
       # 默认 UTC。镜像已内置 tzdata,填 IANA 时区名即可。
       # TZ: "Asia/Shanghai"
-      # 以下两个变量只在首次启动生成 config.yaml 时生效。
-      # wrapper-manager gRPC 地址:
-      #   - wrapper 跑在宿主机上:保持 host.docker.internal:8080;
+      # 任何配置项都可以用 AMDL_<大写段名>_<大写键名> 环境变量覆盖,
+      # 例如 AMDL_DOWNLOAD_QUALITY_PRIORITY: "alac,aac"、
+      # AMDL_SIMULATE_ENABLED: "true"。列表值用逗号分隔,布尔用 true/false。
+      # wrapper-manager gRPC 地址(覆盖 wrapper.address):
+      #   - wrapper 跑在宿主机上:保持 host.docker.internal:8080(也是
+      #     入口脚本的容器默认值,不设该变量效果相同);
       #   - wrapper 也是 compose 服务:改成 "<服务名>:8080" 并取消下方
       #     wrapper-manager 服务注释。
-      AMDL_WRAPPER_ADDR: "host.docker.internal:8080"
-      # API 监听地址,容器内必须监听非回环地址(默认 :18080)。
-      # 改端口时需同步调整上方 ports 映射;健康检查端口也从它推导。
-      # AMDL_LISTEN: ":18080"
+      AMDL_WRAPPER_ADDRESS: "host.docker.internal:8080"
+      # API 监听地址(覆盖 server.listen),容器内必须监听非回环地址,
+      # 入口脚本默认 :18080。改端口时需同步调整上方 ports 映射;健康
+      # 检查端口也从它推导。
+      # AMDL_SERVER_LISTEN: ":18080"
     extra_hosts:
       # 让 Linux 上的容器也能通过 host.docker.internal 访问宿主机。
       - "host.docker.internal:host-gateway"
     volumes:
-      # 配置卷:config.yaml(后端机器管理)、config.example.yaml、hooks.yaml。
-      - amdl-configs:/app/configs
-      # 数据卷:SQLite 数据库、下载产物、临时目录。
-      - amdl-data:/app/data
-      # 想直接在宿主机文件系统里拿到音乐文件,可以改用绑定挂载,例如:
-      # - /path/to/music:/app/data/downloads
+      # 配置目录:config.yaml(后端机器管理)、config.example.yaml、hooks.yaml。
+      - ./configs:/app/configs
+      # SQLite 数据库目录(database.path 默认 data/db/amdl.db)。
+      - ./data/db:/app/data/db
+      # 下载产物目录;想放到宿主机其它位置改冒号左边即可,
+      # 例如 /path/to/music:/app/data/downloads。
+      - ./data/downloads:/app/data/downloads
+      # 临时目录 data/tmp 留在容器内,无需挂载。
       # 启用开发者令牌签名时挂载 .p8 私钥(只读),并在 config.yaml 中把
       # catalog.apple_music_private_key_path 指向 /app/keys/<文件名>.p8:
       # - ./keys:/app/keys:ro
 
   # 如果 wrapper-manager 也做了容器化,取消注释并按实际镜像补全,
-  # 然后把上面的 AMDL_WRAPPER_ADDR 改成 "wrapper-manager:8080"。
+  # 然后把上面的 AMDL_WRAPPER_ADDRESS 改成 "wrapper-manager:8080"。
   # wrapper-manager:
   #   image: <wrapper-manager 镜像>
   #   container_name: wrapper-manager
   #   restart: unless-stopped
-
-volumes:
-  amdl-configs:
-  amdl-data:

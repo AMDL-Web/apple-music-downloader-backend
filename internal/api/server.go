@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -287,6 +288,13 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if locked := config.RuntimeLockedChanges(current, merged); len(locked) > 0 {
 			rejectStatus, rejectErr = http.StatusUnprocessableEntity, fmt.Errorf("fields can only be changed in the config file and require a restart: %s", strings.Join(locked, ", "))
+			return config.Config{}, rejectErr
+		}
+		// A field pinned by an AMDL_* environment override would accept the
+		// write but revert to the environment value on the next reload, so
+		// reject it up front instead of pretending the change stuck.
+		if locked := config.EnvLockedChanges(current, merged, os.LookupEnv); len(locked) > 0 {
+			rejectStatus, rejectErr = http.StatusUnprocessableEntity, fmt.Errorf("fields are pinned by environment variables; unset the variable and restart to change them: %s", strings.Join(locked, ", "))
 			return config.Config{}, rejectErr
 		}
 		if err := merged.Validate(); err != nil {
