@@ -1,10 +1,22 @@
+# Every key in this file can be overridden with an environment variable named
+# AMDL_<SECTION>_<KEY> (the yaml path uppercased, "_" as separator), for
+# example AMDL_SERVER_LISTEN, AMDL_WRAPPER_ADDRESS, AMDL_DATABASE_PATH,
+# AMDL_DOWNLOAD_QUALITY_PRIORITY. Overrides sit on top of the config file on
+# every start and are not written back by the loader, so unsetting a variable
+# restores the file value on the next start (PUT /api/v1/config still
+# rewrites the whole file with the effective values, environment overrides
+# included). Value syntax: strings verbatim, booleans true/false,
+# integers as digits, string lists as comma-separated items (an empty value
+# means an empty list). Unknown AMDL_* variables fail startup; fields pinned
+# by an environment variable are rejected by PUT /api/v1/config with 422.
+
 server:
   # string: API listen address in "host:port" form, for example "127.0.0.1:18080" or ":18080".
   listen: "127.0.0.1:18080"
 
 database:
   # string: SQLite database file path. Relative paths are resolved from the backend working directory.
-  path: "data/amdl.db"
+  path: "data/db/amdl.db"
 
 wrapper:
   # string: wrapper-manager gRPC address in "host:port" form.

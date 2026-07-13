@@ -183,6 +183,30 @@ func TestUpdateConfigRejectsBadInput(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigRejectsEnvPinnedFields(t *testing.T) {
+	t.Setenv("AMDL_DOWNLOAD_COVER_FORMAT", "jpg")
+	store := config.NewStore(config.Default())
+	server := &Server{cfg: store}
+	recorder := requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config", `{"download":{"cover_format":"png"}}`)
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 (body %s)", recorder.Code, recorder.Body.String())
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, "AMDL_DOWNLOAD_COVER_FORMAT") || !strings.Contains(body, "pinned by environment") {
+		t.Fatalf("error body %q must name the pinning variable", body)
+	}
+	if store.Get().Download.CoverFormat != "jpg" {
+		t.Fatalf("rejected update leaked into the store: %+v", store.Get().Download)
+	}
+	// Leaving a pinned field at its current value is still accepted.
+	recorder = requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config", `{"download":{"cover_format":"jpg","embed_cover":false}}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
+	}
+	if got := store.Get().Download; got.EmbedCover || got.CoverFormat != "jpg" {
+		t.Fatalf("update alongside unchanged pinned field not applied: %+v", got)
+	}
+}
+
 func TestCreateDownloadWithOverrides(t *testing.T) {
 	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
 	if err != nil {

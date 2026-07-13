@@ -31,9 +31,11 @@ const savedFileHeader = `# Managed by the amdl backend: rewritten (comments drop
 // defaults. The values are loaded from the example and written back in the
 // same machine-managed format every later Save produces — the example's
 // comments are not carried over, since the first PUT /api/v1/config would
-// drop them anyway. It reports whether it created the file; an existing file
-// is left untouched, and a missing example next to a missing config is an
-// error the caller surfaces (nothing to start from).
+// drop them anyway. AMDL_* environment overrides are deliberately not baked
+// in: they overlay every Load instead, so unsetting one restores the file
+// value. It reports whether it created the file; an existing file is left
+// untouched, and a missing example next to a missing config is an error the
+// caller surfaces (nothing to start from).
 func BootstrapFromExample(path string) (bool, error) {
 	if _, err := os.Stat(path); err == nil {
 		return false, nil
@@ -41,7 +43,7 @@ func BootstrapFromExample(path string) (bool, error) {
 		return false, err
 	}
 	examplePath := filepath.Join(filepath.Dir(path), exampleFileName)
-	cfg, err := Load(examplePath)
+	cfg, err := load(examplePath, nil)
 	if err != nil {
 		return false, fmt.Errorf("config file %s does not exist and bootstrapping from %s failed: %w", path, examplePath, err)
 	}
