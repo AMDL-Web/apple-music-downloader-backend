@@ -108,8 +108,10 @@ func (d *Dispatcher) execute(entry Entry, payload Payload) {
 	runner := runners[entry.Type]
 	timeout := entry.Timeout(d.cfg.Timeout())
 	ctx := context.Background()
+	logger := d.logger.With("job_id", payload.Job.ID, "hook", entry.Name, "hook_event", payload.Event)
 
 	d.record(ctx, entry, payload.Job.ID, "hook_started", "", nil)
+	logger.Debug("hook execution started")
 
 	// max_attempts counts total attempts including the first; 0 (unset)
 	// behaves as a single attempt.
@@ -128,10 +130,11 @@ func (d *Dispatcher) execute(entry Entry, payload Payload) {
 			d.record(ctx, entry, payload.Job.ID, "hook_succeeded", "", map[string]any{
 				"attempt": attempt, "duration_ms": duration.Milliseconds(),
 			})
+			logger.Info("hook execution succeeded", "attempt", attempt, "duration_ms", duration.Milliseconds())
 			return
 		}
 		lastErr = err
-		d.logger.Warn("hook execution failed", "hook", entry.Name, "attempt", attempt, "max_attempts", attempts, "error", err)
+		logger.Warn("hook execution failed", "attempt", attempt, "max_attempts", attempts, "duration_ms", duration.Milliseconds(), "error", err)
 		if attempt < attempts {
 			time.Sleep(time.Second)
 		}

@@ -13,6 +13,7 @@ import (
 type Config struct {
 	Server   ServerConfig   `yaml:"server" json:"server"`
 	Database DatabaseConfig `yaml:"database" json:"database"`
+	Logging  LoggingConfig  `yaml:"logging" json:"logging"`
 	Wrapper  WrapperConfig  `yaml:"wrapper" json:"wrapper"`
 	Catalog  CatalogConfig  `yaml:"catalog" json:"catalog"`
 	Download DownloadConfig `yaml:"download" json:"download"`
@@ -26,6 +27,25 @@ type ServerConfig struct {
 
 type DatabaseConfig struct {
 	Path string `yaml:"path" json:"path"`
+}
+
+// LoggingConfig controls the process-wide structured logger. The whole
+// output shape is startup-bound because changing files and handler structure
+// while requests are in flight would make persistence failures ambiguous;
+// Level and AccessLog are safe to update at runtime.
+type LoggingConfig struct {
+	Level         string `yaml:"level" json:"level"`
+	Format        string `yaml:"format" json:"format"`
+	Console       bool   `yaml:"console" json:"console"`
+	IncludeSource bool   `yaml:"include_source" json:"include_source"`
+	AccessLog     bool   `yaml:"access_log" json:"access_log"`
+	BufferSize    int    `yaml:"buffer_size" json:"buffer_size"`
+	FileEnabled   bool   `yaml:"file_enabled" json:"file_enabled"`
+	FilePath      string `yaml:"file_path" json:"file_path"`
+	MaxSizeMB     int    `yaml:"max_size_mb" json:"max_size_mb"`
+	MaxBackups    int    `yaml:"max_backups" json:"max_backups"`
+	MaxAgeDays    int    `yaml:"max_age_days" json:"max_age_days"`
+	Compress      bool   `yaml:"compress" json:"compress"`
 }
 
 type WrapperConfig struct {
@@ -134,6 +154,11 @@ func Default() Config {
 	return Config{
 		Server:   ServerConfig{Listen: "127.0.0.1:18080"},
 		Database: DatabaseConfig{Path: "data/db/amdl.db"},
+		Logging: LoggingConfig{
+			Level: "info", Format: "text", Console: true, AccessLog: true,
+			BufferSize: 2000, FilePath: "data/logs/amdl.log", MaxSizeMB: 100,
+			MaxBackups: 7, MaxAgeDays: 30, Compress: true,
+		},
 		Wrapper: WrapperConfig{
 			Address: "127.0.0.1:8080", Insecure: true, TimeoutSeconds: 30, LoginTimeoutSeconds: 120,
 		},
@@ -191,6 +216,34 @@ func load(path string, environ []string) (Config, error) {
 // was loaded from YAML at startup or assembled at runtime (config update API,
 // per-request download overrides applied to a base config).
 func (c Config) Validate() error {
+	switch c.Logging.Level {
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("logging.level must be debug, info, warn, or error")
+	}
+	switch c.Logging.Format {
+	case "text", "json":
+	default:
+		return fmt.Errorf("logging.format must be text or json")
+	}
+	if !c.Logging.Console && !c.Logging.FileEnabled && c.Logging.BufferSize == 0 {
+		return fmt.Errorf("logging must enable console, file, or a non-zero buffer_size")
+	}
+	if c.Logging.BufferSize < 0 || c.Logging.BufferSize > 100000 {
+		return fmt.Errorf("logging.buffer_size must be between 0 and 100000")
+	}
+	if c.Logging.FileEnabled && strings.TrimSpace(c.Logging.FilePath) == "" {
+		return fmt.Errorf("logging.file_path cannot be empty when file_enabled is true")
+	}
+	if c.Logging.MaxSizeMB < 1 {
+		return fmt.Errorf("logging.max_size_mb must be >= 1")
+	}
+	if c.Logging.MaxBackups < 0 {
+		return fmt.Errorf("logging.max_backups must be >= 0")
+	}
+	if c.Logging.MaxAgeDays < 0 {
+		return fmt.Errorf("logging.max_age_days must be >= 0")
+	}
 	if c.Catalog.AlbumTrackURLMode != "song" && c.Catalog.AlbumTrackURLMode != "album" {
 		return fmt.Errorf("catalog.album_track_url_mode must be song or album")
 	}

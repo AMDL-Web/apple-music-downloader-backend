@@ -18,12 +18,13 @@ import (
 	"amdl/internal/events"
 	"amdl/internal/hooks"
 	"amdl/internal/jobs"
+	"amdl/internal/logging"
 	"amdl/internal/media"
 	"amdl/internal/wrapper"
 )
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	bootstrapLogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfgPath := os.Getenv("AMDL_CONFIG")
 	if cfgPath == "" {
 		cfgPath = "configs/config.yaml"
@@ -32,16 +33,25 @@ func main() {
 	// config.example.yaml next to it. The live file is machine-managed —
 	// PUT /api/v1/config rewrites it — so it stays out of version control.
 	if created, err := config.BootstrapFromExample(cfgPath); err != nil {
-		logger.Error("bootstrap config", "error", err)
+		bootstrapLogger.Error("bootstrap config", "error", err)
 		os.Exit(1)
 	} else if created {
-		logger.Info("created config from example", "path", cfgPath)
+		bootstrapLogger.Info("created config from example", "path", cfgPath)
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		logger.Error("load config", "error", err)
+		bootstrapLogger.Error("load config", "error", err)
 		os.Exit(1)
 	}
+	logSystem, err := logging.New(cfg.Logging)
+	if err != nil {
+		bootstrapLogger.Error("initialize logging", "error", err)
+		os.Exit(1)
+	}
+	defer logSystem.Close()
+	slog.SetDefault(logSystem.Logger)
+	logger := logSystem.Logger.With("component", "main")
+	logger.Info("logging initialized", "level", cfg.Logging.Level, "format", cfg.Logging.Format, "file_enabled", cfg.Logging.FileEnabled)
 	hooksCfgPath := os.Getenv("AMDL_HOOKS_CONFIG")
 	if hooksCfgPath == "" {
 		hooksCfgPath = "configs/hooks.yaml"
@@ -62,7 +72,7 @@ func main() {
 	// Remove scratch files a previous run left behind (a crash mid-download can
 	// leak encrypted/decrypted/flatten temp files). Safe to do unconditionally
 	// at startup: the temp dir is single-writer and no job has started yet.
-	media.CleanupStaleTemp(cfg.Download.TempDir, logger)
+	media.CleanupStaleTemp(cfg.Download.TempDir, logSystem.Logger.With("component", "media"))
 	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o755); err != nil {
 		logger.Error("create database dir", "error", err)
 		os.Exit(1)
@@ -83,7 +93,7 @@ func main() {
 	}
 	defer wrapperClient.Close()
 
-	catalog := applemusic.NewCatalogClient(cfg.Catalog, logger)
+	catalog := applemusic.NewCatalogClient(cfg.Catalog, logSystem.Logger.With("component", "catalog"))
 	if err := catalog.InitDeveloperToken(); err != nil {
 		logger.Error("sign apple music developer token", "error", err)
 		os.Exit(1)
@@ -96,10 +106,10 @@ func main() {
 	// update endpoint refuses to change them.
 	cfgStore := config.NewFileStore(cfg, cfgPath)
 	toolChecker := media.NewToolChecker(cfg.Tools)
-	downloader := media.NewDownloader(cfgStore, catalog, wrapperClient, toolChecker, logger)
+	downloader := media.NewDownloader(cfgStore, catalog, wrapperClient, toolChecker, logSystem.Logger.With("component", "media"))
 	qualityService := media.NewQualityService(cfgStore, catalog, wrapperClient)
-	manager := jobs.NewManager(store, hub, downloader, cfg.Download.MaxRunningJobs, logger)
-	hookDispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, logger)
+	manager := jobs.NewManager(store, hub, downloader, cfg.Download.MaxRunningJobs, logSystem.Logger.With("component", "jobs"))
+	hookDispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, logSystem.Logger.With("component", "hooks"))
 	manager.SetHooks(hookDispatcher)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -123,7 +133,7 @@ func main() {
 			}
 			if dir := *job.Overrides.TempDir; dir != "" && !swept[dir] {
 				swept[dir] = true
-				media.CleanupStaleTemp(dir, logger)
+				media.CleanupStaleTemp(dir, logSystem.Logger.With("component", "media"))
 			}
 		}
 	}
@@ -131,7 +141,8 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
-		Handler:           api.NewServer(cfgStore, store, hub, manager, wrapperClient, qualityService, catalog, logger).Routes(),
+		Handler:           api.NewServer(cfgStore, store, hub, manager, wrapperClient, qualityService, catalog, logSystem.Logger, logSystem).Routes(),
+		ErrorLog:          slog.NewLogLogger(logSystem.Logger.With("component", "http").Handler(), slog.LevelError),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

@@ -22,6 +22,7 @@ import (
 	"amdl/internal/domain"
 	"amdl/internal/events"
 	"amdl/internal/jobs"
+	"amdl/internal/logging"
 	"amdl/internal/media"
 	"amdl/internal/wrapper"
 
@@ -39,14 +40,16 @@ var urlSplitPattern = regexp.MustCompile(`[\r\n\s,;，；]+`)
 type Server struct {
 	// cfg is the live runtime config store shared with the download pipeline;
 	// GET/PUT /api/v1/config read and replace its snapshot.
-	cfg      *config.Store
-	store    *db.Store
-	hub      *events.Hub
-	manager  *jobs.Manager
-	wrapper  wrapperService
-	quality  qualityService
-	devToken developerTokenService
-	logger   *slog.Logger
+	cfg       *config.Store
+	store     *db.Store
+	hub       *events.Hub
+	manager   *jobs.Manager
+	wrapper   wrapperService
+	quality   qualityService
+	devToken  developerTokenService
+	logger    *slog.Logger
+	logStore  *logging.Store
+	logSystem *logging.System
 }
 
 type wrapperService interface {
@@ -64,8 +67,13 @@ type developerTokenService interface {
 	MintDeveloperToken() (string, error)
 }
 
-func NewServer(cfg *config.Store, store *db.Store, hub *events.Hub, manager *jobs.Manager, wrapperClient wrapperService, qualityClient qualityService, devToken developerTokenService, logger *slog.Logger) *Server {
-	return &Server{cfg: cfg, store: store, hub: hub, manager: manager, wrapper: wrapperClient, quality: qualityClient, devToken: devToken, logger: logger}
+func NewServer(cfg *config.Store, store *db.Store, hub *events.Hub, manager *jobs.Manager, wrapperClient wrapperService, qualityClient qualityService, devToken developerTokenService, logger *slog.Logger, logSystem ...*logging.System) *Server {
+	s := &Server{cfg: cfg, store: store, hub: hub, manager: manager, wrapper: wrapperClient, quality: qualityClient, devToken: devToken, logger: logger}
+	if len(logSystem) > 0 && logSystem[0] != nil {
+		s.logSystem = logSystem[0]
+		s.logStore = logSystem[0].Store
+	}
+	return s
 }
 
 // currentConfig returns the live runtime config snapshot; nil-safe for test
@@ -82,6 +90,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /docs", swaggerUI)
 	mux.HandleFunc("GET /api/openapi.yaml", openAPI)
 	mux.HandleFunc("GET /api/v1/health", s.health)
+	mux.HandleFunc("GET /api/v1/logs", s.listLogs)
+	mux.HandleFunc("GET /api/v1/logs/stream", s.streamLogs)
 	mux.HandleFunc("GET /api/v1/config", s.getConfig)
 	mux.HandleFunc("PUT /api/v1/config", s.updateConfig)
 	mux.HandleFunc("GET /api/v1/developer-token", s.developerToken)
@@ -103,7 +113,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/downloads/{id}/retry", s.retryDownload)
 	mux.HandleFunc("GET /api/v1/downloads/{id}/events", s.events)
 	mux.HandleFunc("GET /api/v1/downloads/{id}/events/ws", s.eventsWS)
-	return cors(mux)
+	return s.observeHTTP(cors(mux))
 }
 
 func (s *Server) queryQuality(w http.ResponseWriter, r *http.Request) {
@@ -209,7 +219,8 @@ func (s *Server) wrapperLogout(w http.ResponseWriter, r *http.Request) {
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Request-ID")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -233,7 +244,8 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 // getConfig returns the runtime-changeable part of the current config
-// (download minus max_running_jobs, simulate, catalog.album_track_url_mode).
+// (download minus max_running_jobs, logging level/access log, simulate,
+// catalog.album_track_url_mode).
 // Startup-bound fields are omitted: clients cannot change them through this
 // API, so they have no reason to see them here.
 //
@@ -249,6 +261,7 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 			resp["reload_error"] = err.Error()
 		}
 	}
+	s.applyLoggingConfig()
 	resp["config"] = config.MutableView(s.currentConfig())
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -256,11 +269,11 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 // updateConfig merges the request body onto the current runtime config:
 // omitted fields keep their current values, present fields (including whole
 // sections) are replaced. The merged result must pass full config validation,
-// and fields consumed only at startup (server, database, wrapper, tools,
-// catalog client/signing, download.max_running_jobs) are rejected — changing
-// them at runtime would silently do nothing. Accepted changes apply to new
-// requests and newly started jobs immediately and are written back to the
-// live config file, so they survive restarts.
+// and fields consumed only at startup (server, database, logging outputs,
+// wrapper, tools, catalog client/signing, download.max_running_jobs) are
+// rejected — changing them at runtime would silently do nothing. Accepted
+// changes apply to new requests and newly started jobs immediately and are
+// written back to the live config file, so they survive restarts.
 func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	if s.cfg == nil {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("runtime config store is not configured"))
@@ -311,7 +324,24 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("persist config: %w", err))
 		return
 	}
+	// Another concurrent update may have committed after this one returned;
+	// apply the store's final snapshot so an older request cannot restore its
+	// logging level after a newer write.
+	s.applyLoggingConfig()
 	writeJSON(w, http.StatusOK, map[string]any{"config": config.MutableView(updated), "persisted": s.cfg.Persistent()})
+}
+
+func (s *Server) applyLoggingConfig() {
+	if s.logSystem == nil {
+		return
+	}
+	for {
+		level := s.currentConfig().Logging.Level
+		_ = s.logSystem.SetLevel(level)
+		if s.currentConfig().Logging.Level == level {
+			return
+		}
+	}
 }
 
 // developerToken hands out a freshly signed Apple Music developer token. Only

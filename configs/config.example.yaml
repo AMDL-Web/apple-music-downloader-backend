@@ -18,6 +18,35 @@ database:
   # string: SQLite database file path. Relative paths are resolved from the backend working directory.
   path: "data/db/amdl.db"
 
+logging:
+  # enum: debug, info, warn, error. Records below this severity are discarded from every output.
+  # Runtime-mutable through PUT /api/v1/config and manual-file reload; no restart required.
+  level: "info"
+  # enum: text, json. Applies to both console and rotating-file output. Requires a restart.
+  format: "text"
+  # bool: true writes logs to stdout; false disables console output. Requires a restart.
+  console: true
+  # bool: true includes the Go source file and line in each record; false omits it. Requires a restart.
+  include_source: false
+  # bool: true emits one structured record per completed HTTP request; false disables HTTP access records.
+  # Panic recovery and X-Request-ID propagation remain active when false. Runtime-mutable; no restart required.
+  access_log: true
+  # integer records: number of recent structured records retained for GET /api/v1/logs and its SSE stream.
+  # 0 disables in-memory retention and the log APIs return an empty history; valid range: 0-100000. Requires a restart.
+  buffer_size: 2000
+  # bool: true writes to the rotating file below; false leaves file output disabled. Requires a restart.
+  file_enabled: false
+  # string path: active log file. Relative paths are resolved from the backend working directory. Requires a restart.
+  file_path: "data/logs/amdl.log"
+  # integer MiB: rotate the active file after it reaches this size; must be >= 1. Requires a restart.
+  max_size_mb: 100
+  # integer files: maximum old rotated files retained. 0 means no count-based limit. Requires a restart.
+  max_backups: 7
+  # integer days: maximum age of rotated files. 0 means no age-based limit. Requires a restart.
+  max_age_days: 30
+  # bool: true gzip-compresses rotated files; false keeps them uncompressed. Requires a restart.
+  compress: true
+
 wrapper:
   # string: wrapper-manager gRPC address in "host:port" form.
   address: "127.0.0.1:8080"

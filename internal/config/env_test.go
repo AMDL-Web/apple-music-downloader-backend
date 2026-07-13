@@ -14,6 +14,7 @@ func TestEnvOverrides(t *testing.T) {
 		"AMDL_SERVER_LISTEN=:19090",
 		"AMDL_WRAPPER_ADDRESS=wrapper-manager:8080",
 		"AMDL_DATABASE_PATH=/srv/amdl/amdl.db",
+		"AMDL_LOGGING_LEVEL=debug",
 		"AMDL_SIMULATE_ENABLED=true",
 		"AMDL_DOWNLOAD_MAX_ATTEMPTS=7",
 		"AMDL_DOWNLOAD_QUALITY_PRIORITY=aac, alac,",
@@ -32,6 +33,9 @@ func TestEnvOverrides(t *testing.T) {
 	}
 	if cfg.Database.Path != "/srv/amdl/amdl.db" {
 		t.Fatalf("database path = %q, want env override", cfg.Database.Path)
+	}
+	if cfg.Logging.Level != "debug" {
+		t.Fatalf("logging level = %q, want debug", cfg.Logging.Level)
 	}
 	if !cfg.Simulate.Enabled {
 		t.Fatal("simulate.enabled not overridden")

@@ -54,6 +54,8 @@ services:
       - ./configs:/app/configs
       # SQLite 数据库目录(database.path 默认 data/db/amdl.db)。
       - ./data/db:/app/data/db
+      # 可选轮转日志目录(logging.file_enabled 默认 false,启用后写入此处)。
+      - ./data/logs:/app/data/logs
       # 下载产物目录;想放到宿主机其它位置改冒号左边即可,
       # 例如 /path/to/music:/app/data/downloads。
       - ./data/downloads:/app/data/downloads

@@ -14,6 +14,7 @@ import (
 	"amdl/internal/domain"
 	"amdl/internal/events"
 	"amdl/internal/jobs"
+	"amdl/internal/logging"
 )
 
 func TestGetConfigReturnsOnlyMutableFields(t *testing.T) {
@@ -32,7 +33,7 @@ func TestGetConfigReturnsOnlyMutableFields(t *testing.T) {
 	if resp.Persisted {
 		t.Fatal("persisted = true, runtime config is never written back to disk")
 	}
-	for _, section := range []string{"catalog", "download", "simulate"} {
+	for _, section := range []string{"catalog", "download", "logging", "simulate"} {
 		if _, ok := resp.Config[section]; !ok {
 			t.Fatalf("config missing mutable section %q: %s", section, recorder.Body.String())
 		}
@@ -59,6 +60,13 @@ func TestGetConfigReturnsOnlyMutableFields(t *testing.T) {
 	if len(catalog) != 1 || catalog["album_track_url_mode"] != "song" {
 		t.Fatalf("catalog section = %v, want only album_track_url_mode", catalog)
 	}
+	var logging map[string]any
+	if err := json.Unmarshal(resp.Config["logging"], &logging); err != nil {
+		t.Fatal(err)
+	}
+	if len(logging) != 2 || logging["level"] != "info" || logging["access_log"] != true {
+		t.Fatalf("logging section = %v, want only level/access_log", logging)
+	}
 }
 
 func TestUpdateConfigMergesAndTakesEffect(t *testing.T) {
@@ -83,6 +91,32 @@ func TestUpdateConfigMergesAndTakesEffect(t *testing.T) {
 	base := config.Default()
 	if got.Download.SongPathFormat != base.Download.SongPathFormat || got.Server.Listen != base.Server.Listen {
 		t.Fatalf("omitted fields changed: %+v", got)
+	}
+}
+
+func TestUpdateConfigAppliesLoggingLevel(t *testing.T) {
+	cfg := config.Default()
+	cfg.Logging.Console = false
+	system, err := logging.New(cfg.Logging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = system.Close() })
+	store := config.NewStore(cfg)
+	server := NewServer(store, nil, nil, nil, nil, nil, nil, system.Logger, system)
+
+	system.Logger.Debug("before-level-change")
+	recorder := requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config", `{"logging":{"level":"debug","access_log":false}}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	system.Logger.Debug("after-level-change")
+	page := system.Store.List(logging.Filter{Query: "level-change", Limit: 10})
+	if len(page.Entries) != 1 || page.Entries[0].Message != "after-level-change" {
+		t.Fatalf("runtime level entries = %#v", page.Entries)
+	}
+	if got := store.Get().Logging; got.Level != "debug" || got.AccessLog {
+		t.Fatalf("runtime logging config = %+v", got)
 	}
 }
 
@@ -164,6 +198,7 @@ func TestUpdateConfigRejectsBadInput(t *testing.T) {
 		{name: "validation failure", body: `{"download":{"cover_format":"gif"}}`, status: http.StatusUnprocessableEntity, want: "cover_format"},
 		{name: "locked field", body: `{"server":{"listen":"0.0.0.0:1"}}`, status: http.StatusUnprocessableEntity, want: "server.listen"},
 		{name: "locked worker count", body: `{"download":{"max_running_jobs":99}}`, status: http.StatusUnprocessableEntity, want: "download.max_running_jobs"},
+		{name: "locked logging output", body: `{"logging":{"format":"json"}}`, status: http.StatusUnprocessableEntity, want: "logging.format"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
