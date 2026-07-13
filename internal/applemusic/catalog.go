@@ -79,6 +79,23 @@ func (c *CatalogClient) apiBase() string {
 }
 
 func (c *CatalogClient) Song(ctx context.Context, storefront, id string) (Song, error) {
+	song, err := c.SongMetadata(ctx, storefront, id)
+	if err != nil {
+		return Song{}, err
+	}
+	if song.AlbumID != "" {
+		if album, err := c.Album(ctx, storefront, song.AlbumID); err == nil && len(album.Tracks) > 0 {
+			song = enrichSongWithAlbum(song, album)
+		}
+	}
+	return song, nil
+}
+
+// SongMetadata reads the song resource without following its album
+// relationship. Collection downloads already hold album metadata from their
+// resolve phase, so they use this lighter request and merge that existing
+// context instead of downloading the same album once per track.
+func (c *CatalogClient) SongMetadata(ctx context.Context, storefront, id string) (Song, error) {
 	var resp catalogSongResponse
 	params := url.Values{
 		"include": []string{"albums,artists"},
@@ -95,29 +112,28 @@ func (c *CatalogClient) Song(ctx context.Context, storefront, id string) (Song, 
 	if len(resp.Data) == 0 {
 		return Song{}, fmt.Errorf("song %s not found", id)
 	}
-	song := mapSong(resp.Data[0])
-	if song.AlbumID != "" {
-		if album, err := c.Album(ctx, storefront, song.AlbumID); err == nil && len(album.Tracks) > 0 {
-			song.AlbumArtworkURL = album.ArtworkURL
-			song.AlbumArtistID = album.ArtistID
-			song.AlbumArtistArtworkURL = album.ArtistArtworkURL
-			for _, track := range album.Tracks {
-				if track.ID == song.ID {
-					song.TrackCount = track.TrackCount
-					song.DiscCount = track.DiscCount
-					break
-				}
-			}
-			if song.TrackCount == 0 {
-				song.TrackCount = len(album.Tracks)
-			}
-			if song.DiscCount == 0 {
-				song.DiscCount = maxDisc(album.Tracks)
-			}
-			song.AlbumArtist = album.Artist
+	return mapSong(resp.Data[0]), nil
+}
+
+func enrichSongWithAlbum(song Song, album Collection) Song {
+	song.AlbumArtworkURL = album.ArtworkURL
+	song.AlbumArtistID = album.ArtistID
+	song.AlbumArtistArtworkURL = album.ArtistArtworkURL
+	for _, track := range album.Tracks {
+		if track.ID == song.ID {
+			song.TrackCount = track.TrackCount
+			song.DiscCount = track.DiscCount
+			break
 		}
 	}
-	return song, nil
+	if song.TrackCount == 0 {
+		song.TrackCount = len(album.Tracks)
+	}
+	if song.DiscCount == 0 {
+		song.DiscCount = maxDisc(album.Tracks)
+	}
+	song.AlbumArtist = album.Artist
+	return song
 }
 
 func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Collection, error) {
