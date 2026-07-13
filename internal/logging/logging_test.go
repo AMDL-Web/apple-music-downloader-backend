@@ -182,6 +182,28 @@ func TestFileOutput(t *testing.T) {
 	}
 }
 
+func TestFileOutputRedactsSensitiveGroup(t *testing.T) {
+	cfg := testConfig()
+	cfg.FileEnabled = true
+	cfg.FilePath = filepath.Join(t.TempDir(), "amdl.log")
+	cfg.Format = "json"
+	system, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	system.Logger.Info("written", slog.Group("authorization", "value", "group-secret"))
+	if err := system.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(cfg.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "group-secret") || !strings.Contains(string(raw), `"authorization":{"value":"[REDACTED]"}`) {
+		t.Fatalf("sensitive group leaked to file output: %s", raw)
+	}
+}
+
 func TestFileOutputFailsFastForUnwritableTarget(t *testing.T) {
 	cfg := testConfig()
 	cfg.FileEnabled = true

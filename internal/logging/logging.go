@@ -61,7 +61,11 @@ func New(cfg config.LoggingConfig) (*System, error) {
 	options := &slog.HandlerOptions{
 		AddSource: cfg.IncludeSource,
 		Level:     &system.level,
-		ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
+		ReplaceAttr: func(groups []string, attr slog.Attr) slog.Attr {
+			if hasSensitiveGroup(groups) {
+				attr.Value = slog.StringValue("[REDACTED]")
+				return attr
+			}
 			return redactAttr(attr)
 		},
 	}
@@ -229,6 +233,15 @@ func sensitiveKey(key string) bool {
 	normalized := strings.ToLower(strings.ReplaceAll(key, "-", "_"))
 	for _, part := range []string{"password", "passwd", "authorization", "cookie", "secret", "private_key", "token", "api_key", "bearer", "two_step_code"} {
 		if normalized == part || strings.HasSuffix(normalized, "_"+part) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSensitiveGroup(groups []string) bool {
+	for _, group := range groups {
+		if sensitiveKey(group) {
 			return true
 		}
 	}
