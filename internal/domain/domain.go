@@ -298,6 +298,11 @@ type DownloadRequest struct {
 	// config for every job created from this request only. Omitted fields
 	// keep the runtime config's values.
 	Overrides *config.DownloadOverrides `json:"overrides,omitempty"`
+	// MediaUserToken is an optional Apple Music subscription token
+	// (media-user-token) used only to resolve station (radio) downloads in
+	// this request. It is kept in memory for the lifetime of these jobs and is
+	// never persisted to the database or config.
+	MediaUserToken string `json:"media_user_token,omitempty"`
 }
 
 type SubmitStatus string

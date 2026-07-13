@@ -25,6 +25,7 @@ type DownloadOverrides struct {
 	AlbumPathFormat    *string   `json:"album_path_format,omitempty"`
 	ArtistPathFormat   *string   `json:"artist_path_format,omitempty"`
 	PlaylistPathFormat *string   `json:"playlist_path_format,omitempty"`
+	StationPathFormat  *string   `json:"station_path_format,omitempty"`
 	TempDir            *string   `json:"temp_dir,omitempty"`
 	CoverSize          *string   `json:"cover_size,omitempty"`
 	CoverFormat        *string   `json:"cover_format,omitempty"`
@@ -75,6 +76,9 @@ func (o *DownloadOverrides) Apply(base Config) Config {
 	}
 	if o.PlaylistPathFormat != nil {
 		d.PlaylistPathFormat = *o.PlaylistPathFormat
+	}
+	if o.StationPathFormat != nil {
+		d.StationPathFormat = *o.StationPathFormat
 	}
 	if o.TempDir != nil {
 		d.TempDir = *o.TempDir

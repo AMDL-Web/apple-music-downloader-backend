@@ -98,6 +98,7 @@ type DownloadConfig struct {
 	AlbumPathFormat    string   `yaml:"album_path_format" json:"album_path_format"`
 	ArtistPathFormat   string   `yaml:"artist_path_format" json:"artist_path_format"`
 	PlaylistPathFormat string   `yaml:"playlist_path_format" json:"playlist_path_format"`
+	StationPathFormat  string   `yaml:"station_path_format" json:"station_path_format"`
 	TempDir            string   `yaml:"temp_dir" json:"temp_dir"`
 	CoverSize          string   `yaml:"cover_size" json:"cover_size"`
 	CoverFormat        string   `yaml:"cover_format" json:"cover_format"`
@@ -148,6 +149,7 @@ func Default() Config {
 			AlbumPathFormat:    "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
 			ArtistPathFormat:   "artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
 			PlaylistPathFormat: "playlists/{PlaylistName}/{SongNumber:02d}. {SongName}",
+			StationPathFormat:  "stations/{StationName}/{SongNumber:02d}. {SongName}",
 			TempDir:            "data/tmp", CoverSize: "5000x5000", CoverFormat: "jpg",
 			EmbedCover: true, EmbedLyrics: true, LyricsFormat: "lrc", LyricsType: "lyrics", LyricsExtras: []string{},
 			ALACMaxSampleRate: 192000, ALACMaxBitDepth: 24, CheckIntegrity: true,
@@ -213,6 +215,7 @@ func (c Config) Validate() error {
 		"download.album_path_format":    c.Download.AlbumPathFormat,
 		"download.artist_path_format":   c.Download.ArtistPathFormat,
 		"download.playlist_path_format": c.Download.PlaylistPathFormat,
+		"download.station_path_format":  c.Download.StationPathFormat,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s cannot be empty", name)

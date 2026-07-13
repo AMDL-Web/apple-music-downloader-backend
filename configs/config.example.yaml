@@ -103,6 +103,10 @@ download:
   artist_path_format: "artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}"
   # string template: output path for playlist tasks. {SongNumber} is the 1-based position in the playlist.
   playlist_path_format: "playlists/{PlaylistName}/{SongNumber:02d}. {SongName}"
+  # string template: output path for radio station (station/ra.xxxx) tasks. A station resolves to a
+  # rolling next-tracks list, so it gets its own folder. {StationName}/{StationId} carry the station's
+  # name/id; {SongNumber} is the 1-based position.
+  station_path_format: "stations/{StationName}/{SongNumber:02d}. {SongName}"
   # string path: temporary media working directory. Relative paths are resolved from the backend working directory.
   # All per-track scratch (encrypted download, streamed decrypt output, and the
   # flattened/verified/tagged file) is staged here and only the finished file is

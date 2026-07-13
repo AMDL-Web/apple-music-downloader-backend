@@ -226,15 +226,27 @@ func TestStandaloneCoverDirsShareOutputPathContext(t *testing.T) {
 	}
 }
 
+func TestStationUsesStationPathFormat(t *testing.T) {
+	cfg := config.Default()
+	cfg.Download.DownloadsDir = "downloads"
+
+	song := applemusic.Song{ArtistName: "Utada", AlbumName: "One Last Kiss", Name: "One Last Kiss"}
+	got := outputPath(cfg, song, applemusic.TypeStation, 3, "", "\u6881\u6768\u5cfb\u73ae\u7684\u7535\u53f0", "ra.u-abc", "", "")
+	want := filepath.Join("downloads", "stations", "\u6881\u6768\u5cfb\u73ae\u7684\u7535\u53f0", "03. One Last Kiss.m4a")
+	if got != want {
+		t.Fatalf("station outputPath = %q, want %q", got, want)
+	}
+}
+
 func TestPlaylistFolderPathMatchesOutputPathFolder(t *testing.T) {
 	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
 
 	song := applemusic.Song{ArtistName: "Artist", AlbumName: "Album", Name: "Song"}
-	folder := playlistFolderPath(cfg, song, "My Playlist", "pl.123")
+	folder := collectionFolderPath(cfg, song, applemusic.TypePlaylist, "My Playlist", "pl.123")
 	track := outputPath(cfg, song, applemusic.TypePlaylist, 1, "", "My Playlist", "pl.123", "", "")
 	if want := filepath.Dir(track); folder != want {
-		t.Fatalf("playlistFolderPath() = %q, want %q", folder, want)
+		t.Fatalf("collectionFolderPath() = %q, want %q", folder, want)
 	}
 }
 

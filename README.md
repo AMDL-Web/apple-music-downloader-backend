@@ -1,12 +1,12 @@
 # AMDL Backend
 
-AMDL Backend 是 Apple Music 下载系统的核心后端服务。它负责解析 Apple Music 单曲、专辑、歌单和艺术家链接，调度下载任务，对接 `wrapper-manager` 获取媒体数据，并通过 HTTP API 与 SSE 暴露任务状态。
+AMDL Backend 是 Apple Music 下载系统的核心后端服务。它负责解析 Apple Music 单曲、专辑、歌单、艺术家和电台链接，调度下载任务，对接 `wrapper-manager` 获取媒体数据，并通过 HTTP API 与 SSE 暴露任务状态。
 
 当前仓库以根目录 Go 模块为生产代码来源，主要代码位于 `cmd/`、`internal/`、`configs/` 等目录。
 
 ## 功能
 
-- 支持 Apple Music 单曲、专辑、歌单和艺术家 URL。
+- 支持 Apple Music 单曲、专辑、歌单、艺术家和电台 URL。
 - 不会支持 Apple Music MV 下载；受 L3 限制，当前链路只能获取低分辨率视频，不符合本项目的下载质量目标。
 - 通过 `wrapper-manager` gRPC 获取账号状态、播放清单和媒体数据。
 - 使用 SQLite 持久化任务、任务项和事件。
@@ -215,6 +215,14 @@ curl -X POST http://localhost:18080/api/v1/downloads \
 
 `force: true` 会覆盖已存在的音频及其歌词边车文件；默认为 `false`，已存在的文件会被跳过。
 
+下载电台（station，链接形如 `https://music.apple.com/us/station/.../ra.xxxx`）：仅支持能解析为曲目列表的个性化/精选电台，需随请求提供订阅令牌 `media_user_token`；直播电台（Apple Music 1 等）没有静态曲目列表，任务会以明确错误结束。电台曲目取自 Apple Music 的「接下来播放」滚动列表，因此一次下载捕获的是当前返回的若干首曲目，而非固定编目。`media_user_token` 只保存在内存中、随这批任务的生命周期存在，绝不写入数据库或配置文件；后端重启后会丢失，届时被恢复的电台任务会提示重新提交。电台产物存入独立的电台目录，按 `download.station_path_format`（默认 `stations/{StationName}/{SongNumber:02d}. {SongName}`）归档。
+
+```bash
+curl -X POST http://localhost:18080/api/v1/downloads \
+  -H 'Content-Type: application/json' \
+  -d '{"urls":["https://music.apple.com/us/station/example/ra.978194965"],"media_user_token":"<你的 media-user-token>"}'
+```
+
 查询任务：
 
 ```bash
@@ -292,6 +300,7 @@ curl -X DELETE http://localhost:18080/api/v1/downloads/{job_id}
 - `download.album_path_format`，默认 `albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}`
 - `download.artist_path_format`，默认 `artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}`（艺术家任务会展开为该艺术家的专辑/单曲列表）
 - `download.playlist_path_format`，默认 `playlists/{PlaylistName}/{SongNumber:02d}. {SongName}`（`{SongNumber}` 为歌曲在歌单中的序号）
+- `download.station_path_format`，默认 `stations/{StationName}/{SongNumber:02d}. {SongName}`（电台任务；`{StationName}`/`{StationId}` 为电台名/ID）
 
 以默认配置为例，专辑曲目会保存到：
 
@@ -307,7 +316,7 @@ data/downloads/albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
 - `download.save_artist_cover: true`：在艺术家目录保存 `artist.jpg` 或 `artist.png`。
 - `download.save_playlist_cover: true`：在歌单目录保存 `cover.jpg` 或 `cover.png`。
 
-封面目录按路径模板中的变量定位：专辑封面写入引用 `{AlbumName}`/`{AlbumId}` 的最深目录段（若无则写入音频文件所在目录）；艺术家封面写入引用艺术家变量（`{ArtistName}`、`{UrlArtistName}`、`{AlbumArtist}`、`{ArtistId}`）的最深目录段，若模板目录中没有艺术家段则跳过艺术家封面。文件扩展名跟随 `download.cover_format`。歌单为平铺目录，可保存歌单封面，但不会额外写入专辑或艺术家封面。
+封面目录按路径模板中的变量定位：专辑封面写入引用 `{AlbumName}`/`{AlbumId}` 的最深目录段（若无则写入音频文件所在目录）；艺术家封面写入引用艺术家变量（`{ArtistName}`、`{UrlArtistName}`、`{AlbumArtist}`、`{ArtistId}`）的最深目录段，若模板目录中没有艺术家段则跳过艺术家封面。文件扩展名跟随 `download.cover_format`。歌单与电台为平铺目录，可保存歌单/电台封面，但不会额外写入专辑或艺术家封面。
 
 对于带 `?i=<song_id>` 的专辑链接，可通过 `catalog.album_track_url_mode` 选择任务类型：
 

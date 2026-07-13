@@ -366,7 +366,7 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	resp := s.manager.SubmitBatch(r.Context(), urls, req.Force, req.Overrides)
+	resp := s.manager.SubmitBatch(r.Context(), urls, req.Force, req.Overrides, strings.TrimSpace(req.MediaUserToken))
 	status := http.StatusUnprocessableEntity
 	if resp.Accepted > 0 {
 		status = http.StatusAccepted
@@ -407,7 +407,7 @@ var (
 		domain.JobQueued: {}, domain.JobRunning: {}, domain.JobCompleted: {}, domain.JobFailed: {}, domain.JobCancelled: {},
 	}
 	allowedListTypes = map[string]struct{}{
-		"song": {}, "album": {}, "playlist": {}, "artist": {},
+		"song": {}, "album": {}, "playlist": {}, "artist": {}, "station": {},
 	}
 )
 
@@ -445,7 +445,7 @@ func parseJobListFilter(r *http.Request) (db.JobListFilter, error) {
 
 	for _, t := range parseCSVQuery(q, "type") {
 		if _, ok := allowedListTypes[t]; !ok {
-			return filter, fmt.Errorf("type %q is not supported; allowed: song, album, playlist, artist", t)
+			return filter, fmt.Errorf("type %q is not supported; allowed: song, album, playlist, artist, station", t)
 		}
 		filter.Types = append(filter.Types, t)
 	}

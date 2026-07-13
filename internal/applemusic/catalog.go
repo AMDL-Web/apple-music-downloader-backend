@@ -201,6 +201,95 @@ func (c *CatalogClient) Playlist(ctx context.Context, storefront, id string) (Co
 	return Collection{ID: playlist.ID, Type: TypePlaylist, Name: playlist.Attributes.Name, Artist: firstNonEmpty(playlist.Attributes.CuratorName, playlist.Attributes.ArtistName), ArtworkURL: playlist.Attributes.Artwork.URL, Tracks: tracks}, nil
 }
 
+// Station fetches a radio station's catalog metadata. The developer token
+// alone authorizes this read (no media-user-token needed); the returned
+// Format distinguishes a downloadable "tracks" station from a live "stream".
+func (c *CatalogClient) Station(ctx context.Context, storefront, id string) (StationInfo, error) {
+	var resp catalogStationResponse
+	if err := c.get(ctx, fmt.Sprintf("%s/v1/catalog/%s/stations/%s", c.apiBase(), storefront, id), url.Values{
+		"l": []string{c.cfg.Language},
+	}, &resp); err != nil {
+		return StationInfo{}, err
+	}
+	if len(resp.Data) == 0 {
+		return StationInfo{}, fmt.Errorf("station %s not found", id)
+	}
+	station := resp.Data[0]
+	return StationInfo{
+		ID: station.ID, Name: station.Attributes.Name, ArtworkURL: station.Attributes.Artwork.URL,
+		Format: station.Attributes.PlayParams.Format, IsLive: station.Attributes.IsLive,
+	}, nil
+}
+
+// StationTracks resolves a personalized/curated radio station into a finite
+// collection of catalog songs via POST /v1/me/stations/next-tracks/{id}, which
+// requires the user's media-user-token (an Apple subscription token) in
+// addition to the developer token. Live broadcast stations ("stream" format)
+// have no static track list and return an error. The next-tracks feed is a
+// rolling window, so a station "download" captures whichever upcoming songs the
+// feed currently returns rather than a fixed catalog listing.
+func (c *CatalogClient) StationTracks(ctx context.Context, storefront, id, mediaUserToken string) (Collection, error) {
+	info, err := c.Station(ctx, storefront, id)
+	if err != nil {
+		return Collection{}, err
+	}
+	if info.Format != "tracks" {
+		return Collection{}, fmt.Errorf("station %q is not downloadable: only track-based stations (playParams.format=tracks) are supported, not live/stream stations", info.Name)
+	}
+	if strings.TrimSpace(mediaUserToken) == "" {
+		return Collection{}, fmt.Errorf("station downloads require a media_user_token")
+	}
+	var resp stationTracksResponse
+	if err := c.stationNextTracks(ctx, id, mediaUserToken, &resp); err != nil {
+		return Collection{}, err
+	}
+	tracks := make([]Song, 0, len(resp.Data))
+	for _, raw := range resp.Data {
+		if raw.Type != "songs" {
+			continue
+		}
+		tracks = append(tracks, mapSong(raw))
+	}
+	return Collection{ID: info.ID, Type: TypeStation, Name: info.Name, Artist: "Apple Music Station", ArtworkURL: info.ArtworkURL, Tracks: tracks}, nil
+}
+
+// stationNextTracks performs the authenticated POST to the personalized
+// next-tracks endpoint. It mirrors get() (bearer developer token, legacy Origin
+// header) but adds the Media-User-Token header and uses POST, which get() does
+// not support.
+func (c *CatalogClient) stationNextTracks(ctx context.Context, id, mediaUserToken string, out any) error {
+	token, err := c.Token(ctx)
+	if err != nil {
+		return err
+	}
+	params := url.Values{
+		"include[songs]": []string{"artists,albums"},
+		"limit":          []string{"10"},
+		"l":              []string{c.cfg.Language},
+	}
+	endpoint := fmt.Sprintf("%s/v1/me/stations/next-tracks/%s?%s", c.apiBase(), id, params.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Media-User-Token", mediaUserToken)
+	if !c.cfg.DeveloperTokenSigningEnabled() {
+		req.Header.Set("Origin", "https://music.apple.com")
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("station next-tracks request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
 func (c *CatalogClient) ArtistAlbums(ctx context.Context, storefront, id string) (ArtistAlbums, error) {
 	var resp catalogArtistResponse
 	if err := c.get(ctx, fmt.Sprintf("%s/v1/catalog/%s/artists/%s", c.apiBase(), storefront, id), url.Values{
