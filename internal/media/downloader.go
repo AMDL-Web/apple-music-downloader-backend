@@ -38,6 +38,7 @@ type Downloader struct {
 	tools   *ToolChecker
 	http    *http.Client
 	mp4     *MP4Processor
+	covers  *coverCache
 	logger  *slog.Logger
 }
 
@@ -91,6 +92,7 @@ func (d *Downloader) withConfig(cfg config.Config) *Downloader {
 	clone := *d
 	clone.cfg = cfg
 	clone.mp4 = newMP4Processor(cfg)
+	clone.covers = nil
 	return &clone
 }
 
@@ -160,7 +162,9 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 			return fmt.Errorf("create temp dir: %w", err)
 		}
 	}
-	return d.withConfig(cfg).processJob(ctx, job, reporter)
+	jobDownloader := d.withConfig(cfg)
+	jobDownloader.covers = newCoverCache(jobDownloader.catalog)
+	return jobDownloader.processJob(ctx, job, reporter)
 }
 
 // parseJobInput reconstructs the submission-time parse result from the job's
@@ -683,7 +687,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 		var coverAttempts int
 		cover, coverAttempts, err = retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(attempt int) ([]byte, error) {
 			d.setItemAttempt(ctx, reporter, &item, "cover", attempt, clampAttempts(d.cfg.Download.MaxAttempts), fmt.Sprintf("Fetching cover (%d/%d)", attempt, clampAttempts(d.cfg.Download.MaxAttempts)))
-			return d.catalog.FetchCover(ctx, coverURLs, d.cfg.Download.CoverFormat, d.cfg.Download.CoverSize)
+			return d.fetchCover(ctx, coverURLs, d.cfg.Download.CoverFormat, d.cfg.Download.CoverSize)
 		}, func(failure retryFailure) {
 			d.setRetryFailure(ctx, reporter, &item, "cover", "cover", failure)
 			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "cover", "", failure)
