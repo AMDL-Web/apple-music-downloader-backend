@@ -49,7 +49,7 @@ func TestEncapsulateRoundTripProducesPlayableFile(t *testing.T) {
 	p := newMP4Processor(cfg)
 	ctx := context.Background()
 
-	info, err := p.extractSong(ctx, raw, "aac")
+	info, err := p.extractSong(ctx, bytes.NewReader(raw), "aac")
 	if err != nil {
 		t.Fatalf("extractSong: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestExtractSongAcceptsOptionalInitBoxesBeforeMoov(t *testing.T) {
 	cfg.Download.TempDir = tmp
 	cfg.Tools.FFmpeg = "ffmpeg"
 	p := newMP4Processor(cfg)
-	info, err := p.extractSong(context.Background(), withFree, "aac")
+	info, err := p.extractSong(context.Background(), bytes.NewReader(withFree), "aac")
 	if err != nil {
 		t.Fatalf("extractSong with free box between ftyp and moov: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestEncapsulateStripsEncryptionStructure(t *testing.T) {
 		t.Fatalf("input sample entry = %q, want enca (test fixture not encrypted)", got)
 	}
 
-	info, err := p.extractSong(ctx, raw, "aac")
+	info, err := p.extractSong(ctx, bytes.NewReader(raw), "aac")
 	if err != nil {
 		t.Fatalf("extractSong: %v", err)
 	}
