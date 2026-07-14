@@ -130,10 +130,10 @@ func (h *captureHandler) Enabled(ctx context.Context, level slog.Level) bool {
 func (h *captureHandler) Handle(ctx context.Context, record slog.Record) error {
 	attrs := map[string]any{}
 	for _, bound := range h.attrs {
-		addAttr(attrs, bound.groups, redactAttr(bound.attr))
+		addAttr(attrs, bound.groups, redactCaptured(bound.groups, bound.attr))
 	}
 	record.Attrs(func(attr slog.Attr) bool {
-		addAttr(attrs, h.groups, redactAttr(attr))
+		addAttr(attrs, h.groups, redactCaptured(h.groups, attr))
 		return true
 	})
 	entry := Entry{Time: record.Time, Level: levelName(record.Level), Message: record.Message, Attributes: attrs}
@@ -176,6 +176,19 @@ func levelName(level slog.Level) string {
 	default:
 		return "debug"
 	}
+}
+
+// redactCaptured mirrors the output handlers' ReplaceAttr on the capture
+// path: an attribute recorded inside a sensitive group (WithGroup) is
+// redacted wholesale, otherwise per-key redaction applies. Without the group
+// check, the in-memory log API would return raw values that the console and
+// file outputs already redact.
+func redactCaptured(groups []string, attr slog.Attr) slog.Attr {
+	if hasSensitiveGroup(groups) {
+		attr.Value = slog.StringValue("[REDACTED]")
+		return attr
+	}
+	return redactAttr(attr)
 }
 
 func redactAttr(attr slog.Attr) slog.Attr {

@@ -80,6 +80,25 @@ func TestHandlerPreservesBoundAttributeGroups(t *testing.T) {
 	}
 }
 
+func TestCaptureRedactsSensitiveGroups(t *testing.T) {
+	system, err := New(testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	system.Logger.WithGroup("authorization").Info("record", "value", "record-secret")
+	system.Logger.WithGroup("authorization").With("value", "bound-secret").Info("bound")
+	page := system.Store.List(Filter{Limit: 2})
+	if len(page.Entries) != 2 {
+		t.Fatalf("entries = %#v", page.Entries)
+	}
+	for _, entry := range page.Entries {
+		group, ok := entry.Attributes["authorization"].(map[string]any)
+		if !ok || group["value"] != "[REDACTED]" {
+			t.Fatalf("sensitive group leaked to capture store in %q: %#v", entry.Message, entry.Attributes)
+		}
+	}
+}
+
 func TestSystemUpdatesLevel(t *testing.T) {
 	system, err := New(testConfig())
 	if err != nil {
