@@ -81,6 +81,7 @@ type CatalogConfig struct {
 	AlbumTrackURLMode        string   `yaml:"album_track_url_mode" json:"album_track_url_mode"`
 	MediaUserToken           string   `yaml:"media_user_token" json:"media_user_token"`
 	MediaUserTokenPriority   string   `yaml:"media_user_token_priority" json:"media_user_token_priority"`
+	SignedModeHLSSource      string   `yaml:"signed_mode_hls_source" json:"signed_mode_hls_source"`
 }
 
 // EffectiveMediaUserToken selects the media-user-token for a submitted batch.
@@ -126,6 +127,14 @@ func (c CatalogConfig) DeveloperTokenSigningEnabled() bool {
 	return strings.TrimSpace(c.AppleMusicPrivateKeyPath) != "" &&
 		strings.TrimSpace(c.AppleMusicKeyID) != "" &&
 		strings.TrimSpace(c.AppleMusicTeamID) != ""
+}
+
+// EnhancedHLSFromWebToken reports whether, in signed developer-token mode, the
+// Enhanced HLS master playlist should be read via a scraped music.apple.com
+// web-player token instead of the wrapper's authorized device manifest.
+// Meaningless (and ignored) when signing is disabled.
+func (c CatalogConfig) EnhancedHLSFromWebToken() bool {
+	return c.SignedModeHLSSource == "web_token"
 }
 
 type DownloadConfig struct {
@@ -185,7 +194,7 @@ func Default() Config {
 			Address: "127.0.0.1:8080", Insecure: true, TimeoutSeconds: 30, LoginTimeoutSeconds: 120,
 		},
 		Catalog: CatalogConfig{
-			DefaultStorefront: "us", Language: "en-US", DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song", MediaUserTokenPriority: "config",
+			DefaultStorefront: "us", Language: "en-US", DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song", MediaUserTokenPriority: "config", SignedModeHLSSource: "wrapper",
 		},
 		Download: DownloadConfig{
 			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true,
@@ -272,6 +281,9 @@ func (c Config) Validate() error {
 	}
 	if c.Catalog.MediaUserTokenPriority != "request" && c.Catalog.MediaUserTokenPriority != "config" {
 		return fmt.Errorf("catalog.media_user_token_priority must be request or config")
+	}
+	if c.Catalog.SignedModeHLSSource != "wrapper" && c.Catalog.SignedModeHLSSource != "web_token" {
+		return fmt.Errorf("catalog.signed_mode_hls_source must be wrapper or web_token")
 	}
 	signingFields := 0
 	for _, v := range []string{c.Catalog.AppleMusicPrivateKeyPath, c.Catalog.AppleMusicKeyID, c.Catalog.AppleMusicTeamID} {

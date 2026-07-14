@@ -24,6 +24,12 @@ type CatalogClient struct {
 	signer     *developerTokenSigner
 	token      string
 	tokenUntil time.Time
+	// webToken/webTokenUntil cache a scraped music.apple.com web-player JWT,
+	// kept separate from token/tokenUntil above so that fetching it for
+	// EnhancedHLSViaWebToken never disturbs the signed developer-token cache
+	// used by every other catalog request.
+	webToken      string
+	webTokenUntil time.Time
 }
 
 func NewCatalogClient(cfg config.CatalogConfig, logger *slog.Logger) *CatalogClient {
@@ -612,6 +618,78 @@ func (c *CatalogClient) fetchToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("cannot find Apple Music authorization token")
 	}
 	return token, nil
+}
+
+// webJWTToken returns a cached music.apple.com web-player JWT, scraping a
+// fresh one when the cache is empty or expired. It is independent of Token,
+// which serves the signed developer token once signing is enabled; this
+// cache exists so EnhancedHLSViaWebToken can keep working in signed mode
+// without touching the signed-token cache.
+func (c *CatalogClient) webJWTToken(ctx context.Context) (string, error) {
+	c.mu.Lock()
+	if c.webToken != "" && time.Now().Before(c.webTokenUntil) {
+		token := c.webToken
+		c.mu.Unlock()
+		return token, nil
+	}
+	c.mu.Unlock()
+
+	token, err := c.fetchToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	c.webToken = token
+	c.webTokenUntil = time.Now().Add(c.cfg.TokenTTL())
+	c.mu.Unlock()
+	return token, nil
+}
+
+// EnhancedHLSViaWebToken fetches a song's Enhanced HLS master playlist URL
+// from amp-api.music.apple.com using a scraped music.apple.com web-player
+// JWT, regardless of whether developer-token signing is enabled. It is used
+// when signing is enabled but catalog.signed_mode_hls_source is "web_token":
+// the self-signed developer token cannot read enhancedHls at all, so this
+// reads it through the same legacy-style web token as unsigned mode while
+// catalog metadata itself keeps using the official signed-token endpoint.
+func (c *CatalogClient) EnhancedHLSViaWebToken(ctx context.Context, storefront, id string) (string, error) {
+	token, err := c.webJWTToken(ctx)
+	if err != nil {
+		return "", fmt.Errorf("fetch web token: %w", err)
+	}
+	params := url.Values{
+		"extend": []string{"extendedAssetUrls"},
+		"l":      []string{c.cfg.Language},
+	}
+	endpoint := fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s?%s", storefront, id, params.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Origin", "https://music.apple.com")
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return "", fmt.Errorf("catalog request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var out catalogSongResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if len(out.Data) == 0 {
+		return "", fmt.Errorf("song %s not found", id)
+	}
+	master := out.Data[0].Attributes.ExtendedAssetURLs.EnhancedHLS
+	if master == "" {
+		return "", fmt.Errorf("song %s has no enhanced hls manifest", id)
+	}
+	return master, nil
 }
 
 func mapSong(raw catalogSongData) Song {

@@ -65,9 +65,9 @@ catalog:
   # Apple Music developer-token signing (all three keys form one unit):
   # - all three empty: signing disabled; the bearer token is auto-discovered from music.apple.com (legacy behavior)
   #     and catalog metadata is read from amp-api.music.apple.com with enhancedHls manifests.
-  # - all three set: the backend signs its own 24h ES256 developer token at startup (fails to start on any signing error),
-  #     reads catalog metadata from the official api.music.apple.com, and sources every audio manifest from wrapper.M3U8
-  #     (enhancedHls is not accessible with a self-signed token).
+  # - all three set: the backend signs its own 24h ES256 developer token at startup (fails to start on any signing error)
+  #     and reads catalog metadata from the official api.music.apple.com. The self-signed token cannot read enhancedHls,
+  #     so the Enhanced HLS master playlist source is controlled separately by signed_mode_hls_source below.
   # - only some set: startup fails with a configuration error.
   # string: filesystem path to the Apple Media Services .p8 private key (PKCS#8 ECDSA). Empty disables signing.
   apple_music_private_key_path: ""
@@ -97,6 +97,13 @@ catalog:
   # create-download request body provide one. config is the default; request preserves the legacy request-first behavior.
   # If the preferred source is empty, the other non-empty source is used as a fallback.
   media_user_token_priority: "config"
+  # enum: wrapper, web_token. Only meaningful when developer-token signing is enabled above (the self-signed
+  # token cannot read enhancedHls); ignored in legacy mode, where enhancedHls already comes from the catalog response.
+  # - wrapper (default): the Enhanced HLS master playlist comes from wrapper.M3U8 (the authorized device manifest).
+  # - web_token: the backend scrapes a music.apple.com web-player JWT (same technique as legacy mode) and reads
+  #     enhancedHls from amp-api.music.apple.com with that token, independent of the signed developer token used
+  #     for catalog metadata. Use this if the wrapper cannot supply a usable device manifest.
+  signed_mode_hls_source: "wrapper"
 
 download:
   # list enum: alac, aac, aac-binaural, aac-downmix, ec3, ac3.

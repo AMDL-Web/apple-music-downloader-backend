@@ -58,6 +58,7 @@ type QualityService struct {
 
 type qualityCatalog interface {
 	Song(context.Context, string, string) (applemusic.Song, error)
+	EnhancedHLSViaWebToken(context.Context, string, string) (string, error)
 }
 
 type qualityWrapper interface {
@@ -95,15 +96,24 @@ func (s *QualityService) QueryQuality(ctx context.Context, req QualityRequest) (
 	master := song.EnhancedHLS
 	if cfg.Catalog.DeveloperTokenSigningEnabled() {
 		// A self-signed developer token cannot read enhancedHls, so quality is
-		// analyzed from the authorized device manifest instead.
-		if s.wrapper == nil {
-			return QualityResult{}, fmt.Errorf("developer-token signing enabled but wrapper is not configured")
+		// analyzed from either the authorized device manifest or a scraped
+		// web-player token, per catalog.signed_mode_hls_source.
+		if cfg.Catalog.EnhancedHLSFromWebToken() {
+			hls, err := s.catalog.EnhancedHLSViaWebToken(ctx, parsed.Storefront, song.ID)
+			if err != nil {
+				return QualityResult{}, fmt.Errorf("fetch enhanced hls via web token: %w", err)
+			}
+			master = hls
+		} else {
+			if s.wrapper == nil {
+				return QualityResult{}, fmt.Errorf("developer-token signing enabled but wrapper is not configured")
+			}
+			m3u8, err := s.wrapper.M3U8(ctx, song.ID)
+			if err != nil {
+				return QualityResult{}, fmt.Errorf("request device m3u8: %w", err)
+			}
+			master = m3u8
 		}
-		m3u8, err := s.wrapper.M3U8(ctx, song.ID)
-		if err != nil {
-			return QualityResult{}, fmt.Errorf("request device m3u8: %w", err)
-		}
-		master = m3u8
 	}
 	if strings.TrimSpace(master) == "" {
 		return QualityResult{}, fmt.Errorf("song %s has no enhanced hls manifest", song.ID)
