@@ -245,7 +245,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 
 // getConfig returns the runtime-changeable part of the current config
 // (download minus max_running_jobs, logging level/access log, simulate,
-// catalog.album_track_url_mode/media_user_token/media_user_token_priority).
+// catalog.album_track_url_mode/media_user_token/media_user_token_priority/signed_mode_hls_source).
 // Startup-bound fields are omitted: clients cannot change them through this
 // API, so they have no reason to see them here.
 //

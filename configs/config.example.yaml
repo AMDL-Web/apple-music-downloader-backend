@@ -103,6 +103,7 @@ catalog:
   # - web_token: the backend scrapes a music.apple.com web-player JWT (same technique as legacy mode) and reads
   #     enhancedHls from amp-api.music.apple.com with that token, independent of the signed developer token used
   #     for catalog metadata. Use this if the wrapper cannot supply a usable device manifest.
+  # Runtime-mutable through PUT /api/v1/config and manual-file reload; no restart required.
   signed_mode_hls_source: "wrapper"
 
 download:

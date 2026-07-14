@@ -103,7 +103,7 @@ paths:
       summary: 读取当前运行时配置（仅可修改字段）
       description: >-
         返回当前生效配置中可运行时修改的部分：download 段（max_running_jobs
-        除外）、logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/media_user_token_priority。
+        除外）、logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/media_user_token_priority/signed_mode_hls_source。
         仅启动时生效的字段（server、database、logging 其它字段、wrapper、tools、catalog 其它字段）不返回——
         它们无法通过本 API 修改，请编辑 configs/config.yaml 并重启。
 
@@ -129,7 +129,7 @@ paths:
         （含整段）被替换。合并结果必须通过与配置文件相同的完整校验。
 
         仅 GET 返回的字段可以修改：download 段（max_running_jobs 除外）、
-        logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/media_user_token_priority。其余字段只在进程启动时
+        logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/media_user_token_priority/signed_mode_hls_source。其余字段只在进程启动时
         被消费，修改请求会被 422 拒绝——请改 configs/config.yaml 并重启。
         被 AMDL_<大写段名>_<大写键名> 环境变量覆盖的字段同样返回 422：
         写入会在下一次配置重载时被环境变量的值重新遮盖，请改环境变量并
@@ -1094,6 +1094,14 @@ components:
             media_user_token_priority:
               type: string
               enum: [request, config]
+            signed_mode_hls_source:
+              type: string
+              enum: [wrapper, web_token]
+              description: >-
+                仅在启用 developer-token 签名时生效（自签 token 无法读取
+                enhancedHls）；legacy 模式下忽略。wrapper（默认）取
+                wrapper.M3U8 的授权设备清单；web_token 抓取
+                music.apple.com 网页端 JWT，从 amp-api 读取 enhancedHls。
         download:
           type: object
           description: max_running_jobs 仅启动时生效，不在此出现、不可修改。
