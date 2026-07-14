@@ -256,8 +256,12 @@ func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool, ov
 			continue
 		}
 		// Record the ephemeral token before enqueue so a worker that claims the
-		// job immediately can already read it during station resolution.
-		m.sessionTokens.Set(job.ID, mediaUserToken)
+		// job immediately can already read it during resolution. Only jobs
+		// that actually read the token get an entry — a mixed batch must not
+		// retain the credential for song/album/artist jobs that never use it.
+		if needsMediaUserToken(c.valid.Type, c.valid.ID) {
+			m.sessionTokens.Set(job.ID, mediaUserToken)
+		}
 		_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_queued", Message: "job queued"})
 		// Fire creation hooks before enqueuing, so the job_queued hook is
 		// dispatched before a worker can claim the job and reach a terminal
@@ -591,6 +595,14 @@ func (m *Manager) persistTerminal(ctx context.Context, job domain.Job, eventType
 		return err
 	}
 	m.hub.Publish(stored)
+	// A completed or cancelled job can never run again (Retry only accepts
+	// failed jobs), so its ephemeral media-user-token has no further use —
+	// drop it now instead of letting the credential sit in memory until the
+	// job record is deleted. Failed jobs keep theirs so a retry can still
+	// resolve its station/private-playlist input.
+	if job.Status != domain.JobFailed {
+		m.sessionTokens.Delete(job.ID)
+	}
 	return nil
 }
 

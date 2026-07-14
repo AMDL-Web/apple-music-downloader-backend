@@ -176,20 +176,18 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 	}, nil
 }
 
-// Playlist fetches a catalog playlist. mediaUserToken, when non-empty, is
-// sent as the Media-User-Token header together with include=library: a
-// private (user-shared) playlist has no artwork in its public catalog
-// attributes, and the owner's library copy — only visible with the user's
-// subscription identity — is the sole place its user-uploaded cover lives.
+// Playlist fetches a catalog playlist. The fetch itself never carries the
+// media-user-token, so an invalid or expired token can never fail a playlist
+// that resolves fine without one. mediaUserToken only powers a best-effort
+// artwork enrichment afterwards: a private (user-shared, pl.u-) playlist has
+// no artwork in its public catalog attributes, and the owner's library copy —
+// only visible with the user's subscription identity — is the sole place its
+// user-uploaded cover lives (see libraryArtworkURL).
 func (c *CatalogClient) Playlist(ctx context.Context, storefront, id, mediaUserToken string) (Collection, error) {
-	params := url.Values{
-		"l": []string{c.cfg.Language},
-	}
-	if mediaUserToken != "" {
-		params.Set("include", "library")
-	}
 	var resp catalogPlaylistResponse
-	if err := c.getWithUserToken(ctx, fmt.Sprintf("%s/v1/catalog/%s/playlists/%s", c.apiBase(), storefront, id), params, mediaUserToken, &resp); err != nil {
+	if err := c.get(ctx, fmt.Sprintf("%s/v1/catalog/%s/playlists/%s", c.apiBase(), storefront, id), url.Values{
+		"l": []string{c.cfg.Language},
+	}, &resp); err != nil {
 		return Collection{}, err
 	}
 	if len(resp.Data) == 0 {
@@ -208,18 +206,37 @@ func (c *CatalogClient) Playlist(ctx context.Context, storefront, id, mediaUserT
 		tracks = append(tracks, mapSong(raw))
 	}
 	artworkURL := playlist.Attributes.Artwork.URL
-	if artworkURL == "" {
-		// Private playlist: fall back to the library copy's artwork. The URL
-		// is a pre-signed direct image link (no {w}x{h}/{f} placeholders),
-		// which the cover fetcher passes through unchanged.
-		for _, lib := range playlist.Relationships.Library.Data {
-			if lib.Attributes.Artwork.URL != "" {
-				artworkURL = lib.Attributes.Artwork.URL
-				break
-			}
-		}
+	if artworkURL == "" && mediaUserToken != "" && strings.HasPrefix(id, "pl.u-") {
+		artworkURL = c.libraryArtworkURL(ctx, storefront, id, mediaUserToken)
 	}
 	return Collection{ID: playlist.ID, Type: TypePlaylist, Name: playlist.Attributes.Name, Artist: firstNonEmpty(playlist.Attributes.CuratorName, playlist.Attributes.ArtistName), ArtworkURL: artworkURL, Tracks: tracks}, nil
+}
+
+// libraryArtworkURL fetches a private playlist's cover from the owner's
+// library copy: the catalog playlist is re-requested with include=library and
+// the Media-User-Token header, and the artwork hangs off the returned
+// library-playlists relationship as a pre-signed direct image link (no
+// {w}x{h}/{f} placeholders), which the cover fetcher passes through
+// unchanged. Purely best-effort enrichment: any failure returns "" and the
+// download proceeds without a playlist cover, it never fails the job.
+func (c *CatalogClient) libraryArtworkURL(ctx context.Context, storefront, id, mediaUserToken string) string {
+	var resp catalogPlaylistResponse
+	if err := c.getWithUserToken(ctx, fmt.Sprintf("%s/v1/catalog/%s/playlists/%s", c.apiBase(), storefront, id), url.Values{
+		"include": []string{"library"},
+		"l":       []string{c.cfg.Language},
+	}, mediaUserToken, &resp); err != nil {
+		c.logger.Warn("private playlist library artwork lookup failed; continuing without playlist cover", "playlist_id", id, "error", err)
+		return ""
+	}
+	if len(resp.Data) == 0 {
+		return ""
+	}
+	for _, lib := range resp.Data[0].Relationships.Library.Data {
+		if lib.Attributes.Artwork.URL != "" {
+			return lib.Attributes.Artwork.URL
+		}
+	}
+	return ""
 }
 
 // Station fetches a radio station's catalog metadata. The developer token

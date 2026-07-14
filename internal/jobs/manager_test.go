@@ -188,6 +188,82 @@ func newTestManager(t *testing.T) *Manager {
 	return NewManager(store, events.NewHub(), keyedProcessor{}, 1, slog.Default())
 }
 
+func TestSubmitBatchStoresTokenOnlyForJobsThatNeedIt(t *testing.T) {
+	manager := newTestManager(t)
+	resp := manager.SubmitBatch(context.Background(), []string{
+		"station|us|ra.1",
+		"playlist|us|pl.u-private",
+		"playlist|us|pl.editorial",
+		"song|us|1",
+	}, false, nil, "batch-token")
+	if resp.Accepted != 4 {
+		t.Fatalf("accepted = %d, want 4: %+v", resp.Accepted, resp.Results)
+	}
+	want := []string{"batch-token", "batch-token", "", ""}
+	for i, result := range resp.Results {
+		if got := manager.sessionTokens.Get(result.Job.ID); got != want[i] {
+			t.Fatalf("job %s (%s) token = %q, want %q", result.Job.ID, result.URL, got, want[i])
+		}
+	}
+}
+
+// failingProcessor validates like keyedProcessor but every job fails, so
+// tests can observe the failed-terminal state.
+type failingProcessor struct{ keyedProcessor }
+
+func (failingProcessor) ProcessJob(context.Context, domain.Job, Reporter) error {
+	return errors.New("boom")
+}
+
+func TestTerminalJobDropsSessionTokenUnlessRetryable(t *testing.T) {
+	waitToken := func(t *testing.T, m *Manager, jobID, want string) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			job, err := m.store.GetJob(context.Background(), jobID)
+			if err == nil && job.Status.IsTerminal() && !m.FinalizeInFlight(jobID) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("job %s never finalized", jobID)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if got := m.sessionTokens.Get(jobID); got != want {
+			t.Fatalf("token after terminal = %q, want %q", got, want)
+		}
+	}
+
+	t.Run("completed drops the token", func(t *testing.T) {
+		manager := newTestManager(t)
+		ctx, stop := context.WithCancel(context.Background())
+		defer stop()
+		manager.Start(ctx)
+		resp := manager.SubmitBatch(ctx, []string{"station|us|ra.1"}, false, nil, "tok")
+		if resp.Accepted != 1 {
+			t.Fatalf("submit: %+v", resp.Results)
+		}
+		waitToken(t, manager, resp.Results[0].Job.ID, "")
+	})
+
+	t.Run("failed keeps the token for retry", func(t *testing.T) {
+		store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { store.Close() })
+		manager := NewManager(store, events.NewHub(), failingProcessor{}, 1, slog.Default())
+		ctx, stop := context.WithCancel(context.Background())
+		defer stop()
+		manager.Start(ctx)
+		resp := manager.SubmitBatch(ctx, []string{"station|us|ra.1"}, false, nil, "tok")
+		if resp.Accepted != 1 {
+			t.Fatalf("submit: %+v", resp.Results)
+		}
+		waitToken(t, manager, resp.Results[0].Job.ID, "tok")
+	})
+}
+
 func TestSubmitBatchDedupesWithinRequest(t *testing.T) {
 	manager := newTestManager(t)
 	ctx := context.Background()

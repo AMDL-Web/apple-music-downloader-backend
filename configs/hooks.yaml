@@ -54,8 +54,8 @@ entries:
   #   #     with an error.
   #   #   job_cancelled: job was cancelled via the API.
   #   events: ["job_finished"]
-  #   # list enum: song, album, playlist, artist. Empty list or omitted = all
-  #   # job types match.
+  #   # list enum: song, album, playlist, artist, station. Empty list or
+  #   # omitted = all job types match.
   #   job_types: ["album"]
   #   # string, required for type webhook: target URL for the POST request.
   #   url: "http://media-server.local/Library/Refresh"

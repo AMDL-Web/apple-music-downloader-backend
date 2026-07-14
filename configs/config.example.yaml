@@ -89,7 +89,7 @@ download:
   # Variables: {SongId}, {SongNumber}, {SongName}, {ArtistName}, {UrlArtistName}, {ArtistId},
   # {AlbumName}, {AlbumId}, {AlbumArtist}, {ReleaseDate}, {ReleaseYear}, {UPC}, {Copyright},
   # {RecordLabel}, {DiscNumber}, {DiscCount}, {TrackNumber}, {TrackCount}, {PlaylistName},
-  # {PlaylistId}, {Quality}, {Codec}, {Tag}. Numeric variables {SongNumber}, {DiscNumber},
+  # {PlaylistId}, {StationName}, {StationId}, {Quality}, {Codec}, {Tag}. Numeric variables {SongNumber}, {DiscNumber},
   # {DiscCount}, {TrackNumber}, and {TrackCount} also support :02d padding, for example
   # {TrackNumber:02d}. Unknown variables are preserved literally.
   # In directory segments, {ArtistName} resolves to the collection's grouping artist

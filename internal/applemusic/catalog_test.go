@@ -152,10 +152,10 @@ func TestPlaylistPrivateCoverFallsBackToLibraryArtwork(t *testing.T) {
 	client := NewCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
-	var gotMediaToken, gotInclude string
+	type seen struct{ mediaToken, include string }
+	var requests []seen
 	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		gotMediaToken = req.Header.Get("Media-User-Token")
-		gotInclude = req.URL.Query().Get("include")
+		requests = append(requests, seen{req.Header.Get("Media-User-Token"), req.URL.Query().Get("include")})
 		body := `{"data":[{"id":"pl.u-1","type":"playlists","attributes":{"name":"Private","artwork":{"url":""}},"relationships":{"tracks":{"data":[{"id":"song-1","type":"songs","attributes":{"name":"One","artistName":"Artist"}}]},"library":{"data":[{"id":"p.lib1","type":"library-playlists","attributes":{"name":"Private","artwork":{"url":"https://blob.example/image?sig=abc"}}}]}}}]}`
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 	})}
@@ -164,32 +164,93 @@ func TestPlaylistPrivateCoverFallsBackToLibraryArtwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotMediaToken != "media-token-xyz" {
-		t.Fatalf("Media-User-Token header = %q", gotMediaToken)
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want 2 (plain fetch + library enrichment)", len(requests))
 	}
-	if gotInclude != "library" {
-		t.Fatalf("include param = %q, want library", gotInclude)
+	if requests[0].mediaToken != "" || requests[0].include != "" {
+		t.Fatalf("plain fetch leaked auth: %+v", requests[0])
+	}
+	if requests[1].mediaToken != "media-token-xyz" || requests[1].include != "library" {
+		t.Fatalf("enrichment request = %+v, want token + include=library", requests[1])
 	}
 	if playlist.ArtworkURL != "https://blob.example/image?sig=abc" {
 		t.Fatalf("ArtworkURL = %q, want library artwork", playlist.ArtworkURL)
 	}
 }
 
-func TestPlaylistCatalogArtworkWinsOverLibrary(t *testing.T) {
+func TestPlaylistCatalogArtworkSkipsLibraryLookup(t *testing.T) {
 	client := NewCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
+	var calls int
 	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		body := `{"data":[{"id":"pl.1","type":"playlists","attributes":{"name":"Editorial","artwork":{"url":"catalog-art"}},"relationships":{"tracks":{"data":[]},"library":{"data":[{"id":"p.lib1","type":"library-playlists","attributes":{"artwork":{"url":"library-art"}}}]}}}]}`
+		calls++
+		body := `{"data":[{"id":"pl.u-1","type":"playlists","attributes":{"name":"Shared","artwork":{"url":"catalog-art"}},"relationships":{"tracks":{"data":[]}}}]}`
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 	})}
 
-	playlist, err := client.Playlist(context.Background(), "cn", "pl.1", "media-token-xyz")
+	playlist, err := client.Playlist(context.Background(), "cn", "pl.u-1", "media-token-xyz")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if playlist.ArtworkURL != "catalog-art" {
 		t.Fatalf("ArtworkURL = %q, want catalog artwork to win", playlist.ArtworkURL)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1 (no enrichment when catalog artwork exists)", calls)
+	}
+}
+
+func TestPlaylistPublicIDWithTokenSkipsEnrichment(t *testing.T) {
+	client := NewCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
+	client.token = "test-token"
+	client.tokenUntil = time.Now().Add(time.Hour)
+	var calls int
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		body := `{"data":[{"id":"pl.123","type":"playlists","attributes":{"name":"Editorial","artwork":{"url":""}},"relationships":{"tracks":{"data":[]}}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+
+	playlist, err := client.Playlist(context.Background(), "cn", "pl.123", "media-token-xyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1 (non-private ids never trigger enrichment)", calls)
+	}
+	if playlist.ArtworkURL != "" {
+		t.Fatalf("ArtworkURL = %q, want empty", playlist.ArtworkURL)
+	}
+}
+
+func TestPlaylistLibraryLookupFailureIsNonFatal(t *testing.T) {
+	client := NewCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
+	client.token = "test-token"
+	client.tokenUntil = time.Now().Add(time.Hour)
+	var calls int
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 2 {
+			// Enrichment request rejected, e.g. an expired media-user-token.
+			return &http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(strings.NewReader(`{"errors":[{"status":"403"}]}`)), Header: make(http.Header)}, nil
+		}
+		body := `{"data":[{"id":"pl.u-1","type":"playlists","attributes":{"name":"Private","artwork":{"url":""}},"relationships":{"tracks":{"data":[{"id":"song-1","type":"songs","attributes":{"name":"One","artistName":"Artist"}}]}}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+
+	playlist, err := client.Playlist(context.Background(), "cn", "pl.u-1", "expired-token")
+	if err != nil {
+		t.Fatalf("playlist resolve must survive a failed artwork enrichment, got %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if playlist.ArtworkURL != "" {
+		t.Fatalf("ArtworkURL = %q, want empty after failed enrichment", playlist.ArtworkURL)
+	}
+	if len(playlist.Tracks) != 1 {
+		t.Fatalf("tracks = %d, want 1", len(playlist.Tracks))
 	}
 }
 

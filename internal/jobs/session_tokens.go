@@ -2,8 +2,18 @@ package jobs
 
 import (
 	"context"
+	"strings"
 	"sync"
 )
+
+// needsMediaUserToken reports whether a job of this type/id ever reads the
+// batch's media-user-token: stations always (the next-tracks endpoint requires
+// it) and private playlists (pl.u- ids, whose cover lives on the owner's
+// library copy). Every other job type never reads it, so no credential is
+// retained for those jobs at all.
+func needsMediaUserToken(jobType, id string) bool {
+	return jobType == "station" || (jobType == "playlist" && strings.HasPrefix(id, "pl.u-"))
+}
 
 // SessionTokenStore holds per-job media-user-tokens (Apple subscription
 // tokens) submitted with a download batch. The tokens are deliberately kept in
