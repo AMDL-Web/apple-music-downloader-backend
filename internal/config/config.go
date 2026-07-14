@@ -79,6 +79,27 @@ type CatalogConfig struct {
 	AllowedOrigins           []string `yaml:"allowed_origins" json:"allowed_origins"`
 	TokenCacheTTLHours       int      `yaml:"token_cache_ttl_hours" json:"token_cache_ttl_hours"`
 	AlbumTrackURLMode        string   `yaml:"album_track_url_mode" json:"album_track_url_mode"`
+	MediaUserToken           string   `yaml:"media_user_token" json:"media_user_token"`
+	MediaUserTokenPriority   string   `yaml:"media_user_token_priority" json:"media_user_token_priority"`
+}
+
+// EffectiveMediaUserToken selects the media-user-token for a submitted batch.
+// The configured priority wins when that token is non-empty; if the preferred
+// source is empty, the other source is used as a fallback so existing request
+// flows keep working unless a config token is actually present.
+func (c CatalogConfig) EffectiveMediaUserToken(requestToken string) string {
+	requestToken = strings.TrimSpace(requestToken)
+	configToken := strings.TrimSpace(c.MediaUserToken)
+	if c.MediaUserTokenPriority == "config" {
+		if configToken != "" {
+			return configToken
+		}
+		return requestToken
+	}
+	if requestToken != "" {
+		return requestToken
+	}
+	return configToken
 }
 
 // DeveloperTokenTTL returns the validity of developer tokens minted for
@@ -164,7 +185,7 @@ func Default() Config {
 			Address: "127.0.0.1:8080", Insecure: true, TimeoutSeconds: 30, LoginTimeoutSeconds: 120,
 		},
 		Catalog: CatalogConfig{
-			DefaultStorefront: "us", Language: "en-US", DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song",
+			DefaultStorefront: "us", Language: "en-US", DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song", MediaUserTokenPriority: "config",
 		},
 		Download: DownloadConfig{
 			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true,
@@ -248,6 +269,9 @@ func (c Config) Validate() error {
 	}
 	if c.Catalog.AlbumTrackURLMode != "song" && c.Catalog.AlbumTrackURLMode != "album" {
 		return fmt.Errorf("catalog.album_track_url_mode must be song or album")
+	}
+	if c.Catalog.MediaUserTokenPriority != "request" && c.Catalog.MediaUserTokenPriority != "config" {
+		return fmt.Errorf("catalog.media_user_token_priority must be request or config")
 	}
 	signingFields := 0
 	for _, v := range []string{c.Catalog.AppleMusicPrivateKeyPath, c.Catalog.AppleMusicKeyID, c.Catalog.AppleMusicTeamID} {

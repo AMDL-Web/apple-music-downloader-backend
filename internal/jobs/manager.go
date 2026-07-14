@@ -187,9 +187,10 @@ func (m *Manager) RecoverUnfinished(ctx context.Context) (int, error) {
 // run. Callers must validate it (apply to the current config and Validate)
 // before submitting.
 //
-// mediaUserToken, when non-empty, is an ephemeral Apple subscription token
-// kept in memory only (never persisted with the job) and used solely to
-// resolve station downloads while these jobs run; see SessionTokenStore.
+// mediaUserToken, when non-empty, is the already-selected Apple subscription
+// token for this batch (request token or configured token, depending on
+// catalog.media_user_token_priority). It is kept with matching jobs in memory
+// only and never persisted with the job; see SessionTokenStore.
 func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool, overrides *config.DownloadOverrides, mediaUserToken string) domain.BatchSubmitResponse {
 	results := make([]domain.SubmitResult, len(urls))
 

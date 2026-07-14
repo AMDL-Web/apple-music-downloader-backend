@@ -299,9 +299,11 @@ type DownloadRequest struct {
 	// keep the runtime config's values.
 	Overrides *config.DownloadOverrides `json:"overrides,omitempty"`
 	// MediaUserToken is an optional Apple Music subscription token
-	// (media-user-token) used only to resolve station (radio) downloads in
-	// this request. It is kept in memory for the lifetime of these jobs and is
-	// never persisted to the database or config.
+	// (media-user-token) used only to resolve downloads that need user
+	// identity in this request. It is kept in memory for jobs created by this
+	// request; alternatively, catalog.media_user_token can persist a token in
+	// the runtime config, with catalog.media_user_token_priority choosing which
+	// source wins when both are provided.
 	MediaUserToken string `json:"media_user_token,omitempty"`
 }
 
