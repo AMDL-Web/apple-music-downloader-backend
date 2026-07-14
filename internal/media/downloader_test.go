@@ -15,6 +15,7 @@ import (
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
 	"amdl/internal/domain"
+	"amdl/internal/jobs"
 	"amdl/internal/wrapper"
 )
 
@@ -63,6 +64,8 @@ type fakeDownloaderCatalog struct {
 	songErr      error
 	album        applemusic.Collection
 	artistAlbums applemusic.ArtistAlbums
+	station      applemusic.Collection
+	stationErr   error
 }
 
 func (f fakeDownloaderCatalog) Song(context.Context, string, string) (applemusic.Song, error) {
@@ -85,8 +88,12 @@ func (f fakeDownloaderCatalog) Album(_ context.Context, _, id string) (applemusi
 	return applemusic.Collection{}, nil
 }
 
-func (f fakeDownloaderCatalog) Playlist(context.Context, string, string) (applemusic.Collection, error) {
+func (f fakeDownloaderCatalog) Playlist(context.Context, string, string, string) (applemusic.Collection, error) {
 	return applemusic.Collection{}, nil
+}
+
+func (f fakeDownloaderCatalog) StationTracks(context.Context, string, string, string) (applemusic.Collection, error) {
+	return f.station, f.stationErr
 }
 
 func (f fakeDownloaderCatalog) ArtistAlbums(context.Context, string, string) (applemusic.ArtistAlbums, error) {
@@ -245,6 +252,42 @@ func TestResolveCollectionArtistFlattensAlbumTracksAndDedupesSongs(t *testing.T)
 	}
 	if resolved.ArtworkURL != "https://example.com/artist/{w}x{h}bb.jpg" {
 		t.Fatalf("artwork url = %q, want artist artwork template", resolved.ArtworkURL)
+	}
+}
+
+func TestResolveCollectionStationPassesTokenAndTracks(t *testing.T) {
+	downloader := &Downloader{
+		cfg: config.Default(),
+		catalog: fakeDownloaderCatalog{station: applemusic.Collection{
+			ID: "ra.1", Type: applemusic.TypeStation, Name: "My Station", ArtworkURL: "station-art",
+			Tracks: []applemusic.Song{{ID: "song-1", Name: "One"}, {ID: "song-2", Name: "Two"}},
+		}},
+	}
+
+	ctx := jobs.WithMediaUserToken(context.Background(), "media-token-xyz")
+	resolved, err := downloader.resolveCollection(ctx, applemusic.ParsedURL{
+		Storefront: "us", Type: applemusic.TypeStation, ID: "ra.1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := trackIDsForTest(resolved.Tracks), []string{"song-1", "song-2"}; !equalStrings(got, want) {
+		t.Fatalf("tracks = %#v, want %#v", got, want)
+	}
+	if resolved.Name != "My Station" || resolved.ID != "ra.1" || resolved.ArtworkURL != "station-art" {
+		t.Fatalf("resolved = %+v", resolved)
+	}
+}
+
+func TestResolveCollectionStationPropagatesError(t *testing.T) {
+	downloader := &Downloader{
+		cfg:     config.Default(),
+		catalog: fakeDownloaderCatalog{stationErr: errors.New("live radio stations are not downloadable")},
+	}
+	if _, err := downloader.resolveCollection(context.Background(), applemusic.ParsedURL{
+		Storefront: "us", Type: applemusic.TypeStation, ID: "ra.live",
+	}); err == nil {
+		t.Fatal("expected station resolve error to propagate")
 	}
 }
 

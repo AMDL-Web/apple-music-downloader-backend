@@ -31,7 +31,7 @@ func (d *Downloader) savePlaylistCover(ctx context.Context, artworkURL, playlist
 }
 
 func (d *Downloader) saveStandaloneCovers(ctx context.Context, song applemusic.Song, collectionType applemusic.URLType, storefront, albumDir, artistDir string) error {
-	if collectionType == applemusic.TypePlaylist {
+	if collectionType == applemusic.TypePlaylist || collectionType == applemusic.TypeStation {
 		return nil
 	}
 

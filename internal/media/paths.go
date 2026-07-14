@@ -81,8 +81,8 @@ func outputPath(cfg config.Config, song applemusic.Song, collectionType applemus
 	return filepath.Join(parts...)
 }
 
-func playlistFolderPath(cfg config.Config, song applemusic.Song, playlistName, playlistID string) string {
-	return filepath.Dir(outputPath(cfg, song, applemusic.TypePlaylist, 1, "", playlistName, playlistID, "", ""))
+func collectionFolderPath(cfg config.Config, song applemusic.Song, collectionType applemusic.URLType, name, id string) string {
+	return filepath.Dir(outputPath(cfg, song, collectionType, 1, "", name, id, "", ""))
 }
 
 // standaloneCoverDirs resolves where standalone album and artist covers live.
@@ -151,6 +151,8 @@ func pathPattern(cfg config.Config, collectionType applemusic.URLType) string {
 		return cfg.Download.AlbumPathFormat
 	case applemusic.TypePlaylist:
 		return cfg.Download.PlaylistPathFormat
+	case applemusic.TypeStation:
+		return cfg.Download.StationPathFormat
 	case applemusic.TypeArtist:
 		return cfg.Download.ArtistPathFormat
 	default:
@@ -219,6 +221,10 @@ func templateValue(key string, ctx pathTemplateContext) (string, bool) {
 	case "PlaylistName":
 		return ctx.playlistName, true
 	case "PlaylistId":
+		return ctx.playlistID, true
+	case "StationName":
+		return ctx.playlistName, true
+	case "StationId":
 		return ctx.playlistID, true
 	case "Quality":
 		return ctx.quality, true

@@ -46,7 +46,8 @@ type downloaderCatalog interface {
 	Song(context.Context, string, string) (applemusic.Song, error)
 	SongMetadata(context.Context, string, string) (applemusic.Song, error)
 	Album(context.Context, string, string) (applemusic.Collection, error)
-	Playlist(context.Context, string, string) (applemusic.Collection, error)
+	Playlist(context.Context, string, string, string) (applemusic.Collection, error)
+	StationTracks(context.Context, string, string, string) (applemusic.Collection, error)
 	ArtistAlbums(context.Context, string, string) (applemusic.ArtistAlbums, error)
 	Artist(context.Context, string, string) (applemusic.Artist, error)
 	FetchCover(context.Context, []string, string, string) ([]byte, error)
@@ -216,8 +217,8 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 	collectionID := resolved.ID
 	// Simulate mode never fetches artwork or writes files, so the standalone
 	// playlist cover is skipped along with the per-track disk writes.
-	if parsed.Type == applemusic.TypePlaylist && d.cfg.Download.SavePlaylistCover && len(tracks) > 0 && !d.cfg.Simulate.Enabled {
-		folder := playlistFolderPath(d.cfg, tracks[0], collectionName, collectionID)
+	if (parsed.Type == applemusic.TypePlaylist || parsed.Type == applemusic.TypeStation) && d.cfg.Download.SavePlaylistCover && len(tracks) > 0 && !d.cfg.Simulate.Enabled {
+		folder := collectionFolderPath(d.cfg, tracks[0], parsed.Type, collectionName, collectionID)
 		if coverErr := d.savePlaylistCover(ctx, resolved.ArtworkURL, folder); coverErr != nil {
 			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, Type: "standalone_cover_failed", Phase: "playlist_cover", Message: coverErr.Error()})
 		}
@@ -393,11 +394,17 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 		}
 		return resolvedCollection{Tracks: album.Tracks, ID: album.ID, Name: album.Name, ArtworkURL: album.ArtworkURL}, nil
 	case applemusic.TypePlaylist:
-		playlist, err := d.catalog.Playlist(ctx, parsed.Storefront, parsed.ID)
+		playlist, err := d.catalog.Playlist(ctx, parsed.Storefront, parsed.ID, jobs.MediaUserTokenFromContext(ctx))
 		if err != nil {
 			return resolvedCollection{}, err
 		}
 		return resolvedCollection{Tracks: playlist.Tracks, ID: playlist.ID, Name: playlist.Name, ArtworkURL: playlist.ArtworkURL}, nil
+	case applemusic.TypeStation:
+		station, err := d.catalog.StationTracks(ctx, parsed.Storefront, parsed.ID, jobs.MediaUserTokenFromContext(ctx))
+		if err != nil {
+			return resolvedCollection{}, err
+		}
+		return resolvedCollection{Tracks: station.Tracks, ID: station.ID, Name: station.Name, ArtworkURL: station.ArtworkURL}, nil
 	case applemusic.TypeArtist:
 		artist, err := d.catalog.ArtistAlbums(ctx, parsed.Storefront, parsed.ID)
 		if err != nil {
