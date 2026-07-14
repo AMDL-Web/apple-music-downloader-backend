@@ -5,9 +5,10 @@ import (
 )
 
 // trackCoverURLs returns artwork URL candidates for a track.
-// Playlist downloads try the song cover first, then the album cover.
+// Playlist and station downloads try the song cover first, then the album
+// cover, because their tracks come from different albums.
 func trackCoverURLs(song applemusic.Song, collectionType applemusic.URLType) []string {
-	if collectionType == applemusic.TypePlaylist {
+	if collectionType == applemusic.TypePlaylist || collectionType == applemusic.TypeStation {
 		urls := make([]string, 0, 2)
 		if song.ArtworkURL != "" {
 			urls = append(urls, song.ArtworkURL)

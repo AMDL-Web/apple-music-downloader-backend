@@ -48,6 +48,18 @@ type Artist struct {
 	ArtworkURL string
 }
 
+// StationInfo is the catalog metadata for an Apple Music radio station. Format
+// mirrors attributes.playParams.format: "tracks" for a personalized/curated
+// station that resolves to a finite next-tracks list (downloadable here), or
+// "stream" for a live broadcast (not downloadable — no static track list).
+type StationInfo struct {
+	ID         string
+	Name       string
+	ArtworkURL string
+	Format     string
+	IsLive     bool
+}
+
 type ArtistAlbums struct {
 	Artist
 	Albums []Collection
@@ -67,6 +79,32 @@ type catalogPlaylistResponse struct {
 
 type catalogArtistResponse struct {
 	Data []artistData `json:"data"`
+}
+
+type catalogStationResponse struct {
+	Data []catalogStationData `json:"data"`
+}
+
+type catalogStationData struct {
+	ID         string            `json:"id"`
+	Type       string            `json:"type"`
+	Attributes stationAttributes `json:"attributes"`
+}
+
+type stationAttributes struct {
+	Name       string  `json:"name"`
+	IsLive     bool    `json:"isLive"`
+	Artwork    artwork `json:"artwork"`
+	PlayParams struct {
+		Format string `json:"format"`
+	} `json:"playParams"`
+}
+
+// stationTracksResponse is the shape of POST /v1/me/stations/next-tracks/{id}:
+// a page of catalog songs, decoded with the same catalogSongData used for
+// album/playlist tracks so mapSong applies uniformly.
+type stationTracksResponse struct {
+	Data []catalogSongData `json:"data"`
 }
 
 type catalogSongData struct {
@@ -148,6 +186,23 @@ type albumRelationships struct {
 
 type playlistRelationships struct {
 	Tracks relationshipSongs `json:"tracks"`
+	// Library is populated only when the request carries a media-user-token
+	// and include=library: for a private (user-shared) playlist it exposes the
+	// owner's library copy, whose attributes carry the user-uploaded artwork
+	// that the public catalog attributes omit.
+	Library relationshipLibraryPlaylists `json:"library"`
+}
+
+type relationshipLibraryPlaylists struct {
+	Data []libraryPlaylistData `json:"data"`
+}
+
+type libraryPlaylistData struct {
+	ID         string `json:"id"`
+	Attributes struct {
+		Name    string  `json:"name"`
+		Artwork artwork `json:"artwork"`
+	} `json:"attributes"`
 }
 
 type relationshipSongs struct {

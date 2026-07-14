@@ -370,12 +370,12 @@ paths:
           in: query
           description: >-
             按任务类型筛选；可重复或逗号分隔。允许值：song, album, playlist,
-            artist。
+            artist, station。
           schema:
             type: array
             items:
               type: string
-              enum: [song, album, playlist, artist]
+              enum: [song, album, playlist, artist, station]
           style: form
           explode: true
         - name: storefront
@@ -1001,7 +1001,11 @@ components:
       properties:
         urls:
           type: array
-          description: Apple Music 链接列表（单曲/专辑/歌单/艺人）。每个元素内允许包含换行或空白分隔的多个 URL，服务端会自动拆分；拆分后单次最多 100 条。
+          description: >-
+            Apple Music 链接列表（单曲/专辑/歌单/艺人/电台）。每个元素内允许包含换行或空白分隔的多个
+            URL，服务端会自动拆分；拆分后单次最多 100 条。电台（station，形如
+            .../station/.../ra.xxxx）仅支持可解析为曲目列表的个性化/精选电台，需随请求提供
+            media_user_token；直播电台（Apple Music 1 等）没有静态曲目列表，无法下载。
           minItems: 1
           items:
             type: string
@@ -1018,6 +1022,14 @@ components:
             可选：仅对本次请求创建的任务生效的下载配置覆盖。省略的字段沿用
             当前运行时配置。覆盖随任务持久化，重试和重启恢复后依然生效，
             不影响其它任务。
+        media_user_token:
+          type: string
+          description: >-
+            可选：Apple Music 订阅令牌（media-user-token），仅用于本次请求中需要用户身份的
+            解析：电台（station）下载，以及私人歌单（pl.u-xxx）的封面获取（公共目录不含其封
+            面，需以用户身份读取库中的副本）。它只保存在内存中、随这批任务的生命周期存在，绝
+            不写入数据库或配置文件；后端重启后会丢失，届时被恢复的电台任务会以明确错误提示要
+            求重新提交（私人歌单仍可下载，只是缺封面）。其余链接会忽略该字段。
     DownloadOverrides:
       type: object
       description: >-
@@ -1038,6 +1050,7 @@ components:
         album_path_format: {type: string}
         artist_path_format: {type: string}
         playlist_path_format: {type: string}
+        station_path_format: {type: string}
         temp_dir: {type: string}
         cover_size: {type: string}
         cover_format:
@@ -1094,6 +1107,7 @@ components:
             album_path_format: {type: string}
             artist_path_format: {type: string}
             playlist_path_format: {type: string}
+            station_path_format: {type: string}
             temp_dir: {type: string}
             cover_size:
               type: string
@@ -1258,7 +1272,7 @@ components:
           type: string
         type:
           type: string
-          enum: [song, album, playlist, artist]
+          enum: [song, album, playlist, artist, station]
         storefront:
           type: string
         title:

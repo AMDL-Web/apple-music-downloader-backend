@@ -15,6 +15,7 @@ const (
 	TypePlaylist URLType = "playlist"
 	TypeArtist   URLType = "artist"
 	TypeVideo    URLType = "music-video"
+	TypeStation  URLType = "station"
 )
 
 type ParsedURL struct {
@@ -52,7 +53,7 @@ func ParseWithAlbumTrackMode(raw, albumTrackURLMode string) (ParsedURL, error) {
 		return ParsedURL{}, fmt.Errorf("invalid storefront %q", storefront)
 	}
 	kind := URLType(parts[1])
-	if u.Host == classicalAppleMusicHost && kind == TypeVideo {
+	if u.Host == classicalAppleMusicHost && (kind == TypeVideo || kind == TypeStation) {
 		return ParsedURL{}, fmt.Errorf("unsupported Apple Music Classical URL type %q", kind)
 	}
 	id := parts[len(parts)-1]
@@ -68,6 +69,8 @@ func ParseWithAlbumTrackMode(raw, albumTrackURLMode string) (ParsedURL, error) {
 		return ParsedURL{Raw: raw, Storefront: storefront, Type: TypePlaylist, ID: id}, nil
 	case TypeArtist:
 		return ParsedURL{Raw: raw, Storefront: storefront, Type: TypeArtist, ID: id}, nil
+	case TypeStation:
+		return ParsedURL{Raw: raw, Storefront: storefront, Type: TypeStation, ID: id}, nil
 	case TypeVideo:
 		return ParsedURL{Raw: raw, Storefront: storefront, Type: TypeVideo, ID: id}, nil
 	default:
