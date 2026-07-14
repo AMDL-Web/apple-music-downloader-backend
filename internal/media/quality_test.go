@@ -50,11 +50,11 @@ atmos/master.m3u8
 }
 
 type fakeQualityCatalog struct {
-	song             applemusic.Song
-	webTokenHLS      string
-	webTokenErr      error
+	song              applemusic.Song
+	webTokenHLS       string
+	webTokenErr       error
 	webTokenCallCount *int
-	wrapperM3U8Calls *int
+	wrapperM3U8Calls  *int
 }
 
 func (f fakeQualityCatalog) Song(context.Context, string, string) (applemusic.Song, error) {
