@@ -46,13 +46,16 @@ func (c *CatalogClient) InitDeveloperToken() error {
 		return err
 	}
 	c.signer = signer
-	token, exp, err := signer.sign(time.Now(), internalDeveloperTokenTTL, nil)
+	token, _, err := signer.sign(time.Now(), internalDeveloperTokenTTL, nil)
 	if err != nil {
 		return err
 	}
 	c.mu.Lock()
 	c.token = token
-	c.tokenUntil = exp.Add(-5 * time.Minute)
+	// Cache for only half the signed lifetime: a still-valid-on-paper token
+	// can start getting rejected by Apple before its exp claim, so refreshing
+	// proactively at the half-life avoids waiting for a 401 to notice.
+	c.tokenUntil = cacheUntil(time.Now(), internalDeveloperTokenTTL)
 	c.mu.Unlock()
 	return nil
 }
@@ -312,27 +315,25 @@ func (c *CatalogClient) StationTracks(ctx context.Context, storefront, id, media
 // header) but adds the Media-User-Token header and uses POST, which get() does
 // not support.
 func (c *CatalogClient) stationNextTracks(ctx context.Context, id, mediaUserToken string, out any) error {
-	token, err := c.Token(ctx)
-	if err != nil {
-		return err
-	}
 	params := url.Values{
 		"include[songs]": []string{"artists,albums"},
 		"limit":          []string{"10"},
 		"l":              []string{c.cfg.Language},
 	}
 	endpoint := fmt.Sprintf("%s/v1/me/stations/next-tracks/%s?%s", c.apiBase(), id, params.Encode())
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Media-User-Token", mediaUserToken)
-	if !c.cfg.DeveloperTokenSigningEnabled() {
-		req.Header.Set("Origin", "https://music.apple.com")
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	resp, err := c.http.Do(req)
+	resp, err := c.doWithCatalogAuth(ctx, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Media-User-Token", mediaUserToken)
+		if !c.cfg.DeveloperTokenSigningEnabled() {
+			req.Header.Set("Origin", "https://music.apple.com")
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+		return req, nil
+	})
 	if err != nil {
 		return err
 	}
@@ -510,28 +511,26 @@ func (c *CatalogClient) get(ctx context.Context, endpoint string, params url.Val
 // user's subscription identity (e.g. private playlist artwork via
 // include=library). An empty token degrades to a plain get.
 func (c *CatalogClient) getWithUserToken(ctx context.Context, endpoint string, params url.Values, mediaUserToken string, out any) error {
-	token, err := c.Token(ctx)
-	if err != nil {
-		return err
-	}
 	if len(params) > 0 {
 		endpoint += "?" + params.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	if mediaUserToken != "" {
-		req.Header.Set("Media-User-Token", mediaUserToken)
-	}
-	if !c.cfg.DeveloperTokenSigningEnabled() {
-		// The web player token is scoped to music.apple.com; a self-signed
-		// developer token carries no origin claim, so no Origin header is sent.
-		req.Header.Set("Origin", "https://music.apple.com")
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	resp, err := c.http.Do(req)
+	resp, err := c.doWithCatalogAuth(ctx, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		if mediaUserToken != "" {
+			req.Header.Set("Media-User-Token", mediaUserToken)
+		}
+		if !c.cfg.DeveloperTokenSigningEnabled() {
+			// The web player token is scoped to music.apple.com; a self-signed
+			// developer token carries no origin claim, so no Origin header is sent.
+			req.Header.Set("Origin", "https://music.apple.com")
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+		return req, nil
+	})
 	if err != nil {
 		return err
 	}
@@ -548,6 +547,15 @@ var (
 	jwtPattern     = regexp.MustCompile(`eyJ[A-Za-z0-9_\-=]+\.[A-Za-z0-9_\-=]+\.[A-Za-z0-9_\-=]+`)
 )
 
+// cacheUntil is the half-life proactive-refresh policy: a token is only
+// trusted from the cache for half of its validity window (ttl), so it
+// rotates well before Apple's own expiry - or an early rejection of a
+// still-technically-valid token - could otherwise stall catalog requests
+// until a full TTL passes.
+func cacheUntil(now time.Time, ttl time.Duration) time.Time {
+	return now.Add(ttl / 2)
+}
+
 func (c *CatalogClient) Token(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	if c.token != "" && time.Now().Before(c.tokenUntil) {
@@ -558,13 +566,13 @@ func (c *CatalogClient) Token(ctx context.Context) (string, error) {
 	c.mu.Unlock()
 
 	if c.signer != nil {
-		token, exp, err := c.signer.sign(time.Now(), internalDeveloperTokenTTL, nil)
+		token, _, err := c.signer.sign(time.Now(), internalDeveloperTokenTTL, nil)
 		if err != nil {
 			return "", err
 		}
 		c.mu.Lock()
 		c.token = token
-		c.tokenUntil = exp.Add(-5 * time.Minute)
+		c.tokenUntil = cacheUntil(time.Now(), internalDeveloperTokenTTL)
 		c.mu.Unlock()
 		return token, nil
 	}
@@ -575,9 +583,54 @@ func (c *CatalogClient) Token(ctx context.Context) (string, error) {
 	}
 	c.mu.Lock()
 	c.token = token
-	c.tokenUntil = time.Now().Add(c.cfg.TokenTTL())
+	c.tokenUntil = cacheUntil(time.Now(), c.cfg.TokenTTL())
 	c.mu.Unlock()
 	return token, nil
+}
+
+// invalidateToken clears the cached catalog token so the next Token() call
+// mints (signed mode) or re-scrapes (legacy mode) a fresh one, used after
+// Apple rejects a still-cached token with 401.
+func (c *CatalogClient) invalidateToken() {
+	c.mu.Lock()
+	c.token = ""
+	c.tokenUntil = time.Time{}
+	c.mu.Unlock()
+}
+
+// doWithCatalogAuth sends a request built by buildReq (called with the
+// current bearer token) and, if Apple responds 401, invalidates the cached
+// token, re-authenticates once via Token(), and retries the same request
+// exactly once with the new token. Any other status - including a second
+// 401 - is returned as-is; callers keep their existing status/body handling.
+func (c *CatalogClient) doWithCatalogAuth(ctx context.Context, buildReq func(token string) (*http.Request, error)) (*http.Response, error) {
+	token, err := c.Token(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req, err := buildReq(token)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		return resp, nil
+	}
+	resp.Body.Close()
+
+	c.invalidateToken()
+	token, err = c.Token(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req, err = buildReq(token)
+	if err != nil {
+		return nil, err
+	}
+	return c.http.Do(req)
 }
 
 func (c *CatalogClient) fetchToken(ctx context.Context) (string, error) {
