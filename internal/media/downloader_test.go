@@ -449,6 +449,45 @@ func TestTrackMetadataResolverCoalescesPlaylistAlbumReads(t *testing.T) {
 	}
 }
 
+func TestTrackMetadataResolverEnrichesStationTracksWithAlbum(t *testing.T) {
+	catalog := &metadataCountingCatalog{
+		metadataSongs: map[string]applemusic.Song{
+			"song-1": {ID: "song-1", Name: "One", AlbumID: "album-1", AlbumArtist: "Album Artist"},
+			"song-2": {ID: "song-2", Name: "Two", AlbumID: "album-1", AlbumArtist: "Album Artist"},
+		},
+		albums: map[string]applemusic.Collection{
+			"album-1": {
+				ID: "album-1", Artist: "Album Artist", ArtworkURL: "album-art", ArtistID: "artist-1", ArtistArtworkURL: "artist-art",
+				Tracks: []applemusic.Song{
+					{ID: "song-1", TrackCount: 2, DiscNumber: 2, DiscCount: 2},
+					{ID: "song-2", TrackCount: 2, DiscNumber: 1, DiscCount: 2},
+				},
+			},
+		},
+		metadataCalls: make(map[string]int),
+		albumCalls:    make(map[string]int),
+	}
+	downloader := &Downloader{cfg: config.Default(), catalog: catalog}
+	resolver := newTrackMetadataResolver(downloader, "cn")
+
+	// Station tracks come from the next-tracks feed: their album relationship
+	// carries name/artist but no per-track disc totals or album artist id, so
+	// they need the same shared album enrichment as playlist tracks.
+	for _, id := range []string{"song-1", "song-2"} {
+		song, err := resolver.song(context.Background(), applemusic.Song{ID: id}, applemusic.TypeStation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if song.DiscCount != 2 || song.AlbumArtistID != "artist-1" || song.AlbumArtworkURL != "album-art" {
+			t.Fatalf("station song %s was not album-enriched: %+v", id, song)
+		}
+	}
+	_, metadataCalls, albumCalls := catalog.counts()
+	if metadataCalls["song-1"] != 1 || metadataCalls["song-2"] != 1 || albumCalls["album-1"] != 1 {
+		t.Fatalf("metadata calls = %v, album calls = %v, want one song read each and one shared album read", metadataCalls, albumCalls)
+	}
+}
+
 func TestProcessJobAvoidsDuplicateSingleSongMetadataReads(t *testing.T) {
 	catalog := &metadataCountingCatalog{
 		songs: map[string]applemusic.Song{

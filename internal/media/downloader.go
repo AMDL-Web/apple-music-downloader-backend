@@ -487,14 +487,16 @@ func (r *trackMetadataResolver) song(ctx context.Context, initial applemusic.Son
 		return applemusic.Song{}, err
 	}
 	song = mergeResolvedSong(song, initial)
-	if collectionType != applemusic.TypePlaylist || song.AlbumID == "" {
+	if (collectionType != applemusic.TypePlaylist && collectionType != applemusic.TypeStation) || song.AlbumID == "" {
 		return song, nil
 	}
 
-	// Playlist track payloads do not carry the collection-level album fields
-	// available to album and artist resolves. Preserve Song's historical
-	// best-effort enrichment, but share one album read across every track from
-	// that album and every concurrent worker in this job.
+	// Playlist and station track payloads do not carry the collection-level
+	// album fields available to album and artist resolves (station tracks come
+	// from the rolling next-tracks feed, whose album relationship lacks
+	// per-track disc totals and the album artist id). Preserve Song's
+	// historical best-effort enrichment, but share one album read across every
+	// track from that album and every concurrent worker in this job.
 	album, err := r.album(ctx, song.AlbumID)
 	if err == nil && len(album.Tracks) > 0 {
 		song = enrichTrackWithAlbum(song, album)
