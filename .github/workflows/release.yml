@@ -1,5 +1,13 @@
 name: Release
 
+# 发版入口(二选一):
+#   - workflow_dispatch:手动指定版本号发版,兜底路径(比如 PR 标题里
+#     没写版本号导致自动发版失败时)。
+#   - pull_request closed:dev -> main 的 PR 被合并时自动发版,版本号从
+#     PR 标题解析(需要形如 "Release v1.2.0: ..." 的 vX.Y.Z 版本号)。
+#     标题里没有版本号时该运行会失败并提示改用手动触发,不会静默跳过。
+# 两条路径都会:跑测试 -> 生成 changelog -> 创建 tag + GitHub Release ->
+# 显式级联 docker-publish 构建并推送镜像(latest 一并更新)。
 on:
   workflow_dispatch:
     inputs:
@@ -11,6 +19,9 @@ on:
         description: '基础标签 (可选，默认为上一个标签)'
         required: false
         type: string
+  pull_request:
+    types: [closed]
+    branches: [main]
 
 permissions:
   contents: write
@@ -19,14 +30,49 @@ jobs:
   release:
     name: Create GitHub release
     runs-on: ubuntu-latest
+    # 手动触发总是运行;PR 事件只在「来自 dev 且真的被合并」时运行,
+    # 直接 close 不合并、或从其他分支合入 main 的 PR 都不发版。
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       github.event.pull_request.head.ref == 'dev')
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
+      - name: Resolve version
+        id: version
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            # 从 PR 标题解析第一个 vX.Y.Z(允许 -rc.1 之类的后缀)
+            VERSION=$(printf '%s' "$PR_TITLE" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?' | head -n1 || true)
+            if [ -z "$VERSION" ]; then
+              echo "::error::PR 标题「$PR_TITLE」中未找到 vX.Y.Z 版本号,无法自动发版。请手动运行 Release workflow 指定版本号。"
+              exit 1
+            fi
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "发布版本: $VERSION"
+
       - name: Checkout source
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # PR 合并触发时检出合并进 main 的那个提交;手动触发时用所选 ref。
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.ref }}
+
+      - name: Fail if tag already exists
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "::error::标签 ${{ steps.version.outputs.version }} 已存在,取消发布。如需补发镜像请手动运行 Docker Publish workflow。"
+            exit 1
+          fi
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -38,7 +84,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      
+
       - name: Run tests
         run: go test ./...
 
@@ -54,16 +100,16 @@ jobs:
             BASE_TAG=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               "https://api.github.com/repos/${{ github.repository }}/releases/latest" \
               | jq -r '.tag_name' 2>/dev/null)
-            
+
             # 如果还是没有标签，设置为空字符串
             if [ "$BASE_TAG" = "null" ]; then
               BASE_TAG=""
             fi
           fi
-          
+
           echo "base_tag=$BASE_TAG" >> $GITHUB_OUTPUT
           echo "使用基础标签: ${BASE_TAG:-无}"
-          
+
           # 检查是否有提交
           if [ -n "$BASE_TAG" ]; then
             COMMIT_COUNT=$(git rev-list --count $BASE_TAG..HEAD)
@@ -71,10 +117,10 @@ jobs:
             # 如果没有标签，检查所有提交
             COMMIT_COUNT=$(git rev-list --count HEAD)
           fi
-          
+
           echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
           echo "新提交数量: $COMMIT_COUNT"
-          
+
           if [ "$COMMIT_COUNT" -eq 0 ]; then
             echo "没有新的提交，取消发布"
             echo "skip_release=true" >> $GITHUB_OUTPUT
@@ -87,19 +133,19 @@ jobs:
         if: steps.get-base-tag.outputs.skip_release == 'false'
         run: |
           # 构建参数
-          ARGS="--tag ${{ github.event.inputs.version }} --with-hash"
+          ARGS="--tag ${{ steps.version.outputs.version }} --with-hash"
           if [ -n "${{ steps.get-base-tag.outputs.base_tag }}" ]; then
             ARGS="$ARGS --base ${{ steps.get-base-tag.outputs.base_tag }}"
           fi
-          
+
           # 运行 changelog 生成器
           CHANGELOG_CONTENT=$(node tools/generate-changelog.js $ARGS --output-only)
-          
+
           # 保存到环境变量，使用 GITHUB_OUTPUT 方式
           echo "changelog_content<<EOF" >> $GITHUB_OUTPUT
           echo "$CHANGELOG_CONTENT" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-          
+
           # 显示输出用于调试
           echo "$CHANGELOG_CONTENT"
 
@@ -113,11 +159,14 @@ jobs:
         if: steps.get-base-tag.outputs.skip_release == 'false'
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ github.event.inputs.version }}
-          name: Release ${{ github.event.inputs.version }}
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
           body: ${{ steps.changelog.outputs.changelog_content }}
           draft: false
           prerelease: false
+          # PR 合并触发时把 tag 打在合并提交上(默认会打在触发事件的
+          # GITHUB_SHA 上,对 closed 事件那不是合并提交)。
+          target_commitish: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -133,5 +182,5 @@ jobs:
       contents: read
       packages: write
     with:
-      tag: ${{ github.event.inputs.version }}
+      tag: ${{ needs.release.outputs.version }}
       latest: true
