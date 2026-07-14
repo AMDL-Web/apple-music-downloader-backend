@@ -66,6 +66,7 @@ type fakeDownloaderCatalog struct {
 	artistAlbums applemusic.ArtistAlbums
 	station      applemusic.Collection
 	stationErr   error
+	stationToken *string
 }
 
 func (f fakeDownloaderCatalog) Song(context.Context, string, string) (applemusic.Song, error) {
@@ -92,7 +93,10 @@ func (f fakeDownloaderCatalog) Playlist(context.Context, string, string, string)
 	return applemusic.Collection{}, nil
 }
 
-func (f fakeDownloaderCatalog) StationTracks(context.Context, string, string, string) (applemusic.Collection, error) {
+func (f fakeDownloaderCatalog) StationTracks(_ context.Context, _, _, token string) (applemusic.Collection, error) {
+	if f.stationToken != nil {
+		*f.stationToken = token
+	}
 	return f.station, f.stationErr
 }
 
@@ -276,6 +280,41 @@ func TestResolveCollectionStationPassesTokenAndTracks(t *testing.T) {
 	}
 	if resolved.Name != "My Station" || resolved.ID != "ra.1" || resolved.ArtworkURL != "station-art" {
 		t.Fatalf("resolved = %+v", resolved)
+	}
+}
+
+func TestResolveCollectionStationFallsBackToConfiguredToken(t *testing.T) {
+	var gotToken string
+	cfg := config.Default()
+	cfg.Catalog.MediaUserToken = " configured-token "
+	downloader := &Downloader{
+		cfg: cfg,
+		catalog: fakeDownloaderCatalog{
+			station:      applemusic.Collection{ID: "ra.1", Type: applemusic.TypeStation, Name: "My Station"},
+			stationToken: &gotToken,
+		},
+	}
+
+	// No token on ctx, as for a job recovered after a restart: the configured
+	// catalog token is used instead of failing.
+	if _, err := downloader.resolveCollection(context.Background(), applemusic.ParsedURL{
+		Storefront: "us", Type: applemusic.TypeStation, ID: "ra.1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotToken != "configured-token" {
+		t.Fatalf("token = %q, want trimmed configured fallback", gotToken)
+	}
+
+	// A batch token attached at submission still wins over the config value.
+	ctx := jobs.WithMediaUserToken(context.Background(), "request-token")
+	if _, err := downloader.resolveCollection(ctx, applemusic.ParsedURL{
+		Storefront: "us", Type: applemusic.TypeStation, ID: "ra.1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotToken != "request-token" {
+		t.Fatalf("token = %q, want submission token to take precedence", gotToken)
 	}
 }
 

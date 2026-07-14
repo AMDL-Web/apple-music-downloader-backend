@@ -379,6 +379,19 @@ type resolvedCollection struct {
 	ArtworkURL string
 }
 
+// mediaUserToken returns the media-user-token for the current job: the
+// batch's ephemeral token attached at submission, or the configured
+// catalog.media_user_token when the in-memory copy is gone (the process
+// restarted before a recovered or retried job ran). Without the fallback,
+// recovered station and private-playlist jobs would fail even though a
+// usable token still sits in config.yaml.
+func (d *Downloader) mediaUserToken(ctx context.Context) string {
+	if token := jobs.MediaUserTokenFromContext(ctx); token != "" {
+		return token
+	}
+	return strings.TrimSpace(d.cfg.Catalog.MediaUserToken)
+}
+
 func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.ParsedURL) (resolvedCollection, error) {
 	switch parsed.Type {
 	case applemusic.TypeSong:
@@ -394,13 +407,13 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 		}
 		return resolvedCollection{Tracks: album.Tracks, ID: album.ID, Name: album.Name, ArtworkURL: album.ArtworkURL}, nil
 	case applemusic.TypePlaylist:
-		playlist, err := d.catalog.Playlist(ctx, parsed.Storefront, parsed.ID, jobs.MediaUserTokenFromContext(ctx))
+		playlist, err := d.catalog.Playlist(ctx, parsed.Storefront, parsed.ID, d.mediaUserToken(ctx))
 		if err != nil {
 			return resolvedCollection{}, err
 		}
 		return resolvedCollection{Tracks: playlist.Tracks, ID: playlist.ID, Name: playlist.Name, ArtworkURL: playlist.ArtworkURL}, nil
 	case applemusic.TypeStation:
-		station, err := d.catalog.StationTracks(ctx, parsed.Storefront, parsed.ID, jobs.MediaUserTokenFromContext(ctx))
+		station, err := d.catalog.StationTracks(ctx, parsed.Storefront, parsed.ID, d.mediaUserToken(ctx))
 		if err != nil {
 			return resolvedCollection{}, err
 		}

@@ -538,8 +538,10 @@ func (m *Manager) run(parent context.Context, jobID string) {
 	_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_started", Message: "job started"})
 
 	// Attach the batch's ephemeral media-user-token (if any) so station
-	// resolution can read it. Absent after a restart, in which case a station
-	// job fails with a clear "resubmit" error instead of reusing a credential.
+	// resolution can read it. Absent after a restart, in which case the
+	// downloader falls back to the configured catalog.media_user_token, so a
+	// recovered or retried station job only fails when no token is configured
+	// either. Request-supplied tokens are never persisted, so they stay gone.
 	procCtx := WithMediaUserToken(ctx, m.sessionTokens.Get(jobID))
 	err = m.processor.ProcessJob(procCtx, job, m)
 	if latest, loadErr := m.store.GetJob(context.Background(), job.ID); loadErr == nil {
