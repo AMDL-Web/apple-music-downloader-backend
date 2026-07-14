@@ -136,7 +136,7 @@ func TestPlaylistFetchesAllTrackPages(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("unexpected path: " + req.URL.RequestURI())), Header: make(http.Header)}, nil
 	})}
 
-	playlist, err := client.Playlist(context.Background(), "cn", "pl.1")
+	playlist, err := client.Playlist(context.Background(), "cn", "pl.1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,6 +145,72 @@ func TestPlaylistFetchesAllTrackPages(t *testing.T) {
 	}
 	if len(paths) != 2 || paths[1] != "/v1/catalog/cn/playlists/pl.1/tracks?offset=1" {
 		t.Fatalf("request paths = %#v", paths)
+	}
+}
+
+func TestPlaylistPrivateCoverFallsBackToLibraryArtwork(t *testing.T) {
+	client := NewCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
+	client.token = "test-token"
+	client.tokenUntil = time.Now().Add(time.Hour)
+	var gotMediaToken, gotInclude string
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotMediaToken = req.Header.Get("Media-User-Token")
+		gotInclude = req.URL.Query().Get("include")
+		body := `{"data":[{"id":"pl.u-1","type":"playlists","attributes":{"name":"Private","artwork":{"url":""}},"relationships":{"tracks":{"data":[{"id":"song-1","type":"songs","attributes":{"name":"One","artistName":"Artist"}}]},"library":{"data":[{"id":"p.lib1","type":"library-playlists","attributes":{"name":"Private","artwork":{"url":"https://blob.example/image?sig=abc"}}}]}}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+
+	playlist, err := client.Playlist(context.Background(), "cn", "pl.u-1", "media-token-xyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMediaToken != "media-token-xyz" {
+		t.Fatalf("Media-User-Token header = %q", gotMediaToken)
+	}
+	if gotInclude != "library" {
+		t.Fatalf("include param = %q, want library", gotInclude)
+	}
+	if playlist.ArtworkURL != "https://blob.example/image?sig=abc" {
+		t.Fatalf("ArtworkURL = %q, want library artwork", playlist.ArtworkURL)
+	}
+}
+
+func TestPlaylistCatalogArtworkWinsOverLibrary(t *testing.T) {
+	client := NewCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
+	client.token = "test-token"
+	client.tokenUntil = time.Now().Add(time.Hour)
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{"data":[{"id":"pl.1","type":"playlists","attributes":{"name":"Editorial","artwork":{"url":"catalog-art"}},"relationships":{"tracks":{"data":[]},"library":{"data":[{"id":"p.lib1","type":"library-playlists","attributes":{"artwork":{"url":"library-art"}}}]}}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+
+	playlist, err := client.Playlist(context.Background(), "cn", "pl.1", "media-token-xyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if playlist.ArtworkURL != "catalog-art" {
+		t.Fatalf("ArtworkURL = %q, want catalog artwork to win", playlist.ArtworkURL)
+	}
+}
+
+func TestPlaylistWithoutTokenSkipsLibraryInclude(t *testing.T) {
+	client := NewCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
+	client.token = "test-token"
+	client.tokenUntil = time.Now().Add(time.Hour)
+	var sawMediaToken bool
+	var gotInclude string
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		sawMediaToken = req.Header.Get("Media-User-Token") != ""
+		gotInclude = req.URL.Query().Get("include")
+		body := `{"data":[{"id":"pl.1","type":"playlists","attributes":{"name":"Editorial","artwork":{"url":"catalog-art"}},"relationships":{"tracks":{"data":[]}}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+
+	if _, err := client.Playlist(context.Background(), "cn", "pl.1", ""); err != nil {
+		t.Fatal(err)
+	}
+	if sawMediaToken || gotInclude != "" {
+		t.Fatalf("tokenless playlist request leaked auth: header=%v include=%q", sawMediaToken, gotInclude)
 	}
 }
 

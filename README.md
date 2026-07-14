@@ -215,7 +215,7 @@ curl -X POST http://localhost:18080/api/v1/downloads \
 
 `force: true` 会覆盖已存在的音频及其歌词边车文件；默认为 `false`，已存在的文件会被跳过。
 
-下载电台（station，链接形如 `https://music.apple.com/us/station/.../ra.xxxx`）：仅支持能解析为曲目列表的个性化/精选电台，需随请求提供订阅令牌 `media_user_token`；直播电台（Apple Music 1 等）没有静态曲目列表，任务会以明确错误结束。电台曲目取自 Apple Music 的「接下来播放」滚动列表，因此一次下载捕获的是当前返回的若干首曲目，而非固定编目。`media_user_token` 只保存在内存中、随这批任务的生命周期存在，绝不写入数据库或配置文件；后端重启后会丢失，届时被恢复的电台任务会提示重新提交。电台产物存入独立的电台目录，按 `download.station_path_format`（默认 `stations/{StationName}/{SongNumber:02d}. {SongName}`）归档。
+下载电台（station，链接形如 `https://music.apple.com/us/station/.../ra.xxxx`）：仅支持能解析为曲目列表的个性化/精选电台，需随请求提供订阅令牌 `media_user_token`；直播电台（Apple Music 1 等）没有静态曲目列表，任务会以明确错误结束。电台曲目取自 Apple Music 的「接下来播放」滚动列表，因此一次下载捕获的是当前返回的若干首曲目，而非固定编目。`media_user_token` 只保存在内存中、随这批任务的生命周期存在，绝不写入数据库或配置文件；后端重启后会丢失，届时被恢复的电台任务会提示重新提交。该令牌同时用于私人歌单（`pl.u-xxx`）的封面获取：公共目录不含私人歌单封面，随请求提供令牌后会以用户身份从库副本读取；不提供令牌时私人歌单仍可下载，只是没有歌单封面。电台产物存入独立的电台目录，按 `download.station_path_format`（默认 `stations/{StationName}/{SongNumber:02d}. {SongName}`）归档。
 
 ```bash
 curl -X POST http://localhost:18080/api/v1/downloads \

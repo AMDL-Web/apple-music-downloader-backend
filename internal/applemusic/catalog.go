@@ -176,11 +176,20 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 	}, nil
 }
 
-func (c *CatalogClient) Playlist(ctx context.Context, storefront, id string) (Collection, error) {
-	var resp catalogPlaylistResponse
-	if err := c.get(ctx, fmt.Sprintf("%s/v1/catalog/%s/playlists/%s", c.apiBase(), storefront, id), url.Values{
+// Playlist fetches a catalog playlist. mediaUserToken, when non-empty, is
+// sent as the Media-User-Token header together with include=library: a
+// private (user-shared) playlist has no artwork in its public catalog
+// attributes, and the owner's library copy — only visible with the user's
+// subscription identity — is the sole place its user-uploaded cover lives.
+func (c *CatalogClient) Playlist(ctx context.Context, storefront, id, mediaUserToken string) (Collection, error) {
+	params := url.Values{
 		"l": []string{c.cfg.Language},
-	}, &resp); err != nil {
+	}
+	if mediaUserToken != "" {
+		params.Set("include", "library")
+	}
+	var resp catalogPlaylistResponse
+	if err := c.getWithUserToken(ctx, fmt.Sprintf("%s/v1/catalog/%s/playlists/%s", c.apiBase(), storefront, id), params, mediaUserToken, &resp); err != nil {
 		return Collection{}, err
 	}
 	if len(resp.Data) == 0 {
@@ -198,7 +207,19 @@ func (c *CatalogClient) Playlist(ctx context.Context, storefront, id string) (Co
 		}
 		tracks = append(tracks, mapSong(raw))
 	}
-	return Collection{ID: playlist.ID, Type: TypePlaylist, Name: playlist.Attributes.Name, Artist: firstNonEmpty(playlist.Attributes.CuratorName, playlist.Attributes.ArtistName), ArtworkURL: playlist.Attributes.Artwork.URL, Tracks: tracks}, nil
+	artworkURL := playlist.Attributes.Artwork.URL
+	if artworkURL == "" {
+		// Private playlist: fall back to the library copy's artwork. The URL
+		// is a pre-signed direct image link (no {w}x{h}/{f} placeholders),
+		// which the cover fetcher passes through unchanged.
+		for _, lib := range playlist.Relationships.Library.Data {
+			if lib.Attributes.Artwork.URL != "" {
+				artworkURL = lib.Attributes.Artwork.URL
+				break
+			}
+		}
+	}
+	return Collection{ID: playlist.ID, Type: TypePlaylist, Name: playlist.Attributes.Name, Artist: firstNonEmpty(playlist.Attributes.CuratorName, playlist.Attributes.ArtistName), ArtworkURL: artworkURL, Tracks: tracks}, nil
 }
 
 // Station fetches a radio station's catalog metadata. The developer token
@@ -448,6 +469,14 @@ func (c *CatalogClient) fetchCoverOnce(ctx context.Context, artworkURL, format, 
 }
 
 func (c *CatalogClient) get(ctx context.Context, endpoint string, params url.Values, out any) error {
+	return c.getWithUserToken(ctx, endpoint, params, "", out)
+}
+
+// getWithUserToken is get plus an optional Media-User-Token header, for the
+// few catalog reads whose response is richer when the request carries the
+// user's subscription identity (e.g. private playlist artwork via
+// include=library). An empty token degrades to a plain get.
+func (c *CatalogClient) getWithUserToken(ctx context.Context, endpoint string, params url.Values, mediaUserToken string, out any) error {
 	token, err := c.Token(ctx)
 	if err != nil {
 		return err
@@ -460,6 +489,9 @@ func (c *CatalogClient) get(ctx context.Context, endpoint string, params url.Val
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	if mediaUserToken != "" {
+		req.Header.Set("Media-User-Token", mediaUserToken)
+	}
 	if !c.cfg.DeveloperTokenSigningEnabled() {
 		// The web player token is scoped to music.apple.com; a self-signed
 		// developer token carries no origin claim, so no Origin header is sent.

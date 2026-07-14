@@ -868,10 +868,11 @@ components:
         media_user_token:
           type: string
           description: >-
-            可选：Apple Music 订阅令牌（media-user-token），仅用于解析本次请求中的电台
-            （station）下载。它只保存在内存中、随这批任务的生命周期存在，绝不写入数据库或配置
-            文件；后端重启后会丢失，届时被恢复的电台任务会以明确错误提示要求重新提交。非电台
-            链接会忽略该字段。
+            可选：Apple Music 订阅令牌（media-user-token），仅用于本次请求中需要用户身份的
+            解析：电台（station）下载，以及私人歌单（pl.u-xxx）的封面获取（公共目录不含其封
+            面，需以用户身份读取库中的副本）。它只保存在内存中、随这批任务的生命周期存在，绝
+            不写入数据库或配置文件；后端重启后会丢失，届时被恢复的电台任务会以明确错误提示要
+            求重新提交（私人歌单仍可下载，只是缺封面）。其余链接会忽略该字段。
     DownloadOverrides:
       type: object
       description: >-

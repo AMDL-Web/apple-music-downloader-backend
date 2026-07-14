@@ -186,6 +186,23 @@ type albumRelationships struct {
 
 type playlistRelationships struct {
 	Tracks relationshipSongs `json:"tracks"`
+	// Library is populated only when the request carries a media-user-token
+	// and include=library: for a private (user-shared) playlist it exposes the
+	// owner's library copy, whose attributes carry the user-uploaded artwork
+	// that the public catalog attributes omit.
+	Library relationshipLibraryPlaylists `json:"library"`
+}
+
+type relationshipLibraryPlaylists struct {
+	Data []libraryPlaylistData `json:"data"`
+}
+
+type libraryPlaylistData struct {
+	ID         string `json:"id"`
+	Attributes struct {
+		Name    string  `json:"name"`
+		Artwork artwork `json:"artwork"`
+	} `json:"attributes"`
 }
 
 type relationshipSongs struct {

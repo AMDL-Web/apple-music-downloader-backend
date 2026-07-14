@@ -83,7 +83,7 @@ func (f fakeDownloaderCatalog) Album(_ context.Context, _, id string) (applemusi
 	return applemusic.Collection{}, nil
 }
 
-func (f fakeDownloaderCatalog) Playlist(context.Context, string, string) (applemusic.Collection, error) {
+func (f fakeDownloaderCatalog) Playlist(context.Context, string, string, string) (applemusic.Collection, error) {
 	return applemusic.Collection{}, nil
 }
 

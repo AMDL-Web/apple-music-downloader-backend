@@ -43,7 +43,7 @@ type Downloader struct {
 type downloaderCatalog interface {
 	Song(context.Context, string, string) (applemusic.Song, error)
 	Album(context.Context, string, string) (applemusic.Collection, error)
-	Playlist(context.Context, string, string) (applemusic.Collection, error)
+	Playlist(context.Context, string, string, string) (applemusic.Collection, error)
 	StationTracks(context.Context, string, string, string) (applemusic.Collection, error)
 	ArtistAlbums(context.Context, string, string) (applemusic.ArtistAlbums, error)
 	Artist(context.Context, string, string) (applemusic.Artist, error)
@@ -387,7 +387,7 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 		}
 		return resolvedCollection{Tracks: album.Tracks, ID: album.ID, Name: album.Name, ArtworkURL: album.ArtworkURL}, nil
 	case applemusic.TypePlaylist:
-		playlist, err := d.catalog.Playlist(ctx, parsed.Storefront, parsed.ID)
+		playlist, err := d.catalog.Playlist(ctx, parsed.Storefront, parsed.ID, jobs.MediaUserTokenFromContext(ctx))
 		if err != nil {
 			return resolvedCollection{}, err
 		}
