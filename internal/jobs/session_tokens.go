@@ -16,12 +16,11 @@ func needsMediaUserToken(jobType, id string) bool {
 }
 
 // SessionTokenStore holds per-job media-user-tokens (Apple subscription
-// tokens) submitted with a download batch. The tokens are deliberately kept in
-// memory only and never persisted to the database or config: they authorize a
-// single submission's station resolution and nothing more. A process restart
-// drops them, so a station job requeued by RecoverUnfinished re-resolves
-// without one and fails with a clear "resubmit" error rather than silently
-// reusing a stored credential.
+// tokens) selected for a download batch. The per-job copy is deliberately kept
+// in memory only and never persisted with database jobs: it authorizes a single
+// submission's user-scoped resolution and nothing more. A process restart drops
+// in-memory request tokens; configured catalog.media_user_token values can be
+// selected again for newly submitted jobs.
 type SessionTokenStore struct {
 	mu     sync.Mutex
 	tokens map[string]string

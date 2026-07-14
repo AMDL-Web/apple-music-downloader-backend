@@ -132,8 +132,8 @@ func TestMutableViewOmitsStartupBoundFields(t *testing.T) {
 		t.Fatalf("download.cover_format = %v, want jpg", download["cover_format"])
 	}
 	catalog, ok := view["catalog"].(map[string]any)
-	if !ok || len(catalog) != 1 || catalog["album_track_url_mode"] != "song" {
-		t.Fatalf("catalog section = %v, want only album_track_url_mode", view["catalog"])
+	if !ok || len(catalog) != 3 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["media_user_token_priority"] != "config" {
+		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/media_user_token_priority", view["catalog"])
 	}
 	logging, ok := view["logging"].(map[string]any)
 	if !ok || len(logging) != 2 || logging["level"] != "info" || logging["access_log"] != false {

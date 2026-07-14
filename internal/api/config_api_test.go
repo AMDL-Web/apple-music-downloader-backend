@@ -57,8 +57,8 @@ func TestGetConfigReturnsOnlyMutableFields(t *testing.T) {
 	if err := json.Unmarshal(resp.Config["catalog"], &catalog); err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog) != 1 || catalog["album_track_url_mode"] != "song" {
-		t.Fatalf("catalog section = %v, want only album_track_url_mode", catalog)
+	if len(catalog) != 3 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["media_user_token_priority"] != "config" {
+		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/media_user_token_priority", catalog)
 	}
 	var logging map[string]any
 	if err := json.Unmarshal(resp.Config["logging"], &logging); err != nil {

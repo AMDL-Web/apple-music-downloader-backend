@@ -89,6 +89,14 @@ catalog:
   token_cache_ttl_hours: 12
   # enum: song, album. song means album URLs containing ?i= are single-song tasks; album downloads the full album.
   album_track_url_mode: "song"
+  # string: optional Apple Music subscription token (media-user-token) used for station downloads and private playlist covers.
+  # Empty keeps the legacy per-request-only behavior. When set, the token is stored in config.yaml and may also be
+  # exposed by GET /api/v1/config; protect this service at the deployment layer if the token is sensitive.
+  media_user_token: ""
+  # enum: request, config. Selects which media-user-token source wins when both this config value and the
+  # create-download request body provide one. config is the default; request preserves the legacy request-first behavior.
+  # If the preferred source is empty, the other non-empty source is used as a fallback.
+  media_user_token_priority: "config"
 
 download:
   # list enum: alac, aac, aac-binaural, aac-downmix, ec3, ac3.

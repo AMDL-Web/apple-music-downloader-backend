@@ -245,7 +245,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 
 // getConfig returns the runtime-changeable part of the current config
 // (download minus max_running_jobs, logging level/access log, simulate,
-// catalog.album_track_url_mode).
+// catalog.album_track_url_mode/media_user_token/media_user_token_priority).
 // Startup-bound fields are omitted: clients cannot change them through this
 // API, so they have no reason to see them here.
 //
@@ -396,7 +396,8 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	resp := s.manager.SubmitBatch(r.Context(), urls, req.Force, req.Overrides, strings.TrimSpace(req.MediaUserToken))
+	mediaUserToken := s.currentConfig().Catalog.EffectiveMediaUserToken(req.MediaUserToken)
+	resp := s.manager.SubmitBatch(r.Context(), urls, req.Force, req.Overrides, mediaUserToken)
 	status := http.StatusUnprocessableEntity
 	if resp.Accepted > 0 {
 		status = http.StatusAccepted

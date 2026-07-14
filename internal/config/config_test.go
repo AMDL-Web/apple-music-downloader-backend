@@ -131,6 +131,36 @@ func TestDeveloperTokenSigningEnabled(t *testing.T) {
 	}
 }
 
+func TestMediaUserTokenPriority(t *testing.T) {
+	if got := Default().Catalog.MediaUserTokenPriority; got != "config" {
+		t.Fatalf("default media-user-token priority = %q, want config", got)
+	}
+
+	requestFirst := CatalogConfig{MediaUserToken: " config-token ", MediaUserTokenPriority: "request"}
+	if got := requestFirst.EffectiveMediaUserToken(" request-token "); got != "request-token" {
+		t.Fatalf("request priority token = %q, want request-token", got)
+	}
+	if got := requestFirst.EffectiveMediaUserToken("   "); got != "config-token" {
+		t.Fatalf("request priority fallback token = %q, want config-token", got)
+	}
+
+	configFirst := CatalogConfig{MediaUserToken: " config-token ", MediaUserTokenPriority: "config"}
+	if got := configFirst.EffectiveMediaUserToken(" request-token "); got != "config-token" {
+		t.Fatalf("config priority token = %q, want config-token", got)
+	}
+	configFirst.MediaUserToken = ""
+	if got := configFirst.EffectiveMediaUserToken(" request-token "); got != "request-token" {
+		t.Fatalf("config priority fallback token = %q, want request-token", got)
+	}
+}
+
+func TestLoadRejectsUnknownMediaUserTokenPriority(t *testing.T) {
+	path := writeConfig(t, "catalog:\n  media_user_token_priority: always\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "media_user_token_priority") {
+		t.Fatalf("Load() error = %v, want media_user_token_priority validation error", err)
+	}
+}
+
 func TestDeveloperTokenTTL(t *testing.T) {
 	if got := Default().Catalog.DeveloperTokenTTL(); got != time.Hour {
 		t.Fatalf("default developer token TTL = %s, want 1h", got)
