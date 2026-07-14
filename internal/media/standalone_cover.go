@@ -88,7 +88,7 @@ func (d *Downloader) ensureStandaloneCover(ctx context.Context, path string, res
 		return nil
 	}
 	data, _, err := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(int) ([]byte, error) {
-		return d.catalog.FetchCover(ctx, []string{artworkURL}, d.cfg.Download.CoverFormat, d.cfg.Download.CoverSize)
+		return d.fetchCover(ctx, []string{artworkURL}, d.cfg.Download.CoverFormat, d.cfg.Download.CoverSize)
 	}, nil)
 	if err != nil {
 		return err

@@ -85,6 +85,60 @@ func TestSongRequestsAndMapsExtendedAssetURLs(t *testing.T) {
 	}
 }
 
+func TestSongMetadataDoesNotFollowAlbumRelationship(t *testing.T) {
+	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client.token = "test-token"
+	client.tokenUntil = time.Now().Add(time.Hour)
+	var paths []string
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		paths = append(paths, req.URL.Path)
+		body := `{"data":[{"id":"song-1","type":"songs","attributes":{"name":"Song","artistName":"Artist","albumName":"Album"},"relationships":{"albums":{"data":[{"id":"album-1","type":"albums","attributes":{"name":"Album","artistName":"Album Artist","trackCount":10}}]}}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+
+	song, err := client.SongMetadata(context.Background(), "cn", "song-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if song.AlbumID != "album-1" || song.TrackCount != 10 {
+		t.Fatalf("song metadata = %+v, want mapped album relationship", song)
+	}
+	if got, want := paths, []string{"/v1/catalog/cn/songs/song-1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("request paths = %#v, want %#v", got, want)
+	}
+}
+
+func TestSongStillFollowsAlbumRelationshipForFullMetadata(t *testing.T) {
+	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client.token = "test-token"
+	client.tokenUntil = time.Now().Add(time.Hour)
+	var paths []string
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		paths = append(paths, req.URL.Path)
+		switch req.URL.Path {
+		case "/v1/catalog/cn/songs/song-1":
+			body := `{"data":[{"id":"song-1","type":"songs","attributes":{"name":"Song","artistName":"Artist","albumName":"Album","trackNumber":1,"discNumber":1},"relationships":{"albums":{"data":[{"id":"album-1","type":"albums","attributes":{"name":"Album","artistName":"Album Artist","trackCount":2}}]}}}]}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		case "/v1/catalog/cn/albums/album-1":
+			body := `{"data":[{"id":"album-1","type":"albums","attributes":{"name":"Album","artistName":"Album Artist","trackCount":2,"artwork":{"url":"album-art"}},"relationships":{"artists":{"data":[{"id":"artist-1","attributes":{"name":"Album Artist","artwork":{"url":"artist-art"}}}]},"tracks":{"data":[{"id":"song-1","type":"songs","attributes":{"name":"Song","trackNumber":1,"discNumber":1}},{"id":"song-2","type":"songs","attributes":{"name":"Two","trackNumber":2,"discNumber":1}}]}}}]}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("unexpected path")), Header: make(http.Header)}, nil
+		}
+	})}
+
+	song, err := client.Song(context.Background(), "cn", "song-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if song.AlbumArtist != "Album Artist" || song.AlbumArtworkURL != "album-art" || song.AlbumArtistID != "artist-1" || song.AlbumArtistArtworkURL != "artist-art" || song.TrackCount != 2 || song.DiscCount != 1 {
+		t.Fatalf("enriched song = %+v", song)
+	}
+	if got, want := paths, []string{"/v1/catalog/cn/songs/song-1", "/v1/catalog/cn/albums/album-1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("request paths = %#v, want %#v", got, want)
+	}
+}
+
 func TestAlbumFetchesAllTrackPages(t *testing.T) {
 	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 	client.token = "test-token"
