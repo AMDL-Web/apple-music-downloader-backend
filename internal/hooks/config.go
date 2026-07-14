@@ -124,7 +124,7 @@ var allowedEvents = map[string]struct{}{
 }
 
 var allowedJobTypes = map[string]struct{}{
-	"song": {}, "album": {}, "playlist": {}, "artist": {},
+	"song": {}, "album": {}, "playlist": {}, "artist": {}, "station": {},
 }
 
 func (c Config) validate() error {

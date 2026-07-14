@@ -13,6 +13,7 @@ import (
 type Config struct {
 	Server   ServerConfig   `yaml:"server" json:"server"`
 	Database DatabaseConfig `yaml:"database" json:"database"`
+	Logging  LoggingConfig  `yaml:"logging" json:"logging"`
 	Wrapper  WrapperConfig  `yaml:"wrapper" json:"wrapper"`
 	Catalog  CatalogConfig  `yaml:"catalog" json:"catalog"`
 	Download DownloadConfig `yaml:"download" json:"download"`
@@ -26,6 +27,25 @@ type ServerConfig struct {
 
 type DatabaseConfig struct {
 	Path string `yaml:"path" json:"path"`
+}
+
+// LoggingConfig controls the process-wide structured logger. The whole
+// output shape is startup-bound because changing files and handler structure
+// while requests are in flight would make persistence failures ambiguous;
+// Level and AccessLog are safe to update at runtime.
+type LoggingConfig struct {
+	Level         string `yaml:"level" json:"level"`
+	Format        string `yaml:"format" json:"format"`
+	Console       bool   `yaml:"console" json:"console"`
+	IncludeSource bool   `yaml:"include_source" json:"include_source"`
+	AccessLog     bool   `yaml:"access_log" json:"access_log"`
+	BufferSize    int    `yaml:"buffer_size" json:"buffer_size"`
+	FileEnabled   bool   `yaml:"file_enabled" json:"file_enabled"`
+	FilePath      string `yaml:"file_path" json:"file_path"`
+	MaxSizeMB     int    `yaml:"max_size_mb" json:"max_size_mb"`
+	MaxBackups    int    `yaml:"max_backups" json:"max_backups"`
+	MaxAgeDays    int    `yaml:"max_age_days" json:"max_age_days"`
+	Compress      bool   `yaml:"compress" json:"compress"`
 }
 
 type WrapperConfig struct {
@@ -59,6 +79,27 @@ type CatalogConfig struct {
 	AllowedOrigins           []string `yaml:"allowed_origins" json:"allowed_origins"`
 	TokenCacheTTLHours       int      `yaml:"token_cache_ttl_hours" json:"token_cache_ttl_hours"`
 	AlbumTrackURLMode        string   `yaml:"album_track_url_mode" json:"album_track_url_mode"`
+	MediaUserToken           string   `yaml:"media_user_token" json:"media_user_token"`
+	MediaUserTokenPriority   string   `yaml:"media_user_token_priority" json:"media_user_token_priority"`
+}
+
+// EffectiveMediaUserToken selects the media-user-token for a submitted batch.
+// The configured priority wins when that token is non-empty; if the preferred
+// source is empty, the other source is used as a fallback so existing request
+// flows keep working unless a config token is actually present.
+func (c CatalogConfig) EffectiveMediaUserToken(requestToken string) string {
+	requestToken = strings.TrimSpace(requestToken)
+	configToken := strings.TrimSpace(c.MediaUserToken)
+	if c.MediaUserTokenPriority == "config" {
+		if configToken != "" {
+			return configToken
+		}
+		return requestToken
+	}
+	if requestToken != "" {
+		return requestToken
+	}
+	return configToken
 }
 
 // DeveloperTokenTTL returns the validity of developer tokens minted for
@@ -98,6 +139,7 @@ type DownloadConfig struct {
 	AlbumPathFormat    string   `yaml:"album_path_format" json:"album_path_format"`
 	ArtistPathFormat   string   `yaml:"artist_path_format" json:"artist_path_format"`
 	PlaylistPathFormat string   `yaml:"playlist_path_format" json:"playlist_path_format"`
+	StationPathFormat  string   `yaml:"station_path_format" json:"station_path_format"`
 	TempDir            string   `yaml:"temp_dir" json:"temp_dir"`
 	CoverSize          string   `yaml:"cover_size" json:"cover_size"`
 	CoverFormat        string   `yaml:"cover_format" json:"cover_format"`
@@ -134,11 +176,16 @@ func Default() Config {
 	return Config{
 		Server:   ServerConfig{Listen: "127.0.0.1:18080"},
 		Database: DatabaseConfig{Path: "data/db/amdl.db"},
+		Logging: LoggingConfig{
+			Level: "info", Format: "text", Console: true, AccessLog: false,
+			BufferSize: 2000, FilePath: "data/logs/amdl.log", MaxSizeMB: 100,
+			MaxBackups: 7, MaxAgeDays: 30, Compress: true,
+		},
 		Wrapper: WrapperConfig{
 			Address: "127.0.0.1:8080", Insecure: true, TimeoutSeconds: 30, LoginTimeoutSeconds: 120,
 		},
 		Catalog: CatalogConfig{
-			DefaultStorefront: "us", Language: "en-US", DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song",
+			DefaultStorefront: "us", Language: "en-US", DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song", MediaUserTokenPriority: "config",
 		},
 		Download: DownloadConfig{
 			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true,
@@ -148,6 +195,7 @@ func Default() Config {
 			AlbumPathFormat:    "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
 			ArtistPathFormat:   "artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
 			PlaylistPathFormat: "playlists/{PlaylistName}/{SongNumber:02d}. {SongName}",
+			StationPathFormat:  "stations/{StationName}/{SongNumber:02d}. {SongName}",
 			TempDir:            "data/tmp", CoverSize: "5000x5000", CoverFormat: "jpg",
 			EmbedCover: true, EmbedLyrics: true, LyricsFormat: "lrc", LyricsType: "lyrics", LyricsExtras: []string{},
 			ALACMaxSampleRate: 192000, ALACMaxBitDepth: 24, CheckIntegrity: true,
@@ -191,8 +239,39 @@ func load(path string, environ []string) (Config, error) {
 // was loaded from YAML at startup or assembled at runtime (config update API,
 // per-request download overrides applied to a base config).
 func (c Config) Validate() error {
+	switch c.Logging.Level {
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("logging.level must be debug, info, warn, or error")
+	}
+	switch c.Logging.Format {
+	case "text", "json":
+	default:
+		return fmt.Errorf("logging.format must be text or json")
+	}
+	if !c.Logging.Console && !c.Logging.FileEnabled && c.Logging.BufferSize == 0 {
+		return fmt.Errorf("logging must enable console, file, or a non-zero buffer_size")
+	}
+	if c.Logging.BufferSize < 0 || c.Logging.BufferSize > 100000 {
+		return fmt.Errorf("logging.buffer_size must be between 0 and 100000")
+	}
+	if c.Logging.FileEnabled && strings.TrimSpace(c.Logging.FilePath) == "" {
+		return fmt.Errorf("logging.file_path cannot be empty when file_enabled is true")
+	}
+	if c.Logging.MaxSizeMB < 1 {
+		return fmt.Errorf("logging.max_size_mb must be >= 1")
+	}
+	if c.Logging.MaxBackups < 0 {
+		return fmt.Errorf("logging.max_backups must be >= 0")
+	}
+	if c.Logging.MaxAgeDays < 0 {
+		return fmt.Errorf("logging.max_age_days must be >= 0")
+	}
 	if c.Catalog.AlbumTrackURLMode != "song" && c.Catalog.AlbumTrackURLMode != "album" {
 		return fmt.Errorf("catalog.album_track_url_mode must be song or album")
+	}
+	if c.Catalog.MediaUserTokenPriority != "request" && c.Catalog.MediaUserTokenPriority != "config" {
+		return fmt.Errorf("catalog.media_user_token_priority must be request or config")
 	}
 	signingFields := 0
 	for _, v := range []string{c.Catalog.AppleMusicPrivateKeyPath, c.Catalog.AppleMusicKeyID, c.Catalog.AppleMusicTeamID} {
@@ -213,6 +292,7 @@ func (c Config) Validate() error {
 		"download.album_path_format":    c.Download.AlbumPathFormat,
 		"download.artist_path_format":   c.Download.ArtistPathFormat,
 		"download.playlist_path_format": c.Download.PlaylistPathFormat,
+		"download.station_path_format":  c.Download.StationPathFormat,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s cannot be empty", name)

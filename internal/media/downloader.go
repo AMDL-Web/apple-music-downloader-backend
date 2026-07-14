@@ -20,6 +20,7 @@ import (
 	"amdl/internal/config"
 	"amdl/internal/domain"
 	"amdl/internal/jobs"
+	"amdl/internal/logging"
 	"amdl/internal/storage"
 	"amdl/internal/wrapper"
 )
@@ -37,13 +38,16 @@ type Downloader struct {
 	tools   *ToolChecker
 	http    *http.Client
 	mp4     *MP4Processor
+	covers  *coverCache
 	logger  *slog.Logger
 }
 
 type downloaderCatalog interface {
 	Song(context.Context, string, string) (applemusic.Song, error)
+	SongMetadata(context.Context, string, string) (applemusic.Song, error)
 	Album(context.Context, string, string) (applemusic.Collection, error)
-	Playlist(context.Context, string, string) (applemusic.Collection, error)
+	Playlist(context.Context, string, string, string) (applemusic.Collection, error)
+	StationTracks(context.Context, string, string, string) (applemusic.Collection, error)
 	ArtistAlbums(context.Context, string, string) (applemusic.ArtistAlbums, error)
 	Artist(context.Context, string, string) (applemusic.Artist, error)
 	FetchCover(context.Context, []string, string, string) ([]byte, error)
@@ -89,6 +93,7 @@ func (d *Downloader) withConfig(cfg config.Config) *Downloader {
 	clone := *d
 	clone.cfg = cfg
 	clone.mp4 = newMP4Processor(cfg)
+	clone.covers = nil
 	return &clone
 }
 
@@ -158,7 +163,9 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 			return fmt.Errorf("create temp dir: %w", err)
 		}
 	}
-	return d.withConfig(cfg).processJob(ctx, job, reporter)
+	jobDownloader := d.withConfig(cfg)
+	jobDownloader.covers = newCoverCache(jobDownloader.catalog)
+	return jobDownloader.processJob(ctx, job, reporter)
 }
 
 // parseJobInput reconstructs the submission-time parse result from the job's
@@ -210,8 +217,8 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 	collectionID := resolved.ID
 	// Simulate mode never fetches artwork or writes files, so the standalone
 	// playlist cover is skipped along with the per-track disk writes.
-	if parsed.Type == applemusic.TypePlaylist && d.cfg.Download.SavePlaylistCover && len(tracks) > 0 && !d.cfg.Simulate.Enabled {
-		folder := playlistFolderPath(d.cfg, tracks[0], collectionName, collectionID)
+	if (parsed.Type == applemusic.TypePlaylist || parsed.Type == applemusic.TypeStation) && d.cfg.Download.SavePlaylistCover && len(tracks) > 0 && !d.cfg.Simulate.Enabled {
+		folder := collectionFolderPath(d.cfg, tracks[0], parsed.Type, collectionName, collectionID)
 		if coverErr := d.savePlaylistCover(ctx, resolved.ArtworkURL, folder); coverErr != nil {
 			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, Type: "standalone_cover_failed", Phase: "playlist_cover", Message: coverErr.Error()})
 		}
@@ -236,6 +243,7 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 	if err != nil {
 		return err
 	}
+	metadata := newTrackMetadataResolver(d, parsed.Storefront)
 
 	parallel := d.cfg.Download.MaxParallelTracks
 	if parallel <= 0 {
@@ -260,8 +268,8 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := d.processTrack(ctx, job, items[i], tracks[i], parsed.Storefront, parsed.Type, collectionName, collectionID, i+1, folderArtist, reporter); err != nil {
-				d.logger.Error("track failed", "adam_id", tracks[i].ID, "error", err)
+			if err := d.processTrackWithMetadata(ctx, job, items[i], tracks[i], parsed.Storefront, parsed.Type, collectionName, collectionID, i+1, folderArtist, metadata, reporter); err != nil {
+				logging.FromContext(ctx, d.logger).Error("track failed", "item_id", items[i].ID, "adam_id", tracks[i].ID, "error", err)
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err
@@ -371,6 +379,19 @@ type resolvedCollection struct {
 	ArtworkURL string
 }
 
+// mediaUserToken returns the media-user-token for the current job: the
+// batch's ephemeral token attached at submission, or the configured
+// catalog.media_user_token when the in-memory copy is gone (the process
+// restarted before a recovered or retried job ran). Without the fallback,
+// recovered station and private-playlist jobs would fail even though a
+// usable token still sits in config.yaml.
+func (d *Downloader) mediaUserToken(ctx context.Context) string {
+	if token := jobs.MediaUserTokenFromContext(ctx); token != "" {
+		return token
+	}
+	return strings.TrimSpace(d.cfg.Catalog.MediaUserToken)
+}
+
 func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.ParsedURL) (resolvedCollection, error) {
 	switch parsed.Type {
 	case applemusic.TypeSong:
@@ -386,11 +407,17 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 		}
 		return resolvedCollection{Tracks: album.Tracks, ID: album.ID, Name: album.Name, ArtworkURL: album.ArtworkURL}, nil
 	case applemusic.TypePlaylist:
-		playlist, err := d.catalog.Playlist(ctx, parsed.Storefront, parsed.ID)
+		playlist, err := d.catalog.Playlist(ctx, parsed.Storefront, parsed.ID, d.mediaUserToken(ctx))
 		if err != nil {
 			return resolvedCollection{}, err
 		}
 		return resolvedCollection{Tracks: playlist.Tracks, ID: playlist.ID, Name: playlist.Name, ArtworkURL: playlist.ArtworkURL}, nil
+	case applemusic.TypeStation:
+		station, err := d.catalog.StationTracks(ctx, parsed.Storefront, parsed.ID, d.mediaUserToken(ctx))
+		if err != nil {
+			return resolvedCollection{}, err
+		}
+		return resolvedCollection{Tracks: station.Tracks, ID: station.ID, Name: station.Name, ArtworkURL: station.ArtworkURL}, nil
 	case applemusic.TypeArtist:
 		artist, err := d.catalog.ArtistAlbums(ctx, parsed.Storefront, parsed.ID)
 		if err != nil {
@@ -425,7 +452,183 @@ func (d *Downloader) artistTracks(ctx context.Context, storefront string, albums
 	return tracks, nil
 }
 
+type albumMetadataResult struct {
+	done  chan struct{}
+	album applemusic.Collection
+	err   error
+}
+
+// trackMetadataResolver lives for one job. It keeps the intentional per-track
+// song refresh while coalescing album enrichment shared by playlist tracks.
+// Album and artist jobs already carry that enrichment in their resolved track
+// values, so those paths never read the same album again here.
+type trackMetadataResolver struct {
+	downloader *Downloader
+	storefront string
+
+	mu     sync.Mutex
+	albums map[string]*albumMetadataResult
+}
+
+func newTrackMetadataResolver(d *Downloader, storefront string) *trackMetadataResolver {
+	return &trackMetadataResolver{
+		downloader: d,
+		storefront: storefront,
+		albums:     make(map[string]*albumMetadataResult),
+	}
+}
+
+func (r *trackMetadataResolver) song(ctx context.Context, initial applemusic.Song, collectionType applemusic.URLType) (applemusic.Song, error) {
+	// A single-song resolve already used CatalogClient.Song, including its album
+	// enrichment, immediately before processTrack. Reusing it avoids fetching
+	// both the song and its album twice. The name guard retains a defensive
+	// fallback for callers that provide only an Adam ID.
+	if collectionType == applemusic.TypeSong && strings.TrimSpace(initial.Name) != "" {
+		if initial.AlbumID != "" && (initial.TrackCount == 0 || initial.DiscCount == 0) {
+			// Song's album enrichment is best-effort. If it failed during the
+			// collection resolve, retain the old pipeline's recovery opportunity
+			// without repeating the successful song request.
+			if album, err := r.album(ctx, initial.AlbumID); err == nil && len(album.Tracks) > 0 {
+				initial = enrichTrackWithAlbum(initial, album)
+			}
+		}
+		return initial, nil
+	}
+
+	song, err := r.downloader.catalog.SongMetadata(ctx, r.storefront, initial.ID)
+	if err != nil {
+		return applemusic.Song{}, err
+	}
+	song = mergeResolvedSong(song, initial)
+	if (collectionType != applemusic.TypePlaylist && collectionType != applemusic.TypeStation) || song.AlbumID == "" {
+		return song, nil
+	}
+
+	// Playlist and station track payloads do not carry the collection-level
+	// album fields available to album and artist resolves (station tracks come
+	// from the rolling next-tracks feed, whose album relationship lacks
+	// per-track disc totals and the album artist id). Preserve Song's
+	// historical best-effort enrichment, but share one album read across every
+	// track from that album and every concurrent worker in this job.
+	album, err := r.album(ctx, song.AlbumID)
+	if err == nil && len(album.Tracks) > 0 {
+		song = enrichTrackWithAlbum(song, album)
+	}
+	return song, nil
+}
+
+func (r *trackMetadataResolver) album(ctx context.Context, albumID string) (applemusic.Collection, error) {
+	r.mu.Lock()
+	if pending, ok := r.albums[albumID]; ok {
+		r.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return applemusic.Collection{}, ctx.Err()
+		case <-pending.done:
+			return pending.album, pending.err
+		}
+	}
+	pending := &albumMetadataResult{done: make(chan struct{})}
+	r.albums[albumID] = pending
+	r.mu.Unlock()
+
+	pending.album, pending.err = r.downloader.catalog.Album(ctx, r.storefront, albumID)
+	r.mu.Lock()
+	if pending.err != nil && r.albums[albumID] == pending {
+		// Do not retain transient failures for the whole job. Concurrent callers
+		// still share this result, while a later track may try the album again.
+		delete(r.albums, albumID)
+	}
+	close(pending.done)
+	r.mu.Unlock()
+	return pending.album, pending.err
+}
+
+func mergeResolvedSong(song, initial applemusic.Song) applemusic.Song {
+	song.ID = firstNonEmpty(song.ID, initial.ID)
+	song.Name = firstNonEmpty(song.Name, initial.Name)
+	song.ArtistName = firstNonEmpty(song.ArtistName, initial.ArtistName)
+	song.AlbumName = firstNonEmpty(song.AlbumName, initial.AlbumName)
+	song.ComposerName = firstNonEmpty(song.ComposerName, initial.ComposerName)
+	if len(song.GenreNames) == 0 {
+		song.GenreNames = append([]string(nil), initial.GenreNames...)
+	}
+	song.ReleaseDate = firstNonEmpty(song.ReleaseDate, initial.ReleaseDate)
+	if song.TrackNumber == 0 {
+		song.TrackNumber = initial.TrackNumber
+	}
+	if song.DiscNumber == 0 {
+		song.DiscNumber = initial.DiscNumber
+	}
+	if song.DurationInMillis == 0 {
+		song.DurationInMillis = initial.DurationInMillis
+	}
+	song.ISRC = firstNonEmpty(song.ISRC, initial.ISRC)
+	song.ContentRating = firstNonEmpty(song.ContentRating, initial.ContentRating)
+	song.ArtworkURL = firstNonEmpty(song.ArtworkURL, initial.ArtworkURL)
+	song.ArtistArtworkURL = firstNonEmpty(song.ArtistArtworkURL, initial.ArtistArtworkURL)
+	song.EnhancedHLS = firstNonEmpty(song.EnhancedHLS, initial.EnhancedHLS)
+	song.AlbumID = firstNonEmpty(song.AlbumID, initial.AlbumID)
+	song.ArtistID = firstNonEmpty(song.ArtistID, initial.ArtistID)
+
+	// Collection resolves have more authoritative album-wide values than the
+	// individual song relationship, especially disc and track totals.
+	song.AlbumArtist = firstNonEmpty(initial.AlbumArtist, song.AlbumArtist)
+	song.AlbumArtistID = firstNonEmpty(initial.AlbumArtistID, song.AlbumArtistID)
+	song.AlbumArtworkURL = firstNonEmpty(initial.AlbumArtworkURL, song.AlbumArtworkURL)
+	song.AlbumArtistArtworkURL = firstNonEmpty(initial.AlbumArtistArtworkURL, song.AlbumArtistArtworkURL)
+	song.AlbumRelease = firstNonEmpty(initial.AlbumRelease, song.AlbumRelease)
+	song.Copyright = firstNonEmpty(initial.Copyright, song.Copyright)
+	song.RecordLabel = firstNonEmpty(initial.RecordLabel, song.RecordLabel)
+	song.UPC = firstNonEmpty(initial.UPC, song.UPC)
+	if initial.TrackCount > 0 {
+		song.TrackCount = initial.TrackCount
+	}
+	if initial.DiscCount > 0 {
+		song.DiscCount = initial.DiscCount
+	}
+	return song
+}
+
+func enrichTrackWithAlbum(song applemusic.Song, album applemusic.Collection) applemusic.Song {
+	song.AlbumArtworkURL = album.ArtworkURL
+	song.AlbumArtistID = album.ArtistID
+	song.AlbumArtistArtworkURL = album.ArtistArtworkURL
+	for _, track := range album.Tracks {
+		if track.ID == song.ID {
+			song.TrackCount = track.TrackCount
+			song.DiscCount = track.DiscCount
+			break
+		}
+	}
+	if song.TrackCount == 0 {
+		song.TrackCount = len(album.Tracks)
+	}
+	if song.DiscCount == 0 {
+		song.DiscCount = maxTrackDisc(album.Tracks)
+	}
+	song.AlbumArtist = album.Artist
+	return song
+}
+
+func maxTrackDisc(tracks []applemusic.Song) int {
+	maximum := 0
+	for _, track := range tracks {
+		if track.DiscNumber > maximum {
+			maximum = track.DiscNumber
+		}
+	}
+	if maximum == 0 {
+		return 1
+	}
+	return maximum
+}
+
 func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item domain.JobItem, initial applemusic.Song, storefront string, collectionType applemusic.URLType, collectionName, collectionID string, playlistIndex int, folderArtist string, reporter jobs.Reporter) error {
+	return d.processTrackWithMetadata(ctx, job, item, initial, storefront, collectionType, collectionName, collectionID, playlistIndex, folderArtist, newTrackMetadataResolver(d, storefront), reporter)
+}
+
+func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Job, item domain.JobItem, initial applemusic.Song, storefront string, collectionType applemusic.URLType, collectionName, collectionID string, playlistIndex int, folderArtist string, metadata *trackMetadataResolver, reporter jobs.Reporter) error {
 	// set updates item state and emits an item_progress SSE event.
 	// The full JobItem is embedded in the event Payload so the frontend can
 	// update the UI directly from SSE without any additional HTTP round-trips,
@@ -467,7 +670,7 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 
 	song, metadataAttempts, err := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(attempt int) (applemusic.Song, error) {
 		d.setItemAttempt(ctx, reporter, &item, "metadata", attempt, clampAttempts(d.cfg.Download.MaxAttempts), fmt.Sprintf("Fetching track metadata (%d/%d)", attempt, clampAttempts(d.cfg.Download.MaxAttempts)))
-		return d.catalog.Song(ctx, storefront, initial.ID)
+		return metadata.song(ctx, initial, collectionType)
 	}, func(failure retryFailure) {
 		d.setRetryFailure(ctx, reporter, &item, "metadata", "metadata", failure)
 		d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "metadata", "", failure)
@@ -506,7 +709,7 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 		var coverAttempts int
 		cover, coverAttempts, err = retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(attempt int) ([]byte, error) {
 			d.setItemAttempt(ctx, reporter, &item, "cover", attempt, clampAttempts(d.cfg.Download.MaxAttempts), fmt.Sprintf("Fetching cover (%d/%d)", attempt, clampAttempts(d.cfg.Download.MaxAttempts)))
-			return d.catalog.FetchCover(ctx, coverURLs, d.cfg.Download.CoverFormat, d.cfg.Download.CoverSize)
+			return d.fetchCover(ctx, coverURLs, d.cfg.Download.CoverFormat, d.cfg.Download.CoverSize)
 		}, func(failure retryFailure) {
 			d.setRetryFailure(ctx, reporter, &item, "cover", "cover", failure)
 			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "cover", "", failure)

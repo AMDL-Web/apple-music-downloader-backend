@@ -1,18 +1,21 @@
 # AMDL Backend
 
-AMDL Backend 是 Apple Music 下载系统的核心后端服务。它负责解析 Apple Music 单曲、专辑、歌单和艺术家链接，调度下载任务，对接 `wrapper-manager` 获取媒体数据，并通过 HTTP API 与 SSE 暴露任务状态。
+AMDL Backend 是 Apple Music 下载系统的核心后端服务。它负责解析 Apple Music 单曲、专辑、歌单、艺术家和电台链接，调度下载任务，对接 `wrapper-manager` 获取媒体数据，并通过 HTTP API 与 SSE 暴露任务状态。
 
 当前仓库以根目录 Go 模块为生产代码来源，主要代码位于 `cmd/`、`internal/`、`configs/` 等目录。
 
 ## 功能
 
-- 支持 Apple Music 单曲、专辑、歌单和艺术家 URL。
+- 支持 Apple Music 单曲、专辑、歌单、艺术家和电台 URL。
 - 不会支持 Apple Music MV 下载；受 L3 限制，当前链路只能获取低分辨率视频，不符合本项目的下载质量目标。
 - 通过 `wrapper-manager` gRPC 获取账号状态、播放清单和媒体数据。
 - 使用 SQLite 持久化任务、任务项和事件。
-- 通过 SSE 推送下载进度。
+- 通过 SSE 或 WebSocket 推送下载进度，支持单任务订阅与跨任务总览 feed。
 - 支持 Enhanced HLS 编码回退链和 AAC-LC 保底格式。
 - 支持歌词嵌入、歌词边车文件、封面嵌入和独立封面保存。
+- 支持任务生命周期 hooks（`configs/hooks.yaml`）：在任务排队或进入终态时触发 webhook 或本地命令。
+- 提供结构化日志、敏感字段脱敏、请求/任务关联、可选压缩轮转文件，以及带过滤和断线续接的日志查询/SSE API。
+- 支持本地模拟（simulate）模式：不实际下载/解密，用于联调和压测下载流水线（配置文件顶层 `simulate` 段）。
 - 提供 Swagger UI 与 OpenAPI 3.1 规范。
 - 使用 GitHub Actions 在发版时自动生成 Release changelog。
 
@@ -48,6 +51,7 @@ API 修改时被重写。
 - `server.listen`：API 监听地址。
 - `wrapper.address`：`wrapper-manager` gRPC 地址。
 - `database.path`：SQLite 数据库路径（默认 `data/db/amdl.db`）。
+- `logging.*`：日志级别、格式、内存保留和可选轮转文件（字段完整说明见示例配置）。
 - `download.downloads_dir`：下载文件保存目录。
 - `tools.*`：外部媒体工具命令路径或命令名。
 
@@ -55,6 +59,7 @@ API 修改时被重写。
 
 任何配置项都可以用环境变量覆盖，变量名为 `AMDL_<大写段名>_<大写键名>`，
 例如 `AMDL_SERVER_LISTEN`、`AMDL_WRAPPER_ADDRESS`、`AMDL_DATABASE_PATH`、
+`AMDL_LOGGING_LEVEL`、
 `AMDL_DOWNLOAD_QUALITY_PRIORITY`。规则：
 
 - 环境变量优先于 `config.yaml`，每次启动（以及每次配置重载）都生效，加载
@@ -70,19 +75,21 @@ API 修改时被重写。
 
 ## Docker 部署
 
-仓库根目录提供 `Dockerfile` 与 `docker-compose.yml`。镜像为多阶段构建：构建阶段产出静态二进制（纯 Go SQLite，无 CGO），运行阶段基于 Alpine 并内置 `ffmpeg`。容器以 root 启动入口脚本，完成配置播种和挂载目录属主修正后，通过 `su-exec` 降权到 `PUID:PGID`（默认 `1000:1000`）运行后端进程。
+仓库根目录提供 `Dockerfile` 与 `docker-compose.yml`。发版时 GitHub Actions 会自动构建多架构镜像（linux/amd64 + linux/arm64）并推送到 GHCR（镜像 tag 与版本对应，如 `v1.2.3` → `1.2.3`、`1.2`、`latest`），`docker-compose.yml` 默认就直接拉取该镜像，无需本地构建：
+
+```bash
+docker compose up -d
+```
+
+> 匿名拉取要求 GHCR 上的镜像 package 为 public。本仓库已公开;若你 fork 自建,首次推送到 GHCR 时 package 默认是私有的,`docker compose up -d` 会以 `unauthorized`/`denied` 失败——到你仓库的 Packages 设置里改成 public 即可(详见下方[发版](#发版)小节),或改用本地构建。
+
+想固定版本，把 compose 里的 `:latest` 换成具体 tag（如 `:1.1`）。
+
+若想从源码本地构建（镜像为多阶段构建：构建阶段产出静态二进制——纯 Go SQLite，无 CGO；运行阶段基于 Alpine 并内置 `ffmpeg`。容器以 root 启动入口脚本，完成配置播种和挂载目录属主修正后，通过 `su-exec` 降权到 `PUID:PGID`（默认 `1000:1000`）运行后端进程），取消 `docker-compose.yml` 里 `build: .` 的注释后：
 
 ```bash
 docker compose up -d --build
 ```
-
-发版时 GitHub Actions 会自动构建多架构镜像（linux/amd64 + linux/arm64）并推送到 GHCR，可以直接拉取而无需本地构建（镜像 tag 与版本对应，如 `v1.2.3` → `1.2.3`、`1.2`、`latest`）：
-
-```bash
-docker pull ghcr.io/amdl-web/apple-music-downloader-backend:latest
-```
-
-使用 compose 时把 `build: .` 换成 `image: ghcr.io/amdl-web/apple-music-downloader-backend:latest` 即可。
 
 或者不用 compose：
 
@@ -92,6 +99,7 @@ docker run -d --name amdl-backend \
   -p 18080:18080 \
   -v ./configs:/app/configs \
   -v ./data/db:/app/data/db \
+  -v ./data/logs:/app/data/logs \
   -v ./data/downloads:/app/data/downloads \
   --add-host host.docker.internal:host-gateway \
   amdl-backend
@@ -132,12 +140,13 @@ docker run -d --name amdl-backend \
 
 ### 挂载目录
 
-`docker-compose.yml` 默认把三个目录绑定挂载到宿主机：
+`docker-compose.yml` 默认把四个目录绑定挂载到宿主机：
 
 - `./configs` → `/app/configs`：配置目录（`config.yaml`、`config.example.yaml`、`hooks.yaml`）。
 - `./data/db` → `/app/data/db`：SQLite 数据库目录（`database.path` 默认 `data/db/amdl.db`）。
+- `./data/logs` → `/app/data/logs`：轮转日志目录；仅在 `logging.file_enabled: true` 时写入。
 - `./data/downloads` → `/app/data/downloads`：下载产物目录。想放到宿主机其它位置，改冒号左边的宿主机路径即可（例如 `/path/to/music:/app/data/downloads`）。
-- 临时目录 `data/tmp` 留在容器内，无需挂载。
+- 临时目录 `data/tmp` 默认留在容器内，无需挂载。它承担下载/解密/转封装/校验/打标签这几步的落盘中转（见 `configs/config.example.yaml` 里 `download.temp_dir` 的注释），如果容器存储驱动较慢，可以把它单独挂载到宿主机的快速磁盘（如 SSD）上，与 `data/downloads` 分开。
 - 启用开发者令牌签名时，把 `.p8` 私钥以只读方式挂载进容器（例如 `-v ./keys:/app/keys:ro`），并将 `catalog.apple_music_private_key_path` 指向容器内路径。密钥不会也不应打进镜像（`.dockerignore` 已排除 `keys/` 与 `*.p8`）。
 - 把 `PUID`/`PGID` 设成宿主机目录属主的 uid/gid 即可，入口脚本会自动修正容器内挂载目录的属主。
 
@@ -170,6 +179,26 @@ http://localhost:18080/api/openapi.yaml
 ```bash
 curl http://localhost:18080/api/v1/config
 ```
+
+查询最近的错误日志：
+
+```bash
+curl 'http://localhost:18080/api/v1/logs?level=error&limit=100'
+```
+
+按任务过滤并实时订阅日志（SSE `id` 可作为重连时的 `Last-Event-ID`）：
+
+```bash
+curl -N 'http://localhost:18080/api/v1/logs/stream?job_id=job_01JZ0000000000000000000000'
+```
+
+每个 HTTP 响应都带 `X-Request-ID`。调用方也可以在请求中传入同名头，随后用
+`GET /api/v1/logs?request_id=<id>` 聚合同一请求的访问日志与同步任务操作日志。
+日志 API 的内存保留量由 `logging.buffer_size` 控制；设为 `0` 时不保留历史，
+实时 SSE 仍会推送新记录。文件输出默认关闭，启用后按 `max_size_mb`、
+`max_backups`、`max_age_days` 自动轮转，并可用 `compress` 压缩旧文件。
+`logging.level` 与 `logging.access_log` 可通过 `PUT /api/v1/config` 即时调整；
+格式、输出目标、缓冲容量和轮转参数修改后需要重启。
 
 检查 `wrapper-manager` 状态：
 
@@ -211,6 +240,14 @@ curl -X POST http://localhost:18080/api/v1/downloads \
 
 `force: true` 会覆盖已存在的音频及其歌词边车文件；默认为 `false`，已存在的文件会被跳过。
 
+下载电台（station，链接形如 `https://music.apple.com/us/station/.../ra.xxxx`）：仅支持能解析为曲目列表的个性化/精选电台，需提供订阅令牌 `media_user_token`（可随请求提供，也可写入 `catalog.media_user_token`，并用 `catalog.media_user_token_priority` 选择请求值或配置值优先）；直播电台（Apple Music 1 等）没有静态曲目列表，任务会以明确错误结束。电台曲目取自 Apple Music 的「接下来播放」滚动列表，因此一次下载捕获的是当前返回的若干首曲目，而非固定编目。随请求提供的 `media_user_token` 只保存在内存中、随这批任务的生命周期存在；写入配置文件的令牌会随配置持久化。该令牌同时用于私人歌单（`pl.u-xxx`）的封面获取：公共目录不含私人歌单封面，提供令牌后会以用户身份从库副本读取；不提供令牌时私人歌单仍可下载，只是没有歌单封面。电台产物存入独立的电台目录，按 `download.station_path_format`（默认 `stations/{StationName}/{SongNumber:02d}. {SongName}`）归档。
+
+```bash
+curl -X POST http://localhost:18080/api/v1/downloads \
+  -H 'Content-Type: application/json' \
+  -d '{"urls":["https://music.apple.com/us/station/example/ra.978194965"],"media_user_token":"<你的 media-user-token>"}'
+```
+
 查询任务：
 
 ```bash
@@ -236,6 +273,26 @@ curl -N http://localhost:18080/api/v1/downloads/{job_id}/events
 ```bash
 curl -X POST http://localhost:18080/api/v1/downloads/{job_id}/cancel
 ```
+
+重试失败任务（仅 `failed` 状态的任务可重试；非失败状态、仍在收尾上一次运行、或已有同 key 任务在跑时返回 409）：
+
+```bash
+curl -X POST http://localhost:18080/api/v1/downloads/{job_id}/retry
+```
+
+删除已结束（终态）的任务及其记录：
+
+```bash
+curl -X DELETE http://localhost:18080/api/v1/downloads/{job_id}
+```
+
+任务事件也可通过 WebSocket 订阅（`GET /api/v1/downloads/{job_id}/events/ws`），与上面的 SSE 端点等价，供偏好 WS 的客户端使用。
+
+其它端点（详细请求/响应结构见 Swagger UI）：
+
+- `GET /api/v1/downloads/events`（及 `/events/ws`）：跨任务的总览 feed，推送任务列表增删改，无需分别订阅每个任务。
+- `POST /api/v1/quality`：不创建任务，仅探测某个 URL 当前可用的编码与画质信息。
+- `GET /api/v1/developer-token`：签发可共享的 Apple Music developer token；仅在启用本地签名模式（`catalog.apple_music_*` 三个 key 配置齐全）时可用，否则返回 409。
 
 ## 下载行为
 
@@ -268,6 +325,7 @@ curl -X POST http://localhost:18080/api/v1/downloads/{job_id}/cancel
 - `download.album_path_format`，默认 `albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}`
 - `download.artist_path_format`，默认 `artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}`（艺术家任务会展开为该艺术家的专辑/单曲列表）
 - `download.playlist_path_format`，默认 `playlists/{PlaylistName}/{SongNumber:02d}. {SongName}`（`{SongNumber}` 为歌曲在歌单中的序号）
+- `download.station_path_format`，默认 `stations/{StationName}/{SongNumber:02d}. {SongName}`（电台任务；`{StationName}`/`{StationId}` 为电台名/ID）
 
 以默认配置为例，专辑曲目会保存到：
 
@@ -283,7 +341,7 @@ data/downloads/albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
 - `download.save_artist_cover: true`：在艺术家目录保存 `artist.jpg` 或 `artist.png`。
 - `download.save_playlist_cover: true`：在歌单目录保存 `cover.jpg` 或 `cover.png`。
 
-封面目录按路径模板中的变量定位：专辑封面写入引用 `{AlbumName}`/`{AlbumId}` 的最深目录段（若无则写入音频文件所在目录）；艺术家封面写入引用艺术家变量（`{ArtistName}`、`{UrlArtistName}`、`{AlbumArtist}`、`{ArtistId}`）的最深目录段，若模板目录中没有艺术家段则跳过艺术家封面。文件扩展名跟随 `download.cover_format`。歌单为平铺目录，可保存歌单封面，但不会额外写入专辑或艺术家封面。
+封面目录按路径模板中的变量定位：专辑封面写入引用 `{AlbumName}`/`{AlbumId}` 的最深目录段（若无则写入音频文件所在目录）；艺术家封面写入引用艺术家变量（`{ArtistName}`、`{UrlArtistName}`、`{AlbumArtist}`、`{ArtistId}`）的最深目录段，若模板目录中没有艺术家段则跳过艺术家封面。文件扩展名跟随 `download.cover_format`。歌单与电台为平铺目录，可保存歌单/电台封面，但不会额外写入专辑或艺术家封面。
 
 对于带 `?i=<song_id>` 的专辑链接，可通过 `catalog.album_track_url_mode` 选择任务类型：
 
@@ -304,7 +362,7 @@ go test ./... -count=1
 
 ## 发版
 
-推送 `v*` tag 或手动运行 `Release` workflow 时，GitHub Actions 会先执行完整 Go 测试，再创建 GitHub Release。
+手动运行 `Release` workflow（`workflow_dispatch`，指定版本号）时，GitHub Actions 会先执行完整 Go 测试，再创建 GitHub Release；本仓库不通过推送 tag 触发发版。
 
 Release changelog 由 GitHub generated release notes 自动生成，分类规则位于：
 

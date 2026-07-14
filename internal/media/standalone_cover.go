@@ -31,7 +31,7 @@ func (d *Downloader) savePlaylistCover(ctx context.Context, artworkURL, playlist
 }
 
 func (d *Downloader) saveStandaloneCovers(ctx context.Context, song applemusic.Song, collectionType applemusic.URLType, storefront, albumDir, artistDir string) error {
-	if collectionType == applemusic.TypePlaylist {
+	if collectionType == applemusic.TypePlaylist || collectionType == applemusic.TypeStation {
 		return nil
 	}
 
@@ -88,7 +88,7 @@ func (d *Downloader) ensureStandaloneCover(ctx context.Context, path string, res
 		return nil
 	}
 	data, _, err := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(int) ([]byte, error) {
-		return d.catalog.FetchCover(ctx, []string{artworkURL}, d.cfg.Download.CoverFormat, d.cfg.Download.CoverSize)
+		return d.fetchCover(ctx, []string{artworkURL}, d.cfg.Download.CoverFormat, d.cfg.Download.CoverSize)
 	}, nil)
 	if err != nil {
 		return err

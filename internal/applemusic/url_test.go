@@ -38,6 +38,22 @@ func TestParsePlaylistURL(t *testing.T) {
 	}
 }
 
+func TestParseStationURL(t *testing.T) {
+	got, err := ParseWithAlbumTrackMode("https://music.apple.com/us/station/foo/ra.978194965", "song")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != TypeStation || got.ID != "ra.978194965" || got.Storefront != "us" {
+		t.Fatalf("unexpected parse result: %+v", got)
+	}
+}
+
+func TestParseClassicalStationRejected(t *testing.T) {
+	if _, err := ParseWithAlbumTrackMode("https://classical.music.apple.com/us/station/foo/ra.978194965", "song"); err == nil {
+		t.Fatal("expected classical station to be rejected")
+	}
+}
+
 func TestParseClassicalSupportedURLs(t *testing.T) {
 	tests := []struct {
 		name string

@@ -8,12 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
 	"amdl/internal/domain"
+	"amdl/internal/jobs"
 	"amdl/internal/wrapper"
 )
 
@@ -62,9 +64,16 @@ type fakeDownloaderCatalog struct {
 	songErr      error
 	album        applemusic.Collection
 	artistAlbums applemusic.ArtistAlbums
+	station      applemusic.Collection
+	stationErr   error
+	stationToken *string
 }
 
 func (f fakeDownloaderCatalog) Song(context.Context, string, string) (applemusic.Song, error) {
+	return f.song, f.songErr
+}
+
+func (f fakeDownloaderCatalog) SongMetadata(context.Context, string, string) (applemusic.Song, error) {
 	return f.song, f.songErr
 }
 
@@ -80,8 +89,15 @@ func (f fakeDownloaderCatalog) Album(_ context.Context, _, id string) (applemusi
 	return applemusic.Collection{}, nil
 }
 
-func (f fakeDownloaderCatalog) Playlist(context.Context, string, string) (applemusic.Collection, error) {
+func (f fakeDownloaderCatalog) Playlist(context.Context, string, string, string) (applemusic.Collection, error) {
 	return applemusic.Collection{}, nil
+}
+
+func (f fakeDownloaderCatalog) StationTracks(_ context.Context, _, _, token string) (applemusic.Collection, error) {
+	if f.stationToken != nil {
+		*f.stationToken = token
+	}
+	return f.station, f.stationErr
 }
 
 func (f fakeDownloaderCatalog) ArtistAlbums(context.Context, string, string) (applemusic.ArtistAlbums, error) {
@@ -102,6 +118,75 @@ type recordingReporter struct {
 	existing []domain.JobItem
 	added    []domain.JobItem
 	removed  []string
+}
+
+type metadataCountingCatalog struct {
+	fakeDownloaderCatalog
+
+	mu            sync.Mutex
+	songs         map[string]applemusic.Song
+	metadataSongs map[string]applemusic.Song
+	albums        map[string]applemusic.Collection
+	songCalls     map[string]int
+	metadataCalls map[string]int
+	albumCalls    map[string]int
+	albumWait     <-chan struct{}
+	albumStarted  chan<- struct{}
+}
+
+func (c *metadataCountingCatalog) Song(ctx context.Context, _, id string) (applemusic.Song, error) {
+	c.mu.Lock()
+	c.songCalls[id]++
+	song := c.songs[id]
+	c.mu.Unlock()
+	return song, ctx.Err()
+}
+
+func (c *metadataCountingCatalog) SongMetadata(ctx context.Context, _, id string) (applemusic.Song, error) {
+	c.mu.Lock()
+	c.metadataCalls[id]++
+	song := c.metadataSongs[id]
+	c.mu.Unlock()
+	return song, ctx.Err()
+}
+
+func (c *metadataCountingCatalog) Album(ctx context.Context, _, id string) (applemusic.Collection, error) {
+	c.mu.Lock()
+	c.albumCalls[id]++
+	album := c.albums[id]
+	c.mu.Unlock()
+	if c.albumStarted != nil {
+		select {
+		case c.albumStarted <- struct{}{}:
+		default:
+		}
+	}
+	if c.albumWait != nil {
+		select {
+		case <-ctx.Done():
+			return applemusic.Collection{}, ctx.Err()
+		case <-c.albumWait:
+		}
+	}
+	return album, nil
+}
+
+func (c *metadataCountingCatalog) counts() (map[string]int, map[string]int, map[string]int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	songs := make(map[string]int, len(c.songCalls))
+	for id, count := range c.songCalls {
+		songs[id] = count
+	}
+	metadata := make(map[string]int, len(c.metadataCalls))
+	for id, count := range c.metadataCalls {
+		metadata[id] = count
+	}
+	albums := make(map[string]int, len(c.albumCalls))
+	for id, count := range c.albumCalls {
+		albums[id] = count
+	}
+	return songs, metadata, albums
 }
 
 func (*recordingReporter) SetJob(context.Context, domain.Job) error { return nil }
@@ -174,6 +259,77 @@ func TestResolveCollectionArtistFlattensAlbumTracksAndDedupesSongs(t *testing.T)
 	}
 }
 
+func TestResolveCollectionStationPassesTokenAndTracks(t *testing.T) {
+	downloader := &Downloader{
+		cfg: config.Default(),
+		catalog: fakeDownloaderCatalog{station: applemusic.Collection{
+			ID: "ra.1", Type: applemusic.TypeStation, Name: "My Station", ArtworkURL: "station-art",
+			Tracks: []applemusic.Song{{ID: "song-1", Name: "One"}, {ID: "song-2", Name: "Two"}},
+		}},
+	}
+
+	ctx := jobs.WithMediaUserToken(context.Background(), "media-token-xyz")
+	resolved, err := downloader.resolveCollection(ctx, applemusic.ParsedURL{
+		Storefront: "us", Type: applemusic.TypeStation, ID: "ra.1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := trackIDsForTest(resolved.Tracks), []string{"song-1", "song-2"}; !equalStrings(got, want) {
+		t.Fatalf("tracks = %#v, want %#v", got, want)
+	}
+	if resolved.Name != "My Station" || resolved.ID != "ra.1" || resolved.ArtworkURL != "station-art" {
+		t.Fatalf("resolved = %+v", resolved)
+	}
+}
+
+func TestResolveCollectionStationFallsBackToConfiguredToken(t *testing.T) {
+	var gotToken string
+	cfg := config.Default()
+	cfg.Catalog.MediaUserToken = " configured-token "
+	downloader := &Downloader{
+		cfg: cfg,
+		catalog: fakeDownloaderCatalog{
+			station:      applemusic.Collection{ID: "ra.1", Type: applemusic.TypeStation, Name: "My Station"},
+			stationToken: &gotToken,
+		},
+	}
+
+	// No token on ctx, as for a job recovered after a restart: the configured
+	// catalog token is used instead of failing.
+	if _, err := downloader.resolveCollection(context.Background(), applemusic.ParsedURL{
+		Storefront: "us", Type: applemusic.TypeStation, ID: "ra.1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotToken != "configured-token" {
+		t.Fatalf("token = %q, want trimmed configured fallback", gotToken)
+	}
+
+	// A batch token attached at submission still wins over the config value.
+	ctx := jobs.WithMediaUserToken(context.Background(), "request-token")
+	if _, err := downloader.resolveCollection(ctx, applemusic.ParsedURL{
+		Storefront: "us", Type: applemusic.TypeStation, ID: "ra.1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotToken != "request-token" {
+		t.Fatalf("token = %q, want submission token to take precedence", gotToken)
+	}
+}
+
+func TestResolveCollectionStationPropagatesError(t *testing.T) {
+	downloader := &Downloader{
+		cfg:     config.Default(),
+		catalog: fakeDownloaderCatalog{stationErr: errors.New("live radio stations are not downloadable")},
+	}
+	if _, err := downloader.resolveCollection(context.Background(), applemusic.ParsedURL{
+		Storefront: "us", Type: applemusic.TypeStation, ID: "ra.live",
+	}); err == nil {
+		t.Fatal("expected station resolve error to propagate")
+	}
+}
+
 func TestResolveCollectionPropagatesArtwork(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -218,6 +374,239 @@ func TestResolveCollectionPropagatesArtwork(t *testing.T) {
 				t.Fatalf("artwork url = %q, want %q", resolved.ArtworkURL, tt.want)
 			}
 		})
+	}
+}
+
+func TestTrackMetadataResolverReusesResolvedSingleSong(t *testing.T) {
+	catalog := &metadataCountingCatalog{
+		metadataCalls: make(map[string]int),
+		albumCalls:    make(map[string]int),
+	}
+	downloader := &Downloader{cfg: config.Default(), catalog: catalog}
+	initial := applemusic.Song{
+		ID: "song-1", Name: "Song", AlbumID: "album-1", AlbumArtist: "Album Artist",
+		TrackCount: 10, DiscCount: 2, HasLyrics: true,
+	}
+
+	got, err := newTrackMetadataResolver(downloader, "cn").song(context.Background(), initial, applemusic.TypeSong)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != initial.ID || got.Name != initial.Name || got.AlbumID != initial.AlbumID || got.TrackCount != initial.TrackCount || got.DiscCount != initial.DiscCount || got.HasLyrics != initial.HasLyrics {
+		t.Fatalf("song = %+v, want resolved value %+v", got, initial)
+	}
+	_, metadataCalls, albumCalls := catalog.counts()
+	if len(metadataCalls) != 0 || len(albumCalls) != 0 {
+		t.Fatalf("metadata calls = %v, album calls = %v, want no duplicate reads", metadataCalls, albumCalls)
+	}
+}
+
+func TestTrackMetadataResolverMergesResolvedAlbumWithoutRefetch(t *testing.T) {
+	catalog := &metadataCountingCatalog{
+		metadataSongs: map[string]applemusic.Song{
+			"song-1": {ID: "song-1", Name: "Fresh Song", AlbumID: "album-1", HasLyrics: false},
+		},
+		metadataCalls: make(map[string]int),
+		albumCalls:    make(map[string]int),
+	}
+	downloader := &Downloader{cfg: config.Default(), catalog: catalog}
+	initial := applemusic.Song{
+		ID: "song-1", Name: "Old Song", AlbumID: "album-1", AlbumName: "Album",
+		AlbumArtist: "Album Artist", AlbumArtistID: "artist-1", AlbumArtworkURL: "album-art",
+		AlbumArtistArtworkURL: "artist-art", AlbumRelease: "2026-01-01", Copyright: "Copyright",
+		RecordLabel: "Label", UPC: "123456", TrackCount: 10, DiscCount: 2, HasLyrics: true,
+	}
+
+	got, err := newTrackMetadataResolver(downloader, "cn").song(context.Background(), initial, applemusic.TypeAlbum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "Fresh Song" || got.HasLyrics {
+		t.Fatalf("refreshed fields = %q/hasLyrics=%v, want Fresh Song/false", got.Name, got.HasLyrics)
+	}
+	if got.AlbumArtist != "Album Artist" || got.AlbumArtistID != "artist-1" || got.AlbumArtworkURL != "album-art" || got.TrackCount != 10 || got.DiscCount != 2 || got.UPC != "123456" {
+		t.Fatalf("album fields were not preserved: %+v", got)
+	}
+	_, metadataCalls, albumCalls := catalog.counts()
+	if metadataCalls["song-1"] != 1 || len(albumCalls) != 0 {
+		t.Fatalf("metadata calls = %v, album calls = %v, want one lightweight song read and no album read", metadataCalls, albumCalls)
+	}
+}
+
+func TestTrackMetadataResolverCoalescesPlaylistAlbumReads(t *testing.T) {
+	albumWait := make(chan struct{})
+	albumStarted := make(chan struct{}, 1)
+	catalog := &metadataCountingCatalog{
+		metadataSongs: map[string]applemusic.Song{
+			"song-1": {ID: "song-1", Name: "One", AlbumID: "album-1"},
+			"song-2": {ID: "song-2", Name: "Two", AlbumID: "album-1"},
+		},
+		albums: map[string]applemusic.Collection{
+			"album-1": {
+				ID: "album-1", Artist: "Album Artist", ArtworkURL: "album-art", ArtistID: "artist-1", ArtistArtworkURL: "artist-art",
+				Tracks: []applemusic.Song{
+					{ID: "song-1", TrackCount: 2, DiscNumber: 1, DiscCount: 1},
+					{ID: "song-2", TrackCount: 2, DiscNumber: 1, DiscCount: 1},
+				},
+			},
+		},
+		metadataCalls: make(map[string]int),
+		albumCalls:    make(map[string]int),
+		albumWait:     albumWait,
+		albumStarted:  albumStarted,
+	}
+	downloader := &Downloader{cfg: config.Default(), catalog: catalog}
+	resolver := newTrackMetadataResolver(downloader, "cn")
+	results := make(chan applemusic.Song, 2)
+	errs := make(chan error, 2)
+
+	go func() {
+		song, err := resolver.song(context.Background(), applemusic.Song{ID: "song-1"}, applemusic.TypePlaylist)
+		results <- song
+		errs <- err
+	}()
+	<-albumStarted
+	go func() {
+		song, err := resolver.song(context.Background(), applemusic.Song{ID: "song-2"}, applemusic.TypePlaylist)
+		results <- song
+		errs <- err
+	}()
+	close(albumWait)
+
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+		song := <-results
+		if song.AlbumArtist != "Album Artist" || song.AlbumArtworkURL != "album-art" || song.TrackCount != 2 || song.DiscCount != 1 {
+			t.Fatalf("playlist song was not enriched: %+v", song)
+		}
+	}
+	_, metadataCalls, albumCalls := catalog.counts()
+	if metadataCalls["song-1"] != 1 || metadataCalls["song-2"] != 1 || albumCalls["album-1"] != 1 {
+		t.Fatalf("metadata calls = %v, album calls = %v, want one song read each and one shared album read", metadataCalls, albumCalls)
+	}
+}
+
+func TestTrackMetadataResolverEnrichesStationTracksWithAlbum(t *testing.T) {
+	catalog := &metadataCountingCatalog{
+		metadataSongs: map[string]applemusic.Song{
+			"song-1": {ID: "song-1", Name: "One", AlbumID: "album-1", AlbumArtist: "Album Artist"},
+			"song-2": {ID: "song-2", Name: "Two", AlbumID: "album-1", AlbumArtist: "Album Artist"},
+		},
+		albums: map[string]applemusic.Collection{
+			"album-1": {
+				ID: "album-1", Artist: "Album Artist", ArtworkURL: "album-art", ArtistID: "artist-1", ArtistArtworkURL: "artist-art",
+				Tracks: []applemusic.Song{
+					{ID: "song-1", TrackCount: 2, DiscNumber: 2, DiscCount: 2},
+					{ID: "song-2", TrackCount: 2, DiscNumber: 1, DiscCount: 2},
+				},
+			},
+		},
+		metadataCalls: make(map[string]int),
+		albumCalls:    make(map[string]int),
+	}
+	downloader := &Downloader{cfg: config.Default(), catalog: catalog}
+	resolver := newTrackMetadataResolver(downloader, "cn")
+
+	// Station tracks come from the next-tracks feed: their album relationship
+	// carries name/artist but no per-track disc totals or album artist id, so
+	// they need the same shared album enrichment as playlist tracks.
+	for _, id := range []string{"song-1", "song-2"} {
+		song, err := resolver.song(context.Background(), applemusic.Song{ID: id}, applemusic.TypeStation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if song.DiscCount != 2 || song.AlbumArtistID != "artist-1" || song.AlbumArtworkURL != "album-art" {
+			t.Fatalf("station song %s was not album-enriched: %+v", id, song)
+		}
+	}
+	_, metadataCalls, albumCalls := catalog.counts()
+	if metadataCalls["song-1"] != 1 || metadataCalls["song-2"] != 1 || albumCalls["album-1"] != 1 {
+		t.Fatalf("metadata calls = %v, album calls = %v, want one song read each and one shared album read", metadataCalls, albumCalls)
+	}
+}
+
+func TestProcessJobAvoidsDuplicateSingleSongMetadataReads(t *testing.T) {
+	catalog := &metadataCountingCatalog{
+		songs: map[string]applemusic.Song{
+			"song-1": {
+				ID: "song-1", Name: "Song", ArtistName: "Artist", AlbumID: "album-1", AlbumName: "Album",
+				AlbumArtist: "Album Artist", TrackCount: 1, DiscCount: 1, DurationInMillis: 1000,
+			},
+		},
+		songCalls:     make(map[string]int),
+		metadataCalls: make(map[string]int),
+		albumCalls:    make(map[string]int),
+	}
+	cfg := config.Default()
+	cfg.Simulate = config.SimulateConfig{Enabled: true, MinSpeedKBps: 1_000_000, MaxSpeedKBps: 1_000_000}
+	cfg.Download.DownloadsDir = t.TempDir()
+	cfg.Download.MaxAttempts = 1
+	cfg.Download.MaxParallelTracks = 1
+	cfg.Download.EmbedCover = false
+	cfg.Download.EmbedLyrics = false
+	cfg.Download.QualityPriority = []string{"alac"}
+	downloader := &Downloader{cfg: cfg, catalog: catalog}
+	reporter := &recordingReporter{}
+	job := domain.Job{
+		ID: "job-1", Input: "https://music.apple.com/cn/song/song/song-1",
+		CanonicalKey: "song:cn:song-1", Force: true,
+	}
+
+	if err := downloader.ProcessJob(context.Background(), job, reporter); err != nil {
+		t.Fatal(err)
+	}
+	songCalls, metadataCalls, albumCalls := catalog.counts()
+	if songCalls["song-1"] != 1 || len(metadataCalls) != 0 || len(albumCalls) != 0 {
+		t.Fatalf("song calls = %v, metadata calls = %v, album calls = %v, want one complete song read only", songCalls, metadataCalls, albumCalls)
+	}
+	if len(reporter.items) == 0 || reporter.items[len(reporter.items)-1].Status != domain.ItemCompleted {
+		t.Fatalf("job did not complete: %+v", reporter.items)
+	}
+}
+
+func TestProcessJobDoesNotRefetchResolvedAlbumPerTrack(t *testing.T) {
+	tracks := []applemusic.Song{
+		{ID: "song-1", Name: "One", AlbumID: "album-1", AlbumName: "Album", AlbumArtist: "Album Artist", TrackCount: 2, DiscCount: 1, DurationInMillis: 1000},
+		{ID: "song-2", Name: "Two", AlbumID: "album-1", AlbumName: "Album", AlbumArtist: "Album Artist", TrackCount: 2, DiscCount: 1, DurationInMillis: 1000},
+	}
+	catalog := &metadataCountingCatalog{
+		metadataSongs: map[string]applemusic.Song{
+			"song-1": {ID: "song-1", Name: "One", AlbumID: "album-1", DurationInMillis: 1000},
+			"song-2": {ID: "song-2", Name: "Two", AlbumID: "album-1", DurationInMillis: 1000},
+		},
+		albums: map[string]applemusic.Collection{
+			"album-1": {ID: "album-1", Name: "Album", Artist: "Album Artist", Tracks: tracks},
+		},
+		songCalls:     make(map[string]int),
+		metadataCalls: make(map[string]int),
+		albumCalls:    make(map[string]int),
+	}
+	cfg := config.Default()
+	cfg.Simulate = config.SimulateConfig{Enabled: true, MinSpeedKBps: 1_000_000, MaxSpeedKBps: 1_000_000}
+	cfg.Download.DownloadsDir = t.TempDir()
+	cfg.Download.MaxAttempts = 1
+	cfg.Download.MaxParallelTracks = 1
+	cfg.Download.EmbedCover = false
+	cfg.Download.EmbedLyrics = false
+	cfg.Download.QualityPriority = []string{"alac"}
+	downloader := &Downloader{cfg: cfg, catalog: catalog}
+	reporter := &recordingReporter{}
+	job := domain.Job{
+		ID: "job-1", Input: "https://music.apple.com/cn/album/album/album-1",
+		CanonicalKey: "album:cn:album-1", Force: true,
+	}
+
+	if err := downloader.ProcessJob(context.Background(), job, reporter); err != nil {
+		t.Fatal(err)
+	}
+	songCalls, metadataCalls, albumCalls := catalog.counts()
+	if len(songCalls) != 0 || metadataCalls["song-1"] != 1 || metadataCalls["song-2"] != 1 || albumCalls["album-1"] != 1 {
+		t.Fatalf("song calls = %v, metadata calls = %v, album calls = %v, want one album resolve and one lightweight read per track", songCalls, metadataCalls, albumCalls)
+	}
+	if len(reporter.added) != 2 {
+		t.Fatalf("added items = %d, want 2", len(reporter.added))
 	}
 }
 

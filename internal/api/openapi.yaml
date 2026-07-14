@@ -29,14 +29,82 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
+  /api/v1/logs:
+    get:
+      tags: [System]
+      summary: 查询进程日志
+      description: >-
+        查询 logging.buffer_size 保留的最近结构化日志，按时间正序返回。
+        首次查询返回最近的 limit 条；带 after 的后续查询从游标向前分页，
+        next_cursor 可直接用于下一页。oldest_sequence 是当前最早保留序号，
+        truncated 表示 after 与它之间已有记录被内存环淘汰。敏感属性在进入
+        缓冲区和外部输出前已统一脱敏。
+      operationId: listLogs
+      parameters:
+        - $ref: '#/components/parameters/LogLevel'
+        - $ref: '#/components/parameters/LogComponent'
+        - $ref: '#/components/parameters/LogRequestID'
+        - $ref: '#/components/parameters/LogJobID'
+        - $ref: '#/components/parameters/LogQuery'
+        - $ref: '#/components/parameters/LogSince'
+        - $ref: '#/components/parameters/LogUntil'
+        - $ref: '#/components/parameters/LogAfter'
+        - $ref: '#/components/parameters/LogLimit'
+      responses:
+        '200':
+          description: 匹配的日志和下一次查询游标。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/v1/logs/stream:
+    get:
+      tags: [System]
+      summary: 实时订阅进程日志
+      description: >-
+        SSE 日志流。先重放内存中游标后的匹配记录，再持续推送新记录；每条
+        事件名为 log，SSE id 等于日志 sequence。after 缺省时使用
+        Last-Event-ID 请求头；有游标时完整重放仍在内存中的匹配记录，二者都
+        缺省时按 limit 重放最近记录。服务端每 15 秒发送 keepalive 注释；
+        客户端持续读取过慢时连接会关闭，应携带最后收到的 id 重连补齐。
+      operationId: streamLogs
+      parameters:
+        - $ref: '#/components/parameters/LogLevel'
+        - $ref: '#/components/parameters/LogComponent'
+        - $ref: '#/components/parameters/LogRequestID'
+        - $ref: '#/components/parameters/LogJobID'
+        - $ref: '#/components/parameters/LogQuery'
+        - $ref: '#/components/parameters/LogSince'
+        - $ref: '#/components/parameters/LogUntil'
+        - $ref: '#/components/parameters/LogAfter'
+        - $ref: '#/components/parameters/LogLimit'
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema:
+            type: string
+            pattern: '^[0-9]+$'
+      responses:
+        '200':
+          description: text/event-stream；data 为 LogEntry JSON。
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/config:
     get:
       tags: [System]
       summary: 读取当前运行时配置（仅可修改字段）
       description: >-
         返回当前生效配置中可运行时修改的部分：download 段（max_running_jobs
-        除外）、simulate 段、catalog.album_track_url_mode。仅启动时生效的
-        字段（server、database、wrapper、tools、catalog 其它字段）不返回——
+        除外）、logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/media_user_token_priority。
+        仅启动时生效的字段（server、database、logging 其它字段、wrapper、tools、catalog 其它字段）不返回——
         它们无法通过本 API 修改，请编辑 configs/config.yaml 并重启。
 
         每次 GET 会先重读 configs/config.yaml 再返回，因此运行期间手工编辑
@@ -61,7 +129,7 @@ paths:
         （含整段）被替换。合并结果必须通过与配置文件相同的完整校验。
 
         仅 GET 返回的字段可以修改：download 段（max_running_jobs 除外）、
-        simulate 段、catalog.album_track_url_mode。其余字段只在进程启动时
+        logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/media_user_token_priority。其余字段只在进程启动时
         被消费，修改请求会被 422 拒绝——请改 configs/config.yaml 并重启。
         被 AMDL_<大写段名>_<大写键名> 环境变量覆盖的字段同样返回 422：
         写入会在下一次配置重载时被环境变量的值重新遮盖，请改环境变量并
@@ -302,12 +370,12 @@ paths:
           in: query
           description: >-
             按任务类型筛选；可重复或逗号分隔。允许值：song, album, playlist,
-            artist。
+            artist, station。
           schema:
             type: array
             items:
               type: string
-              enum: [song, album, playlist, artist]
+              enum: [song, album, playlist, artist, station]
           style: form
           explode: true
         - name: storefront
@@ -683,6 +751,53 @@ components:
       schema:
         type: string
       example: job_01JZ0000000000000000000000
+    LogLevel:
+      name: level
+      in: query
+      description: 逗号分隔的精确严重级别，可选 debug、info、warn、error。
+      schema:
+        type: string
+      example: warn,error
+    LogComponent:
+      name: component
+      in: query
+      description: 精确匹配 component 属性，例如 api、jobs、media、catalog、hooks、main。
+      schema: {type: string}
+    LogRequestID:
+      name: request_id
+      in: query
+      description: 精确匹配 HTTP 请求关联 ID。
+      schema: {type: string}
+    LogJobID:
+      name: job_id
+      in: query
+      description: 精确匹配下载任务 ID。
+      schema: {type: string}
+    LogQuery:
+      name: q
+      in: query
+      description: 在消息与结构化属性中进行不区分大小写的包含匹配。
+      schema: {type: string}
+    LogSince:
+      name: since
+      in: query
+      description: 包含该时刻，RFC3339 时间戳。
+      schema: {type: string, format: date-time}
+    LogUntil:
+      name: until
+      in: query
+      description: 包含该时刻，RFC3339 时间戳。
+      schema: {type: string, format: date-time}
+    LogAfter:
+      name: after
+      in: query
+      description: 只返回 sequence 大于此值的记录。
+      schema: {type: integer, format: int64, minimum: 0}
+    LogLimit:
+      name: limit
+      in: query
+      description: 最多返回或重放的记录数，默认查询 200、SSE 500。
+      schema: {type: integer, minimum: 1, maximum: 1000}
   responses:
     BadRequest:
       description: 请求参数错误。
@@ -786,6 +901,48 @@ components:
           enum: [ok, degraded]
         database_error:
           type: string
+    LogEntry:
+      type: object
+      required: [sequence, time, level, message]
+      properties:
+        sequence:
+          type: integer
+          format: int64
+          minimum: 1
+        time:
+          type: string
+          format: date-time
+        level:
+          type: string
+          enum: [debug, info, warn, error]
+        message:
+          type: string
+        source:
+          type: string
+          description: logging.include_source 为 true 时出现，格式为 Go 源文件路径与行号。
+        attributes:
+          type: object
+          additionalProperties: true
+    LogListResponse:
+      type: object
+      required: [logs, next_cursor, oldest_sequence, truncated]
+      properties:
+        logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/LogEntry'
+        next_cursor:
+          type: integer
+          format: int64
+          minimum: 0
+        oldest_sequence:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 当前内存缓冲区中最早的全局序号；缓冲区为空时为 0。
+        truncated:
+          type: boolean
+          description: after 游标之后、oldest_sequence 之前是否已有记录被淘汰。
     LoginRequest:
       type: object
       required: [username, password]
@@ -844,7 +1001,11 @@ components:
       properties:
         urls:
           type: array
-          description: Apple Music 链接列表（单曲/专辑/歌单/艺人）。每个元素内允许包含换行或空白分隔的多个 URL，服务端会自动拆分；拆分后单次最多 100 条。
+          description: >-
+            Apple Music 链接列表（单曲/专辑/歌单/艺人/电台）。每个元素内允许包含换行或空白分隔的多个
+            URL，服务端会自动拆分；拆分后单次最多 100 条。电台（station，形如
+            .../station/.../ra.xxxx）仅支持可解析为曲目列表的个性化/精选电台，需随请求提供
+            media_user_token（也可使用配置文件中的 catalog.media_user_token）；直播电台（Apple Music 1 等）没有静态曲目列表，无法下载。
           minItems: 1
           items:
             type: string
@@ -861,6 +1022,14 @@ components:
             可选：仅对本次请求创建的任务生效的下载配置覆盖。省略的字段沿用
             当前运行时配置。覆盖随任务持久化，重试和重启恢复后依然生效，
             不影响其它任务。
+        media_user_token:
+          type: string
+          description: >-
+            可选：Apple Music 订阅令牌（media-user-token），仅用于本次请求中需要用户身份的
+            解析：电台（station）下载，以及私人歌单（pl.u-xxx）的封面获取（公共目录不含其封
+            面，需以用户身份读取库中的副本）。随请求提供的值只保存在内存中、随这批任务的生命周期存在；写入 catalog.media_user_token
+            的值会随配置持久化。catalog.media_user_token_priority 控制两者同时存在时优先使用哪一
+            个；其余链接会忽略该字段。
     DownloadOverrides:
       type: object
       description: >-
@@ -881,6 +1050,7 @@ components:
         album_path_format: {type: string}
         artist_path_format: {type: string}
         playlist_path_format: {type: string}
+        station_path_format: {type: string}
         temp_dir: {type: string}
         cover_size: {type: string}
         cover_format:
@@ -919,6 +1089,11 @@ components:
             album_track_url_mode:
               type: string
               enum: [song, album]
+            media_user_token:
+              type: string
+            media_user_token_priority:
+              type: string
+              enum: [request, config]
         download:
           type: object
           description: max_running_jobs 仅启动时生效，不在此出现、不可修改。
@@ -937,6 +1112,7 @@ components:
             album_path_format: {type: string}
             artist_path_format: {type: string}
             playlist_path_format: {type: string}
+            station_path_format: {type: string}
             temp_dir: {type: string}
             cover_size:
               type: string
@@ -969,6 +1145,14 @@ components:
               type: integer
               description: 常见取值 16、24。
             check_integrity: {type: boolean}
+        logging:
+          type: object
+          description: 只有日志级别和 HTTP 访问日志开关可运行时修改；输出与轮转配置需重启。
+          properties:
+            level:
+              type: string
+              enum: [debug, info, warn, error]
+            access_log: {type: boolean}
         simulate:
           type: object
           properties:
@@ -1093,7 +1277,7 @@ components:
           type: string
         type:
           type: string
-          enum: [song, album, playlist, artist]
+          enum: [song, album, playlist, artist, station]
         storefront:
           type: string
         title:

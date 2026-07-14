@@ -79,6 +79,23 @@ func (c *CatalogClient) apiBase() string {
 }
 
 func (c *CatalogClient) Song(ctx context.Context, storefront, id string) (Song, error) {
+	song, err := c.SongMetadata(ctx, storefront, id)
+	if err != nil {
+		return Song{}, err
+	}
+	if song.AlbumID != "" {
+		if album, err := c.Album(ctx, storefront, song.AlbumID); err == nil && len(album.Tracks) > 0 {
+			song = enrichSongWithAlbum(song, album)
+		}
+	}
+	return song, nil
+}
+
+// SongMetadata reads the song resource without following its album
+// relationship. Collection downloads already hold album metadata from their
+// resolve phase, so they use this lighter request and merge that existing
+// context instead of downloading the same album once per track.
+func (c *CatalogClient) SongMetadata(ctx context.Context, storefront, id string) (Song, error) {
 	var resp catalogSongResponse
 	params := url.Values{
 		"include": []string{"albums,artists"},
@@ -95,29 +112,28 @@ func (c *CatalogClient) Song(ctx context.Context, storefront, id string) (Song, 
 	if len(resp.Data) == 0 {
 		return Song{}, fmt.Errorf("song %s not found", id)
 	}
-	song := mapSong(resp.Data[0])
-	if song.AlbumID != "" {
-		if album, err := c.Album(ctx, storefront, song.AlbumID); err == nil && len(album.Tracks) > 0 {
-			song.AlbumArtworkURL = album.ArtworkURL
-			song.AlbumArtistID = album.ArtistID
-			song.AlbumArtistArtworkURL = album.ArtistArtworkURL
-			for _, track := range album.Tracks {
-				if track.ID == song.ID {
-					song.TrackCount = track.TrackCount
-					song.DiscCount = track.DiscCount
-					break
-				}
-			}
-			if song.TrackCount == 0 {
-				song.TrackCount = len(album.Tracks)
-			}
-			if song.DiscCount == 0 {
-				song.DiscCount = maxDisc(album.Tracks)
-			}
-			song.AlbumArtist = album.Artist
+	return mapSong(resp.Data[0]), nil
+}
+
+func enrichSongWithAlbum(song Song, album Collection) Song {
+	song.AlbumArtworkURL = album.ArtworkURL
+	song.AlbumArtistID = album.ArtistID
+	song.AlbumArtistArtworkURL = album.ArtistArtworkURL
+	for _, track := range album.Tracks {
+		if track.ID == song.ID {
+			song.TrackCount = track.TrackCount
+			song.DiscCount = track.DiscCount
+			break
 		}
 	}
-	return song, nil
+	if song.TrackCount == 0 {
+		song.TrackCount = len(album.Tracks)
+	}
+	if song.DiscCount == 0 {
+		song.DiscCount = maxDisc(album.Tracks)
+	}
+	song.AlbumArtist = album.Artist
+	return song
 }
 
 func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Collection, error) {
@@ -176,7 +192,14 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 	}, nil
 }
 
-func (c *CatalogClient) Playlist(ctx context.Context, storefront, id string) (Collection, error) {
+// Playlist fetches a catalog playlist. The fetch itself never carries the
+// media-user-token, so an invalid or expired token can never fail a playlist
+// that resolves fine without one. mediaUserToken only powers a best-effort
+// artwork enrichment afterwards: a private (user-shared, pl.u-) playlist has
+// no artwork in its public catalog attributes, and the owner's library copy —
+// only visible with the user's subscription identity — is the sole place its
+// user-uploaded cover lives (see libraryArtworkURL).
+func (c *CatalogClient) Playlist(ctx context.Context, storefront, id, mediaUserToken string) (Collection, error) {
 	var resp catalogPlaylistResponse
 	if err := c.get(ctx, fmt.Sprintf("%s/v1/catalog/%s/playlists/%s", c.apiBase(), storefront, id), url.Values{
 		"l": []string{c.cfg.Language},
@@ -198,7 +221,127 @@ func (c *CatalogClient) Playlist(ctx context.Context, storefront, id string) (Co
 		}
 		tracks = append(tracks, mapSong(raw))
 	}
-	return Collection{ID: playlist.ID, Type: TypePlaylist, Name: playlist.Attributes.Name, Artist: firstNonEmpty(playlist.Attributes.CuratorName, playlist.Attributes.ArtistName), ArtworkURL: playlist.Attributes.Artwork.URL, Tracks: tracks}, nil
+	artworkURL := playlist.Attributes.Artwork.URL
+	if artworkURL == "" && mediaUserToken != "" && strings.HasPrefix(id, "pl.u-") {
+		artworkURL = c.libraryArtworkURL(ctx, storefront, id, mediaUserToken)
+	}
+	return Collection{ID: playlist.ID, Type: TypePlaylist, Name: playlist.Attributes.Name, Artist: firstNonEmpty(playlist.Attributes.CuratorName, playlist.Attributes.ArtistName), ArtworkURL: artworkURL, Tracks: tracks}, nil
+}
+
+// libraryArtworkURL fetches a private playlist's cover from the owner's
+// library copy: the catalog playlist is re-requested with include=library and
+// the Media-User-Token header, and the artwork hangs off the returned
+// library-playlists relationship as a pre-signed direct image link (no
+// {w}x{h}/{f} placeholders), which the cover fetcher passes through
+// unchanged. Purely best-effort enrichment: any failure returns "" and the
+// download proceeds without a playlist cover, it never fails the job.
+func (c *CatalogClient) libraryArtworkURL(ctx context.Context, storefront, id, mediaUserToken string) string {
+	var resp catalogPlaylistResponse
+	if err := c.getWithUserToken(ctx, fmt.Sprintf("%s/v1/catalog/%s/playlists/%s", c.apiBase(), storefront, id), url.Values{
+		"include": []string{"library"},
+		"l":       []string{c.cfg.Language},
+	}, mediaUserToken, &resp); err != nil {
+		c.logger.Warn("private playlist library artwork lookup failed; continuing without playlist cover", "playlist_id", id, "error", err)
+		return ""
+	}
+	if len(resp.Data) == 0 {
+		return ""
+	}
+	for _, lib := range resp.Data[0].Relationships.Library.Data {
+		if lib.Attributes.Artwork.URL != "" {
+			return lib.Attributes.Artwork.URL
+		}
+	}
+	return ""
+}
+
+// Station fetches a radio station's catalog metadata. The developer token
+// alone authorizes this read (no media-user-token needed); the returned
+// Format distinguishes a downloadable "tracks" station from a live "stream".
+func (c *CatalogClient) Station(ctx context.Context, storefront, id string) (StationInfo, error) {
+	var resp catalogStationResponse
+	if err := c.get(ctx, fmt.Sprintf("%s/v1/catalog/%s/stations/%s", c.apiBase(), storefront, id), url.Values{
+		"l": []string{c.cfg.Language},
+	}, &resp); err != nil {
+		return StationInfo{}, err
+	}
+	if len(resp.Data) == 0 {
+		return StationInfo{}, fmt.Errorf("station %s not found", id)
+	}
+	station := resp.Data[0]
+	return StationInfo{
+		ID: station.ID, Name: station.Attributes.Name, ArtworkURL: station.Attributes.Artwork.URL,
+		Format: station.Attributes.PlayParams.Format, IsLive: station.Attributes.IsLive,
+	}, nil
+}
+
+// StationTracks resolves a personalized/curated radio station into a finite
+// collection of catalog songs via POST /v1/me/stations/next-tracks/{id}, which
+// requires the user's media-user-token (an Apple subscription token) in
+// addition to the developer token. Live broadcast stations ("stream" format)
+// have no static track list and return an error. The next-tracks feed is a
+// rolling window, so a station "download" captures whichever upcoming songs the
+// feed currently returns rather than a fixed catalog listing.
+func (c *CatalogClient) StationTracks(ctx context.Context, storefront, id, mediaUserToken string) (Collection, error) {
+	info, err := c.Station(ctx, storefront, id)
+	if err != nil {
+		return Collection{}, err
+	}
+	if info.Format != "tracks" {
+		return Collection{}, fmt.Errorf("station %q is not downloadable: only track-based stations (playParams.format=tracks) are supported, not live/stream stations", info.Name)
+	}
+	if strings.TrimSpace(mediaUserToken) == "" {
+		return Collection{}, fmt.Errorf("station downloads require a media_user_token")
+	}
+	var resp stationTracksResponse
+	if err := c.stationNextTracks(ctx, id, mediaUserToken, &resp); err != nil {
+		return Collection{}, err
+	}
+	tracks := make([]Song, 0, len(resp.Data))
+	for _, raw := range resp.Data {
+		if raw.Type != "songs" {
+			continue
+		}
+		tracks = append(tracks, mapSong(raw))
+	}
+	return Collection{ID: info.ID, Type: TypeStation, Name: info.Name, Artist: "Apple Music Station", ArtworkURL: info.ArtworkURL, Tracks: tracks}, nil
+}
+
+// stationNextTracks performs the authenticated POST to the personalized
+// next-tracks endpoint. It mirrors get() (bearer developer token, legacy Origin
+// header) but adds the Media-User-Token header and uses POST, which get() does
+// not support.
+func (c *CatalogClient) stationNextTracks(ctx context.Context, id, mediaUserToken string, out any) error {
+	token, err := c.Token(ctx)
+	if err != nil {
+		return err
+	}
+	params := url.Values{
+		"include[songs]": []string{"artists,albums"},
+		"limit":          []string{"10"},
+		"l":              []string{c.cfg.Language},
+	}
+	endpoint := fmt.Sprintf("%s/v1/me/stations/next-tracks/%s?%s", c.apiBase(), id, params.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Media-User-Token", mediaUserToken)
+	if !c.cfg.DeveloperTokenSigningEnabled() {
+		req.Header.Set("Origin", "https://music.apple.com")
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("station next-tracks request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
 }
 
 func (c *CatalogClient) ArtistAlbums(ctx context.Context, storefront, id string) (ArtistAlbums, error) {
@@ -359,6 +502,14 @@ func (c *CatalogClient) fetchCoverOnce(ctx context.Context, artworkURL, format, 
 }
 
 func (c *CatalogClient) get(ctx context.Context, endpoint string, params url.Values, out any) error {
+	return c.getWithUserToken(ctx, endpoint, params, "", out)
+}
+
+// getWithUserToken is get plus an optional Media-User-Token header, for the
+// few catalog reads whose response is richer when the request carries the
+// user's subscription identity (e.g. private playlist artwork via
+// include=library). An empty token degrades to a plain get.
+func (c *CatalogClient) getWithUserToken(ctx context.Context, endpoint string, params url.Values, mediaUserToken string, out any) error {
 	token, err := c.Token(ctx)
 	if err != nil {
 		return err
@@ -371,6 +522,9 @@ func (c *CatalogClient) get(ctx context.Context, endpoint string, params url.Val
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	if mediaUserToken != "" {
+		req.Header.Set("Media-User-Token", mediaUserToken)
+	}
 	if !c.cfg.DeveloperTokenSigningEnabled() {
 		// The web player token is scoped to music.apple.com; a self-signed
 		// developer token carries no origin claim, so no Origin header is sent.

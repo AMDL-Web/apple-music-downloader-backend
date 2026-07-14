@@ -50,7 +50,7 @@ if [ "$(id -u)" = "0" ]; then
     # 数据目录逐个挂载点检查:绑定挂载的宿主机目录首次由 Docker 创建时
     # 属主是 root,而下载目录可能包含大量文件,所以只在顶层属主不匹配时
     # 递归修正一次(对应首次挂载或 PUID/PGID 变更的情况)。
-    for dir in /app/data /app/data/db /app/data/downloads; do
+    for dir in /app/data /app/data/db /app/data/logs /app/data/downloads; do
         mkdir -p "$dir"
         if [ "$(stat -c '%u:%g' "$dir")" != "$PUID:$PGID" ]; then
             echo "fixing ownership of $dir to $PUID:$PGID"
