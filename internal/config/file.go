@@ -64,7 +64,23 @@ func Save(path string, cfg Config) error {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append([]byte(savedFileHeader), raw...), 0o644); err != nil {
+	// The persisted config may contain catalog.media_user_token. Always force
+	// owner-only permissions, including when a stale temp file or an older
+	// world-readable config already exists.
+	file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp)
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		return err
+	}
+	if _, err := file.Write(append([]byte(savedFileHeader), raw...)); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

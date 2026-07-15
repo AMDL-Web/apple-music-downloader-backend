@@ -1,5 +1,11 @@
 package config
 
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
 // DownloadOverrides is a per-request overlay for the download section of the
 // runtime config. A batch submit may attach one; it is stored on every job
 // created from that submission and applied on top of the live config when the
@@ -126,4 +132,92 @@ func (o *DownloadOverrides) Apply(base Config) Config {
 		d.CheckIntegrity = *o.CheckIntegrity
 	}
 	return base
+}
+
+// ApplyValidated applies the request-scoped overrides and verifies both the
+// ordinary config rules and the extra trust boundary around filesystem roots.
+// A request may select a subdirectory of the administrator-configured roots,
+// but it may not redirect downloads or scratch data elsewhere.
+func (o *DownloadOverrides) ApplyValidated(base Config) (Config, error) {
+	applied := o.Apply(base)
+	if err := applied.Validate(); err != nil {
+		return applied, err
+	}
+	if o == nil {
+		return applied, nil
+	}
+	for _, path := range []struct {
+		name      string
+		override  *string
+		base      string
+		candidate string
+	}{
+		{name: "download.downloads_dir", override: o.DownloadsDir, base: base.Download.DownloadsDir, candidate: applied.Download.DownloadsDir},
+		{name: "download.temp_dir", override: o.TempDir, base: base.Download.TempDir, candidate: applied.Download.TempDir},
+	} {
+		if path.override == nil {
+			continue
+		}
+		contained, err := pathIsWithin(path.base, path.candidate)
+		if err != nil {
+			return applied, fmt.Errorf("validate %s override: %w", path.name, err)
+		}
+		if !contained {
+			return applied, fmt.Errorf("%s override must stay within the configured root %q", path.name, path.base)
+		}
+	}
+	return applied, nil
+}
+
+// pathIsWithin compares canonical absolute paths. EvalSymlinks alone cannot
+// handle the normal case where a requested subdirectory does not exist yet,
+// so canonicalPath resolves the deepest existing ancestor and appends the
+// missing suffix. This catches both lexical traversal and existing symlinks
+// that point outside the configured root without rejecting new subdirectories.
+func pathIsWithin(base, candidate string) (bool, error) {
+	basePath, err := canonicalPath(base)
+	if err != nil {
+		return false, err
+	}
+	candidatePath, err := canonicalPath(candidate)
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(basePath, candidatePath)
+	if err != nil {
+		return false, err
+	}
+	return rel != ".." && !filepath.IsAbs(rel) && (rel == "." || !startsWithParent(rel)), nil
+}
+
+func startsWithParent(path string) bool {
+	return len(path) >= 3 && path[:3] == ".."+string(filepath.Separator)
+}
+
+func canonicalPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	abs = filepath.Clean(abs)
+	current := abs
+	var missing []string
+	for {
+		resolved, evalErr := filepath.EvalSymlinks(current)
+		if evalErr == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(evalErr) {
+			return "", evalErr
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", evalErr
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
 }

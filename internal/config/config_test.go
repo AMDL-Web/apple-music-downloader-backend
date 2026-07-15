@@ -66,6 +66,37 @@ func TestLoadValidatesLogging(t *testing.T) {
 	}
 }
 
+func TestValidateBoundsResourceAmplifyingDownloadSettings(t *testing.T) {
+	tests := []struct {
+		name  string
+		apply func(*Config, int)
+		key   string
+		max   int
+	}{
+		{name: "running jobs", apply: func(c *Config, value int) { c.Download.MaxRunningJobs = value }, key: "max_running_jobs", max: maxRunningJobsLimit},
+		{name: "parallel tracks", apply: func(c *Config, value int) { c.Download.MaxParallelTracks = value }, key: "max_parallel_tracks", max: maxParallelTracksLimit},
+		{name: "attempts", apply: func(c *Config, value int) { c.Download.MaxAttempts = value }, key: "max_attempts", max: maxAttemptsLimit},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, value := range []int{0, -1, tt.max + 1} {
+				cfg := Default()
+				tt.apply(&cfg, value)
+				if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.key) {
+					t.Fatalf("Validate() with %s=%d error = %v, want %s bounds error", tt.key, value, err, tt.key)
+				}
+			}
+			for _, value := range []int{1, tt.max} {
+				cfg := Default()
+				tt.apply(&cfg, value)
+				if err := cfg.Validate(); err != nil {
+					t.Fatalf("Validate() rejected boundary %s=%d: %v", tt.key, value, err)
+				}
+			}
+		})
+	}
+}
+
 func TestDefaultPathFormats(t *testing.T) {
 	defaults := Default().Download
 	want := map[string]string{

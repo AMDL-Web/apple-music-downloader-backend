@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -56,6 +57,22 @@ func TestProcessJobAppliesPerJobOverrides(t *testing.T) {
 	}
 	if !strings.Contains(plain.OutputPath, "songs/Artist") {
 		t.Fatalf("plain job output path = %q, want the runtime config's song_path_format", plain.OutputPath)
+	}
+}
+
+func TestProcessJobRejectsPersistedOverrideOutsideConfiguredRoots(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.Simulate = config.SimulateConfig{Enabled: true, MinSpeedKBps: 1_000_000, MaxSpeedKBps: 1_000_000}
+	cfg.Download.DownloadsDir = filepath.Join(dir, "downloads")
+	cfg.Download.TempDir = filepath.Join(dir, "temp")
+	downloader := &Downloader{store: config.NewStore(cfg)}
+	escaped := filepath.Join(dir, "outside")
+	err := downloader.ProcessJob(context.Background(), domain.Job{
+		ID: "job-unsafe", Overrides: &config.DownloadOverrides{DownloadsDir: &escaped},
+	}, &recordingReporter{})
+	if err == nil || !strings.Contains(err.Error(), "downloads_dir") {
+		t.Fatalf("ProcessJob error = %v, want unsafe downloads_dir rejection", err)
 	}
 }
 
