@@ -52,7 +52,8 @@ wrapper:
   address: "127.0.0.1:8080"
   # bool: true uses insecure gRPC transport; false requires transport credentials support in code/config.
   insecure: true
-  # integer seconds: wrapper RPC timeout. Values <= 0 fall back to 30 seconds.
+  # integer seconds: wrapper unary-RPC timeout and per-decrypt-fragment inactivity timeout.
+  # It is not a whole-track deadline, so long tracks may run longer. Values <= 0 fall back to 30 seconds.
   timeout_seconds: 30
   # integer seconds: wrapper login/2FA timeout. Values <= 0 fall back to 120 seconds.
   login_timeout_seconds: 120

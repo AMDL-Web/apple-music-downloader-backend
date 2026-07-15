@@ -21,6 +21,55 @@ type fakeDecryptStream struct {
 	closeSends  atomic.Int32
 }
 
+type blockingDecryptStream struct {
+	ctx         context.Context
+	sendReturns atomic.Int32
+}
+
+func (f *blockingDecryptStream) Send(*pb.DecryptRequest) error {
+	<-f.ctx.Done()
+	f.sendReturns.Add(1)
+	return f.ctx.Err()
+}
+func (f *blockingDecryptStream) Recv() (*pb.DecryptReply, error) {
+	<-f.ctx.Done()
+	return nil, f.ctx.Err()
+}
+func (f *blockingDecryptStream) Header() (metadata.MD, error) { return nil, nil }
+func (f *blockingDecryptStream) Trailer() metadata.MD         { return nil }
+func (f *blockingDecryptStream) CloseSend() error             { return nil }
+func (f *blockingDecryptStream) Context() context.Context     { return f.ctx }
+func (f *blockingDecryptStream) SendMsg(any) error            { return nil }
+func (f *blockingDecryptStream) RecvMsg(any) error            { return nil }
+
+type echoDecryptStream struct {
+	ctx      context.Context
+	requests chan *pb.DecryptRequest
+}
+
+func (f *echoDecryptStream) Send(req *pb.DecryptRequest) error {
+	select {
+	case f.requests <- req:
+		return nil
+	case <-f.ctx.Done():
+		return f.ctx.Err()
+	}
+}
+func (f *echoDecryptStream) Recv() (*pb.DecryptReply, error) {
+	select {
+	case req := <-f.requests:
+		return &pb.DecryptReply{Header: &pb.ReplyHeader{Code: 0}, Data: req.GetData()}, nil
+	case <-f.ctx.Done():
+		return nil, f.ctx.Err()
+	}
+}
+func (f *echoDecryptStream) Header() (metadata.MD, error) { return nil, nil }
+func (f *echoDecryptStream) Trailer() metadata.MD         { return nil }
+func (f *echoDecryptStream) CloseSend() error             { return nil }
+func (f *echoDecryptStream) Context() context.Context     { return f.ctx }
+func (f *echoDecryptStream) SendMsg(any) error            { return nil }
+func (f *echoDecryptStream) RecvMsg(any) error            { return nil }
+
 func (f *fakeDecryptStream) Send(*pb.DecryptRequest) error {
 	<-f.ctx.Done() // unblocks only once DecryptFragment cancels the session
 	f.sendReturns.Add(1)
@@ -69,5 +118,47 @@ func TestDecryptFragmentWaitsForSenderOnRecvError(t *testing.T) {
 	}
 	if fake.closeSends.Load() != 1 {
 		t.Fatalf("CloseSend called %d times, want 1", fake.closeSends.Load())
+	}
+}
+
+func TestDecryptFragmentTimeoutCancelsAndDrainsStream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	fake := &blockingDecryptStream{ctx: ctx}
+	session := &grpcDecryptSession{
+		stream: fake, cancel: cancel, adamID: "adam", fragmentTimeout: 20 * time.Millisecond,
+	}
+
+	started := time.Now()
+	_, err := session.DecryptFragment("key", [][]byte{{1, 2, 3}})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("DecryptFragment error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("fragment timeout took %s, want prompt cancellation", elapsed)
+	}
+	if got := fake.sendReturns.Load(); got != 1 {
+		t.Fatalf("sender returns = %d, want 1 before DecryptFragment returns", got)
+	}
+}
+
+func TestDecryptTimeoutIsPerFragmentNotWholeSession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fake := &echoDecryptStream{ctx: ctx, requests: make(chan *pb.DecryptRequest)}
+	timeout := 20 * time.Millisecond
+	session := &grpcDecryptSession{
+		stream: fake, cancel: cancel, adamID: "adam", fragmentTimeout: timeout,
+	}
+
+	first, err := session.DecryptFragment("key", [][]byte{{1}})
+	if err != nil || len(first) != 1 || first[0][0] != 1 {
+		t.Fatalf("first fragment = (%v, %v)", first, err)
+	}
+	// An old whole-session deadline would expire here. A fresh fragment gets
+	// its own inactivity window and must still succeed.
+	time.Sleep(2 * timeout)
+	second, err := session.DecryptFragment("key", [][]byte{{2}})
+	if err != nil || len(second) != 1 || second[0][0] != 2 {
+		t.Fatalf("second fragment after idle gap = (%v, %v)", second, err)
 	}
 }

@@ -353,21 +353,26 @@ func (c *Client) License(ctx context.Context, adamID, challenge, uri string) (st
 // NewDecryptSession opens a bidirectional decrypt stream for one track. The
 // stream is fed one fragment at a time (DecryptFragment) and torn down with
 // Close, so the caller can decrypt a whole track without ever holding all of
-// its samples in memory. The configured timeout bounds the whole session.
+// its samples in memory. A track may legitimately take much longer than a
+// unary RPC, so the configured timeout bounds each fragment operation rather
+// than the lifetime of the whole stream.
 func (c *Client) NewDecryptSession(ctx context.Context, adamID string) (DecryptSession, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout())
-	stream, err := c.api.Decrypt(ctx)
+	streamCtx, cancel := context.WithCancel(ctx)
+	stream, err := c.api.Decrypt(streamCtx)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-	return &grpcDecryptSession{stream: stream, cancel: cancel, adamID: adamID}, nil
+	return &grpcDecryptSession{stream: stream, cancel: cancel, adamID: adamID, fragmentTimeout: c.cfg.Timeout()}, nil
 }
 
 type grpcDecryptSession struct {
 	stream pb.WrapperManagerService_DecryptClient
 	cancel context.CancelFunc
 	adamID string
+	// fragmentTimeout is an inactivity bound for one fragment request/reply
+	// batch. It deliberately is not a whole-track deadline.
+	fragmentTimeout time.Duration
 	// next is the monotonically increasing sample index used to correlate
 	// requests with their replies. It spans the whole track (not reset per
 	// fragment) so indices stay unique across every batch on the one stream.
@@ -375,10 +380,37 @@ type grpcDecryptSession struct {
 }
 
 func (s *grpcDecryptSession) DecryptFragment(key string, samples [][]byte) ([][]byte, error) {
-	n := len(samples)
-	if n == 0 {
+	if len(samples) == 0 {
 		return nil, nil
 	}
+	if s.fragmentTimeout <= 0 {
+		return s.decryptFragment(key, samples)
+	}
+	type result struct {
+		out [][]byte
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := s.decryptFragment(key, samples)
+		done <- result{out: out, err: err}
+	}()
+	timer := time.NewTimer(s.fragmentTimeout)
+	defer timer.Stop()
+	select {
+	case result := <-done:
+		return result.out, result.err
+	case <-timer.C:
+		// Cancelling the stream unblocks both Send and Recv. Wait for the
+		// operation to unwind so CloseSend cannot race a lingering Send.
+		s.cancel()
+		<-done
+		return nil, fmt.Errorf("wrapper decrypt fragment timed out after %s: %w", s.fragmentTimeout, context.DeadlineExceeded)
+	}
+}
+
+func (s *grpcDecryptSession) decryptFragment(key string, samples [][]byte) ([][]byte, error) {
+	n := len(samples)
 	base := s.next
 	s.next += n
 	// Send in the background while receiving: a fragment can carry more sample
