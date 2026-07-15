@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -137,14 +138,29 @@ func main() {
 			}
 		}
 	}
-	manager.Start(ctx)
+	// Worker lifetime is deliberately independent of the signal context. On
+	// shutdown main first closes the HTTP listener (so no new jobs enter), then
+	// explicitly cancels and joins workers before draining hooks and allowing
+	// the deferred database/wrapper closes to run.
+	manager.Start(context.Background())
 
+	httpHandlerCtx, cancelHTTPHandlers := context.WithCancel(context.Background())
+	defer cancelHTTPHandlers()
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           api.NewServer(cfgStore, store, hub, manager, wrapperClient, qualityService, catalog, logSystem.Logger, logSystem).Routes(),
 		ErrorLog:          slog.NewLogLogger(logSystem.Logger.With("component", "http").Handler(), slog.LevelError),
+		BaseContext:       func(net.Listener) context.Context { return httpHandlerCtx },
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		// Do not set WriteTimeout: SSE and WebSocket responses are intentionally
+		// long-lived and must not be cut off by a whole-response deadline.
 	}
+	// net/http does not close hijacked WebSocket connections during Shutdown.
+	// Cancelling the shared base context lets both WebSocket and SSE handlers
+	// leave promptly before job and dependency shutdown continues.
+	httpServer.RegisterOnShutdown(cancelHTTPHandlers)
 
 	go func() {
 		logger.Info("amdl backend listening", "addr", cfg.Server.Listen)
@@ -155,8 +171,20 @@ func main() {
 	}()
 
 	<-ctx.Done()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_ = httpServer.Shutdown(shutdownCtx)
-	hookDispatcher.Shutdown(shutdownCtx)
+
+	httpShutdownCtx, cancelHTTPShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := httpServer.Shutdown(httpShutdownCtx); err != nil {
+		logger.Warn("http shutdown timed out", "error", err)
+	}
+	cancelHTTPShutdown()
+
+	jobShutdownCtx, cancelJobShutdown := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := manager.Shutdown(jobShutdownCtx); err != nil {
+		logger.Warn("job shutdown timed out", "error", err)
+	}
+	cancelJobShutdown()
+
+	hookShutdownCtx, cancelHookShutdown := context.WithTimeout(context.Background(), 15*time.Second)
+	hookDispatcher.Shutdown(hookShutdownCtx)
+	cancelHookShutdown()
 }

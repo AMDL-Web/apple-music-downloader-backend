@@ -250,27 +250,49 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 	if parallel <= 0 {
 		parallel = 1
 	}
+	return runParallelTrackTasks(ctx, len(tracks), parallel, finished, func(i int) error {
+		err := d.processTrackWithMetadata(ctx, job, items[i], tracks[i], parsed.Storefront, parsed.Type, collectionName, collectionID, i+1, folderArtist, metadata, reporter)
+		if err != nil {
+			logging.FromContext(ctx, d.logger).Error("track failed", "item_id", items[i].ID, "adam_id", tracks[i].ID, "error", err)
+		}
+		return err
+	})
+}
+
+// runParallelTrackTasks bounds track concurrency and, critically, does not
+// return while any task it started is still running. A cancellation can arrive
+// while the caller is waiting for a semaphore slot; in that case no more tasks
+// are launched and the already-started tasks are joined before returning.
+func runParallelTrackTasks(ctx context.Context, total, parallel int, finished []bool, task func(int) error) error {
 	sem := make(chan struct{}, parallel)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var firstErr error
-	for i := range tracks {
+	for i := 0; i < total; i++ {
 		if finished[i] {
 			// Finished in a previous run of this job; keep the item as-is.
 			continue
 		}
-		i := i
 		select {
 		case <-ctx.Done():
+			wg.Wait()
 			return ctx.Err()
 		case sem <- struct{}{}:
 		}
+		// Cancellation and a free semaphore slot may become ready together.
+		// Re-check before launching so cancellation never knowingly starts the
+		// next track after acquiring the slot.
+		if err := ctx.Err(); err != nil {
+			<-sem
+			wg.Wait()
+			return err
+		}
 		wg.Add(1)
+		i := i
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := d.processTrackWithMetadata(ctx, job, items[i], tracks[i], parsed.Storefront, parsed.Type, collectionName, collectionID, i+1, folderArtist, metadata, reporter); err != nil {
-				logging.FromContext(ctx, d.logger).Error("track failed", "item_id", items[i].ID, "adam_id", tracks[i].ID, "error", err)
+			if err := task(i); err != nil {
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err

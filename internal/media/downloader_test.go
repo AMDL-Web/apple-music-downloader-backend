@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
@@ -18,6 +19,56 @@ import (
 	"amdl/internal/jobs"
 	"amdl/internal/wrapper"
 )
+
+func TestRunParallelTrackTasksWaitsForStartedTaskOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	done := make(chan error, 1)
+
+	go func() {
+		done <- runParallelTrackTasks(ctx, 2, 1, []bool{false, false}, func(int) error {
+			calls.Add(1)
+			select {
+			case <-started:
+			default:
+				close(started)
+			}
+			// Deliberately ignore ctx to prove the scheduler joins work that it
+			// has already launched instead of returning early on cancellation.
+			<-release
+			return nil
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first track task did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		t.Fatalf("scheduler returned before started task exited: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("started tasks after cancellation = %d, want 1", got)
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("scheduler error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not return after started task exited")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("total started tasks = %d, want 1", got)
+	}
+}
 
 type fakeDownloaderWrapper struct {
 	status    wrapper.Status
