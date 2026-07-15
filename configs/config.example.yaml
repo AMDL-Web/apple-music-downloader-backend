@@ -77,15 +77,16 @@ catalog:
   apple_music_team_id: ""
   # integer hours: validity of developer tokens minted for external clients via GET /api/v1/developer-token.
   # Values <= 0 fall back to 1 hour. Only meaningful when signing is enabled (the endpoint returns 409 in legacy mode);
-  # the backend's internal token always lasts 24h regardless of this value.
+  # the backend's internal token always lasts 24h and is proactively refreshed after 12h, regardless of this value.
   developer_token_ttl_hours: 1
   # list of strings: web origins embedded as the JWT "origin" claim in tokens minted via GET /api/v1/developer-token,
   # for example ["https://player.example.com"]. With one or more entries, Apple rejects API requests whose Origin
   # header is not in the list. Empty list: no origin claim (token usable from any origin). Entries must be non-empty;
   # ignored in legacy mode and never applied to the backend's internal token.
   allowed_origins: []
-  # integer hours: cached auto-discovered bearer-token TTL (legacy mode only). Values <= 0 fall back to 12 hours.
-  # Ignored when developer-token signing is enabled (the signed token always expires 24h after issuance).
+  # integer hours: validity window for an auto-discovered bearer token (legacy mode only). The cached token is
+  # proactively refreshed halfway through this window: for example, 12 refreshes after 6 hours. Values <= 0 use
+  # a 12-hour window and refresh after 6 hours. Ignored when developer-token signing is enabled.
   token_cache_ttl_hours: 12
   # enum: song, album. song means album URLs containing ?i= are single-song tasks; album downloads the full album.
   album_track_url_mode: "song"
