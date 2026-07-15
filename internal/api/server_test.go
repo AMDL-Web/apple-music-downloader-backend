@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -318,6 +319,73 @@ func TestQualityEndpointValidatesURL(t *testing.T) {
 	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/quality", `{"url":" "}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}
+
+func TestJSONEndpointsRejectTrailingValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{name: "config", method: http.MethodPut, path: "/api/v1/config", body: `{}`},
+		{name: "wrapper login", method: http.MethodPost, path: "/api/v1/wrapper/login", body: `{"username":"user","password":"secret"}`},
+		{name: "wrapper two step", method: http.MethodPost, path: "/api/v1/wrapper/login/login-1/2fa", body: `{"two_step_code":"123456"}`},
+		{name: "wrapper logout", method: http.MethodPost, path: "/api/v1/wrapper/logout", body: `{"username":"user"}`},
+		{name: "quality", method: http.MethodPost, path: "/api/v1/quality", body: `{"url":"song|us|1"}`},
+		{name: "downloads", method: http.MethodPost, path: "/api/v1/downloads", body: `{"urls":["song|us|1"]}`},
+	}
+	for _, tc := range tests {
+		for _, suffix := range []struct {
+			name  string
+			value string
+		}{
+			{name: "second JSON value", value: "\n{}"},
+			{name: "trailing garbage", value: " trailing"},
+		} {
+			t.Run(tc.name+"/"+suffix.name, func(t *testing.T) {
+				server := &Server{
+					cfg:     config.NewStore(config.Default()),
+					wrapper: &fakeWrapperService{},
+					quality: &fakeQualityService{},
+				}
+				recorder := requestJSON(t, server.Routes(), tc.method, tc.path, tc.body+suffix.value)
+				if recorder.Code != http.StatusBadRequest {
+					t.Fatalf("status = %d, want %d (body %s)", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestJSONEndpointsRejectOversizedBodies(t *testing.T) {
+	padding := strings.Repeat("x", int(maxJSONBodyBytes))
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{name: "config", method: http.MethodPut, path: "/api/v1/config", body: `{"logging":{"level":"` + padding + `"}}`},
+		{name: "wrapper login", method: http.MethodPost, path: "/api/v1/wrapper/login", body: `{"username":"` + padding + `","password":"secret"}`},
+		{name: "wrapper two step", method: http.MethodPost, path: "/api/v1/wrapper/login/login-1/2fa", body: `{"two_step_code":"` + padding + `"}`},
+		{name: "wrapper logout", method: http.MethodPost, path: "/api/v1/wrapper/logout", body: `{"username":"` + padding + `"}`},
+		{name: "quality", method: http.MethodPost, path: "/api/v1/quality", body: `{"url":"` + padding + `"}`},
+		{name: "downloads", method: http.MethodPost, path: "/api/v1/downloads", body: `{"urls":["` + padding + `"]}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := &Server{
+				cfg:     config.NewStore(config.Default()),
+				wrapper: &fakeWrapperService{},
+				quality: &fakeQualityService{},
+			}
+			recorder := requestJSON(t, server.Routes(), tc.method, tc.path, tc.body)
+			if recorder.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("status = %d, want %d (body %s)", recorder.Code, http.StatusRequestEntityTooLarge, recorder.Body.String())
+			}
+		})
 	}
 }
 
@@ -1211,6 +1279,139 @@ func TestEventsWebSocketStreamsBacklogLiveAndResume(t *testing.T) {
 		t.Fatalf("resumed event id = %d, want %d (events at or before last_event_id must be skipped)", got.ID, second.ID)
 	}
 	_ = resume.Close(websocket.StatusNormalClosure, "")
+}
+
+// TestEventsClosesWhenLiveJobBecomesTerminal guards the snapshot regression:
+// a stream opened while a job was running used to retain that running Job
+// value forever, so even after delivering job_finished it never closed.
+func TestEventsClosesWhenLiveJobBecomesTerminal(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	hub := events.NewHub()
+	manager := jobs.NewManager(store, hub, stubProcessor{}, 1, slog.Default())
+	server := &Server{store: store, hub: hub, manager: manager}
+
+	ctx := context.Background()
+	job := domain.Job{ID: "live-sse", Input: "song|us|1", Type: "song", Status: domain.JobRunning}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Event(ctx, domain.Event{JobID: job.ID, Type: "job_started", Message: "job started"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(server.Routes())
+	defer ts.Close()
+	streamCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, ts.URL+"/api/v1/downloads/"+job.ID+"/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	readType := func() string {
+		t.Helper()
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				t.Fatalf("read SSE event: %v", err)
+			}
+			if value, ok := strings.CutPrefix(line, "event: "); ok {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	if got := readType(); got != "job_started" {
+		t.Fatalf("first event = %q, want job_started", got)
+	}
+
+	job.Status = domain.JobCompleted
+	job.UpdatedAt = time.Now().UTC()
+	terminal, err := store.FinalizeJob(ctx, job, domain.Event{JobID: job.ID, Type: "job_finished", Message: "completed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.Publish(terminal)
+	if got := readType(); got != "job_finished" {
+		t.Fatalf("second event = %q, want job_finished", got)
+	}
+	if _, err := io.ReadAll(reader); err != nil {
+		t.Fatalf("stream did not close after live job became terminal: %v", err)
+	}
+}
+
+// TestEventsWSClosesWhenLiveJobBecomesTerminal is the WebSocket twin of the
+// SSE regression above; both handlers must refresh the job state while live.
+func TestEventsWSClosesWhenLiveJobBecomesTerminal(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	hub := events.NewHub()
+	manager := jobs.NewManager(store, hub, stubProcessor{}, 1, slog.Default())
+	server := &Server{store: store, hub: hub, manager: manager}
+
+	ctx := context.Background()
+	job := domain.Job{ID: "live-ws", Input: "song|us|1", Type: "song", Status: domain.JobRunning}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Event(ctx, domain.Event{JobID: job.ID, Type: "job_started", Message: "job started"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(server.Routes())
+	defer ts.Close()
+	streamCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/v1/downloads/" + job.ID + "/events/ws"
+	conn, _, err := websocket.Dial(streamCtx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+
+	readType := func() (string, error) {
+		_, raw, err := conn.Read(streamCtx)
+		if err != nil {
+			return "", err
+		}
+		var ev domain.Event
+		if err := json.Unmarshal(raw, &ev); err != nil {
+			return "", err
+		}
+		return ev.Type, nil
+	}
+	if got, err := readType(); err != nil || got != "job_started" {
+		t.Fatalf("first event = %q, %v; want job_started", got, err)
+	}
+
+	job.Status = domain.JobCompleted
+	job.UpdatedAt = time.Now().UTC()
+	terminal, err := store.FinalizeJob(ctx, job, domain.Event{JobID: job.ID, Type: "job_finished", Message: "completed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub.Publish(terminal)
+	if got, err := readType(); err != nil || got != "job_finished" {
+		t.Fatalf("second event = %q, %v; want job_finished", got, err)
+	}
+	if _, err := readType(); err == nil {
+		t.Fatal("WebSocket remained open after live job became terminal")
+	}
 }
 
 func TestEventsRejectsTerminalJob(t *testing.T) {
