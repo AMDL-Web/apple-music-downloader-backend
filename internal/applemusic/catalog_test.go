@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -550,6 +551,92 @@ func TestTokenRefreshUsesHalfLifeForBothModes(t *testing.T) {
 			t.Fatalf("tokenUntil = %v, want within [%v, %v] (half of %v)", client.tokenUntil, minUntil, maxUntil, wantTTL)
 		}
 	})
+}
+
+func TestConcurrentTokenCacheMissScrapesOnce(t *testing.T) {
+	client := NewCatalogClient(config.CatalogConfig{TokenCacheTTLHours: 12}, slog.Default())
+	var mu sync.Mutex
+	homeCalls, jsCalls := 0, 0
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch req.URL.String() {
+		case "https://music.apple.com":
+			homeCalls++
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`<script src="/assets/index~abc123.js"></script>`)), Header: make(http.Header)}, nil
+		case "https://music.apple.com/assets/index~abc123.js":
+			jsCalls++
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`token:"eyJhbGciOiJFUzI1NiJ9.eyJmb28iOiJiYXIifQ.sig-part-here"`)), Header: make(http.Header)}, nil
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("unexpected")), Header: make(http.Header)}, nil
+		}
+	})}
+
+	const callers = 20
+	start := make(chan struct{})
+	errCh := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := client.Token(context.Background())
+			errCh <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("Token: %v", err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if homeCalls != 1 || jsCalls != 1 {
+		t.Fatalf("token scrape calls = home %d, js %d; want one each", homeCalls, jsCalls)
+	}
+}
+
+func TestEnhancedHLSViaWebTokenRetriesOnce401ThenSucceeds(t *testing.T) {
+	client := NewCatalogClient(config.CatalogConfig{Language: "en-US", TokenCacheTTLHours: 12}, slog.Default())
+	client.webToken = "stale-web-token"
+	client.webTokenUntil = time.Now().Add(time.Hour)
+
+	var catalogCalls int
+	var authHeaders []string
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "amp-api.music.apple.com":
+			catalogCalls++
+			authHeaders = append(authHeaders, req.Header.Get("Authorization"))
+			if catalogCalls == 1 {
+				return &http.Response{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"errors":[{"status":"401"}]}`)), Header: make(http.Header)}, nil
+			}
+			body := `{"data":[{"id":"song-1","type":"songs","attributes":{"extendedAssetUrls":{"enhancedHls":"https://example.test/master.m3u8"}}}]}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		case "music.apple.com":
+			if req.URL.Path == "/" || req.URL.Path == "" {
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`<script src="/assets/index~abc123.js"></script>`)), Header: make(http.Header)}, nil
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`token:"eyJhbGciOiJFUzI1NiJ9.eyJmb28iOiJiYXIifQ.sig-part-here"`)), Header: make(http.Header)}, nil
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("unexpected")), Header: make(http.Header)}, nil
+		}
+	})}
+
+	master, err := client.EnhancedHLSViaWebToken(context.Background(), "cn", "song-1")
+	if err != nil {
+		t.Fatalf("EnhancedHLSViaWebToken: %v", err)
+	}
+	if master != "https://example.test/master.m3u8" {
+		t.Fatalf("master = %q", master)
+	}
+	if catalogCalls != 2 || len(authHeaders) != 2 || authHeaders[0] != "Bearer stale-web-token" || authHeaders[0] == authHeaders[1] {
+		t.Fatalf("calls=%d auth=%#v, want stale token then one refreshed retry", catalogCalls, authHeaders)
+	}
 }
 
 func TestGetWithUserTokenRetriesOnce401ThenSucceeds(t *testing.T) {
