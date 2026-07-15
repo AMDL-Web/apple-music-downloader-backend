@@ -181,6 +181,32 @@ func TestFinalizeJobPersistsStatusAndEventTogether(t *testing.T) {
 	}
 }
 
+func TestListEventsAfterLimitPagesWithoutSkipping(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	job := domain.Job{ID: "job-page", Input: "song|us|1", Type: "song", Status: domain.JobQueued}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := store.AddEvent(ctx, domain.Event{JobID: job.ID, Type: "item_progress"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := store.ListEventsAfterLimit(ctx, job.ID, 0, 2)
+	if err != nil || len(first) != 2 {
+		t.Fatalf("first page = (%+v, %v), want 2 events", first, err)
+	}
+	second, err := store.ListEventsAfterLimit(ctx, job.ID, first[1].ID, 2)
+	if err != nil || len(second) != 1 || second[0].ID <= first[1].ID {
+		t.Fatalf("second page = (%+v, %v), want final event after cursor", second, err)
+	}
+}
+
 func TestUpdateJobStatusPreservesCountsAndError(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "amdl.db"))
 	if err != nil {

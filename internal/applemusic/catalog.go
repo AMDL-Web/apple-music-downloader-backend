@@ -17,14 +17,32 @@ import (
 )
 
 type CatalogClient struct {
-	cfg        config.CatalogConfig
-	http       *http.Client
-	logger     *slog.Logger
-	mu         sync.Mutex
-	signer     *developerTokenSigner
-	token      string
-	tokenUntil time.Time
+	cfg    config.CatalogConfig
+	http   *http.Client
+	logger *slog.Logger
+	mu     sync.Mutex
+	// Refresh locks serialize cache misses without holding mu across network
+	// requests. The cache is checked again after acquiring each lock so a burst
+	// of callers shares one scrape/sign operation instead of stampeding Apple.
+	tokenRefreshMu sync.Mutex
+	webRefreshMu   sync.Mutex
+	signer         *developerTokenSigner
+	token          string
+	tokenUntil     time.Time
+	// webToken/webTokenUntil cache a scraped music.apple.com web-player JWT,
+	// kept separate from token/tokenUntil above so that fetching it for
+	// EnhancedHLSViaWebToken never disturbs the signed developer-token cache
+	// used by every other catalog request.
+	webToken      string
+	webTokenUntil time.Time
 }
+
+const (
+	maxCatalogResponseBytes int64 = 64 << 20
+	maxArtworkBytes         int64 = 64 << 20
+	maxWebPlayerPageBytes   int64 = 16 << 20
+	maxWebPlayerJSBytes     int64 = 64 << 20
+)
 
 func NewCatalogClient(cfg config.CatalogConfig, logger *slog.Logger) *CatalogClient {
 	return &CatalogClient{
@@ -46,13 +64,16 @@ func (c *CatalogClient) InitDeveloperToken() error {
 		return err
 	}
 	c.signer = signer
-	token, exp, err := signer.sign(time.Now(), internalDeveloperTokenTTL, nil)
+	token, _, err := signer.sign(time.Now(), internalDeveloperTokenTTL, nil)
 	if err != nil {
 		return err
 	}
 	c.mu.Lock()
 	c.token = token
-	c.tokenUntil = exp.Add(-5 * time.Minute)
+	// Cache for only half the signed lifetime: a still-valid-on-paper token
+	// can start getting rejected by Apple before its exp claim, so refreshing
+	// proactively at the half-life avoids waiting for a 401 to notice.
+	c.tokenUntil = cacheUntil(time.Now(), internalDeveloperTokenTTL)
 	c.mu.Unlock()
 	return nil
 }
@@ -312,27 +333,25 @@ func (c *CatalogClient) StationTracks(ctx context.Context, storefront, id, media
 // header) but adds the Media-User-Token header and uses POST, which get() does
 // not support.
 func (c *CatalogClient) stationNextTracks(ctx context.Context, id, mediaUserToken string, out any) error {
-	token, err := c.Token(ctx)
-	if err != nil {
-		return err
-	}
 	params := url.Values{
 		"include[songs]": []string{"artists,albums"},
 		"limit":          []string{"10"},
 		"l":              []string{c.cfg.Language},
 	}
 	endpoint := fmt.Sprintf("%s/v1/me/stations/next-tracks/%s?%s", c.apiBase(), id, params.Encode())
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Media-User-Token", mediaUserToken)
-	if !c.cfg.DeveloperTokenSigningEnabled() {
-		req.Header.Set("Origin", "https://music.apple.com")
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	resp, err := c.http.Do(req)
+	resp, err := c.doWithCatalogAuth(ctx, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Media-User-Token", mediaUserToken)
+		if !c.cfg.DeveloperTokenSigningEnabled() {
+			req.Header.Set("Origin", "https://music.apple.com")
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+		return req, nil
+	})
 	if err != nil {
 		return err
 	}
@@ -341,7 +360,7 @@ func (c *CatalogClient) stationNextTracks(ctx context.Context, id, mediaUserToke
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("station next-tracks request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return decodeJSONLimited(resp.Body, maxCatalogResponseBytes, out)
 }
 
 func (c *CatalogClient) ArtistAlbums(ctx context.Context, storefront, id string) (ArtistAlbums, error) {
@@ -498,7 +517,7 @@ func (c *CatalogClient) fetchCoverOnce(ctx context.Context, artworkURL, format, 
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("cover request failed: %s", resp.Status)
 	}
-	return io.ReadAll(resp.Body)
+	return readLimited(resp.Body, maxArtworkBytes)
 }
 
 func (c *CatalogClient) get(ctx context.Context, endpoint string, params url.Values, out any) error {
@@ -510,28 +529,26 @@ func (c *CatalogClient) get(ctx context.Context, endpoint string, params url.Val
 // user's subscription identity (e.g. private playlist artwork via
 // include=library). An empty token degrades to a plain get.
 func (c *CatalogClient) getWithUserToken(ctx context.Context, endpoint string, params url.Values, mediaUserToken string, out any) error {
-	token, err := c.Token(ctx)
-	if err != nil {
-		return err
-	}
 	if len(params) > 0 {
 		endpoint += "?" + params.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	if mediaUserToken != "" {
-		req.Header.Set("Media-User-Token", mediaUserToken)
-	}
-	if !c.cfg.DeveloperTokenSigningEnabled() {
-		// The web player token is scoped to music.apple.com; a self-signed
-		// developer token carries no origin claim, so no Origin header is sent.
-		req.Header.Set("Origin", "https://music.apple.com")
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	resp, err := c.http.Do(req)
+	resp, err := c.doWithCatalogAuth(ctx, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		if mediaUserToken != "" {
+			req.Header.Set("Media-User-Token", mediaUserToken)
+		}
+		if !c.cfg.DeveloperTokenSigningEnabled() {
+			// The web player token is scoped to music.apple.com; a self-signed
+			// developer token carries no origin claim, so no Origin header is sent.
+			req.Header.Set("Origin", "https://music.apple.com")
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+		return req, nil
+	})
 	if err != nil {
 		return err
 	}
@@ -540,13 +557,22 @@ func (c *CatalogClient) getWithUserToken(ctx context.Context, endpoint string, p
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("catalog request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return decodeJSONLimited(resp.Body, maxCatalogResponseBytes, out)
 }
 
 var (
 	indexJSPattern = regexp.MustCompile(`/assets/index~[^"']+\.js`)
 	jwtPattern     = regexp.MustCompile(`eyJ[A-Za-z0-9_\-=]+\.[A-Za-z0-9_\-=]+\.[A-Za-z0-9_\-=]+`)
 )
+
+// cacheUntil is the half-life proactive-refresh policy: a token is only
+// trusted from the cache for half of its validity window (ttl), so it
+// rotates well before Apple's own expiry - or an early rejection of a
+// still-technically-valid token - could otherwise stall catalog requests
+// until a full TTL passes.
+func cacheUntil(now time.Time, ttl time.Duration) time.Time {
+	return now.Add(ttl / 2)
+}
 
 func (c *CatalogClient) Token(ctx context.Context) (string, error) {
 	c.mu.Lock()
@@ -557,14 +583,25 @@ func (c *CatalogClient) Token(ctx context.Context) (string, error) {
 	}
 	c.mu.Unlock()
 
+	c.tokenRefreshMu.Lock()
+	defer c.tokenRefreshMu.Unlock()
+	// Another caller may have refreshed while this one waited.
+	c.mu.Lock()
+	if c.token != "" && time.Now().Before(c.tokenUntil) {
+		token := c.token
+		c.mu.Unlock()
+		return token, nil
+	}
+	c.mu.Unlock()
+
 	if c.signer != nil {
-		token, exp, err := c.signer.sign(time.Now(), internalDeveloperTokenTTL, nil)
+		token, _, err := c.signer.sign(time.Now(), internalDeveloperTokenTTL, nil)
 		if err != nil {
 			return "", err
 		}
 		c.mu.Lock()
 		c.token = token
-		c.tokenUntil = exp.Add(-5 * time.Minute)
+		c.tokenUntil = cacheUntil(time.Now(), internalDeveloperTokenTTL)
 		c.mu.Unlock()
 		return token, nil
 	}
@@ -575,9 +612,56 @@ func (c *CatalogClient) Token(ctx context.Context) (string, error) {
 	}
 	c.mu.Lock()
 	c.token = token
-	c.tokenUntil = time.Now().Add(c.cfg.TokenTTL())
+	c.tokenUntil = cacheUntil(time.Now(), c.cfg.TokenTTL())
 	c.mu.Unlock()
 	return token, nil
+}
+
+// invalidateToken clears rejected only when it is still the cached token. A
+// concurrent request may already have refreshed the cache after this request
+// was sent; an old 401 must not evict that newer token.
+func (c *CatalogClient) invalidateToken(rejected string) {
+	c.mu.Lock()
+	if c.token == rejected {
+		c.token = ""
+		c.tokenUntil = time.Time{}
+	}
+	c.mu.Unlock()
+}
+
+// doWithCatalogAuth sends a request built by buildReq (called with the
+// current bearer token) and, if Apple responds 401, invalidates the cached
+// token, re-authenticates once via Token(), and retries the same request
+// exactly once with the new token. Any other status - including a second
+// 401 - is returned as-is; callers keep their existing status/body handling.
+func (c *CatalogClient) doWithCatalogAuth(ctx context.Context, buildReq func(token string) (*http.Request, error)) (*http.Response, error) {
+	token, err := c.Token(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req, err := buildReq(token)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		return resp, nil
+	}
+	resp.Body.Close()
+
+	c.invalidateToken(token)
+	token, err = c.Token(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req, err = buildReq(token)
+	if err != nil {
+		return nil, err
+	}
+	return c.http.Do(req)
 }
 
 func (c *CatalogClient) fetchToken(ctx context.Context) (string, error) {
@@ -588,7 +672,10 @@ func (c *CatalogClient) fetchToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("fetch Apple Music web player failed: %s", resp.Status)
+	}
+	body, err := readLimited(resp.Body, maxWebPlayerPageBytes)
 	if err != nil {
 		return "", err
 	}
@@ -603,7 +690,10 @@ func (c *CatalogClient) fetchToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	defer jsResp.Body.Close()
-	jsBody, err := io.ReadAll(jsResp.Body)
+	if jsResp.StatusCode >= 300 {
+		return "", fmt.Errorf("fetch Apple Music web player script failed: %s", jsResp.Status)
+	}
+	jsBody, err := readLimited(jsResp.Body, maxWebPlayerJSBytes)
 	if err != nil {
 		return "", err
 	}
@@ -612,6 +702,147 @@ func (c *CatalogClient) fetchToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("cannot find Apple Music authorization token")
 	}
 	return token, nil
+}
+
+// webJWTToken returns a cached music.apple.com web-player JWT, scraping a
+// fresh one when the cache is empty or expired. It is independent of Token,
+// which serves the signed developer token once signing is enabled; this
+// cache exists so EnhancedHLSViaWebToken can keep working in signed mode
+// without touching the signed-token cache.
+func (c *CatalogClient) webJWTToken(ctx context.Context) (string, error) {
+	c.mu.Lock()
+	if c.webToken != "" && time.Now().Before(c.webTokenUntil) {
+		token := c.webToken
+		c.mu.Unlock()
+		return token, nil
+	}
+	c.mu.Unlock()
+
+	c.webRefreshMu.Lock()
+	defer c.webRefreshMu.Unlock()
+	// Another caller may have refreshed while this one waited.
+	c.mu.Lock()
+	if c.webToken != "" && time.Now().Before(c.webTokenUntil) {
+		token := c.webToken
+		c.mu.Unlock()
+		return token, nil
+	}
+	c.mu.Unlock()
+
+	token, err := c.fetchToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	c.webToken = token
+	c.webTokenUntil = cacheUntil(time.Now(), c.cfg.TokenTTL())
+	c.mu.Unlock()
+	return token, nil
+}
+
+func (c *CatalogClient) invalidateWebToken(rejected string) {
+	c.mu.Lock()
+	if c.webToken == rejected {
+		c.webToken = ""
+		c.webTokenUntil = time.Time{}
+	}
+	c.mu.Unlock()
+}
+
+// doWithWebAuth mirrors doWithCatalogAuth for the independent web-player JWT
+// cache used by signed_mode_hls_source=web_token.
+func (c *CatalogClient) doWithWebAuth(ctx context.Context, buildReq func(token string) (*http.Request, error)) (*http.Response, error) {
+	token, err := c.webJWTToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req, err := buildReq(token)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		return resp, nil
+	}
+	resp.Body.Close()
+
+	c.invalidateWebToken(token)
+	token, err = c.webJWTToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req, err = buildReq(token)
+	if err != nil {
+		return nil, err
+	}
+	return c.http.Do(req)
+}
+
+// EnhancedHLSViaWebToken fetches a song's Enhanced HLS master playlist URL
+// from amp-api.music.apple.com using a scraped music.apple.com web-player
+// JWT, regardless of whether developer-token signing is enabled. It is used
+// when signing is enabled but catalog.signed_mode_hls_source is "web_token":
+// the self-signed developer token cannot read enhancedHls at all, so this
+// reads it through the same legacy-style web token as unsigned mode while
+// catalog metadata itself keeps using the official signed-token endpoint.
+func (c *CatalogClient) EnhancedHLSViaWebToken(ctx context.Context, storefront, id string) (string, error) {
+	params := url.Values{
+		"extend": []string{"extendedAssetUrls"},
+		"l":      []string{c.cfg.Language},
+	}
+	endpoint := fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/songs/%s?%s", storefront, id, params.Encode())
+	resp, err := c.doWithWebAuth(ctx, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Origin", "https://music.apple.com")
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+		return req, nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("fetch enhanced hls with web token: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return "", fmt.Errorf("catalog request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var out catalogSongResponse
+	if err := decodeJSONLimited(resp.Body, maxCatalogResponseBytes, &out); err != nil {
+		return "", err
+	}
+	if len(out.Data) == 0 {
+		return "", fmt.Errorf("song %s not found", id)
+	}
+	master := out.Data[0].Attributes.ExtendedAssetURLs.EnhancedHLS
+	if master == "" {
+		return "", fmt.Errorf("song %s has no enhanced hls manifest", id)
+	}
+	return master, nil
+}
+
+func readLimited(r io.Reader, limit int64) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, fmt.Errorf("upstream response exceeded limit of %d bytes", limit)
+	}
+	return raw, nil
+}
+
+func decodeJSONLimited(r io.Reader, limit int64, out any) error {
+	raw, err := readLimited(r, limit)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, out)
 }
 
 func mapSong(raw catalogSongData) Song {

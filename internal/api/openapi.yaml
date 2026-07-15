@@ -103,7 +103,7 @@ paths:
       summary: 读取当前运行时配置（仅可修改字段）
       description: >-
         返回当前生效配置中可运行时修改的部分：download 段（max_running_jobs
-        除外）、logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/media_user_token_priority。
+        除外）、logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/media_user_token_priority/signed_mode_hls_source。
         仅启动时生效的字段（server、database、logging 其它字段、wrapper、tools、catalog 其它字段）不返回——
         它们无法通过本 API 修改，请编辑 configs/config.yaml 并重启。
 
@@ -129,7 +129,7 @@ paths:
         （含整段）被替换。合并结果必须通过与配置文件相同的完整校验。
 
         仅 GET 返回的字段可以修改：download 段（max_running_jobs 除外）、
-        logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/media_user_token_priority。其余字段只在进程启动时
+        logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/media_user_token_priority/signed_mode_hls_source。其余字段只在进程启动时
         被消费，修改请求会被 422 拒绝——请改 configs/config.yaml 并重启。
         被 AMDL_<大写段名>_<大写键名> 环境变量覆盖的字段同样返回 422：
         写入会在下一次配置重载时被环境变量的值重新遮盖，请改环境变量并
@@ -164,6 +164,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/JSONBodyTooLarge'
         '422':
           description: >-
             合并结果未通过配置校验，或试图修改仅启动时生效的字段，
@@ -239,6 +241,8 @@ paths:
                 $ref: '#/components/schemas/NeedsTwoStepResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/JSONBodyTooLarge'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '409':
@@ -269,6 +273,8 @@ paths:
                 $ref: '#/components/schemas/LoggedInResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/JSONBodyTooLarge'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -299,6 +305,8 @@ paths:
                 $ref: '#/components/schemas/LoggedOutResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/JSONBodyTooLarge'
         '404':
           $ref: '#/components/responses/NotFound'
         '502':
@@ -324,6 +332,8 @@ paths:
                 $ref: '#/components/schemas/QualityResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/JSONBodyTooLarge'
         '502':
           $ref: '#/components/responses/BadGateway'
         '503':
@@ -480,6 +490,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/JSONBodyTooLarge'
         '422':
           description: >-
             所有 URL 均被拒绝（响应体为 BatchSubmitResponse，逐条原因见
@@ -805,6 +817,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    JSONBodyTooLarge:
+      description: JSON 请求体超过 1 MiB 上限。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     Unauthorized:
       description: 登录或验证码错误。
       content:
@@ -1036,6 +1054,8 @@ components:
         下载配置的按需覆盖层，字段与运行时配置 download 段一一对应
         （max_running_jobs 除外——工作池大小在启动时确定，无法按任务覆盖）。
         所有字段可选；提交时会以“当前运行时配置 + 覆盖”做完整校验。
+        downloads_dir 和 temp_dir 只能选择管理员配置根目录本身或其子目录，
+        不能通过绝对路径、.. 或符号链接逃出对应根目录。
       properties:
         quality_priority:
           type: array
@@ -1043,8 +1063,14 @@ components:
             type: string
             enum: [alac, aac, aac-binaural, aac-downmix, ec3, ac3]
         codec_alternative: {type: boolean}
-        max_parallel_tracks: {type: integer}
-        max_attempts: {type: integer}
+        max_parallel_tracks:
+          type: integer
+          maximum: 64
+          description: 正数允许 1-64；值 <=0 按 1 处理；提交时超过 64 返回 422（早于该上限持久化的任务覆盖在运行时按 64 截断，不会因此失败）。
+        max_attempts:
+          type: integer
+          maximum: 10
+          description: 正数允许 1-10；值 <=0 按 1 处理；提交时超过 10 返回 422（早于该上限持久化的任务覆盖在运行时按 10 截断，不会因此失败）。
         downloads_dir: {type: string}
         song_path_format: {type: string}
         album_path_format: {type: string}
@@ -1094,6 +1120,14 @@ components:
             media_user_token_priority:
               type: string
               enum: [request, config]
+            signed_mode_hls_source:
+              type: string
+              enum: [wrapper, web_token]
+              description: >-
+                仅在启用 developer-token 签名时生效（自签 token 无法读取
+                enhancedHls）；legacy 模式下忽略。wrapper（默认）取
+                wrapper.M3U8 的授权设备清单；web_token 抓取
+                music.apple.com 网页端 JWT，从 amp-api 读取 enhancedHls。
         download:
           type: object
           description: max_running_jobs 仅启动时生效，不在此出现、不可修改。
@@ -1105,8 +1139,14 @@ components:
                 type: string
                 enum: [alac, aac, aac-binaural, aac-downmix, ec3, ac3]
             codec_alternative: {type: boolean}
-            max_parallel_tracks: {type: integer}
-            max_attempts: {type: integer}
+            max_parallel_tracks:
+              type: integer
+              maximum: 64
+              description: 正数允许 1-64；值 <=0 按 1 处理。
+            max_attempts:
+              type: integer
+              maximum: 10
+              description: 正数允许 1-10；值 <=0 按 1 处理。
             downloads_dir: {type: string}
             song_path_format: {type: string}
             album_path_format: {type: string}

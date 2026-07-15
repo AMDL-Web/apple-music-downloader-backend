@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,15 @@ import (
 // maxBatchSubmitURLs caps the number of URLs accepted in a single batch
 // submit request.
 const maxBatchSubmitURLs = 100
+
+// maxJSONBodyBytes bounds every JSON request body handled by this API. The
+// largest legitimate payload is a runtime-config patch or a batch of 100
+// URLs; 1 MiB leaves ample room for both while preventing unbounded reads.
+const maxJSONBodyBytes int64 = 1 << 20
+
+// streamEventPageSize bounds each database allocation while old SSE/WS
+// cursors are replayed. Handlers advance the persisted event id page by page.
+const streamEventPageSize = 512
 
 // urlSplitPattern splits a pasted textarea blob of URLs on newlines,
 // whitespace, commas, and semicolons (ASCII and full-width variants).
@@ -118,8 +128,7 @@ func (s *Server) Routes() http.Handler {
 
 func (s *Server) queryQuality(w http.ResponseWriter, r *http.Request) {
 	var req media.QualityRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if !decodeJSONBody(w, r, &req, false) {
 		return
 	}
 	req.URL = strings.TrimSpace(req.URL)
@@ -153,8 +162,7 @@ func (s *Server) wrapperLogin(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if !decodeJSONBody(w, r, &req, false) {
 		return
 	}
 	req.Username = strings.TrimSpace(req.Username)
@@ -179,8 +187,7 @@ func (s *Server) wrapperTwoStep(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Code string `json:"two_step_code"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if !decodeJSONBody(w, r, &req, false) {
 		return
 	}
 	req.Code = strings.TrimSpace(req.Code)
@@ -200,8 +207,7 @@ func (s *Server) wrapperLogout(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if !decodeJSONBody(w, r, &req, false) {
 		return
 	}
 	req.Username = strings.TrimSpace(req.Username)
@@ -245,7 +251,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 
 // getConfig returns the runtime-changeable part of the current config
 // (download minus max_running_jobs, logging level/access log, simulate,
-// catalog.album_track_url_mode/media_user_token/media_user_token_priority).
+// catalog.album_track_url_mode/media_user_token/media_user_token_priority/signed_mode_hls_source).
 // Startup-bound fields are omitted: clients cannot change them through this
 // API, so they have no reason to see them here.
 //
@@ -279,9 +285,8 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("runtime config store is not configured"))
 		return
 	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	var body json.RawMessage
+	if !decodeJSONBody(w, r, &body, false) {
 		return
 	}
 	// Decode, merge, and validate inside the store's atomic update, so two
@@ -365,10 +370,7 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 	// Unknown fields are rejected rather than ignored: a typo inside
 	// overrides would otherwise submit successfully and run the whole batch
 	// without the intended settings.
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if !decodeJSONBody(w, r, &req, true) {
 		return
 	}
 	var urls []string
@@ -391,7 +393,9 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 	if req.Overrides != nil {
 		// Validate the overlay against the same rules the runtime config must
 		// satisfy, applied to the config these jobs would actually run under.
-		if err := req.Overrides.Apply(s.currentConfig()).Validate(); err != nil {
+		// Strict: fresh input is rejected, not clamped — only overrides already
+		// persisted before the limits existed are clamped when jobs run.
+		if _, err := req.Overrides.ApplyValidatedStrict(s.currentConfig()); err != nil {
 			writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("invalid overrides: %w", err))
 			return
 		}
@@ -560,20 +564,21 @@ func parseOptionalTime(raw string, endOfDayIfDateOnly bool) (*time.Time, error) 
 }
 
 // jobSnapshot returns a job with progress counters derived from its live
-// items, the same shape the GET /downloads list and getDownload return. ok is
-// false if the job no longer exists (e.g. deleted between a milestone event
-// and this read), so the overview feed simply skips pushing it.
-func (s *Server) jobSnapshot(ctx context.Context, id string) (*domain.Job, bool) {
+// items, the same shape the GET /downloads list and getDownload return. A
+// sql.ErrNoRows error means the job no longer exists (e.g. deleted between a
+// milestone event and this read); the overview feed treats any other error as
+// transient and retries.
+func (s *Server) jobSnapshot(ctx context.Context, id string) (*domain.Job, error) {
 	job, err := s.store.GetJob(ctx, id)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	items, err := s.store.ListItems(ctx, id)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	job.DoneItems, job.FailedItems = domain.CountItemProgress(items)
-	return &job, true
+	return &job, nil
 }
 
 func (s *Server) cancelDownload(w http.ResponseWriter, r *http.Request) {
@@ -648,8 +653,11 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// eventsExhausted reports whether job's event stream will never deliver
-// another event. A terminal job.Status alone is not enough: post-download
+// eventsExhausted reloads jobID and reports whether its event stream will
+// never deliver another event. Reloading is essential for connections opened
+// while the job was active: retaining their initial Job snapshot would keep
+// them open forever after the job transitions to a terminal state. A terminal
+// job.Status alone is not enough: post-download
 // hook dispatch is fire-and-forget and can keep recording hook_started/
 // hook_succeeded/hook_failed events well after the job itself reached a
 // terminal status (see jobs.Manager.HooksPending). And HooksPending alone
@@ -661,8 +669,18 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 // that will fire; the reverse order could read pending before the increment
 // and the finalize mark after its removal, wrongly concluding exhausted
 // while hook events are still coming.
-func (s *Server) eventsExhausted(job domain.Job) bool {
-	return job.Status.IsTerminal() && !s.manager.FinalizeInFlight(job.ID) && !s.manager.HooksPending(job.ID)
+func (s *Server) eventsExhausted(ctx context.Context, jobID string) bool {
+	job, err := s.store.GetJob(ctx, jobID)
+	if errors.Is(err, sql.ErrNoRows) {
+		// A successful DELETE publishes a final job_deleted tombstone after
+		// removing the row. Once the backlog drain has consumed that event there
+		// can be no future per-job events, so an already-open stream must close.
+		return true
+	}
+	if err != nil || !job.Status.IsTerminal() {
+		return false
+	}
+	return !s.manager.FinalizeInFlight(jobID) && !s.manager.HooksPending(jobID)
 }
 
 // eventsWS is the WebSocket twin of events: it streams the same persisted job
@@ -676,33 +694,21 @@ func (s *Server) eventsExhausted(job domain.Job) bool {
 // and torn down instead of holding the goroutine forever.
 func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	job, err := s.store.GetJob(r.Context(), id)
-	if err != nil {
+	if _, err := s.store.GetJob(r.Context(), id); err != nil {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
 	lastID, _ := strconv.ParseInt(r.URL.Query().Get("last_event_id"), 10, 64)
 
-	// Subscribe before the first backlog read so an event published between
-	// that read and registering for live updates still wakes a subsequent
-	// drain instead of being lost in the gap. Skipped only once eventsExhausted
-	// confirms nothing (job event or hook event) will ever be published for
-	// this job again (job.Status and its terminal event are written atomically
-	// — see Store.FinalizeJob — so observing it here guarantees the terminal
-	// event is already visible to the ListEventsAfter call below). The
-	// exhausted snapshot is taken BEFORE the backlog read: hook events are
-	// committed before HooksPending drops (see hooks.Dispatcher.donePending),
-	// so exhausted-then-read can never miss an event, while read-then-check
-	// could reject a client whose undelivered hook event landed in between.
-	exhausted := s.eventsExhausted(job)
-	var ch <-chan domain.Event
-	if !exhausted {
-		var cancel func()
-		ch, cancel = s.hub.Subscribe(id)
-		defer cancel()
-	}
+	// Subscribe before inspecting state or reading the backlog so a concurrent
+	// retry cannot change a failed job back to queued in the gap and leave us
+	// waiting on a nil channel. The store remains the source of truth; the hub
+	// only wakes a subsequent drain sooner.
+	ch, cancel := s.hub.Subscribe(id)
+	defer cancel()
+	exhausted := s.eventsExhausted(r.Context(), id)
 
-	pending, err := s.store.ListEventsAfter(r.Context(), id, lastID)
+	pending, err := s.store.ListEventsAfterLimit(r.Context(), id, lastID, streamEventPageSize)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -710,7 +716,8 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 	if len(pending) == 0 && exhausted {
 		// Nothing left to replay and the job will never emit another event:
 		// refuse the subscription instead of holding a socket open forever.
-		writeError(w, http.StatusConflict, fmt.Errorf("job %s is already %s: no further events will be emitted", id, job.Status))
+		terminalJob, _ := s.store.GetJob(r.Context(), id)
+		writeError(w, http.StatusConflict, fmt.Errorf("job %s is already %s: no further events will be emitted", id, terminalJob.Status))
 		return
 	}
 
@@ -726,20 +733,24 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 	ctx := conn.CloseRead(r.Context())
 
 	drain := func() error {
-		events, err := s.store.ListEventsAfter(ctx, id, lastID)
-		if err != nil {
-			// Keep the connection on a store read error; the next hub wake or
-			// tick retries, mirroring the SSE drain.
-			return nil
-		}
-		for _, ev := range events {
-			raw, _ := json.Marshal(ev)
-			if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
-				return err
+		for {
+			events, err := s.store.ListEventsAfterLimit(ctx, id, lastID, streamEventPageSize)
+			if err != nil {
+				// Keep the connection on a store read error; the next hub wake or
+				// tick retries, mirroring the SSE drain.
+				return nil
 			}
-			lastID = ev.ID
+			for _, ev := range events {
+				raw, _ := json.Marshal(ev)
+				if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
+					return err
+				}
+				lastID = ev.ID
+			}
+			if len(events) < streamEventPageSize {
+				return nil
+			}
 		}
-		return nil
 	}
 
 	for _, ev := range pending {
@@ -749,7 +760,10 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 		}
 		lastID = ev.ID
 	}
-	if s.eventsExhausted(job) {
+	if err := drain(); err != nil {
+		return
+	}
+	if s.eventsExhausted(ctx, id) {
 		// Backlog has been delivered in full and nothing more will ever
 		// arrive (job event or hook event), so close instead of idling
 		// forever. A hook may have recorded its terminal event after the
@@ -771,7 +785,7 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 			if err := drain(); err != nil {
 				return
 			}
-			if s.eventsExhausted(job) {
+			if s.eventsExhausted(ctx, id) {
 				// A pending hook (the reason this loop was entered instead of
 				// closing right after the initial backlog) has now recorded
 				// its terminal event: nothing more will ever arrive. That
@@ -784,7 +798,7 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 			if err := drain(); err != nil {
 				return
 			}
-			if s.eventsExhausted(job) {
+			if s.eventsExhausted(ctx, id) {
 				_ = drain()
 				return
 			}
@@ -818,33 +832,21 @@ func (s *Server) deleteDownload(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	job, err := s.store.GetJob(r.Context(), id)
-	if err != nil {
+	if _, err := s.store.GetJob(r.Context(), id); err != nil {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
 	lastID, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
 
-	// Subscribe before the first backlog read so an event published between
-	// that read and registering for live updates still wakes a subsequent
-	// drain instead of being lost in the gap. Skipped only once eventsExhausted
-	// confirms nothing (job event or hook event) will ever be published for
-	// this job again (job.Status and its terminal event are written atomically
-	// — see Store.FinalizeJob — so observing it here guarantees the terminal
-	// event is already visible to the ListEventsAfter call below). The
-	// exhausted snapshot is taken BEFORE the backlog read: hook events are
-	// committed before HooksPending drops (see hooks.Dispatcher.donePending),
-	// so exhausted-then-read can never miss an event, while read-then-check
-	// could reject a client whose undelivered hook event landed in between.
-	exhausted := s.eventsExhausted(job)
-	var ch <-chan domain.Event
-	if !exhausted {
-		var cancel func()
-		ch, cancel = s.hub.Subscribe(id)
-		defer cancel()
-	}
+	// Subscribe before inspecting state or reading the backlog so a concurrent
+	// retry cannot change a failed job back to queued in the gap and leave us
+	// waiting on a nil channel. The store remains the source of truth; the hub
+	// only wakes a subsequent drain sooner.
+	ch, cancel := s.hub.Subscribe(id)
+	defer cancel()
+	exhausted := s.eventsExhausted(r.Context(), id)
 
-	pending, err := s.store.ListEventsAfter(r.Context(), id, lastID)
+	pending, err := s.store.ListEventsAfterLimit(r.Context(), id, lastID, streamEventPageSize)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -852,7 +854,8 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	if len(pending) == 0 && exhausted {
 		// Nothing left to replay and the job will never emit another event:
 		// refuse the subscription instead of holding a connection open forever.
-		writeError(w, http.StatusConflict, fmt.Errorf("job %s is already %s: no further events will be emitted", id, job.Status))
+		terminalJob, _ := s.store.GetJob(r.Context(), id)
+		writeError(w, http.StatusConflict, fmt.Errorf("job %s is already %s: no further events will be emitted", id, terminalJob.Status))
 		return
 	}
 
@@ -871,15 +874,20 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	// is still picked up on the next drain, and the ticker bounds the tail
 	// latency for a dropped final event that has no successor to wake us.
 	drain := func() {
-		events, err := s.store.ListEventsAfter(r.Context(), id, lastID)
-		if err != nil {
-			return
+		for {
+			events, err := s.store.ListEventsAfterLimit(r.Context(), id, lastID, streamEventPageSize)
+			if err != nil {
+				return
+			}
+			for _, ev := range events {
+				writeSSE(w, ev)
+				lastID = ev.ID
+			}
+			flusher.Flush()
+			if len(events) < streamEventPageSize {
+				return
+			}
 		}
-		for _, ev := range events {
-			writeSSE(w, ev)
-			lastID = ev.ID
-		}
-		flusher.Flush()
 	}
 
 	for _, ev := range pending {
@@ -887,7 +895,8 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		lastID = ev.ID
 	}
 	flusher.Flush()
-	if s.eventsExhausted(job) {
+	drain()
+	if s.eventsExhausted(r.Context(), id) {
 		// Backlog has been delivered in full and nothing more will ever
 		// arrive (job event or hook event), so close instead of idling
 		// forever. A hook may have recorded its terminal event after the
@@ -907,7 +916,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-ch:
 			drain()
-			if s.eventsExhausted(job) {
+			if s.eventsExhausted(r.Context(), id) {
 				// A pending hook (the reason this loop was entered instead of
 				// closing right after the initial backlog) has now recorded
 				// its terminal event: nothing more will ever arrive. That
@@ -918,7 +927,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			}
 		case <-ticker.C:
 			drain()
-			if s.eventsExhausted(job) {
+			if s.eventsExhausted(r.Context(), id) {
 				drain()
 				return
 			}
@@ -1014,53 +1023,61 @@ func (s *Server) downloadsFeedWS(w http.ResponseWriter, r *http.Request) {
 // on each tick. write returning an error (client gone) ends the loop.
 func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, ch <-chan domain.Event, tick <-chan time.Time, write func(domain.DownloadFeedMessage) error, keepalive func() error) {
 	drain := func() error {
-		events, err := s.store.ListMilestoneEventsAfter(ctx, lastID)
-		if err != nil {
-			return nil // keep the connection; the next wake or tick retries
-		}
-		type pendingMessage struct {
-			eventID int64
-			deleted bool
-		}
-		// One upsert per job, carrying that job's own highest milestone id in
-		// this batch — never the batch-wide max. Emitting a job's message with
-		// the batch max would advance the client's resume cursor past other
-		// jobs' still-undelivered messages, so a mid-batch disconnect would skip
-		// them permanently (ListMilestoneEventsAfter is strict id>afterID).
-		latest := map[string]pendingMessage{}
-		var order []string
-		for _, ev := range events {
-			if _, seen := latest[ev.JobID]; !seen {
-				order = append(order, ev.JobID)
+		for {
+			events, err := s.store.ListMilestoneEventsAfterLimit(ctx, lastID, streamEventPageSize)
+			if err != nil {
+				return nil // keep the connection; the next wake or tick retries
 			}
-			if ev.ID > latest[ev.JobID].eventID {
-				latest[ev.JobID] = pendingMessage{eventID: ev.ID, deleted: ev.Type == domain.EventDeleted}
+			type pendingMessage struct {
+				eventID int64
+				deleted bool
 			}
-		}
-		// Send in ascending per-job cursor order so the client's Last-Event-ID
-		// only ever moves forward: a disconnect after message k leaves the
-		// cursor at k's id, and every later message (higher id) is simply
-		// redelivered on reconnect — an idempotent upsert, never a skip.
-		sort.Slice(order, func(i, j int) bool { return latest[order[i]].eventID < latest[order[j]].eventID })
-		for _, jobID := range order {
-			pending := latest[jobID]
-			if pending.deleted {
-				if err := write(domain.DownloadFeedMessage{Type: "download_deleted", JobID: jobID, EventID: pending.eventID}); err != nil {
+			// One upsert per job in this bounded page, carrying that job's own
+			// highest milestone id rather than a page-wide cursor.
+			latest := map[string]pendingMessage{}
+			var order []string
+			for _, ev := range events {
+				if _, seen := latest[ev.JobID]; !seen {
+					order = append(order, ev.JobID)
+				}
+				if ev.ID > latest[ev.JobID].eventID {
+					latest[ev.JobID] = pendingMessage{eventID: ev.ID, deleted: ev.Type == domain.EventDeleted}
+				}
+			}
+			// Send in ascending per-job cursor order so Last-Event-ID only moves
+			// forward and a mid-page disconnect never skips a later message.
+			sort.Slice(order, func(i, j int) bool { return latest[order[i]].eventID < latest[order[j]].eventID })
+			for _, jobID := range order {
+				pending := latest[jobID]
+				if pending.deleted {
+					if err := write(domain.DownloadFeedMessage{Type: "download_deleted", JobID: jobID, EventID: pending.eventID}); err != nil {
+						return err
+					}
+					lastID = pending.eventID
+					continue
+				}
+				snap, err := s.jobSnapshot(ctx, jobID)
+				if errors.Is(err, sql.ErrNoRows) {
+					// Advance past a stale upsert so a deletion in a later page can
+					// be reached instead of replaying this row forever.
+					lastID = pending.eventID
+					continue
+				}
+				if err != nil {
+					// A transient store error must not advance the cursor past a
+					// milestone that may never repeat (e.g. job_finished). Stop
+					// this round; the next wake or tick retries the same page.
+					return nil
+				}
+				if err := write(domain.DownloadFeedMessage{Type: "download_upserted", Job: snap, EventID: pending.eventID}); err != nil {
 					return err
 				}
 				lastID = pending.eventID
-				continue
 			}
-			snap, ok := s.jobSnapshot(ctx, jobID)
-			if !ok {
-				continue // job deleted between the milestone and this read
+			if len(events) < streamEventPageSize {
+				return nil
 			}
-			if err := write(domain.DownloadFeedMessage{Type: "download_upserted", Job: snap, EventID: pending.eventID}); err != nil {
-				return err
-			}
-			lastID = pending.eventID
 		}
-		return nil
 	}
 
 	if err := drain(); err != nil {
@@ -1088,6 +1105,46 @@ func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, ch <-chan d
 			}
 		}
 	}
+}
+
+// decodeJSONBody applies the same resource and framing rules to every JSON
+// endpoint: at most maxJSONBodyBytes, exactly one JSON value, and optionally
+// no unknown object fields. It writes the request error response itself so a
+// MaxBytesError can consistently map to 413 instead of being flattened into
+// a malformed-JSON 400.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any, disallowUnknownFields bool) bool {
+	if r.ContentLength > maxJSONBodyBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Errorf("JSON request body exceeds %d bytes", maxJSONBodyBytes))
+		return false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	if disallowUnknownFields {
+		decoder.DisallowUnknownFields()
+	}
+	if err := decoder.Decode(dst); err != nil {
+		writeJSONBodyError(w, err)
+		return false
+	}
+
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = fmt.Errorf("request body must contain exactly one JSON value")
+		}
+		writeJSONBodyError(w, err)
+		return false
+	}
+	return true
+}
+
+func writeJSONBodyError(w http.ResponseWriter, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Errorf("JSON request body exceeds %d bytes", tooLarge.Limit))
+		return
+	}
+	writeError(w, http.StatusBadRequest, err)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

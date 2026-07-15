@@ -97,10 +97,13 @@ func TestRecoverUnfinishedRequeuesQueuedAndRunningJobs(t *testing.T) {
 	if gotCompleted.Status != domain.JobCompleted {
 		t.Fatalf("completed job status = %s, want %s", gotCompleted.Status, domain.JobCompleted)
 	}
-	if len(manager.queue) != 2 {
-		t.Fatalf("queue length = %d, want 2", len(manager.queue))
+	manager.recoveryMu.Lock()
+	recoveryQueue := append([]string(nil), manager.recoveryQueue...)
+	manager.recoveryMu.Unlock()
+	if len(recoveryQueue) != 2 {
+		t.Fatalf("recovery queue length = %d, want 2", len(recoveryQueue))
 	}
-	if first, second := <-manager.queue, <-manager.queue; first != queued.ID || second != running.ID {
+	if first, second := recoveryQueue[0], recoveryQueue[1]; first != queued.ID || second != running.ID {
 		t.Fatalf("queued ids = [%s, %s], want [%s, %s]", first, second, queued.ID, running.ID)
 	}
 	events, err := store.ListEventsAfter(ctx, running.ID, 0)
@@ -109,6 +112,113 @@ func TestRecoverUnfinishedRequeuesQueuedAndRunningJobs(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Type != "job_recovered" {
 		t.Fatalf("running job recovery events = %+v, want one job_recovered", events)
+	}
+}
+
+type recoveryBacklogProcessor struct {
+	total   int32
+	started chan struct{}
+	release chan struct{}
+	done    chan struct{}
+	once    sync.Once
+	calls   atomic.Int32
+}
+
+func (p *recoveryBacklogProcessor) ValidateRequest(context.Context, string) (ValidationResult, error) {
+	return ValidationResult{Type: "song", Storefront: "cn"}, nil
+}
+
+func (p *recoveryBacklogProcessor) ProcessJob(ctx context.Context, _ domain.Job, _ Reporter) error {
+	p.started <- struct{}{}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.release:
+	}
+	if p.calls.Add(1) == p.total {
+		p.once.Do(func() { close(p.done) })
+	}
+	return nil
+}
+
+func TestRecoverUnfinishedHandlesMoreThanQueueCapacityWithoutLoss(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	const backlog = 300
+	for i := 0; i < backlog; i++ {
+		id := strconv.Itoa(i)
+		job := domain.Job{
+			ID: "recover-" + id, Input: "song-" + id, Type: "song", Storefront: "cn",
+			CanonicalKey: "song:cn:" + id, Status: domain.JobQueued, CreatedAt: now.Add(time.Duration(i) * time.Microsecond), UpdatedAt: now,
+		}
+		if err := store.CreateJob(ctx, job); err != nil {
+			t.Fatalf("create recoverable job %d: %v", i, err)
+		}
+	}
+
+	processor := &recoveryBacklogProcessor{
+		total: backlog, started: make(chan struct{}, backlog), release: make(chan struct{}), done: make(chan struct{}),
+	}
+	manager := NewManager(store, events.NewHub(), processor, 8, slog.Default())
+	recovered, err := manager.RecoverUnfinished(ctx)
+	if err != nil {
+		t.Fatalf("RecoverUnfinished: %v", err)
+	}
+	if recovered != backlog {
+		t.Fatalf("recovered = %d, want %d", recovered, backlog)
+	}
+	manager.recoveryMu.Lock()
+	queued := len(manager.recoveryQueue)
+	manager.recoveryMu.Unlock()
+	if queued != backlog {
+		t.Fatalf("recovery queue length = %d, want %d", queued, backlog)
+	}
+	if len(manager.queue) != 0 {
+		t.Fatalf("submission queue length = %d, want 0", len(manager.queue))
+	}
+
+	manager.Start(context.Background())
+	for i := 0; i < 8; i++ {
+		select {
+		case <-processor.started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("workers did not begin draining recovered backlog")
+		}
+	}
+	close(processor.release)
+	select {
+	case <-processor.done:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("processed %d/%d recovered jobs", processor.calls.Load(), backlog)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		recoverable, err := store.ListRecoverableJobs(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(recoverable) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d recovered jobs remain unfinished", len(recoverable))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	shutdownCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := manager.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if got := processor.calls.Load(); got != backlog {
+		t.Fatalf("processor calls = %d, want %d", got, backlog)
 	}
 }
 
@@ -176,6 +286,63 @@ func (keyedProcessor) ValidateRequest(_ context.Context, url string) (Validation
 
 func (keyedProcessor) ProcessJob(context.Context, domain.Job, Reporter) error {
 	return nil
+}
+
+type shutdownProcessor struct {
+	keyedProcessor
+	started chan struct{}
+	exited  chan struct{}
+	once    sync.Once
+}
+
+func (p *shutdownProcessor) ProcessJob(ctx context.Context, _ domain.Job, _ Reporter) error {
+	p.once.Do(func() { close(p.started) })
+	<-ctx.Done()
+	close(p.exited)
+	return ctx.Err()
+}
+
+func TestManagerShutdownCancelsAndWaitsForRunningWorker(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	processor := &shutdownProcessor{started: make(chan struct{}), exited: make(chan struct{})}
+	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
+	manager.Start(context.Background())
+	resp := manager.SubmitBatch(context.Background(), []string{"song|cn|shutdown"}, false, nil, "")
+	if resp.Accepted != 1 {
+		t.Fatalf("submit = %+v", resp)
+	}
+	select {
+	case <-processor.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("processor did not start")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := manager.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case <-processor.exited:
+	default:
+		t.Fatal("Shutdown returned before ProcessJob exited")
+	}
+	if err := manager.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait after Shutdown: %v", err)
+	}
+
+	job, err := store.GetJob(context.Background(), resp.Results[0].Job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != domain.JobCancelled {
+		t.Fatalf("job status = %s, want %s", job.Status, domain.JobCancelled)
+	}
 }
 
 func newTestManager(t *testing.T) *Manager {
@@ -627,6 +794,41 @@ func TestDeleteRefusesActiveAndFinalizingJobs(t *testing.T) {
 	}
 	if _, err := store.GetJob(ctx, jobID); err == nil {
 		t.Fatal("job row still exists after successful Delete")
+	}
+}
+
+func TestDeleteRefusesJobWhileHookIsPending(t *testing.T) {
+	release := make(chan struct{})
+	hookServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer hookServer.Close()
+
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	manager := NewManager(store, events.NewHub(), recoveryProcessor{}, 1, slog.Default())
+	dispatcher := hooks.NewDispatcher(hooks.Config{Enabled: true, Entries: []hooks.Entry{{
+		Name: "blocking", Type: "webhook", Events: []string{"job_finished"}, URL: hookServer.URL,
+	}}}, manager.Event, slog.Default())
+	manager.SetHooks(dispatcher)
+
+	job := domain.Job{ID: "job-with-hook", Input: "song|us|1", Type: "song", CanonicalKey: "song:us:1", Status: domain.JobCompleted}
+	if err := store.CreateJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher.Dispatch("job_finished", job, nil)
+	if err := manager.Delete(context.Background(), job.ID); !errors.Is(err, db.ErrJobNotTerminal) {
+		t.Fatalf("Delete() while hook pending error = %v, want ErrJobNotTerminal", err)
+	}
+
+	close(release)
+	dispatcher.Shutdown(context.Background())
+	if err := manager.Delete(context.Background(), job.ID); err != nil {
+		t.Fatalf("Delete() after hook completed: %v", err)
 	}
 }
 

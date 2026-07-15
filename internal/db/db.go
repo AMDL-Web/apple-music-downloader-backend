@@ -677,6 +677,15 @@ func (s *Store) ListEventsAfter(ctx context.Context, jobID string, afterID int64
 	return s.queryEvents(ctx, `SELECT id,job_id,item_id,type,phase,message,payload,created_at FROM job_events WHERE job_id=? AND id>? ORDER BY id ASC`, jobID, afterID)
 }
 
+// ListEventsAfterLimit is the bounded-page form used by streaming endpoints.
+// The unbounded method above remains for existing internal callers/tests.
+func (s *Store) ListEventsAfterLimit(ctx context.Context, jobID string, afterID int64, limit int) ([]domain.Event, error) {
+	if limit <= 0 {
+		return s.ListEventsAfter(ctx, jobID, afterID)
+	}
+	return s.queryEvents(ctx, `SELECT id,job_id,item_id,type,phase,message,payload,created_at FROM job_events WHERE job_id=? AND id>? ORDER BY id ASC LIMIT ?`, jobID, afterID, limit)
+}
+
 // LatestGlobalEventID returns the id of the most recent event across all jobs
 // (0 if none). The overview feed hands this to a client alongside the
 // GET /downloads snapshot as the cursor to resume from, mirroring how
@@ -710,6 +719,19 @@ func (s *Store) ListMilestoneEventsAfter(ctx context.Context, afterID int64) ([]
 	return s.queryEvents(ctx, `SELECT id,job_id,item_id,type,phase,message,payload,created_at FROM job_events
 		WHERE id>? AND type IN (`+milestoneTypePlaceholders+`)
 		ORDER BY id ASC`, args...)
+}
+
+// ListMilestoneEventsAfterLimit is the bounded-page form used by the global
+// downloads feed so reconnecting from an old cursor has fixed memory use.
+func (s *Store) ListMilestoneEventsAfterLimit(ctx context.Context, afterID int64, limit int) ([]domain.Event, error) {
+	if limit <= 0 {
+		return s.ListMilestoneEventsAfter(ctx, afterID)
+	}
+	args := append([]any{afterID}, milestoneTypeArgs...)
+	args = append(args, limit)
+	return s.queryEvents(ctx, `SELECT id,job_id,item_id,type,phase,message,payload,created_at FROM job_events
+		WHERE id>? AND type IN (`+milestoneTypePlaceholders+`)
+		ORDER BY id ASC LIMIT ?`, args...)
 }
 
 // ListHookEvents returns only jobID's hook lifecycle events, so callers

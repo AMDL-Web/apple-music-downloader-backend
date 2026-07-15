@@ -66,6 +66,39 @@ func TestLoadValidatesLogging(t *testing.T) {
 	}
 }
 
+func TestValidateBoundsResourceAmplifyingDownloadSettings(t *testing.T) {
+	tests := []struct {
+		name  string
+		apply func(*Config, int)
+		key   string
+		max   int
+	}{
+		{name: "running jobs", apply: func(c *Config, value int) { c.Download.MaxRunningJobs = value }, key: "max_running_jobs", max: maxRunningJobsLimit},
+		{name: "parallel tracks", apply: func(c *Config, value int) { c.Download.MaxParallelTracks = value }, key: "max_parallel_tracks", max: maxParallelTracksLimit},
+		{name: "attempts", apply: func(c *Config, value int) { c.Download.MaxAttempts = value }, key: "max_attempts", max: maxAttemptsLimit},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, value := range []int{tt.max + 1} {
+				cfg := Default()
+				tt.apply(&cfg, value)
+				if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.key) {
+					t.Fatalf("Validate() with %s=%d error = %v, want %s bounds error", tt.key, value, err, tt.key)
+				}
+			}
+			// Preserve the established compatibility contract: non-positive
+			// values are normalized to one by their consumers.
+			for _, value := range []int{-1, 0, 1, tt.max} {
+				cfg := Default()
+				tt.apply(&cfg, value)
+				if err := cfg.Validate(); err != nil {
+					t.Fatalf("Validate() rejected boundary %s=%d: %v", tt.key, value, err)
+				}
+			}
+		})
+	}
+}
+
 func TestDefaultPathFormats(t *testing.T) {
 	defaults := Default().Download
 	want := map[string]string{
@@ -161,6 +194,31 @@ func TestLoadRejectsUnknownMediaUserTokenPriority(t *testing.T) {
 	}
 }
 
+func TestSignedModeHLSSourceDefaultAndValidate(t *testing.T) {
+	if got := Default().Catalog.SignedModeHLSSource; got != "wrapper" {
+		t.Fatalf("default signed_mode_hls_source = %q, want wrapper", got)
+	}
+	if Default().Catalog.EnhancedHLSFromWebToken() {
+		t.Fatal("default should not use web-token HLS source")
+	}
+	web := CatalogConfig{SignedModeHLSSource: "web_token"}
+	if !web.EnhancedHLSFromWebToken() {
+		t.Fatal("web_token should enable EnhancedHLSFromWebToken")
+	}
+	path := writeConfig(t, "catalog:\n  signed_mode_hls_source: device\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "signed_mode_hls_source") {
+		t.Fatalf("Load() error = %v, want signed_mode_hls_source validation error", err)
+	}
+	path = writeConfig(t, "catalog:\n  signed_mode_hls_source: web_token\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Catalog.SignedModeHLSSource != "web_token" {
+		t.Fatalf("signed_mode_hls_source = %q, want web_token", cfg.Catalog.SignedModeHLSSource)
+	}
+}
+
 func TestDeveloperTokenTTL(t *testing.T) {
 	if got := Default().Catalog.DeveloperTokenTTL(); got != time.Hour {
 		t.Fatalf("default developer token TTL = %s, want 1h", got)
@@ -239,5 +297,20 @@ func TestLoadRejectsEmptyPathFormat(t *testing.T) {
 	path := writeConfig(t, "download:\n  artist_path_format: \"\"\n")
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "artist_path_format") {
 		t.Fatalf("Load() error = %v, want artist_path_format validation error", err)
+	}
+}
+
+// TestLoadClampsDownloadLimitsFromFile covers config files written before the
+// hard limits existed: the live config.yaml is machine-managed and may hold
+// larger values, so Load must clamp them instead of refusing to boot.
+func TestLoadClampsDownloadLimitsFromFile(t *testing.T) {
+	path := writeConfig(t, "download:\n  max_running_jobs: 100\n  max_parallel_tracks: 200\n  max_attempts: 50\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() with over-limit values failed: %v", err)
+	}
+	if cfg.Download.MaxRunningJobs != maxRunningJobsLimit || cfg.Download.MaxParallelTracks != maxParallelTracksLimit || cfg.Download.MaxAttempts != maxAttemptsLimit {
+		t.Fatalf("Load() did not clamp over-limit values: jobs=%d tracks=%d attempts=%d",
+			cfg.Download.MaxRunningJobs, cfg.Download.MaxParallelTracks, cfg.Download.MaxAttempts)
 	}
 }

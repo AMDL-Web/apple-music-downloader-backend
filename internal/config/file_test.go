@@ -93,6 +93,64 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveUsesOwnerOnlyPermissionsForPersistedToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	// Older releases wrote 0644. Saving over such a file must both preserve
+	// compatibility and tighten its replacement to 0600.
+	if err := os.WriteFile(path, []byte("legacy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Default()
+	cfg.Catalog.MediaUserToken = "secret-media-user-token"
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("saved config permissions = %#o, want 0600", got)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "secret-media-user-token") {
+		t.Fatal("media_user_token was not persisted")
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Catalog.MediaUserToken != cfg.Catalog.MediaUserToken {
+		t.Fatalf("reloaded media_user_token = %q", loaded.Catalog.MediaUserToken)
+	}
+}
+
+func TestSaveDoesNotFollowLegacyFixedTempSymlink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	victim := filepath.Join(dir, "victim.txt")
+	if err := os.WriteFile(victim, []byte("do not overwrite"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Older Save implementations opened this predictable name with O_TRUNC.
+	if err := os.Symlink(victim, path+".tmp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, Default()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "do not overwrite" {
+		t.Fatalf("fixed temp symlink target was overwritten: %q", raw)
+	}
+}
+
 func TestStoreSetAndSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	store := NewFileStore(Default(), path)
@@ -168,7 +226,7 @@ func TestReloadPreservesLockedFields(t *testing.T) {
 	edited.Wrapper.Address = "10.0.0.9:8080"
 	edited.Logging.Level = "debug"
 	edited.Logging.Format = "json"
-	edited.Download.MaxRunningJobs = 42
+	edited.Download.MaxRunningJobs = maxRunningJobsLimit
 	if err := Save(path, edited); err != nil {
 		t.Fatal(err)
 	}

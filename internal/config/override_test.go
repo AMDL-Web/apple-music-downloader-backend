@@ -2,7 +2,10 @@ package config
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -57,6 +60,46 @@ func TestDownloadOverridesApplyThenValidate(t *testing.T) {
 	}
 }
 
+func TestDownloadOverridesKeepFilesystemRootsContained(t *testing.T) {
+	dir := t.TempDir()
+	downloadsRoot := filepath.Join(dir, "downloads")
+	tempRoot := filepath.Join(dir, "temp")
+	outside := filepath.Join(dir, "outside")
+	for _, path := range []string{downloadsRoot, tempRoot, outside} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := Default()
+	base.Download.DownloadsDir = downloadsRoot
+	base.Download.TempDir = tempRoot
+
+	insideDownloads := filepath.Join(downloadsRoot, "new", "nested")
+	insideTemp := filepath.Join(tempRoot, "job-123")
+	if _, err := (&DownloadOverrides{DownloadsDir: &insideDownloads, TempDir: &insideTemp}).ApplyValidated(base); err != nil {
+		t.Fatalf("nonexistent subdirectories rejected: %v", err)
+	}
+
+	escaped := filepath.Join(downloadsRoot, "..", "outside")
+	if _, err := (&DownloadOverrides{DownloadsDir: &escaped}).ApplyValidated(base); err == nil || !strings.Contains(err.Error(), "downloads_dir") {
+		t.Fatalf("lexically escaped downloads_dir error = %v", err)
+	}
+
+	link := filepath.Join(tempRoot, "escape-link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	throughLink := filepath.Join(link, "not-created-yet")
+	if _, err := (&DownloadOverrides{TempDir: &throughLink}).ApplyValidated(base); err == nil || !strings.Contains(err.Error(), "temp_dir") {
+		t.Fatalf("symlink-escaped temp_dir error = %v", err)
+	}
+
+	// Selecting the configured root itself remains valid.
+	if _, err := (&DownloadOverrides{DownloadsDir: &downloadsRoot, TempDir: &tempRoot}).ApplyValidated(base); err != nil {
+		t.Fatalf("configured roots rejected: %v", err)
+	}
+}
+
 func TestOverridesEmptyListSurvivesJSONRoundTrip(t *testing.T) {
 	extras := []string{}
 	overrides := &DownloadOverrides{LyricsExtras: &extras}
@@ -97,6 +140,7 @@ func TestRuntimeLockedChanges(t *testing.T) {
 	updated.Simulate.Enabled = true
 	updated.Simulate.MinSpeedKBps = 10
 	updated.Catalog.AlbumTrackURLMode = "album"
+	updated.Catalog.SignedModeHLSSource = "web_token"
 	updated.Logging.Level = "debug"
 	updated.Logging.AccessLog = false
 	if got := RuntimeLockedChanges(base, updated); len(got) != 0 {
@@ -132,8 +176,8 @@ func TestMutableViewOmitsStartupBoundFields(t *testing.T) {
 		t.Fatalf("download.cover_format = %v, want jpg", download["cover_format"])
 	}
 	catalog, ok := view["catalog"].(map[string]any)
-	if !ok || len(catalog) != 3 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["media_user_token_priority"] != "config" {
-		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/media_user_token_priority", view["catalog"])
+	if !ok || len(catalog) != 4 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["media_user_token_priority"] != "config" || catalog["signed_mode_hls_source"] != "wrapper" {
+		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/media_user_token_priority/signed_mode_hls_source", view["catalog"])
 	}
 	logging, ok := view["logging"].(map[string]any)
 	if !ok || len(logging) != 2 || logging["level"] != "info" || logging["access_log"] != false {
@@ -151,5 +195,35 @@ func TestStoreGetSet(t *testing.T) {
 	store.Set(updated)
 	if got := store.Get(); got.Download.CoverFormat != "png" {
 		t.Fatalf("snapshot after Set = %+v", got.Download)
+	}
+}
+
+// TestApplyValidatedClampsNumericOverrides covers persisted jobs that predate
+// the hard limits: their stored numeric overrides re-run through validation
+// on every retry and post-restart requeue, so over-limit values must clamp
+// instead of failing the job forever.
+func TestApplyValidatedClampsNumericOverrides(t *testing.T) {
+	tracks, attempts := 200, 50
+	applied, err := (&DownloadOverrides{MaxParallelTracks: &tracks, MaxAttempts: &attempts}).ApplyValidated(Default())
+	if err != nil {
+		t.Fatalf("ApplyValidated() with over-limit numeric overrides failed: %v", err)
+	}
+	if applied.Download.MaxParallelTracks != maxParallelTracksLimit || applied.Download.MaxAttempts != maxAttemptsLimit {
+		t.Fatalf("overrides not clamped: tracks=%d attempts=%d",
+			applied.Download.MaxParallelTracks, applied.Download.MaxAttempts)
+	}
+}
+
+// TestApplyValidatedStrictRejectsOverLimitOverrides covers fresh client
+// submissions: unlike persisted legacy rows, over-limit numeric overrides
+// must be rejected so job submission matches the runtime config API contract.
+func TestApplyValidatedStrictRejectsOverLimitOverrides(t *testing.T) {
+	attempts := 50
+	if _, err := (&DownloadOverrides{MaxAttempts: &attempts}).ApplyValidatedStrict(Default()); err == nil || !strings.Contains(err.Error(), "max_attempts") {
+		t.Fatalf("ApplyValidatedStrict() error = %v, want max_attempts bounds error", err)
+	}
+	tracks := 200
+	if _, err := (&DownloadOverrides{MaxParallelTracks: &tracks}).ApplyValidatedStrict(Default()); err == nil || !strings.Contains(err.Error(), "max_parallel_tracks") {
+		t.Fatalf("ApplyValidatedStrict() error = %v, want max_parallel_tracks bounds error", err)
 	}
 }

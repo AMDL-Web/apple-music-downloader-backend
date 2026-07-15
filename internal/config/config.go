@@ -81,6 +81,7 @@ type CatalogConfig struct {
 	AlbumTrackURLMode        string   `yaml:"album_track_url_mode" json:"album_track_url_mode"`
 	MediaUserToken           string   `yaml:"media_user_token" json:"media_user_token"`
 	MediaUserTokenPriority   string   `yaml:"media_user_token_priority" json:"media_user_token_priority"`
+	SignedModeHLSSource      string   `yaml:"signed_mode_hls_source" json:"signed_mode_hls_source"`
 }
 
 // EffectiveMediaUserToken selects the media-user-token for a submitted batch.
@@ -128,6 +129,14 @@ func (c CatalogConfig) DeveloperTokenSigningEnabled() bool {
 		strings.TrimSpace(c.AppleMusicTeamID) != ""
 }
 
+// EnhancedHLSFromWebToken reports whether, in signed developer-token mode, the
+// Enhanced HLS master playlist should be read via a scraped music.apple.com
+// web-player token instead of the wrapper's authorized device manifest.
+// Meaningless (and ignored) when signing is disabled.
+func (c CatalogConfig) EnhancedHLSFromWebToken() bool {
+	return c.SignedModeHLSSource == "web_token"
+}
+
 type DownloadConfig struct {
 	QualityPriority    []string `yaml:"quality_priority" json:"quality_priority"`
 	CodecAlternative   bool     `yaml:"codec_alternative" json:"codec_alternative"`
@@ -157,6 +166,14 @@ type DownloadConfig struct {
 	CheckIntegrity     bool     `yaml:"check_integrity" json:"check_integrity"`
 }
 
+const (
+	// These limits bound the two multiplicative concurrency controls and the
+	// retry fan-out while remaining comfortably above normal deployments.
+	maxRunningJobsLimit    = 32
+	maxParallelTracksLimit = 64
+	maxAttemptsLimit       = 10
+)
+
 type ToolsConfig struct {
 	FFmpeg string `yaml:"ffmpeg" json:"ffmpeg"`
 }
@@ -185,7 +202,7 @@ func Default() Config {
 			Address: "127.0.0.1:8080", Insecure: true, TimeoutSeconds: 30, LoginTimeoutSeconds: 120,
 		},
 		Catalog: CatalogConfig{
-			DefaultStorefront: "us", Language: "en-US", DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song", MediaUserTokenPriority: "config",
+			DefaultStorefront: "us", Language: "en-US", DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song", MediaUserTokenPriority: "config", SignedModeHLSSource: "wrapper",
 		},
 		Download: DownloadConfig{
 			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true,
@@ -229,10 +246,30 @@ func load(path string, environ []string) (Config, error) {
 	if err := applyEnvOverrides(&cfg, environ); err != nil {
 		return cfg, err
 	}
+	// Config files written before the limits existed may hold larger values;
+	// clamp them instead of refusing to boot. New values submitted through the
+	// runtime config API still fail Validate with an explicit error.
+	clampDownloadLimits(&cfg.Download)
 	if err := cfg.Validate(); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// clampDownloadLimits lowers the bounded download settings to their hard
+// limits in place. It backstops the two compatibility paths that may carry
+// pre-limit values — config files on disk and job overrides persisted in the
+// database — where rejecting would brick a previously working deployment.
+func clampDownloadLimits(d *DownloadConfig) {
+	if d.MaxRunningJobs > maxRunningJobsLimit {
+		d.MaxRunningJobs = maxRunningJobsLimit
+	}
+	if d.MaxParallelTracks > maxParallelTracksLimit {
+		d.MaxParallelTracks = maxParallelTracksLimit
+	}
+	if d.MaxAttempts > maxAttemptsLimit {
+		d.MaxAttempts = maxAttemptsLimit
+	}
 }
 
 // Validate checks the semantic rules every Config must satisfy, whether it
@@ -273,6 +310,9 @@ func (c Config) Validate() error {
 	if c.Catalog.MediaUserTokenPriority != "request" && c.Catalog.MediaUserTokenPriority != "config" {
 		return fmt.Errorf("catalog.media_user_token_priority must be request or config")
 	}
+	if c.Catalog.SignedModeHLSSource != "wrapper" && c.Catalog.SignedModeHLSSource != "web_token" {
+		return fmt.Errorf("catalog.signed_mode_hls_source must be wrapper or web_token")
+	}
 	signingFields := 0
 	for _, v := range []string{c.Catalog.AppleMusicPrivateKeyPath, c.Catalog.AppleMusicKeyID, c.Catalog.AppleMusicTeamID} {
 		if strings.TrimSpace(v) != "" {
@@ -297,6 +337,15 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s cannot be empty", name)
 		}
+	}
+	if c.Download.MaxRunningJobs > maxRunningJobsLimit {
+		return fmt.Errorf("download.max_running_jobs must be at most %d", maxRunningJobsLimit)
+	}
+	if c.Download.MaxParallelTracks > maxParallelTracksLimit {
+		return fmt.Errorf("download.max_parallel_tracks must be at most %d", maxParallelTracksLimit)
+	}
+	if c.Download.MaxAttempts > maxAttemptsLimit {
+		return fmt.Errorf("download.max_attempts must be at most %d", maxAttemptsLimit)
 	}
 	switch c.Download.CoverFormat {
 	case "jpg", "jpeg", "png":

@@ -3,7 +3,7 @@
 # ---- 构建阶段 ----------------------------------------------------------
 # 交叉编译在构建平台上进行(--platform=$BUILDPLATFORM),配合 buildx
 # 可以直接产出 linux/amd64 与 linux/arm64 镜像。
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.25.12-alpine AS build
 
 WORKDIR /src
 

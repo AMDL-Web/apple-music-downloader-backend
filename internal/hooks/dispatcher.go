@@ -34,6 +34,8 @@ type Dispatcher struct {
 	mu     sync.Mutex
 	closed bool
 	wg     sync.WaitGroup
+	wait   sync.Once
+	done   chan struct{}
 
 	// pending counts, per job id, how many dispatched hook executions haven't
 	// recorded their terminal hook_succeeded/hook_failed event yet. A caller
@@ -50,6 +52,7 @@ func NewDispatcher(cfg Config, recorder EventRecorder, logger *slog.Logger) *Dis
 		cfg: cfg, recorder: recorder, logger: logger,
 		sem:     make(chan struct{}, cfg.Concurrency()),
 		pending: map[string]int{},
+		done:    make(chan struct{}),
 	}
 }
 
@@ -173,21 +176,33 @@ func (d *Dispatcher) record(ctx context.Context, entry Entry, jobID, eventType, 
 // to finish, up to ctx's deadline, so the process doesn't exit mid-webhook on
 // SIGTERM. Any Dispatch call after Shutdown has begun is silently dropped
 // instead of racing wg.Add against wg.Wait.
-func (d *Dispatcher) Shutdown(ctx context.Context) {
+func (d *Dispatcher) Shutdown(ctx context.Context) error {
 	if d == nil {
-		return
+		return nil
 	}
 	d.mu.Lock()
 	d.closed = true
 	d.mu.Unlock()
+	return d.Wait(ctx)
+}
 
-	done := make(chan struct{})
-	go func() {
-		d.wg.Wait()
-		close(done)
-	}()
+// Wait waits for hook executions after Shutdown has stopped new dispatches.
+// It can be called again with a longer-lived context after a bounded shutdown
+// wait expires, ensuring dependencies are not closed under active hooks.
+func (d *Dispatcher) Wait(ctx context.Context) error {
+	if d == nil {
+		return nil
+	}
+	d.wait.Do(func() {
+		go func() {
+			d.wg.Wait()
+			close(d.done)
+		}()
+	})
 	select {
-	case <-done:
+	case <-d.done:
+		return nil
 	case <-ctx.Done():
+		return ctx.Err()
 	}
 }

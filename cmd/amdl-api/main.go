@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
 	"amdl/internal/db"
+	"amdl/internal/domain"
 	"amdl/internal/events"
 	"amdl/internal/hooks"
 	"amdl/internal/jobs"
@@ -128,24 +131,42 @@ func main() {
 	if recoverable, err := store.ListRecoverableJobs(ctx); err == nil {
 		swept := map[string]bool{cfg.Download.TempDir: true}
 		for _, job := range recoverable {
-			if job.Overrides == nil || job.Overrides.TempDir == nil {
+			dir, ok, err := recoveryTempOverride(cfg, job)
+			if err != nil {
+				logger.Warn("skip unsafe recovered temp override", "job_id", job.ID, "error", err)
 				continue
 			}
-			if dir := *job.Overrides.TempDir; dir != "" && !swept[dir] {
+			if ok && !swept[dir] {
 				swept[dir] = true
 				media.CleanupStaleTemp(dir, logSystem.Logger.With("component", "media"))
 			}
 		}
 	}
-	manager.Start(ctx)
+	// Worker lifetime is deliberately independent of the signal context. On
+	// shutdown main first closes the HTTP listener (so no new jobs enter), then
+	// explicitly cancels and joins workers before draining hooks and allowing
+	// the deferred database/wrapper closes to run.
+	manager.Start(context.Background())
 
+	httpHandlerCtx, cancelHTTPHandlers := context.WithCancel(context.Background())
+	defer cancelHTTPHandlers()
+	var activeHTTPHandlers sync.WaitGroup
+	routes := api.NewServer(cfgStore, store, hub, manager, wrapperClient, qualityService, catalog, logSystem.Logger, logSystem).Routes()
 	httpServer := &http.Server{
-		Addr:              cfg.Server.Listen,
-		Handler:           api.NewServer(cfgStore, store, hub, manager, wrapperClient, qualityService, catalog, logSystem.Logger, logSystem).Routes(),
+		Addr: cfg.Server.Listen,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			activeHTTPHandlers.Add(1)
+			defer activeHTTPHandlers.Done()
+			routes.ServeHTTP(w, r)
+		}),
 		ErrorLog:          slog.NewLogLogger(logSystem.Logger.With("component", "http").Handler(), slog.LevelError),
+		BaseContext:       func(net.Listener) context.Context { return httpHandlerCtx },
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		// Do not set WriteTimeout: SSE and WebSocket responses are intentionally
+		// long-lived and must not be cut off by a whole-response deadline.
 	}
-
 	go func() {
 		logger.Info("amdl backend listening", "addr", cfg.Server.Listen)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -155,8 +176,74 @@ func main() {
 	}()
 
 	<-ctx.Done()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_ = httpServer.Shutdown(shutdownCtx)
-	hookDispatcher.Shutdown(shutdownCtx)
+
+	httpShutdownCtx, cancelHTTPShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := httpServer.Shutdown(httpShutdownCtx); err != nil {
+		logger.Warn("http shutdown timed out", "error", err)
+	}
+	cancelHTTPShutdown()
+	// The base context must stay live during Shutdown so in-flight ordinary
+	// requests can finish inside the drain window. Shutdown does not wait for
+	// hijacked WebSockets, and long-lived SSE streams hold it until its
+	// deadline, so cancel the shared base context only now to unstick both,
+	// then join every handler before closing the database or other
+	// dependencies they may still use.
+	cancelHTTPHandlers()
+	httpHandlersDone := make(chan struct{})
+	go func() {
+		activeHTTPHandlers.Wait()
+		close(httpHandlersDone)
+	}()
+	// Every drain below is bounded: a handler blocked writing to a dead client
+	// or a worker stuck in a non-cancellable call must not turn SIGTERM into a
+	// process that never exits. After the cap, log and proceed — the remaining
+	// goroutines may see errors from closing dependencies, but the process is
+	// exiting either way.
+	const drainGiveUp = 60 * time.Second
+	select {
+	case <-httpHandlersDone:
+	case <-time.After(10 * time.Second):
+		logger.Warn("HTTP handlers still draining after shutdown timeout")
+		select {
+		case <-httpHandlersDone:
+		case <-time.After(drainGiveUp):
+			logger.Error("giving up on HTTP handler drain; a handler appears stuck")
+		}
+	}
+
+	jobShutdownCtx, cancelJobShutdown := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := manager.Shutdown(jobShutdownCtx); err != nil {
+		logger.Warn("job shutdown timed out; waiting before closing dependencies", "error", err)
+		jobWaitCtx, cancelJobWait := context.WithTimeout(context.Background(), drainGiveUp)
+		if err := manager.Wait(jobWaitCtx); err != nil {
+			logger.Error("giving up on job workers; proceeding with shutdown", "error", err)
+		}
+		cancelJobWait()
+	}
+	cancelJobShutdown()
+
+	hookShutdownCtx, cancelHookShutdown := context.WithTimeout(context.Background(), 15*time.Second)
+	if err := hookDispatcher.Shutdown(hookShutdownCtx); err != nil {
+		logger.Warn("hook shutdown timed out; waiting before closing dependencies", "error", err)
+		hookWaitCtx, cancelHookWait := context.WithTimeout(context.Background(), drainGiveUp)
+		if err := hookDispatcher.Wait(hookWaitCtx); err != nil {
+			logger.Error("giving up on hook drain; proceeding with shutdown", "error", err)
+		}
+		cancelHookWait()
+	}
+	cancelHookShutdown()
+}
+
+// recoveryTempOverride applies the same filesystem trust boundary used when
+// accepting and running a job. Persisted rows may predate that validation, so
+// startup cleanup must not trust their raw temp_dir values.
+func recoveryTempOverride(base config.Config, job domain.Job) (string, bool, error) {
+	if job.Overrides == nil || job.Overrides.TempDir == nil || *job.Overrides.TempDir == "" {
+		return "", false, nil
+	}
+	effective, err := job.Overrides.ApplyValidated(base)
+	if err != nil {
+		return "", false, err
+	}
+	return effective.Download.TempDir, true, nil
 }

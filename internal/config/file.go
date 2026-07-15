@@ -63,8 +63,25 @@ func Save(path string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append([]byte(savedFileHeader), raw...), 0o644); err != nil {
+	// The persisted config may contain catalog.media_user_token. Always force
+	// owner-only permissions. Create a random, exclusive temp file in the same
+	// directory: a fixed path+".tmp" could be pre-planted as a symlink and make
+	// a config update truncate an unrelated file before the final rename.
+	file, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := file.Name()
+	defer os.Remove(tmp)
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		return err
+	}
+	if _, err := file.Write(append([]byte(savedFileHeader), raw...)); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

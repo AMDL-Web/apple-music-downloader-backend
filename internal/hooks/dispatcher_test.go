@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -314,6 +315,31 @@ func TestShutdownRejectsDispatchAfterClose(t *testing.T) {
 
 	if got := atomic.LoadInt32(&calls); got != 0 {
 		t.Fatalf("calls = %d, want 0: Dispatch after Shutdown must be a no-op", got)
+	}
+}
+
+func TestShutdownCanBeWaitedAgainAfterTimeout(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	d := NewDispatcher(Config{Enabled: true, Entries: []Entry{{
+		Name: "blocking", Type: "webhook", Events: []string{"job_finished"}, URL: server.URL,
+	}}}, nil, discardLogger())
+	d.Dispatch("job_finished", domain.Job{ID: "job-1", Type: "song"}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := d.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown error = %v, want deadline exceeded", err)
+	}
+
+	close(release)
+	if err := d.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait after timed-out Shutdown: %v", err)
 	}
 }
 

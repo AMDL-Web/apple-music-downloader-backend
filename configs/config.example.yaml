@@ -52,7 +52,8 @@ wrapper:
   address: "127.0.0.1:8080"
   # bool: true uses insecure gRPC transport; false requires transport credentials support in code/config.
   insecure: true
-  # integer seconds: wrapper RPC timeout. Values <= 0 fall back to 30 seconds.
+  # integer seconds: wrapper unary-RPC timeout and per-decrypt-fragment inactivity timeout.
+  # It is not a whole-track deadline, so long tracks may run longer. Values <= 0 fall back to 30 seconds.
   timeout_seconds: 30
   # integer seconds: wrapper login/2FA timeout. Values <= 0 fall back to 120 seconds.
   login_timeout_seconds: 120
@@ -65,9 +66,9 @@ catalog:
   # Apple Music developer-token signing (all three keys form one unit):
   # - all three empty: signing disabled; the bearer token is auto-discovered from music.apple.com (legacy behavior)
   #     and catalog metadata is read from amp-api.music.apple.com with enhancedHls manifests.
-  # - all three set: the backend signs its own 24h ES256 developer token at startup (fails to start on any signing error),
-  #     reads catalog metadata from the official api.music.apple.com, and sources every audio manifest from wrapper.M3U8
-  #     (enhancedHls is not accessible with a self-signed token).
+  # - all three set: the backend signs its own 24h ES256 developer token at startup (fails to start on any signing error)
+  #     and reads catalog metadata from the official api.music.apple.com. The self-signed token cannot read enhancedHls,
+  #     so the Enhanced HLS master playlist source is controlled separately by signed_mode_hls_source below.
   # - only some set: startup fails with a configuration error.
   # string: filesystem path to the Apple Media Services .p8 private key (PKCS#8 ECDSA). Empty disables signing.
   apple_music_private_key_path: ""
@@ -77,15 +78,16 @@ catalog:
   apple_music_team_id: ""
   # integer hours: validity of developer tokens minted for external clients via GET /api/v1/developer-token.
   # Values <= 0 fall back to 1 hour. Only meaningful when signing is enabled (the endpoint returns 409 in legacy mode);
-  # the backend's internal token always lasts 24h regardless of this value.
+  # the backend's internal token always lasts 24h and is proactively refreshed after 12h, regardless of this value.
   developer_token_ttl_hours: 1
   # list of strings: web origins embedded as the JWT "origin" claim in tokens minted via GET /api/v1/developer-token,
   # for example ["https://player.example.com"]. With one or more entries, Apple rejects API requests whose Origin
   # header is not in the list. Empty list: no origin claim (token usable from any origin). Entries must be non-empty;
   # ignored in legacy mode and never applied to the backend's internal token.
   allowed_origins: []
-  # integer hours: cached auto-discovered bearer-token TTL (legacy mode only). Values <= 0 fall back to 12 hours.
-  # Ignored when developer-token signing is enabled (the signed token always expires 24h after issuance).
+  # integer hours: validity window for an auto-discovered bearer token (legacy mode only). The cached token is
+  # proactively refreshed halfway through this window: for example, 12 refreshes after 6 hours. Values <= 0 use
+  # a 12-hour window and refresh after 6 hours. Ignored when developer-token signing is enabled.
   token_cache_ttl_hours: 12
   # enum: song, album. song means album URLs containing ?i= are single-song tasks; album downloads the full album.
   album_track_url_mode: "song"
@@ -97,6 +99,14 @@ catalog:
   # create-download request body provide one. config is the default; request preserves the legacy request-first behavior.
   # If the preferred source is empty, the other non-empty source is used as a fallback.
   media_user_token_priority: "config"
+  # enum: wrapper, web_token. Only meaningful when developer-token signing is enabled above (the self-signed
+  # token cannot read enhancedHls); ignored in legacy mode, where enhancedHls already comes from the catalog response.
+  # - wrapper (default): the Enhanced HLS master playlist comes from wrapper.M3U8 (the authorized device manifest).
+  # - web_token: the backend scrapes a music.apple.com web-player JWT (same technique as legacy mode) and reads
+  #     enhancedHls from amp-api.music.apple.com with that token, independent of the signed developer token used
+  #     for catalog metadata. Use this if the wrapper cannot supply a usable device manifest.
+  # Runtime-mutable through PUT /api/v1/config and manual-file reload; no restart required.
+  signed_mode_hls_source: "wrapper"
 
 download:
   # list enum: alac, aac, aac-binaural, aac-downmix, ec3, ac3.
@@ -110,12 +120,17 @@ download:
   quality_priority: ["alac"]
   # bool: true tries the next codec in quality_priority after failure; false only tries the first codec.
   codec_alternative: true
-  # integer: maximum concurrently running jobs. Values <= 0 currently behave as the downloader manager default.
+  # integer: maximum concurrently running jobs. Positive values allow 1-32; values <=0 behave as 1;
+  # values above 32 in this file are clamped to 32 (the config API rejects them). Default: 3.
   max_running_jobs: 3
-  # integer: maximum tracks downloaded in parallel per collection. Values <= 0 fall back to 1.
+  # integer: maximum tracks downloaded in parallel per collection. Positive values allow 1-64; values <=0 behave as 1;
+  # values above 64 in this file are clamped to 64 (the config API and new job submissions reject them;
+  # job overrides persisted before the limit existed are clamped when the job runs). Default: 5.
   max_parallel_tracks: 5
   # integer: maximum total attempts (including the first) for metadata, cover, lyrics,
-  # and each codec's download/decrypt phase. Values <= 0 behave as 1 (single attempt, no retry).
+  # and each codec's download/decrypt phase. Positive values allow 1-10; values <=0 behave as 1;
+  # values above 10 in this file are clamped to 10 (the config API and new job submissions reject them;
+  # job overrides persisted before the limit existed are clamped when the job runs). Default: 3.
   max_attempts: 3
   # string path: root download directory. Relative paths are resolved from the backend working directory.
   downloads_dir: "data/downloads"
