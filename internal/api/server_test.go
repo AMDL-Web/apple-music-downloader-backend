@@ -1137,6 +1137,45 @@ func TestDownloadsFeedBatchUsesPerJobCursor(t *testing.T) {
 	}
 }
 
+func TestDownloadsFeedReplaysMilestonesAcrossDatabasePages(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	job := domain.Job{ID: "paged-feed", Input: "song|us|1", Type: "song", Status: domain.JobRunning}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	var boundaryID, finalID int64
+	for i := 0; i < streamEventPageSize+1; i++ {
+		ev, err := store.AddEvent(ctx, domain.Event{JobID: job.ID, Type: "job_started"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == streamEventPageSize-1 {
+			boundaryID = ev.ID
+		}
+		finalID = ev.ID
+	}
+
+	hub := events.NewHub()
+	server := &Server{store: store, hub: hub, manager: jobs.NewManager(store, hub, stubProcessor{}, 1, slog.Default())}
+	var got []domain.DownloadFeedMessage
+	server.runDownloadsFeed(ctx, 0, make(chan domain.Event), make(chan time.Time), func(msg domain.DownloadFeedMessage) error {
+		got = append(got, msg)
+		if len(got) == 2 {
+			cancel()
+		}
+		return nil
+	}, nil)
+	if len(got) != 2 || got[0].EventID != boundaryID || got[1].EventID != finalID {
+		t.Fatalf("paged feed messages = %+v, want page cursors %d then %d", got, boundaryID, finalID)
+	}
+}
+
 // TestDownloadsFeedFlushesHeadWithoutBacklog guards against the SSE feed
 // withholding its 200 response head until the first change or the 10s
 // keepalive: a client connecting when nothing is pending must still open
@@ -1537,6 +1576,36 @@ func TestEventsReplaysBacklogForTerminalJobInsteadOfRejecting(t *testing.T) {
 	server.Routes().ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("SSE fully caught up on terminal job: status = %d, want %d", recorder.Code, http.StatusConflict)
+	}
+}
+
+func TestEventsReplaysTerminalBacklogAcrossDatabasePages(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	hub := events.NewHub()
+	manager := jobs.NewManager(store, hub, stubProcessor{}, 1, slog.Default())
+	server := &Server{store: store, hub: hub, manager: manager}
+	job := domain.Job{ID: "paged-terminal", Input: "song|us|1", Type: "song", Status: domain.JobCompleted}
+	if err := store.CreateJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < streamEventPageSize+1; i++ {
+		if _, err := store.AddEvent(context.Background(), domain.Event{JobID: job.ID, Type: "item_progress"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/downloads/"+job.ID+"/events", nil)
+	recorder := httptest.NewRecorder()
+	server.Routes().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := strings.Count(recorder.Body.String(), "event: item_progress"); got != streamEventPageSize+1 {
+		t.Fatalf("replayed events = %d, want %d across pages", got, streamEventPageSize+1)
 	}
 }
 

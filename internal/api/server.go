@@ -39,6 +39,10 @@ const maxBatchSubmitURLs = 100
 // URLs; 1 MiB leaves ample room for both while preventing unbounded reads.
 const maxJSONBodyBytes int64 = 1 << 20
 
+// streamEventPageSize bounds each database allocation while old SSE/WS
+// cursors are replayed. Handlers advance the persisted event id page by page.
+const streamEventPageSize = 512
+
 // urlSplitPattern splits a pasted textarea blob of URLs on newlines,
 // whitespace, commas, and semicolons (ASCII and full-width variants).
 var urlSplitPattern = regexp.MustCompile(`[\r\n\s,;，；]+`)
@@ -701,7 +705,7 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	exhausted := s.eventsExhausted(r.Context(), id)
 
-	pending, err := s.store.ListEventsAfter(r.Context(), id, lastID)
+	pending, err := s.store.ListEventsAfterLimit(r.Context(), id, lastID, streamEventPageSize)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -726,20 +730,24 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 	ctx := conn.CloseRead(r.Context())
 
 	drain := func() error {
-		events, err := s.store.ListEventsAfter(ctx, id, lastID)
-		if err != nil {
-			// Keep the connection on a store read error; the next hub wake or
-			// tick retries, mirroring the SSE drain.
-			return nil
-		}
-		for _, ev := range events {
-			raw, _ := json.Marshal(ev)
-			if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
-				return err
+		for {
+			events, err := s.store.ListEventsAfterLimit(ctx, id, lastID, streamEventPageSize)
+			if err != nil {
+				// Keep the connection on a store read error; the next hub wake or
+				// tick retries, mirroring the SSE drain.
+				return nil
 			}
-			lastID = ev.ID
+			for _, ev := range events {
+				raw, _ := json.Marshal(ev)
+				if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
+					return err
+				}
+				lastID = ev.ID
+			}
+			if len(events) < streamEventPageSize {
+				return nil
+			}
 		}
-		return nil
 	}
 
 	for _, ev := range pending {
@@ -748,6 +756,9 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		lastID = ev.ID
+	}
+	if err := drain(); err != nil {
+		return
 	}
 	if s.eventsExhausted(ctx, id) {
 		// Backlog has been delivered in full and nothing more will ever
@@ -832,7 +843,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	exhausted := s.eventsExhausted(r.Context(), id)
 
-	pending, err := s.store.ListEventsAfter(r.Context(), id, lastID)
+	pending, err := s.store.ListEventsAfterLimit(r.Context(), id, lastID, streamEventPageSize)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -860,15 +871,20 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	// is still picked up on the next drain, and the ticker bounds the tail
 	// latency for a dropped final event that has no successor to wake us.
 	drain := func() {
-		events, err := s.store.ListEventsAfter(r.Context(), id, lastID)
-		if err != nil {
-			return
+		for {
+			events, err := s.store.ListEventsAfterLimit(r.Context(), id, lastID, streamEventPageSize)
+			if err != nil {
+				return
+			}
+			for _, ev := range events {
+				writeSSE(w, ev)
+				lastID = ev.ID
+			}
+			flusher.Flush()
+			if len(events) < streamEventPageSize {
+				return
+			}
 		}
-		for _, ev := range events {
-			writeSSE(w, ev)
-			lastID = ev.ID
-		}
-		flusher.Flush()
 	}
 
 	for _, ev := range pending {
@@ -876,6 +892,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		lastID = ev.ID
 	}
 	flusher.Flush()
+	drain()
 	if s.eventsExhausted(r.Context(), id) {
 		// Backlog has been delivered in full and nothing more will ever
 		// arrive (job event or hook event), so close instead of idling
@@ -1003,53 +1020,55 @@ func (s *Server) downloadsFeedWS(w http.ResponseWriter, r *http.Request) {
 // on each tick. write returning an error (client gone) ends the loop.
 func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, ch <-chan domain.Event, tick <-chan time.Time, write func(domain.DownloadFeedMessage) error, keepalive func() error) {
 	drain := func() error {
-		events, err := s.store.ListMilestoneEventsAfter(ctx, lastID)
-		if err != nil {
-			return nil // keep the connection; the next wake or tick retries
-		}
-		type pendingMessage struct {
-			eventID int64
-			deleted bool
-		}
-		// One upsert per job, carrying that job's own highest milestone id in
-		// this batch — never the batch-wide max. Emitting a job's message with
-		// the batch max would advance the client's resume cursor past other
-		// jobs' still-undelivered messages, so a mid-batch disconnect would skip
-		// them permanently (ListMilestoneEventsAfter is strict id>afterID).
-		latest := map[string]pendingMessage{}
-		var order []string
-		for _, ev := range events {
-			if _, seen := latest[ev.JobID]; !seen {
-				order = append(order, ev.JobID)
+		for {
+			events, err := s.store.ListMilestoneEventsAfterLimit(ctx, lastID, streamEventPageSize)
+			if err != nil {
+				return nil // keep the connection; the next wake or tick retries
 			}
-			if ev.ID > latest[ev.JobID].eventID {
-				latest[ev.JobID] = pendingMessage{eventID: ev.ID, deleted: ev.Type == domain.EventDeleted}
+			type pendingMessage struct {
+				eventID int64
+				deleted bool
 			}
-		}
-		// Send in ascending per-job cursor order so the client's Last-Event-ID
-		// only ever moves forward: a disconnect after message k leaves the
-		// cursor at k's id, and every later message (higher id) is simply
-		// redelivered on reconnect — an idempotent upsert, never a skip.
-		sort.Slice(order, func(i, j int) bool { return latest[order[i]].eventID < latest[order[j]].eventID })
-		for _, jobID := range order {
-			pending := latest[jobID]
-			if pending.deleted {
-				if err := write(domain.DownloadFeedMessage{Type: "download_deleted", JobID: jobID, EventID: pending.eventID}); err != nil {
+			// One upsert per job in this bounded page, carrying that job's own
+			// highest milestone id rather than a page-wide cursor.
+			latest := map[string]pendingMessage{}
+			var order []string
+			for _, ev := range events {
+				if _, seen := latest[ev.JobID]; !seen {
+					order = append(order, ev.JobID)
+				}
+				if ev.ID > latest[ev.JobID].eventID {
+					latest[ev.JobID] = pendingMessage{eventID: ev.ID, deleted: ev.Type == domain.EventDeleted}
+				}
+			}
+			// Send in ascending per-job cursor order so Last-Event-ID only moves
+			// forward and a mid-page disconnect never skips a later message.
+			sort.Slice(order, func(i, j int) bool { return latest[order[i]].eventID < latest[order[j]].eventID })
+			for _, jobID := range order {
+				pending := latest[jobID]
+				if pending.deleted {
+					if err := write(domain.DownloadFeedMessage{Type: "download_deleted", JobID: jobID, EventID: pending.eventID}); err != nil {
+						return err
+					}
+					lastID = pending.eventID
+					continue
+				}
+				snap, ok := s.jobSnapshot(ctx, jobID)
+				if !ok {
+					// Advance past a stale upsert so a deletion in a later page can
+					// be reached instead of replaying this row forever.
+					lastID = pending.eventID
+					continue
+				}
+				if err := write(domain.DownloadFeedMessage{Type: "download_upserted", Job: snap, EventID: pending.eventID}); err != nil {
 					return err
 				}
 				lastID = pending.eventID
-				continue
 			}
-			snap, ok := s.jobSnapshot(ctx, jobID)
-			if !ok {
-				continue // job deleted between the milestone and this read
+			if len(events) < streamEventPageSize {
+				return nil
 			}
-			if err := write(domain.DownloadFeedMessage{Type: "download_upserted", Job: snap, EventID: pending.eventID}); err != nil {
-				return err
-			}
-			lastID = pending.eventID
 		}
-		return nil
 	}
 
 	if err := drain(); err != nil {
