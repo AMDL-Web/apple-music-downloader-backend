@@ -17,6 +17,7 @@ import (
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
 	"amdl/internal/db"
+	"amdl/internal/domain"
 	"amdl/internal/events"
 	"amdl/internal/hooks"
 	"amdl/internal/jobs"
@@ -130,10 +131,12 @@ func main() {
 	if recoverable, err := store.ListRecoverableJobs(ctx); err == nil {
 		swept := map[string]bool{cfg.Download.TempDir: true}
 		for _, job := range recoverable {
-			if job.Overrides == nil || job.Overrides.TempDir == nil {
+			dir, ok, err := recoveryTempOverride(cfg, job)
+			if err != nil {
+				logger.Warn("skip unsafe recovered temp override", "job_id", job.ID, "error", err)
 				continue
 			}
-			if dir := *job.Overrides.TempDir; dir != "" && !swept[dir] {
+			if ok && !swept[dir] {
 				swept[dir] = true
 				media.CleanupStaleTemp(dir, logSystem.Logger.With("component", "media"))
 			}
@@ -213,4 +216,18 @@ func main() {
 		_ = hookDispatcher.Wait(context.Background())
 	}
 	cancelHookShutdown()
+}
+
+// recoveryTempOverride applies the same filesystem trust boundary used when
+// accepting and running a job. Persisted rows may predate that validation, so
+// startup cleanup must not trust their raw temp_dir values.
+func recoveryTempOverride(base config.Config, job domain.Job) (string, bool, error) {
+	if job.Overrides == nil || job.Overrides.TempDir == nil || *job.Overrides.TempDir == "" {
+		return "", false, nil
+	}
+	effective, err := job.Overrides.ApplyValidated(base)
+	if err != nil {
+		return "", false, err
+	}
+	return effective.Download.TempDir, true, nil
 }
