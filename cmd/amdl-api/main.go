@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -146,9 +147,15 @@ func main() {
 
 	httpHandlerCtx, cancelHTTPHandlers := context.WithCancel(context.Background())
 	defer cancelHTTPHandlers()
+	var activeHTTPHandlers sync.WaitGroup
+	routes := api.NewServer(cfgStore, store, hub, manager, wrapperClient, qualityService, catalog, logSystem.Logger, logSystem).Routes()
 	httpServer := &http.Server{
-		Addr:              cfg.Server.Listen,
-		Handler:           api.NewServer(cfgStore, store, hub, manager, wrapperClient, qualityService, catalog, logSystem.Logger, logSystem).Routes(),
+		Addr: cfg.Server.Listen,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			activeHTTPHandlers.Add(1)
+			defer activeHTTPHandlers.Done()
+			routes.ServeHTTP(w, r)
+		}),
 		ErrorLog:          slog.NewLogLogger(logSystem.Logger.With("component", "http").Handler(), slog.LevelError),
 		BaseContext:       func(net.Listener) context.Context { return httpHandlerCtx },
 		ReadHeaderTimeout: 10 * time.Second,
@@ -177,14 +184,33 @@ func main() {
 		logger.Warn("http shutdown timed out", "error", err)
 	}
 	cancelHTTPShutdown()
+	// Shutdown does not wait for hijacked WebSockets, and registered shutdown
+	// callbacks run asynchronously. Cancel explicitly, then join every handler
+	// before closing the database or other dependencies they may still use.
+	cancelHTTPHandlers()
+	httpHandlersDone := make(chan struct{})
+	go func() {
+		activeHTTPHandlers.Wait()
+		close(httpHandlersDone)
+	}()
+	select {
+	case <-httpHandlersDone:
+	case <-time.After(10 * time.Second):
+		logger.Warn("HTTP handlers still draining after shutdown timeout")
+		<-httpHandlersDone
+	}
 
 	jobShutdownCtx, cancelJobShutdown := context.WithTimeout(context.Background(), 30*time.Second)
 	if err := manager.Shutdown(jobShutdownCtx); err != nil {
-		logger.Warn("job shutdown timed out", "error", err)
+		logger.Warn("job shutdown timed out; waiting before closing dependencies", "error", err)
+		_ = manager.Wait(context.Background())
 	}
 	cancelJobShutdown()
 
 	hookShutdownCtx, cancelHookShutdown := context.WithTimeout(context.Background(), 15*time.Second)
-	hookDispatcher.Shutdown(hookShutdownCtx)
+	if err := hookDispatcher.Shutdown(hookShutdownCtx); err != nil {
+		logger.Warn("hook shutdown timed out; waiting before closing dependencies", "error", err)
+		_ = hookDispatcher.Wait(context.Background())
+	}
 	cancelHookShutdown()
 }

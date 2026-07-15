@@ -222,7 +222,7 @@ func (m *Manager) RecoverUnfinished(ctx context.Context) (int, error) {
 	m.submitMu.Lock()
 	defer m.submitMu.Unlock()
 	now := time.Now().UTC()
-	recoveredIDs := make([]string, 0, len(jobs))
+	recovered := 0
 	for _, job := range jobs {
 		if job.Status == domain.JobRunning {
 			job.Status = domain.JobQueued
@@ -233,20 +233,26 @@ func (m *Manager) RecoverUnfinished(ctx context.Context) (int, error) {
 			}
 		}
 		if err := m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_recovered", Message: "job recovered after backend restart"}); err != nil {
-			return 0, err
+			// The row has already been restored to a claimable queued state.
+			// Enqueue it before returning so a partial recovery never strands
+			// the jobs successfully processed earlier in this pass.
+			m.enqueueRecovered(job.ID)
+			return recovered + 1, err
 		}
-		recoveredIDs = append(recoveredIDs, job.ID)
+		m.enqueueRecovered(job.ID)
+		recovered++
 	}
-	if len(recoveredIDs) > 0 {
-		m.recoveryMu.Lock()
-		m.recoveryQueue = append(m.recoveryQueue, recoveredIDs...)
-		m.recoveryMu.Unlock()
-		select {
-		case m.recoveryReady <- struct{}{}:
-		default:
-		}
+	return recovered, nil
+}
+
+func (m *Manager) enqueueRecovered(jobID string) {
+	m.recoveryMu.Lock()
+	m.recoveryQueue = append(m.recoveryQueue, jobID)
+	m.recoveryMu.Unlock()
+	select {
+	case m.recoveryReady <- struct{}{}:
+	default:
 	}
-	return len(jobs), nil
 }
 
 // SubmitBatch validates and enqueues each url independently, applying
@@ -506,16 +512,14 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 }
 
 // Delete removes a terminal job and its items/events from the store. It
-// refuses while the job is running or while a finalize sequence is still in
-// flight: the jobs row already says completed/failed/cancelled before the
-// terminal event is inserted and the hook dispatcher reads the items, so
-// deleting on the row status alone would orphan the late event insert and
-// hand hooks an empty item list. The check and the delete both happen under
-// m.mu, which run()'s claim and Cancel's queued path also hold, so a job
+// refuses while the job is running, finalizing, or still executing a hook:
+// deleting earlier would orphan late hook events and make an active per-job
+// stream impossible to exhaust cleanly. The check and delete both happen
+// under m.mu, which run()'s claim and Cancel's queued path also hold, so a job
 // cannot start (or finish) finalizing between the check and the delete.
 func (m *Manager) Delete(ctx context.Context, jobID string) error {
 	m.mu.Lock()
-	if m.cancels[jobID] != nil || m.finalizing[jobID] {
+	if m.cancels[jobID] != nil || m.finalizing[jobID] || m.hooks.Pending(jobID) {
 		m.mu.Unlock()
 		return db.ErrJobNotTerminal
 	}

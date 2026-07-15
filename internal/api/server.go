@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -663,6 +664,12 @@ func (s *Server) getDownload(w http.ResponseWriter, r *http.Request) {
 // while hook events are still coming.
 func (s *Server) eventsExhausted(ctx context.Context, jobID string) bool {
 	job, err := s.store.GetJob(ctx, jobID)
+	if errors.Is(err, sql.ErrNoRows) {
+		// A successful DELETE publishes a final job_deleted tombstone after
+		// removing the row. Once the backlog drain has consumed that event there
+		// can be no future per-job events, so an already-open stream must close.
+		return true
+	}
 	if err != nil || !job.Status.IsTerminal() {
 		return false
 	}
@@ -686,24 +693,13 @@ func (s *Server) eventsWS(w http.ResponseWriter, r *http.Request) {
 	}
 	lastID, _ := strconv.ParseInt(r.URL.Query().Get("last_event_id"), 10, 64)
 
-	// Subscribe before the first backlog read so an event published between
-	// that read and registering for live updates still wakes a subsequent
-	// drain instead of being lost in the gap. Skipped only once eventsExhausted
-	// confirms nothing (job event or hook event) will ever be published for
-	// this job again (job.Status and its terminal event are written atomically
-	// — see Store.FinalizeJob — so observing it here guarantees the terminal
-	// event is already visible to the ListEventsAfter call below). The
-	// exhausted snapshot is taken BEFORE the backlog read: hook events are
-	// committed before HooksPending drops (see hooks.Dispatcher.donePending),
-	// so exhausted-then-read can never miss an event, while read-then-check
-	// could reject a client whose undelivered hook event landed in between.
+	// Subscribe before inspecting state or reading the backlog so a concurrent
+	// retry cannot change a failed job back to queued in the gap and leave us
+	// waiting on a nil channel. The store remains the source of truth; the hub
+	// only wakes a subsequent drain sooner.
+	ch, cancel := s.hub.Subscribe(id)
+	defer cancel()
 	exhausted := s.eventsExhausted(r.Context(), id)
-	var ch <-chan domain.Event
-	if !exhausted {
-		var cancel func()
-		ch, cancel = s.hub.Subscribe(id)
-		defer cancel()
-	}
 
 	pending, err := s.store.ListEventsAfter(r.Context(), id, lastID)
 	if err != nil {
@@ -828,24 +824,13 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 	lastID, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
 
-	// Subscribe before the first backlog read so an event published between
-	// that read and registering for live updates still wakes a subsequent
-	// drain instead of being lost in the gap. Skipped only once eventsExhausted
-	// confirms nothing (job event or hook event) will ever be published for
-	// this job again (job.Status and its terminal event are written atomically
-	// — see Store.FinalizeJob — so observing it here guarantees the terminal
-	// event is already visible to the ListEventsAfter call below). The
-	// exhausted snapshot is taken BEFORE the backlog read: hook events are
-	// committed before HooksPending drops (see hooks.Dispatcher.donePending),
-	// so exhausted-then-read can never miss an event, while read-then-check
-	// could reject a client whose undelivered hook event landed in between.
+	// Subscribe before inspecting state or reading the backlog so a concurrent
+	// retry cannot change a failed job back to queued in the gap and leave us
+	// waiting on a nil channel. The store remains the source of truth; the hub
+	// only wakes a subsequent drain sooner.
+	ch, cancel := s.hub.Subscribe(id)
+	defer cancel()
 	exhausted := s.eventsExhausted(r.Context(), id)
-	var ch <-chan domain.Event
-	if !exhausted {
-		var cancel func()
-		ch, cancel = s.hub.Subscribe(id)
-		defer cancel()
-	}
 
 	pending, err := s.store.ListEventsAfter(r.Context(), id, lastID)
 	if err != nil {
@@ -1100,6 +1085,10 @@ func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, ch <-chan d
 // MaxBytesError can consistently map to 413 instead of being flattened into
 // a malformed-JSON 400.
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any, disallowUnknownFields bool) bool {
+	if r.ContentLength > maxJSONBodyBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Errorf("JSON request body exceeds %d bytes", maxJSONBodyBytes))
+		return false
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	decoder := json.NewDecoder(r.Body)
 	if disallowUnknownFields {

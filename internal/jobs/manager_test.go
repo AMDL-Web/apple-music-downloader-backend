@@ -797,6 +797,41 @@ func TestDeleteRefusesActiveAndFinalizingJobs(t *testing.T) {
 	}
 }
 
+func TestDeleteRefusesJobWhileHookIsPending(t *testing.T) {
+	release := make(chan struct{})
+	hookServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer hookServer.Close()
+
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	manager := NewManager(store, events.NewHub(), recoveryProcessor{}, 1, slog.Default())
+	dispatcher := hooks.NewDispatcher(hooks.Config{Enabled: true, Entries: []hooks.Entry{{
+		Name: "blocking", Type: "webhook", Events: []string{"job_finished"}, URL: hookServer.URL,
+	}}}, manager.Event, slog.Default())
+	manager.SetHooks(dispatcher)
+
+	job := domain.Job{ID: "job-with-hook", Input: "song|us|1", Type: "song", CanonicalKey: "song:us:1", Status: domain.JobCompleted}
+	if err := store.CreateJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher.Dispatch("job_finished", job, nil)
+	if err := manager.Delete(context.Background(), job.ID); !errors.Is(err, db.ErrJobNotTerminal) {
+		t.Fatalf("Delete() while hook pending error = %v, want ErrJobNotTerminal", err)
+	}
+
+	close(release)
+	dispatcher.Shutdown(context.Background())
+	if err := manager.Delete(context.Background(), job.ID); err != nil {
+		t.Fatalf("Delete() after hook completed: %v", err)
+	}
+}
+
 func TestCancelRunningJobDispatchesCancelledHookExactlyOnce(t *testing.T) {
 	var calls int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

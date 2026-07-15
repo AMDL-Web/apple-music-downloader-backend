@@ -389,6 +389,15 @@ func TestJSONEndpointsRejectOversizedBodies(t *testing.T) {
 	}
 }
 
+func TestJSONBodyKnownOversizeWinsOverEarlySyntaxError(t *testing.T) {
+	server := &Server{quality: &fakeQualityService{}}
+	body := "!" + strings.Repeat("x", int(maxJSONBodyBytes))
+	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/quality", body)
+	if recorder.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d (body %s)", recorder.Code, http.StatusRequestEntityTooLarge, recorder.Body.String())
+	}
+}
+
 func TestSwaggerUI(t *testing.T) {
 	server := &Server{}
 	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/docs", "")
@@ -1654,6 +1663,22 @@ func TestEventsWaitsForPendingHookBeforeClosingTerminalJob(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("status after hook completion = %d, want %d (nothing left to deliver)", resp.StatusCode, http.StatusConflict)
+	}
+}
+
+func TestEventsExhaustedAfterJobDeletion(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	server := &Server{
+		store:   store,
+		manager: jobs.NewManager(store, events.NewHub(), stubProcessor{}, 1, slog.Default()),
+	}
+	if !server.eventsExhausted(context.Background(), "already-deleted") {
+		t.Fatal("eventsExhausted = false for a deleted job; an existing stream would never close")
 	}
 }
 
