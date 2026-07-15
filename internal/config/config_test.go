@@ -299,3 +299,18 @@ func TestLoadRejectsEmptyPathFormat(t *testing.T) {
 		t.Fatalf("Load() error = %v, want artist_path_format validation error", err)
 	}
 }
+
+// TestLoadClampsDownloadLimitsFromFile covers config files written before the
+// hard limits existed: the live config.yaml is machine-managed and may hold
+// larger values, so Load must clamp them instead of refusing to boot.
+func TestLoadClampsDownloadLimitsFromFile(t *testing.T) {
+	path := writeConfig(t, "download:\n  max_running_jobs: 100\n  max_parallel_tracks: 200\n  max_attempts: 50\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() with over-limit values failed: %v", err)
+	}
+	if cfg.Download.MaxRunningJobs != maxRunningJobsLimit || cfg.Download.MaxParallelTracks != maxParallelTracksLimit || cfg.Download.MaxAttempts != maxAttemptsLimit {
+		t.Fatalf("Load() did not clamp over-limit values: jobs=%d tracks=%d attempts=%d",
+			cfg.Download.MaxRunningJobs, cfg.Download.MaxParallelTracks, cfg.Download.MaxAttempts)
+	}
+}

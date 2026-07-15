@@ -197,3 +197,19 @@ func TestStoreGetSet(t *testing.T) {
 		t.Fatalf("snapshot after Set = %+v", got.Download)
 	}
 }
+
+// TestApplyValidatedClampsNumericOverrides covers persisted jobs that predate
+// the hard limits: their stored numeric overrides re-run through validation
+// on every retry and post-restart requeue, so over-limit values must clamp
+// instead of failing the job forever.
+func TestApplyValidatedClampsNumericOverrides(t *testing.T) {
+	tracks, attempts := 200, 50
+	applied, err := (&DownloadOverrides{MaxParallelTracks: &tracks, MaxAttempts: &attempts}).ApplyValidated(Default())
+	if err != nil {
+		t.Fatalf("ApplyValidated() with over-limit numeric overrides failed: %v", err)
+	}
+	if applied.Download.MaxParallelTracks != maxParallelTracksLimit || applied.Download.MaxAttempts != maxAttemptsLimit {
+		t.Fatalf("overrides not clamped: tracks=%d attempts=%d",
+			applied.Download.MaxParallelTracks, applied.Download.MaxAttempts)
+	}
+}

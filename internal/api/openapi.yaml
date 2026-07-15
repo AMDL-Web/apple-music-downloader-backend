@@ -1065,12 +1065,10 @@ components:
         codec_alternative: {type: boolean}
         max_parallel_tracks:
           type: integer
-          maximum: 64
-          description: 正数允许 1-64；值 <=0 按 1 处理。
+          description: 正数允许 1-64；值 <=0 按 1 处理；超过 64 的值按 64 截断（不拒绝，兼容早于该上限持久化的任务覆盖）。
         max_attempts:
           type: integer
-          maximum: 10
-          description: 正数允许 1-10；值 <=0 按 1 处理。
+          description: 正数允许 1-10；值 <=0 按 1 处理；超过 10 的值按 10 截断（不拒绝，兼容早于该上限持久化的任务覆盖）。
         downloads_dir: {type: string}
         song_path_format: {type: string}
         album_path_format: {type: string}

@@ -120,12 +120,15 @@ download:
   quality_priority: ["alac"]
   # bool: true tries the next codec in quality_priority after failure; false only tries the first codec.
   codec_alternative: true
-  # integer: maximum concurrently running jobs. Positive values allow 1-32; values <=0 behave as 1. Default: 3.
+  # integer: maximum concurrently running jobs. Positive values allow 1-32; values <=0 behave as 1;
+  # values above 32 in this file or in job overrides are clamped to 32 (the config API rejects them). Default: 3.
   max_running_jobs: 3
-  # integer: maximum tracks downloaded in parallel per collection. Positive values allow 1-64; values <=0 behave as 1. Default: 5.
+  # integer: maximum tracks downloaded in parallel per collection. Positive values allow 1-64; values <=0 behave as 1;
+  # values above 64 in this file or in job overrides are clamped to 64 (the config API rejects them). Default: 5.
   max_parallel_tracks: 5
   # integer: maximum total attempts (including the first) for metadata, cover, lyrics,
-  # and each codec's download/decrypt phase. Positive values allow 1-10; values <=0 behave as 1. Default: 3.
+  # and each codec's download/decrypt phase. Positive values allow 1-10; values <=0 behave as 1;
+  # values above 10 in this file or in job overrides are clamped to 10 (the config API rejects them). Default: 3.
   max_attempts: 3
   # string path: root download directory. Relative paths are resolved from the backend working directory.
   downloads_dir: "data/downloads"

@@ -137,9 +137,13 @@ func (o *DownloadOverrides) Apply(base Config) Config {
 // ApplyValidated applies the request-scoped overrides and verifies both the
 // ordinary config rules and the extra trust boundary around filesystem roots.
 // A request may select a subdirectory of the administrator-configured roots,
-// but it may not redirect downloads or scratch data elsewhere.
+// but it may not redirect downloads or scratch data elsewhere. Numeric
+// overrides above the hard limits are clamped rather than rejected: persisted
+// jobs may predate the limits, and their stored overrides re-run through this
+// validation on every retry and post-restart requeue.
 func (o *DownloadOverrides) ApplyValidated(base Config) (Config, error) {
 	applied := o.Apply(base)
+	clampDownloadLimits(&applied.Download)
 	if err := applied.Validate(); err != nil {
 		return applied, err
 	}

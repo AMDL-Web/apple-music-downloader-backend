@@ -246,10 +246,30 @@ func load(path string, environ []string) (Config, error) {
 	if err := applyEnvOverrides(&cfg, environ); err != nil {
 		return cfg, err
 	}
+	// Config files written before the limits existed may hold larger values;
+	// clamp them instead of refusing to boot. New values submitted through the
+	// runtime config API still fail Validate with an explicit error.
+	clampDownloadLimits(&cfg.Download)
 	if err := cfg.Validate(); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// clampDownloadLimits lowers the bounded download settings to their hard
+// limits in place. It backstops the two compatibility paths that may carry
+// pre-limit values — config files on disk and job overrides persisted in the
+// database — where rejecting would brick a previously working deployment.
+func clampDownloadLimits(d *DownloadConfig) {
+	if d.MaxRunningJobs > maxRunningJobsLimit {
+		d.MaxRunningJobs = maxRunningJobsLimit
+	}
+	if d.MaxParallelTracks > maxParallelTracksLimit {
+		d.MaxParallelTracks = maxParallelTracksLimit
+	}
+	if d.MaxAttempts > maxAttemptsLimit {
+		d.MaxAttempts = maxAttemptsLimit
+	}
 }
 
 // Validate checks the semantic rules every Config must satisfy, whether it
