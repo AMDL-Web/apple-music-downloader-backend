@@ -562,20 +562,21 @@ func parseOptionalTime(raw string, endOfDayIfDateOnly bool) (*time.Time, error) 
 }
 
 // jobSnapshot returns a job with progress counters derived from its live
-// items, the same shape the GET /downloads list and getDownload return. ok is
-// false if the job no longer exists (e.g. deleted between a milestone event
-// and this read), so the overview feed simply skips pushing it.
-func (s *Server) jobSnapshot(ctx context.Context, id string) (*domain.Job, bool) {
+// items, the same shape the GET /downloads list and getDownload return. A
+// sql.ErrNoRows error means the job no longer exists (e.g. deleted between a
+// milestone event and this read); the overview feed treats any other error as
+// transient and retries.
+func (s *Server) jobSnapshot(ctx context.Context, id string) (*domain.Job, error) {
 	job, err := s.store.GetJob(ctx, id)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	items, err := s.store.ListItems(ctx, id)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	job.DoneItems, job.FailedItems = domain.CountItemProgress(items)
-	return &job, true
+	return &job, nil
 }
 
 func (s *Server) cancelDownload(w http.ResponseWriter, r *http.Request) {
@@ -1053,12 +1054,18 @@ func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, ch <-chan d
 					lastID = pending.eventID
 					continue
 				}
-				snap, ok := s.jobSnapshot(ctx, jobID)
-				if !ok {
+				snap, err := s.jobSnapshot(ctx, jobID)
+				if errors.Is(err, sql.ErrNoRows) {
 					// Advance past a stale upsert so a deletion in a later page can
 					// be reached instead of replaying this row forever.
 					lastID = pending.eventID
 					continue
+				}
+				if err != nil {
+					// A transient store error must not advance the cursor past a
+					// milestone that may never repeat (e.g. job_finished). Stop
+					// this round; the next wake or tick retries the same page.
+					return nil
 				}
 				if err := write(domain.DownloadFeedMessage{Type: "download_upserted", Job: snap, EventID: pending.eventID}); err != nil {
 					return err
