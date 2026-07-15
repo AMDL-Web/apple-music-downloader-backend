@@ -79,14 +79,16 @@ func TestValidateBoundsResourceAmplifyingDownloadSettings(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			for _, value := range []int{0, -1, tt.max + 1} {
+			for _, value := range []int{tt.max + 1} {
 				cfg := Default()
 				tt.apply(&cfg, value)
 				if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.key) {
 					t.Fatalf("Validate() with %s=%d error = %v, want %s bounds error", tt.key, value, err, tt.key)
 				}
 			}
-			for _, value := range []int{1, tt.max} {
+			// Preserve the established compatibility contract: non-positive
+			// values are normalized to one by their consumers.
+			for _, value := range []int{-1, 0, 1, tt.max} {
 				cfg := Default()
 				tt.apply(&cfg, value)
 				if err := cfg.Validate(); err != nil {

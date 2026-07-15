@@ -1,6 +1,7 @@
 package media
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,13 +17,19 @@ type outputLockTable struct {
 }
 
 type outputLockEntry struct {
-	mu   sync.Mutex
-	refs int
+	token chan struct{}
+	refs  int
 }
 
 var processOutputLocks outputLockTable
 
 func (t *outputLockTable) acquire(path string) (func(), error) {
+	return t.acquireContext(context.Background(), path)
+}
+
+// acquireContext is cancellation-aware so a cancelled job waiting behind a
+// writer of the same output does not remain stuck until that writer finishes.
+func (t *outputLockTable) acquireContext(ctx context.Context, path string) (func(), error) {
 	key, err := canonicalOutputPath(path)
 	if err != nil {
 		return nil, fmt.Errorf("canonicalize output path: %w", err)
@@ -34,23 +41,37 @@ func (t *outputLockTable) acquire(path string) (func(), error) {
 	}
 	entry := t.entries[key]
 	if entry == nil {
-		entry = &outputLockEntry{}
+		entry = &outputLockEntry{token: make(chan struct{}, 1)}
+		entry.token <- struct{}{}
 		t.entries[key] = entry
 	}
 	entry.refs++
 	t.mu.Unlock()
 
-	entry.mu.Lock()
+	dropRef := func() {
+		t.mu.Lock()
+		entry.refs--
+		if entry.refs == 0 && t.entries[key] == entry {
+			delete(t.entries, key)
+		}
+		t.mu.Unlock()
+	}
+	select {
+	case <-entry.token:
+		if err := ctx.Err(); err != nil {
+			entry.token <- struct{}{}
+			dropRef()
+			return nil, err
+		}
+	case <-ctx.Done():
+		dropRef()
+		return nil, ctx.Err()
+	}
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			entry.mu.Unlock()
-			t.mu.Lock()
-			entry.refs--
-			if entry.refs == 0 && t.entries[key] == entry {
-				delete(t.entries, key)
-			}
-			t.mu.Unlock()
+			entry.token <- struct{}{}
+			dropRef()
 		})
 	}, nil
 }

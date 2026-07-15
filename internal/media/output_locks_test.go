@@ -1,6 +1,8 @@
 package media
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,6 +56,38 @@ func TestOutputLockSerializesNormalizedPathsAndReclaimsKey(t *testing.T) {
 	if entries != 0 {
 		t.Fatalf("lock table retained %d unused keys, want 0", entries)
 	}
+}
+
+func TestOutputLockWaitHonorsContextCancellation(t *testing.T) {
+	table := &outputLockTable{}
+	path := filepath.Join(t.TempDir(), "song.m4a")
+	unlock, err := table.acquire(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := table.acquireContext(ctx, path); !errors.Is(err, context.Canceled) {
+		t.Fatalf("acquireContext error = %v, want context canceled", err)
+	}
+
+	table.mu.Lock()
+	refs := table.entries[mustCanonicalOutputPath(t, path)].refs
+	table.mu.Unlock()
+	if refs != 1 {
+		t.Fatalf("refs after cancelled waiter = %d, want holder only", refs)
+	}
+}
+
+func mustCanonicalOutputPath(t *testing.T, path string) string {
+	t.Helper()
+	key, err := canonicalOutputPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
 }
 
 func TestOutputLockSerializesSymlinkAliases(t *testing.T) {

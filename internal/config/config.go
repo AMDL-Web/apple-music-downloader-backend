@@ -318,14 +318,14 @@ func (c Config) Validate() error {
 			return fmt.Errorf("%s cannot be empty", name)
 		}
 	}
-	if c.Download.MaxRunningJobs < 1 || c.Download.MaxRunningJobs > maxRunningJobsLimit {
-		return fmt.Errorf("download.max_running_jobs must be between 1 and %d", maxRunningJobsLimit)
+	if c.Download.MaxRunningJobs > maxRunningJobsLimit {
+		return fmt.Errorf("download.max_running_jobs must be at most %d", maxRunningJobsLimit)
 	}
-	if c.Download.MaxParallelTracks < 1 || c.Download.MaxParallelTracks > maxParallelTracksLimit {
-		return fmt.Errorf("download.max_parallel_tracks must be between 1 and %d", maxParallelTracksLimit)
+	if c.Download.MaxParallelTracks > maxParallelTracksLimit {
+		return fmt.Errorf("download.max_parallel_tracks must be at most %d", maxParallelTracksLimit)
 	}
-	if c.Download.MaxAttempts < 1 || c.Download.MaxAttempts > maxAttemptsLimit {
-		return fmt.Errorf("download.max_attempts must be between 1 and %d", maxAttemptsLimit)
+	if c.Download.MaxAttempts > maxAttemptsLimit {
+		return fmt.Errorf("download.max_attempts must be at most %d", maxAttemptsLimit)
 	}
 	switch c.Download.CoverFormat {
 	case "jpg", "jpeg", "png":

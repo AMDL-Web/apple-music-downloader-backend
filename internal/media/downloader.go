@@ -678,7 +678,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			return nil
 		}
 		releaseOutput()
-		unlock, err := processOutputLocks.acquire(path)
+		unlock, err := processOutputLocks.acquireContext(ctx, path)
 		if err != nil {
 			return err
 		}
