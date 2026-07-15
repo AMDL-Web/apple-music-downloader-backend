@@ -391,7 +391,7 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 	if req.Overrides != nil {
 		// Validate the overlay against the same rules the runtime config must
 		// satisfy, applied to the config these jobs would actually run under.
-		if err := req.Overrides.Apply(s.currentConfig()).Validate(); err != nil {
+		if _, err := req.Overrides.ApplyValidated(s.currentConfig()); err != nil {
 			writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("invalid overrides: %w", err))
 			return
 		}

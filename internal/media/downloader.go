@@ -153,7 +153,10 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	// Bind this job to its effective config: the live runtime snapshot with
 	// the job's submission-time overrides layered on top. Read once here so
 	// a concurrent runtime-config update never changes behavior mid-job.
-	cfg := job.Overrides.Apply(d.baseConfig())
+	cfg, err := job.Overrides.ApplyValidated(d.baseConfig())
+	if err != nil {
+		return fmt.Errorf("invalid job overrides: %w", err)
+	}
 	if !cfg.Simulate.Enabled {
 		// The runtime config or the job's overrides may point at directories
 		// that main() did not create at startup.
@@ -630,6 +633,38 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 }
 
 func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Job, item domain.JobItem, initial applemusic.Song, storefront string, collectionType applemusic.URLType, collectionName, collectionID string, playlistIndex int, folderArtist string, metadata *trackMetadataResolver, reporter jobs.Reporter) error {
+	// Once a codec's concrete output path is known, keep its process-wide lock
+	// through the existence/force check, retries, sidecar writes, and final
+	// commit. This prevents one job's force/cleanup path from deleting another
+	// job's in-flight or newly committed output.
+	var lockedOutputPath string
+	var unlockOutput func()
+	releaseOutput := func() {
+		if unlockOutput != nil {
+			unlockOutput()
+			unlockOutput = nil
+			lockedOutputPath = ""
+		}
+	}
+	defer releaseOutput()
+	acquireOutput := func(path string) error {
+		key, err := canonicalOutputPath(path)
+		if err != nil {
+			return fmt.Errorf("canonicalize output path: %w", err)
+		}
+		if unlockOutput != nil && key == lockedOutputPath {
+			return nil
+		}
+		releaseOutput()
+		unlock, err := processOutputLocks.acquire(path)
+		if err != nil {
+			return err
+		}
+		lockedOutputPath = key
+		unlockOutput = unlock
+		return nil
+	}
+
 	// set updates item state and emits an item_progress SSE event.
 	// The full JobItem is embedded in the event Payload so the frontend can
 	// update the UI directly from SSE without any additional HTTP round-trips,
@@ -812,6 +847,9 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			if codec == "aac-lc" {
 				d.setItemAttempt(ctx, reporter, &item, "download", attempt, clampAttempts(codecMaxAttempts), fmt.Sprintf("Downloading %s (%d/%d)", strings.ToUpper(codec), attempt, clampAttempts(codecMaxAttempts)))
 				attemptOutPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, "256Kbps")
+				if err := acquireOutput(attemptOutPath); err != nil {
+					return struct{}{}, err
+				}
 				// No per-track manifest to read quality from for aac-lc (unlike the
 				// enhanced codecs' HLS variant); leave bit_depth/sample_rate/bitrate
 				// at 0 (omitted from the API response) rather than assert a value.
@@ -832,6 +870,9 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 				return struct{}{}, selectErr
 			}
 			attemptOutPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, qualityLabel(selected.info))
+			if err := acquireOutput(attemptOutPath); err != nil {
+				return struct{}{}, err
+			}
 			if skip, err := d.handleExistingOutput(ctx, reporter, job, &item, attemptOutPath); skip || err != nil {
 				skipped = skip
 				return struct{}{}, err
@@ -843,7 +884,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			enhanced = selected
 			return struct{}{}, nil
 		}, func(failure retryFailure) {
-			if attemptOutPath != "" {
+			if unlockOutput != nil && attemptOutPath != "" {
 				cleanupFailedOutput(attemptOutPath)
 			}
 			operation := strings.ToUpper(codec)
@@ -854,9 +895,11 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "download", codec, failure)
 		})
 		if skipped && fetchErr == nil {
+			releaseOutput()
 			return nil
 		}
 		if fetchErr != nil {
+			releaseOutput()
 			lastErr = fetchErr
 			d.reportCodecFailed(ctx, reporter, job, item, codec, "download", codecMaxAttempts, fetchAttempts, fetchErr)
 			continue
@@ -876,7 +919,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			}
 			return struct{}{}, d.downloadEnhancedCodec(ctx, job, &item, song, codec, lyrics, cover, attemptOutPath, enhanced, reporter, set)
 		}, func(failure retryFailure) {
-			if attemptOutPath != "" {
+			if unlockOutput != nil && attemptOutPath != "" {
 				cleanupFailedOutput(attemptOutPath)
 			}
 			d.setRetryFailure(ctx, reporter, &item, "decrypt", strings.ToUpper(codec), failure)
@@ -888,6 +931,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 		// rawPath is empty and this is a no-op.
 		cleanupTempFile(enhanced.rawPath)
 		if decryptErr != nil {
+			releaseOutput()
 			lastErr = decryptErr
 			d.reportCodecFailed(ctx, reporter, job, item, codec, "decrypt", codecMaxAttempts, decryptAttempts, decryptErr)
 			continue
@@ -914,6 +958,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			"codec": codec, "download_attempts": fetchAttempts, "decrypt_attempts": decryptAttempts,
 			"max_attempts": clampAttempts(codecMaxAttempts), "fallback_from": fallbackCodec(codecs, codecIndex),
 		})})
+		releaseOutput()
 		return nil
 	}
 	if lastErr == nil {

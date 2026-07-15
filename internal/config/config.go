@@ -166,6 +166,14 @@ type DownloadConfig struct {
 	CheckIntegrity     bool     `yaml:"check_integrity" json:"check_integrity"`
 }
 
+const (
+	// These limits bound the two multiplicative concurrency controls and the
+	// retry fan-out while remaining comfortably above normal deployments.
+	maxRunningJobsLimit    = 32
+	maxParallelTracksLimit = 64
+	maxAttemptsLimit       = 10
+)
+
 type ToolsConfig struct {
 	FFmpeg string `yaml:"ffmpeg" json:"ffmpeg"`
 }
@@ -309,6 +317,15 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s cannot be empty", name)
 		}
+	}
+	if c.Download.MaxRunningJobs < 1 || c.Download.MaxRunningJobs > maxRunningJobsLimit {
+		return fmt.Errorf("download.max_running_jobs must be between 1 and %d", maxRunningJobsLimit)
+	}
+	if c.Download.MaxParallelTracks < 1 || c.Download.MaxParallelTracks > maxParallelTracksLimit {
+		return fmt.Errorf("download.max_parallel_tracks must be between 1 and %d", maxParallelTracksLimit)
+	}
+	if c.Download.MaxAttempts < 1 || c.Download.MaxAttempts > maxAttemptsLimit {
+		return fmt.Errorf("download.max_attempts must be between 1 and %d", maxAttemptsLimit)
 	}
 	switch c.Download.CoverFormat {
 	case "jpg", "jpeg", "png":

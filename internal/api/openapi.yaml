@@ -1036,6 +1036,8 @@ components:
         下载配置的按需覆盖层，字段与运行时配置 download 段一一对应
         （max_running_jobs 除外——工作池大小在启动时确定，无法按任务覆盖）。
         所有字段可选；提交时会以“当前运行时配置 + 覆盖”做完整校验。
+        downloads_dir 和 temp_dir 只能选择管理员配置根目录本身或其子目录，
+        不能通过绝对路径、.. 或符号链接逃出对应根目录。
       properties:
         quality_priority:
           type: array
@@ -1043,8 +1045,8 @@ components:
             type: string
             enum: [alac, aac, aac-binaural, aac-downmix, ec3, ac3]
         codec_alternative: {type: boolean}
-        max_parallel_tracks: {type: integer}
-        max_attempts: {type: integer}
+        max_parallel_tracks: {type: integer, minimum: 1, maximum: 64}
+        max_attempts: {type: integer, minimum: 1, maximum: 10}
         downloads_dir: {type: string}
         song_path_format: {type: string}
         album_path_format: {type: string}
@@ -1113,8 +1115,8 @@ components:
                 type: string
                 enum: [alac, aac, aac-binaural, aac-downmix, ec3, ac3]
             codec_alternative: {type: boolean}
-            max_parallel_tracks: {type: integer}
-            max_attempts: {type: integer}
+            max_parallel_tracks: {type: integer, minimum: 1, maximum: 64}
+            max_attempts: {type: integer, minimum: 1, maximum: 10}
             downloads_dir: {type: string}
             song_path_format: {type: string}
             album_path_format: {type: string}

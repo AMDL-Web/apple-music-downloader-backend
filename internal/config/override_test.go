@@ -2,7 +2,10 @@ package config
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -54,6 +57,46 @@ func TestDownloadOverridesApplyThenValidate(t *testing.T) {
 	overrides = &DownloadOverrides{CoverFormat: &good}
 	if err := overrides.Apply(Default()).Validate(); err != nil {
 		t.Fatalf("valid overrides rejected: %v", err)
+	}
+}
+
+func TestDownloadOverridesKeepFilesystemRootsContained(t *testing.T) {
+	dir := t.TempDir()
+	downloadsRoot := filepath.Join(dir, "downloads")
+	tempRoot := filepath.Join(dir, "temp")
+	outside := filepath.Join(dir, "outside")
+	for _, path := range []string{downloadsRoot, tempRoot, outside} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := Default()
+	base.Download.DownloadsDir = downloadsRoot
+	base.Download.TempDir = tempRoot
+
+	insideDownloads := filepath.Join(downloadsRoot, "new", "nested")
+	insideTemp := filepath.Join(tempRoot, "job-123")
+	if _, err := (&DownloadOverrides{DownloadsDir: &insideDownloads, TempDir: &insideTemp}).ApplyValidated(base); err != nil {
+		t.Fatalf("nonexistent subdirectories rejected: %v", err)
+	}
+
+	escaped := filepath.Join(downloadsRoot, "..", "outside")
+	if _, err := (&DownloadOverrides{DownloadsDir: &escaped}).ApplyValidated(base); err == nil || !strings.Contains(err.Error(), "downloads_dir") {
+		t.Fatalf("lexically escaped downloads_dir error = %v", err)
+	}
+
+	link := filepath.Join(tempRoot, "escape-link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	throughLink := filepath.Join(link, "not-created-yet")
+	if _, err := (&DownloadOverrides{TempDir: &throughLink}).ApplyValidated(base); err == nil || !strings.Contains(err.Error(), "temp_dir") {
+		t.Fatalf("symlink-escaped temp_dir error = %v", err)
+	}
+
+	// Selecting the configured root itself remains valid.
+	if _, err := (&DownloadOverrides{DownloadsDir: &downloadsRoot, TempDir: &tempRoot}).ApplyValidated(base); err != nil {
+		t.Fatalf("configured roots rejected: %v", err)
 	}
 }
 
