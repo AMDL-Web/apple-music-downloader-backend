@@ -51,6 +51,7 @@ type downloaderCatalog interface {
 	ArtistAlbums(context.Context, string, string) (applemusic.ArtistAlbums, error)
 	Artist(context.Context, string, string) (applemusic.Artist, error)
 	FetchCover(context.Context, []string, string, string) ([]byte, error)
+	EnhancedHLSViaWebToken(context.Context, string, string) (string, error)
 }
 
 type downloaderWrapper interface {
@@ -1019,12 +1020,21 @@ func (d *Downloader) selectEnhancedMedia(ctx context.Context, job domain.Job, it
 	master := song.EnhancedHLS
 	if d.cfg.Catalog.DeveloperTokenSigningEnabled() {
 		// A self-signed developer token cannot read enhancedHls, so the master
-		// playlist comes from the authorized device manifest instead.
-		m3u8, err := d.wrapper.M3U8(ctx, song.ID)
-		if err != nil {
-			return selectedDownloadMedia{}, fmt.Errorf("request device m3u8: %w", err)
+		// playlist comes from either the wrapper's authorized device manifest
+		// or a scraped web-player token, per catalog.signed_mode_hls_source.
+		if d.cfg.Catalog.EnhancedHLSFromWebToken() {
+			hls, err := d.catalog.EnhancedHLSViaWebToken(ctx, job.Storefront, song.ID)
+			if err != nil {
+				return selectedDownloadMedia{}, fmt.Errorf("fetch enhanced hls via web token: %w", err)
+			}
+			master = hls
+		} else {
+			m3u8, err := d.wrapper.M3U8(ctx, song.ID)
+			if err != nil {
+				return selectedDownloadMedia{}, fmt.Errorf("request device m3u8: %w", err)
+			}
+			master = m3u8
 		}
-		master = m3u8
 	}
 	if master == "" {
 		return selectedDownloadMedia{}, fmt.Errorf("no enhanced hls manifest")

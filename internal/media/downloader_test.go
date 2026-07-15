@@ -60,13 +60,16 @@ func (f fakeDownloaderWrapper) License(context.Context, string, string, string) 
 }
 
 type fakeDownloaderCatalog struct {
-	song         applemusic.Song
-	songErr      error
-	album        applemusic.Collection
-	artistAlbums applemusic.ArtistAlbums
-	station      applemusic.Collection
-	stationErr   error
-	stationToken *string
+	song              applemusic.Song
+	songErr           error
+	album             applemusic.Collection
+	artistAlbums      applemusic.ArtistAlbums
+	station           applemusic.Collection
+	stationErr        error
+	stationToken      *string
+	webTokenHLS       string
+	webTokenErr       error
+	webTokenCallCount *int
 }
 
 func (f fakeDownloaderCatalog) Song(context.Context, string, string) (applemusic.Song, error) {
@@ -110,6 +113,13 @@ func (f fakeDownloaderCatalog) Artist(context.Context, string, string) (applemus
 
 func (f fakeDownloaderCatalog) FetchCover(context.Context, []string, string, string) ([]byte, error) {
 	return nil, nil
+}
+
+func (f fakeDownloaderCatalog) EnhancedHLSViaWebToken(context.Context, string, string) (string, error) {
+	if f.webTokenCallCount != nil {
+		*f.webTokenCallCount++
+	}
+	return f.webTokenHLS, f.webTokenErr
 }
 
 type recordingReporter struct {

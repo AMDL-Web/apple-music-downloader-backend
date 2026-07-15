@@ -161,6 +161,31 @@ func TestLoadRejectsUnknownMediaUserTokenPriority(t *testing.T) {
 	}
 }
 
+func TestSignedModeHLSSourceDefaultAndValidate(t *testing.T) {
+	if got := Default().Catalog.SignedModeHLSSource; got != "wrapper" {
+		t.Fatalf("default signed_mode_hls_source = %q, want wrapper", got)
+	}
+	if Default().Catalog.EnhancedHLSFromWebToken() {
+		t.Fatal("default should not use web-token HLS source")
+	}
+	web := CatalogConfig{SignedModeHLSSource: "web_token"}
+	if !web.EnhancedHLSFromWebToken() {
+		t.Fatal("web_token should enable EnhancedHLSFromWebToken")
+	}
+	path := writeConfig(t, "catalog:\n  signed_mode_hls_source: device\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "signed_mode_hls_source") {
+		t.Fatalf("Load() error = %v, want signed_mode_hls_source validation error", err)
+	}
+	path = writeConfig(t, "catalog:\n  signed_mode_hls_source: web_token\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Catalog.SignedModeHLSSource != "web_token" {
+		t.Fatalf("signed_mode_hls_source = %q, want web_token", cfg.Catalog.SignedModeHLSSource)
+	}
+}
+
 func TestDeveloperTokenTTL(t *testing.T) {
 	if got := Default().Catalog.DeveloperTokenTTL(); got != time.Hour {
 		t.Fatalf("default developer token TTL = %s, want 1h", got)

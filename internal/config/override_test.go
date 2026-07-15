@@ -97,6 +97,7 @@ func TestRuntimeLockedChanges(t *testing.T) {
 	updated.Simulate.Enabled = true
 	updated.Simulate.MinSpeedKBps = 10
 	updated.Catalog.AlbumTrackURLMode = "album"
+	updated.Catalog.SignedModeHLSSource = "web_token"
 	updated.Logging.Level = "debug"
 	updated.Logging.AccessLog = false
 	if got := RuntimeLockedChanges(base, updated); len(got) != 0 {
@@ -132,8 +133,8 @@ func TestMutableViewOmitsStartupBoundFields(t *testing.T) {
 		t.Fatalf("download.cover_format = %v, want jpg", download["cover_format"])
 	}
 	catalog, ok := view["catalog"].(map[string]any)
-	if !ok || len(catalog) != 3 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["media_user_token_priority"] != "config" {
-		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/media_user_token_priority", view["catalog"])
+	if !ok || len(catalog) != 4 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["media_user_token_priority"] != "config" || catalog["signed_mode_hls_source"] != "wrapper" {
+		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/media_user_token_priority/signed_mode_hls_source", view["catalog"])
 	}
 	logging, ok := view["logging"].(map[string]any)
 	if !ok || len(logging) != 2 || logging["level"] != "info" || logging["access_log"] != false {

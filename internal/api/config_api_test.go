@@ -57,8 +57,8 @@ func TestGetConfigReturnsOnlyMutableFields(t *testing.T) {
 	if err := json.Unmarshal(resp.Config["catalog"], &catalog); err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog) != 3 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["media_user_token_priority"] != "config" {
-		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/media_user_token_priority", catalog)
+	if len(catalog) != 4 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["media_user_token_priority"] != "config" || catalog["signed_mode_hls_source"] != "wrapper" {
+		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/media_user_token_priority/signed_mode_hls_source", catalog)
 	}
 	var logging map[string]any
 	if err := json.Unmarshal(resp.Config["logging"], &logging); err != nil {
@@ -74,7 +74,7 @@ func TestUpdateConfigMergesAndTakesEffect(t *testing.T) {
 	server := &Server{cfg: store}
 
 	recorder := requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config",
-		`{"download":{"embed_lyrics":false,"cover_format":"png"},"simulate":{"enabled":true,"min_speed_kbps":10,"max_speed_kbps":20}}`)
+		`{"download":{"embed_lyrics":false,"cover_format":"png"},"simulate":{"enabled":true,"min_speed_kbps":10,"max_speed_kbps":20},"catalog":{"signed_mode_hls_source":"web_token"}}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -86,6 +86,9 @@ func TestUpdateConfigMergesAndTakesEffect(t *testing.T) {
 	got := store.Get()
 	if got.Download.EmbedLyrics || got.Download.CoverFormat != "png" || !got.Simulate.Enabled {
 		t.Fatalf("update not applied to store: %+v %+v", got.Download, got.Simulate)
+	}
+	if got.Catalog.SignedModeHLSSource != "web_token" {
+		t.Fatalf("catalog.signed_mode_hls_source not applied to store: %+v", got.Catalog)
 	}
 	// Merge semantics: fields absent from the body keep their current values.
 	base := config.Default()
@@ -131,6 +134,7 @@ func TestGetConfigReloadsManualFileEdits(t *testing.T) {
 	// Edit the file behind the running store, as a user would with an editor.
 	edited := base
 	edited.Download.CoverFormat = "png"
+	edited.Catalog.SignedModeHLSSource = "web_token"
 	if err := config.Save(path, edited); err != nil {
 		t.Fatal(err)
 	}
@@ -141,11 +145,14 @@ func TestGetConfigReloadsManualFileEdits(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), `"cover_format":"png"`) {
 		t.Fatalf("GET did not pick up the manual file edit: %s", recorder.Body.String())
 	}
+	if !strings.Contains(recorder.Body.String(), `"signed_mode_hls_source":"web_token"`) {
+		t.Fatalf("GET did not pick up the manual signed_mode_hls_source edit: %s", recorder.Body.String())
+	}
 	if strings.Contains(recorder.Body.String(), "reload_error") {
 		t.Fatalf("unexpected reload_error: %s", recorder.Body.String())
 	}
-	if got := server.cfg.Get(); got.Download.CoverFormat != "png" {
-		t.Fatalf("store snapshot not refreshed: %+v", got.Download)
+	if got := server.cfg.Get(); got.Download.CoverFormat != "png" || got.Catalog.SignedModeHLSSource != "web_token" {
+		t.Fatalf("store snapshot not refreshed: %+v", got.Catalog)
 	}
 
 	// A broken file (edit in progress) must not break GET: the last good
