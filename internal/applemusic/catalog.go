@@ -37,6 +37,13 @@ type CatalogClient struct {
 	webTokenUntil time.Time
 }
 
+const (
+	maxCatalogResponseBytes int64 = 64 << 20
+	maxArtworkBytes         int64 = 64 << 20
+	maxWebPlayerPageBytes   int64 = 16 << 20
+	maxWebPlayerJSBytes     int64 = 64 << 20
+)
+
 func NewCatalogClient(cfg config.CatalogConfig, logger *slog.Logger) *CatalogClient {
 	return &CatalogClient{
 		cfg:    cfg,
@@ -353,7 +360,7 @@ func (c *CatalogClient) stationNextTracks(ctx context.Context, id, mediaUserToke
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("station next-tracks request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return decodeJSONLimited(resp.Body, maxCatalogResponseBytes, out)
 }
 
 func (c *CatalogClient) ArtistAlbums(ctx context.Context, storefront, id string) (ArtistAlbums, error) {
@@ -510,7 +517,7 @@ func (c *CatalogClient) fetchCoverOnce(ctx context.Context, artworkURL, format, 
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("cover request failed: %s", resp.Status)
 	}
-	return io.ReadAll(resp.Body)
+	return readLimited(resp.Body, maxArtworkBytes)
 }
 
 func (c *CatalogClient) get(ctx context.Context, endpoint string, params url.Values, out any) error {
@@ -550,7 +557,7 @@ func (c *CatalogClient) getWithUserToken(ctx context.Context, endpoint string, p
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("catalog request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return decodeJSONLimited(resp.Body, maxCatalogResponseBytes, out)
 }
 
 var (
@@ -665,7 +672,10 @@ func (c *CatalogClient) fetchToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("fetch Apple Music web player failed: %s", resp.Status)
+	}
+	body, err := readLimited(resp.Body, maxWebPlayerPageBytes)
 	if err != nil {
 		return "", err
 	}
@@ -680,7 +690,10 @@ func (c *CatalogClient) fetchToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	defer jsResp.Body.Close()
-	jsBody, err := io.ReadAll(jsResp.Body)
+	if jsResp.StatusCode >= 300 {
+		return "", fmt.Errorf("fetch Apple Music web player script failed: %s", jsResp.Status)
+	}
+	jsBody, err := readLimited(jsResp.Body, maxWebPlayerJSBytes)
 	if err != nil {
 		return "", err
 	}
@@ -800,7 +813,7 @@ func (c *CatalogClient) EnhancedHLSViaWebToken(ctx context.Context, storefront, 
 		return "", fmt.Errorf("catalog request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	var out catalogSongResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := decodeJSONLimited(resp.Body, maxCatalogResponseBytes, &out); err != nil {
 		return "", err
 	}
 	if len(out.Data) == 0 {
@@ -811,6 +824,25 @@ func (c *CatalogClient) EnhancedHLSViaWebToken(ctx context.Context, storefront, 
 		return "", fmt.Errorf("song %s has no enhanced hls manifest", id)
 	}
 	return master, nil
+}
+
+func readLimited(r io.Reader, limit int64) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, fmt.Errorf("upstream response exceeded limit of %d bytes", limit)
+	}
+	return raw, nil
+}
+
+func decodeJSONLimited(r io.Reader, limit int64, out any) error {
+	raw, err := readLimited(r, limit)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, out)
 }
 
 func mapSong(raw catalogSongData) Song {

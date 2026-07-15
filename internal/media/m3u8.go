@@ -16,6 +16,16 @@ import (
 	"time"
 )
 
+const (
+	// HLS playlists are text metadata, never media payloads. This is generous
+	// for even very large variant/segment lists while bounding a bad upstream.
+	maxPlaylistBytes int64 = 16 << 20
+	// AAC-LC is currently materialized in memory before MP4 processing. Bound
+	// both advertised and streamed sizes so a forged Content-Length or endless
+	// response cannot exhaust the process. 512 MiB still covers multi-hour AAC.
+	maxInMemoryMediaBytes int64 = 512 << 20
+)
+
 const prefetchKey = "skd://itunes.apple.com/P000000000/s1/e1"
 
 type m3u8Info = selectedMediaInfo
@@ -227,7 +237,7 @@ func downloadText(ctx context.Context, client *http.Client, uri string) (string,
 	if resp.StatusCode >= 300 {
 		return "", fmt.Errorf("download %s failed: %s", uri, resp.Status)
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := readAllLimited(resp.Body, maxPlaylistBytes)
 	return string(raw), err
 }
 
@@ -254,13 +264,16 @@ func downloadBytes(ctx context.Context, client *http.Client, uri string, onProgr
 		// Fallback: try X-Apple-MS-Content-Length used by Apple CDN
 		total, _ = strconv.ParseInt(resp.Header.Get("X-Apple-MS-Content-Length"), 10, 64)
 	}
+	if total > maxInMemoryMediaBytes {
+		return nil, fmt.Errorf("download %s is too large for in-memory processing: %d bytes (max %d)", uri, total, maxInMemoryMediaBytes)
+	}
 
 	if onProgress == nil || total <= 0 {
 		// No progress tracking possible – just read all at once
 		if onProgress != nil {
 			onProgress(-1)
 		}
-		return io.ReadAll(resp.Body)
+		return readAllLimited(resp.Body, maxInMemoryMediaBytes)
 	}
 
 	buf := bytes.NewBuffer(make([]byte, 0, total))
@@ -269,6 +282,9 @@ func downloadBytes(ctx context.Context, client *http.Client, uri string, onProgr
 	for {
 		n, readErr := resp.Body.Read(chunk)
 		if n > 0 {
+			if downloaded+int64(n) > maxInMemoryMediaBytes {
+				return nil, fmt.Errorf("download %s exceeded in-memory limit of %d bytes", uri, maxInMemoryMediaBytes)
+			}
 			buf.Write(chunk[:n])
 			downloaded += int64(n)
 			onProgress(float64(downloaded) / float64(total))
@@ -281,6 +297,17 @@ func downloadBytes(ctx context.Context, client *http.Client, uri string, onProgr
 		}
 	}
 	return buf.Bytes(), nil
+}
+
+func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, fmt.Errorf("response exceeded limit of %d bytes", limit)
+	}
+	return raw, nil
 }
 
 // downloadToFile streams uri into a newly created temp file under dir and

@@ -23,6 +23,12 @@ func TestFormatArtworkURL(t *testing.T) {
 	}
 }
 
+func TestReadLimitedRejectsOversizedUpstreamResponse(t *testing.T) {
+	if _, err := readLimited(strings.NewReader("12345"), 4); err == nil {
+		t.Fatal("readLimited accepted an upstream response larger than its limit")
+	}
+}
+
 func TestFormatArtworkURLPNG(t *testing.T) {
 	raw := "https://is1-ssl.mzstatic.com/image/thumb/foo/{w}x{h}bb.jpg"
 	got := formatArtworkURL(raw, "png", "600x600")
