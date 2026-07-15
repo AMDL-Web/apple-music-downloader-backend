@@ -213,3 +213,17 @@ func TestApplyValidatedClampsNumericOverrides(t *testing.T) {
 			applied.Download.MaxParallelTracks, applied.Download.MaxAttempts)
 	}
 }
+
+// TestApplyValidatedStrictRejectsOverLimitOverrides covers fresh client
+// submissions: unlike persisted legacy rows, over-limit numeric overrides
+// must be rejected so job submission matches the runtime config API contract.
+func TestApplyValidatedStrictRejectsOverLimitOverrides(t *testing.T) {
+	attempts := 50
+	if _, err := (&DownloadOverrides{MaxAttempts: &attempts}).ApplyValidatedStrict(Default()); err == nil || !strings.Contains(err.Error(), "max_attempts") {
+		t.Fatalf("ApplyValidatedStrict() error = %v, want max_attempts bounds error", err)
+	}
+	tracks := 200
+	if _, err := (&DownloadOverrides{MaxParallelTracks: &tracks}).ApplyValidatedStrict(Default()); err == nil || !strings.Contains(err.Error(), "max_parallel_tracks") {
+		t.Fatalf("ApplyValidatedStrict() error = %v, want max_parallel_tracks bounds error", err)
+	}
+}

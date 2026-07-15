@@ -194,24 +194,42 @@ func main() {
 		activeHTTPHandlers.Wait()
 		close(httpHandlersDone)
 	}()
+	// Every drain below is bounded: a handler blocked writing to a dead client
+	// or a worker stuck in a non-cancellable call must not turn SIGTERM into a
+	// process that never exits. After the cap, log and proceed — the remaining
+	// goroutines may see errors from closing dependencies, but the process is
+	// exiting either way.
+	const drainGiveUp = 60 * time.Second
 	select {
 	case <-httpHandlersDone:
 	case <-time.After(10 * time.Second):
 		logger.Warn("HTTP handlers still draining after shutdown timeout")
-		<-httpHandlersDone
+		select {
+		case <-httpHandlersDone:
+		case <-time.After(drainGiveUp):
+			logger.Error("giving up on HTTP handler drain; a handler appears stuck")
+		}
 	}
 
 	jobShutdownCtx, cancelJobShutdown := context.WithTimeout(context.Background(), 30*time.Second)
 	if err := manager.Shutdown(jobShutdownCtx); err != nil {
 		logger.Warn("job shutdown timed out; waiting before closing dependencies", "error", err)
-		_ = manager.Wait(context.Background())
+		jobWaitCtx, cancelJobWait := context.WithTimeout(context.Background(), drainGiveUp)
+		if err := manager.Wait(jobWaitCtx); err != nil {
+			logger.Error("giving up on job workers; proceeding with shutdown", "error", err)
+		}
+		cancelJobWait()
 	}
 	cancelJobShutdown()
 
 	hookShutdownCtx, cancelHookShutdown := context.WithTimeout(context.Background(), 15*time.Second)
 	if err := hookDispatcher.Shutdown(hookShutdownCtx); err != nil {
 		logger.Warn("hook shutdown timed out; waiting before closing dependencies", "error", err)
-		_ = hookDispatcher.Wait(context.Background())
+		hookWaitCtx, cancelHookWait := context.WithTimeout(context.Background(), drainGiveUp)
+		if err := hookDispatcher.Wait(hookWaitCtx); err != nil {
+			logger.Error("giving up on hook drain; proceeding with shutdown", "error", err)
+		}
+		cancelHookWait()
 	}
 	cancelHookShutdown()
 }

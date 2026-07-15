@@ -140,10 +140,24 @@ func (o *DownloadOverrides) Apply(base Config) Config {
 // but it may not redirect downloads or scratch data elsewhere. Numeric
 // overrides above the hard limits are clamped rather than rejected: persisted
 // jobs may predate the limits, and their stored overrides re-run through this
-// validation on every retry and post-restart requeue.
+// validation on every retry and post-restart requeue. Fresh client input
+// should go through ApplyValidatedStrict instead.
 func (o *DownloadOverrides) ApplyValidated(base Config) (Config, error) {
+	return o.applyValidated(base, true)
+}
+
+// ApplyValidatedStrict is ApplyValidated for freshly submitted overrides:
+// numeric values above the hard limits are rejected with an explicit error
+// instead of clamped, matching the contract of the runtime config API.
+func (o *DownloadOverrides) ApplyValidatedStrict(base Config) (Config, error) {
+	return o.applyValidated(base, false)
+}
+
+func (o *DownloadOverrides) applyValidated(base Config, clampLimits bool) (Config, error) {
 	applied := o.Apply(base)
-	clampDownloadLimits(&applied.Download)
+	if clampLimits {
+		clampDownloadLimits(&applied.Download)
+	}
 	if err := applied.Validate(); err != nil {
 		return applied, err
 	}
