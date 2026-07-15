@@ -167,11 +167,6 @@ func main() {
 		// Do not set WriteTimeout: SSE and WebSocket responses are intentionally
 		// long-lived and must not be cut off by a whole-response deadline.
 	}
-	// net/http does not close hijacked WebSocket connections during Shutdown.
-	// Cancelling the shared base context lets both WebSocket and SSE handlers
-	// leave promptly before job and dependency shutdown continues.
-	httpServer.RegisterOnShutdown(cancelHTTPHandlers)
-
 	go func() {
 		logger.Info("amdl backend listening", "addr", cfg.Server.Listen)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -187,9 +182,12 @@ func main() {
 		logger.Warn("http shutdown timed out", "error", err)
 	}
 	cancelHTTPShutdown()
-	// Shutdown does not wait for hijacked WebSockets, and registered shutdown
-	// callbacks run asynchronously. Cancel explicitly, then join every handler
-	// before closing the database or other dependencies they may still use.
+	// The base context must stay live during Shutdown so in-flight ordinary
+	// requests can finish inside the drain window. Shutdown does not wait for
+	// hijacked WebSockets, and long-lived SSE streams hold it until its
+	// deadline, so cancel the shared base context only now to unstick both,
+	// then join every handler before closing the database or other
+	// dependencies they may still use.
 	cancelHTTPHandlers()
 	httpHandlersDone := make(chan struct{})
 	go func() {
