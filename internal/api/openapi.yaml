@@ -164,6 +164,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/JSONBodyTooLarge'
         '422':
           description: >-
             合并结果未通过配置校验，或试图修改仅启动时生效的字段，
@@ -239,6 +241,8 @@ paths:
                 $ref: '#/components/schemas/NeedsTwoStepResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/JSONBodyTooLarge'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '409':
@@ -269,6 +273,8 @@ paths:
                 $ref: '#/components/schemas/LoggedInResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/JSONBodyTooLarge'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -299,6 +305,8 @@ paths:
                 $ref: '#/components/schemas/LoggedOutResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/JSONBodyTooLarge'
         '404':
           $ref: '#/components/responses/NotFound'
         '502':
@@ -324,6 +332,8 @@ paths:
                 $ref: '#/components/schemas/QualityResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/JSONBodyTooLarge'
         '502':
           $ref: '#/components/responses/BadGateway'
         '503':
@@ -480,6 +490,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/JSONBodyTooLarge'
         '422':
           description: >-
             所有 URL 均被拒绝（响应体为 BatchSubmitResponse，逐条原因见
@@ -801,6 +813,12 @@ components:
   responses:
     BadRequest:
       description: 请求参数错误。
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    JSONBodyTooLarge:
+      description: JSON 请求体超过 1 MiB 上限。
       content:
         application/json:
           schema:
