@@ -128,6 +128,29 @@ func TestSaveUsesOwnerOnlyPermissionsForPersistedToken(t *testing.T) {
 	}
 }
 
+func TestSaveDoesNotFollowLegacyFixedTempSymlink(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	victim := filepath.Join(dir, "victim.txt")
+	if err := os.WriteFile(victim, []byte("do not overwrite"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Older Save implementations opened this predictable name with O_TRUNC.
+	if err := os.Symlink(victim, path+".tmp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, Default()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "do not overwrite" {
+		t.Fatalf("fixed temp symlink target was overwritten: %q", raw)
+	}
+}
+
 func TestStoreSetAndSave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	store := NewFileStore(Default(), path)

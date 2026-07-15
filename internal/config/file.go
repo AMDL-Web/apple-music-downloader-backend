@@ -63,14 +63,15 @@ func Save(path string, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
 	// The persisted config may contain catalog.media_user_token. Always force
-	// owner-only permissions, including when a stale temp file or an older
-	// world-readable config already exists.
-	file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	// owner-only permissions. Create a random, exclusive temp file in the same
+	// directory: a fixed path+".tmp" could be pre-planted as a symlink and make
+	// a config update truncate an unrelated file before the final rename.
+	file, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
+	tmp := file.Name()
 	defer os.Remove(tmp)
 	if err := file.Chmod(0o600); err != nil {
 		file.Close()
