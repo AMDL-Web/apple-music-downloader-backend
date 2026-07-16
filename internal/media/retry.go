@@ -3,6 +3,7 @@ package media
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
 	"time"
 )
 
@@ -16,6 +17,10 @@ type retryFailure struct {
 
 type nonRetryable interface {
 	NonRetryable() bool
+}
+
+type retryDelayHint interface {
+	RetryDelay() time.Duration
 }
 
 func isNonRetryableError(err error) bool {
@@ -40,7 +45,10 @@ func retryBackoff(attempt int) time.Duration {
 	if shift > 3 {
 		shift = 3
 	}
-	return time.Second * time.Duration(1<<shift)
+	base := time.Second * time.Duration(1<<shift)
+	// Add up to 50% jitter so a batch of failures does not wake and hit the
+	// same upstream again in lockstep.
+	return base + time.Duration(rand.Int64N(int64(base/2)+1))
 }
 
 // retryValue runs op up to maxAttempts times (attempt counting starts at 1)
@@ -71,6 +79,10 @@ func retryValue[T any](
 		delay := time.Duration(0)
 		if willRetry {
 			delay = delayFor(attempt)
+			var hint retryDelayHint
+			if errors.As(err, &hint) && hint.RetryDelay() > delay {
+				delay = hint.RetryDelay()
+			}
 		}
 		if onFailure != nil {
 			onFailure(retryFailure{Attempt: attempt, MaxAttempts: reportedMaximum, Delay: delay, WillRetry: willRetry, Err: err})

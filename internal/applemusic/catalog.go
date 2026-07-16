@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,46 @@ type CatalogClient struct {
 	// used by every other catalog request.
 	webToken      string
 	webTokenUntil time.Time
+}
+
+type catalogRequestError struct {
+	statusCode int
+	status     string
+	body       string
+	retryAfter time.Duration
+}
+
+func (e catalogRequestError) Error() string {
+	return fmt.Sprintf("catalog request failed: %s: %s", e.status, e.body)
+}
+
+// NonRetryable lets download operations stop immediately on deterministic
+// client errors such as a missing artist. Rate limits and request timeouts are
+// transient and retain the normal retry path.
+func (e catalogRequestError) NonRetryable() bool {
+	return e.statusCode >= 400 && e.statusCode < 500 && e.statusCode != http.StatusRequestTimeout && e.statusCode != http.StatusTooManyRequests
+}
+
+// RetryDelay exposes Apple's Retry-After hint without coupling the generic
+// retry helper to the catalog package.
+func (e catalogRequestError) RetryDelay() time.Duration { return e.retryAfter }
+
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+		return 0
+	}
+	when, err := http.ParseTime(value)
+	if err != nil || !when.After(now) {
+		return 0
+	}
+	return when.Sub(now)
 }
 
 const (
@@ -555,7 +596,12 @@ func (c *CatalogClient) getWithUserToken(ctx context.Context, endpoint string, p
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("catalog request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return catalogRequestError{
+			statusCode: resp.StatusCode,
+			status:     resp.Status,
+			body:       strings.TrimSpace(string(body)),
+			retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+		}
 	}
 	return decodeJSONLimited(resp.Body, maxCatalogResponseBytes, out)
 }

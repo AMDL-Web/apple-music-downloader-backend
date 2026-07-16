@@ -75,12 +75,23 @@ func (d *Downloader) ensureStandaloneCover(ctx context.Context, path string, res
 	standaloneCoverMu.Lock()
 	defer standaloneCoverMu.Unlock()
 
+	if d.standaloneCoverHandled != nil {
+		if _, ok := d.standaloneCoverHandled[path]; ok {
+			return nil
+		}
+		// Every outcome below is final for this job. A failed lookup or fetch has
+		// already spent the configured retry budget; letting every remaining
+		// track repeat it only amplifies pressure on the same upstream resource.
+		defer func() { d.standaloneCoverHandled[path] = struct{}{} }()
+	}
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	artworkURL, err := resolveURL(ctx)
+	artworkURL, _, err := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(int) (string, error) {
+		return resolveURL(ctx)
+	}, nil)
 	if err != nil {
 		return err
 	}

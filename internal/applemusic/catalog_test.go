@@ -92,6 +92,22 @@ func TestSongRequestsAndMapsExtendedAssetURLs(t *testing.T) {
 	}
 }
 
+func TestCatalogRequestErrorClassificationAndRetryAfter(t *testing.T) {
+	if !(catalogRequestError{statusCode: http.StatusNotFound}).NonRetryable() {
+		t.Fatal("404 should be non-retryable")
+	}
+	if (catalogRequestError{statusCode: http.StatusTooManyRequests}).NonRetryable() {
+		t.Fatal("429 should remain retryable")
+	}
+	now := time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC)
+	if got := parseRetryAfter("3", now); got != 3*time.Second {
+		t.Fatalf("delta Retry-After=%s, want 3s", got)
+	}
+	if got := parseRetryAfter(now.Add(5*time.Second).Format(http.TimeFormat), now); got != 5*time.Second {
+		t.Fatalf("date Retry-After=%s, want 5s", got)
+	}
+}
+
 func TestSongMetadataDoesNotFollowAlbumRelationship(t *testing.T) {
 	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 	client.token = "test-token"

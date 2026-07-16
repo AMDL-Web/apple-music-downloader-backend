@@ -1076,7 +1076,7 @@ components:
         max_parallel_tracks:
           type: integer
           maximum: 64
-          description: 正数允许 1-64；值 <=0 按 1 处理；提交时超过 64 返回 422（早于该上限持久化的任务覆盖在运行时按 64 截断，不会因此失败）。
+          description: 正数允许 1-64；值 <=0 按 1 处理；提交时超过 64 返回 422（早于该上限持久化的任务覆盖在运行时按 64 截断，不会因此失败）。该值限制每任务活跃音轨流水线；进程内跨任务共享的安全门另将 Apple Catalog 逐轨元数据并发限制为 16、媒体 CDN 传输限制为 32。
         max_attempts:
           type: integer
           maximum: 10
@@ -1161,7 +1161,7 @@ components:
             max_parallel_tracks:
               type: integer
               maximum: 64
-              description: 正数允许 1-64；值 <=0 按 1 处理。
+              description: 正数允许 1-64；值 <=0 按 1 处理。该值限制每任务活跃音轨流水线；进程内跨任务共享的安全门另将 Apple Catalog 逐轨元数据并发限制为 16、媒体 CDN 传输限制为 32。
             max_attempts:
               type: integer
               maximum: 10

@@ -40,6 +40,18 @@ type Downloader struct {
 	mp4     *MP4Processor
 	covers  *coverCache
 	logger  *slog.Logger
+
+	// Track concurrency is intentionally allowed up to 64, but the Apple
+	// Catalog and media CDN have lower independent capacity ceilings. These
+	// process-wide gates are shared by per-job clones so concurrent jobs cannot
+	// multiply their upstream pressure.
+	metadataSlots chan struct{}
+	mediaSlots    chan struct{}
+
+	// Per-job suppression for standalone cover paths that were already handled
+	// (written, unavailable, or exhausted). Access is serialized by
+	// standaloneCoverMu.
+	standaloneCoverHandled map[string]struct{}
 }
 
 type downloaderCatalog interface {
@@ -74,7 +86,12 @@ type selectedDownloadMedia struct {
 
 func NewDownloader(store *config.Store, catalog *applemusic.CatalogClient, wrapperClient *wrapper.Client, tools *ToolChecker, logger *slog.Logger) *Downloader {
 	cfg := store.Get()
-	return &Downloader{store: store, cfg: cfg, catalog: catalog, wrapper: wrapperClient, tools: tools, http: newHTTPClient(), mp4: newMP4Processor(cfg), logger: logger}
+	return &Downloader{
+		store: store, cfg: cfg, catalog: catalog, wrapper: wrapperClient, tools: tools,
+		http: newHTTPClient(), mp4: newMP4Processor(cfg), logger: logger,
+		metadataSlots: make(chan struct{}, maxConcurrentMetadataRequests),
+		mediaSlots:    make(chan struct{}, maxConcurrentMediaDownloads),
+	}
 }
 
 // baseConfig returns the current runtime config, falling back to the fixed
@@ -169,6 +186,7 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	}
 	jobDownloader := d.withConfig(cfg)
 	jobDownloader.covers = newCoverCache(jobDownloader.catalog)
+	jobDownloader.standaloneCoverHandled = make(map[string]struct{})
 	return jobDownloader.processJob(ctx, job, reporter)
 }
 
@@ -515,7 +533,12 @@ func (r *trackMetadataResolver) song(ctx context.Context, initial applemusic.Son
 		return initial, nil
 	}
 
+	release, err := acquireOperationSlot(ctx, r.downloader.metadataSlots)
+	if err != nil {
+		return applemusic.Song{}, err
+	}
 	song, err := r.downloader.catalog.SongMetadata(ctx, r.storefront, initial.ID)
+	release()
 	if err != nil {
 		return applemusic.Song{}, err
 	}
@@ -1117,6 +1140,11 @@ func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected
 	// Stream-download to a temp file with per-chunk progress from 5% → 55%. The
 	// encrypted bytes stay on disk and are streamed back in during decrypt, so
 	// they never occupy a full-track []byte in memory.
+	release, err := acquireOperationSlot(ctx, d.mediaSlots)
+	if err != nil {
+		return selectedDownloadMedia{}, err
+	}
+	defer release()
 	rawPath, err := downloadToFile(ctx, d.http, selected.info.MediaURI, d.cfg.Download.TempDir, func(p float64) {
 		if p < 0 {
 			return // Content-Length unknown, stay at 5%
@@ -1286,6 +1314,11 @@ func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *
 	})})
 
 	set(domain.ItemDownloading, 0.05, "downloading encrypted AAC-LC media")
+	release, err := acquireOperationSlot(ctx, d.mediaSlots)
+	if err != nil {
+		return aacLCMedia{}, nil, err
+	}
+	defer release()
 	// Stream-download with per-chunk progress from 5% → 55%
 	raw, err := downloadBytes(ctx, d.http, media.MediaURI, func(p float64) {
 		if p < 0 {

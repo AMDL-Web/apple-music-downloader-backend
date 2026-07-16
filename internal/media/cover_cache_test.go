@@ -220,3 +220,26 @@ func TestStandaloneAndEmbeddedCoversShareJobCache(t *testing.T) {
 		t.Fatalf("cover requests = %d, want 1 shared request", got)
 	}
 }
+
+func TestStandaloneCoverFailureIsHandledOncePerJob(t *testing.T) {
+	cfg := config.Default()
+	cfg.Download.MaxAttempts = 1
+	downloader := &Downloader{cfg: cfg, standaloneCoverHandled: make(map[string]struct{})}
+	path := filepath.Join(t.TempDir(), "artist", "artist.jpg")
+	wantErr := errors.New("artist not found")
+	var calls int
+	resolve := func(context.Context) (string, error) {
+		calls++
+		return "", wantErr
+	}
+
+	if err := downloader.ensureStandaloneCover(context.Background(), path, resolve); !errors.Is(err, wantErr) {
+		t.Fatalf("first ensure error=%v, want %v", err, wantErr)
+	}
+	if err := downloader.ensureStandaloneCover(context.Background(), path, resolve); err != nil {
+		t.Fatalf("second ensure error=%v, want suppressed duplicate", err)
+	}
+	if calls != 1 {
+		t.Fatalf("resolver calls=%d, want 1", calls)
+	}
+}

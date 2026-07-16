@@ -304,7 +304,9 @@ curl -X DELETE http://localhost:18080/api/v1/downloads/{job_id}
 
 ### 重试与编码降级
 
+- `download.max_parallel_tracks` 控制每个集合同时活跃的音轨流水线，允许 `1-64`。为避免高并发任务同时冲击同一上游，进程内还会跨任务共享两层安全门：Apple Catalog 逐轨元数据最多并发 16，媒体 CDN 传输最多并发 32；其它处理阶段仍可继续并行。
 - `download.max_attempts`：元数据、封面、歌词以及每个编码的下载/解密阶段的最大总尝试次数（含首次）；正数允许 `1-10`。例如 `4` 表示每个操作最多尝试 4 次；值 `<= 0` 仍按 1 处理（仅尝试一次，不重试）。
+- 可重试错误使用带随机抖动的指数退避；Apple Catalog 返回 `Retry-After` 时，等待时间不会短于该提示，避免同一批请求同步重放。
 - `download.quality_priority`：按顺序尝试的 Enhanced HLS 编码回退链，支持 `alac`、`aac`、`aac-binaural`、`aac-downmix`、`ec3` 和 `ac3`。
 - `download.codec_alternative`：是否在前一个编码重试耗尽后继续尝试回退链；关闭时只尝试第一个编码。
 - `aac-lc` 无需写入 `quality_priority`；开启编码回退时会自动追加为最后的 WebPlayback 保底格式。
