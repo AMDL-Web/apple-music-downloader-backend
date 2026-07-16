@@ -19,6 +19,7 @@ func TestEnvOverrides(t *testing.T) {
 		"AMDL_DOWNLOAD_MAX_ATTEMPTS=7",
 		"AMDL_DOWNLOAD_QUALITY_PRIORITY=aac, alac,",
 		"AMDL_CATALOG_ALLOWED_ORIGINS=",
+		"AMDL_CATALOG_MEDIA_USER_TOKEN_PRIORITY=request",
 		"UNRELATED=1",
 	})
 	if err != nil {
@@ -49,6 +50,9 @@ func TestEnvOverrides(t *testing.T) {
 	// An empty value overrides a list to empty.
 	if !reflect.DeepEqual(cfg.Catalog.AllowedOrigins, []string{}) {
 		t.Fatalf("allowed origins = %#v, want empty list", cfg.Catalog.AllowedOrigins)
+	}
+	if cfg.Catalog.LegacyMediaUserTokenPriority != "" {
+		t.Fatalf("legacy media-user-token priority was not normalized: %q", cfg.Catalog.LegacyMediaUserTokenPriority)
 	}
 }
 

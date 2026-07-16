@@ -240,12 +240,16 @@ curl -X POST http://localhost:18080/api/v1/downloads \
 
 `force: true` 会覆盖已存在的音频及其歌词边车文件；默认为 `false`，已存在的文件会被跳过。
 
-下载电台（station，链接形如 `https://music.apple.com/us/station/.../ra.xxxx`）：仅支持能解析为曲目列表的个性化/精选电台，需提供订阅令牌 `media_user_token`（可随请求提供，也可写入 `catalog.media_user_token`，并用 `catalog.media_user_token_priority` 选择请求值或配置值优先）；直播电台（Apple Music 1 等）没有静态曲目列表，任务会以明确错误结束。电台曲目取自 Apple Music 的「接下来播放」滚动列表，因此一次下载捕获的是当前返回的若干首曲目，而非固定编目。随请求提供的 `media_user_token` 只保存在内存中、随这批任务的生命周期存在；写入配置文件的令牌会随配置持久化。该令牌同时用于私人歌单（`pl.u-xxx`）的封面获取：公共目录不含私人歌单封面，提供令牌后会以用户身份从库副本读取；不提供令牌时私人歌单仍可下载，只是没有歌单封面。电台产物存入独立的电台目录，按 `download.station_path_format`（默认 `stations/{StationName}/{SongNumber:02d}. {SongName}`）归档。
+下载电台（station，链接形如 `https://music.apple.com/us/station/.../ra.xxxx`）：仅支持能解析为曲目列表的个性化/精选电台，需提供 Apple Music 订阅令牌（media-user-token）。按任务入口是 `overrides.media_user_token`；未提供该覆盖时，后端使用运行时配置中的 `catalog.media_user_token` 作为 fallback。覆盖字段具有三态语义：省略表示沿用全局 fallback，非空字符串表示本批任务使用该值，显式空字符串 `""` 表示为本批任务清空全局 fallback。旧的请求顶层 `media_user_token` 不再接受，会作为未知字段返回 `400`。`catalog.media_user_token_priority` 只为兼容旧配置保留，现已弃用且不再参与选择。
+
+请求覆盖令牌只会持久化到实际需要它的电台任务和私人歌单（`pl.u-xxx`）任务；同一批中的单曲、专辑、艺人和其它歌单任务不会保存它。任务完成或取消后令牌会被清除；失败任务会保留令牌，以便后续重试继续解析。创建、列表、详情以及 SSE/WebSocket 等任务响应永不回显令牌。写入 `catalog.media_user_token` 的全局 fallback 则随配置文件持久化，并可能由 `GET /api/v1/config` 返回。该令牌还用于私人歌单的封面获取：公共目录不含私人歌单封面，提供令牌后会以用户身份从库副本读取；不提供令牌时私人歌单仍可下载，只是没有歌单封面。
+
+直播电台（Apple Music 1 等）没有静态曲目列表，任务会以明确错误结束。电台曲目取自 Apple Music 的「接下来播放」滚动列表，因此一次下载捕获的是当前返回的若干首曲目，而非固定编目。电台产物存入独立的电台目录，按 `download.station_path_format`（默认 `stations/{StationName}/{SongNumber:02d}. {SongName}`）归档。
 
 ```bash
 curl -X POST http://localhost:18080/api/v1/downloads \
   -H 'Content-Type: application/json' \
-  -d '{"urls":["https://music.apple.com/us/station/example/ra.978194965"],"media_user_token":"<你的 media-user-token>"}'
+  -d '{"urls":["https://music.apple.com/us/station/example/ra.978194965"],"overrides":{"media_user_token":"<你的 media-user-token>"}}'
 ```
 
 查询任务：

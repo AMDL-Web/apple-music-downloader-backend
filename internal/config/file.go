@@ -20,8 +20,9 @@ const exampleFileName = "config.example.yaml"
 // the example file since YAML marshaling cannot preserve comments.
 const savedFileHeader = `# Managed by the amdl backend: rewritten (comments dropped) on every
 # PUT /api/v1/config. Manual edits to runtime-mutable fields (download,
-# logging.level/access_log, simulate, catalog.album_track_url_mode) take effect on the next
-# GET /api/v1/config; edits to startup-bound fields require a restart. A PUT
+# logging.level/access_log, simulate, catalog.album_track_url_mode/media_user_token/
+# signed_mode_hls_source) take effect on the next GET /api/v1/config; edits to
+# startup-bound fields require a restart. A PUT
 # issued before either of those overwrites manual edits. Key documentation
 # lives in ` + exampleFileName + `.
 `
