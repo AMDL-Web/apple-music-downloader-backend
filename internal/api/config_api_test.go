@@ -57,8 +57,8 @@ func TestGetConfigReturnsOnlyMutableFields(t *testing.T) {
 	if err := json.Unmarshal(resp.Config["catalog"], &catalog); err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog) != 4 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["media_user_token_priority"] != "config" || catalog["signed_mode_hls_source"] != "wrapper" {
-		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/media_user_token_priority/signed_mode_hls_source", catalog)
+	if len(catalog) != 3 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["signed_mode_hls_source"] != "wrapper" {
+		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/signed_mode_hls_source", catalog)
 	}
 	var logging map[string]any
 	if err := json.Unmarshal(resp.Config["logging"], &logging); err != nil {
@@ -94,6 +94,23 @@ func TestUpdateConfigMergesAndTakesEffect(t *testing.T) {
 	base := config.Default()
 	if got.Download.SongPathFormat != base.Download.SongPathFormat || got.Server.Listen != base.Server.Listen {
 		t.Fatalf("omitted fields changed: %+v", got)
+	}
+}
+
+func TestUpdateConfigAcceptsAndDropsLegacyMediaUserTokenPriority(t *testing.T) {
+	store := config.NewStore(config.Default())
+	server := &Server{cfg: store}
+	recorder := requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config",
+		`{"catalog":{"media_user_token":"configured-token","media_user_token_priority":"request"}}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "media_user_token_priority") {
+		t.Fatalf("deprecated priority was echoed in runtime config: %s", recorder.Body.String())
+	}
+	got := store.Get()
+	if got.Catalog.MediaUserToken != "configured-token" || got.Catalog.LegacyMediaUserTokenPriority != "" {
+		t.Fatalf("normalized catalog config = %+v", got.Catalog)
 	}
 }
 
@@ -285,6 +302,77 @@ func TestCreateDownloadWithOverrides(t *testing.T) {
 	}
 	if qp := persisted.Overrides.QualityPriority; qp == nil || len(*qp) != 1 || (*qp)[0] != "aac" {
 		t.Fatalf("persisted quality_priority override = %v, want [aac]", qp)
+	}
+}
+
+func TestCreateDownloadUsesMediaUserTokenOverrideWithoutEchoingIt(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	manager := jobs.NewManager(store, events.NewHub(), stubProcessor{}, 1, slog.Default())
+	server := &Server{cfg: config.NewStore(config.Default()), store: store, manager: manager}
+
+	submit := func(body string) domain.Job {
+		t.Helper()
+		recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads", body)
+		if recorder.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+		}
+		if strings.Contains(recorder.Body.String(), "secret-") || strings.Contains(recorder.Body.String(), "media_user_token") {
+			t.Fatalf("submit response echoed media-user-token: %s", recorder.Body.String())
+		}
+		var resp domain.BatchSubmitResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.Accepted != 1 || resp.Results[0].Job == nil {
+			t.Fatalf("submit response = %+v", resp)
+		}
+		job, err := store.GetJob(t.Context(), resp.Results[0].Job.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return job
+	}
+
+	canonical := submit(`{"urls":["station|us|ra.1"],"overrides":{"media_user_token":" secret-canonical "}}`)
+	if canonical.Overrides == nil || canonical.Overrides.MediaUserToken == nil || *canonical.Overrides.MediaUserToken != "secret-canonical" {
+		t.Fatalf("canonical token override = %+v", canonical.Overrides)
+	}
+	for _, path := range []string{"/api/v1/downloads/" + canonical.ID, "/api/v1/downloads"} {
+		recorder := requestJSON(t, server.Routes(), http.MethodGet, path, "")
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, body = %s", path, recorder.Code, recorder.Body.String())
+		}
+		if strings.Contains(recorder.Body.String(), "secret-canonical") || strings.Contains(recorder.Body.String(), "media_user_token") {
+			t.Fatalf("GET %s echoed media-user-token: %s", path, recorder.Body.String())
+		}
+	}
+
+	empty := submit(`{"urls":["station|us|ra.2"],"overrides":{"media_user_token":""}}`)
+	if empty.Overrides == nil || empty.Overrides.MediaUserToken == nil || *empty.Overrides.MediaUserToken != "" {
+		t.Fatalf("explicit-empty token override lost its three-state meaning = %+v", empty.Overrides)
+	}
+
+	notNeeded := submit(`{"urls":["song|us|3"],"overrides":{"media_user_token":"secret-unused"}}`)
+	if notNeeded.Overrides != nil && notNeeded.Overrides.MediaUserToken != nil {
+		t.Fatalf("unneeded song token was persisted: %+v", notNeeded.Overrides)
+	}
+}
+
+func TestCreateDownloadRejectsLegacyTopLevelMediaUserToken(t *testing.T) {
+	server := &Server{cfg: config.NewStore(config.Default())}
+	for _, token := range []string{`"secret-legacy"`, `""`} {
+		recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads",
+			`{"urls":["station|us|ra.1"],"media_user_token":`+token+`}`)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("token %s: status = %d, body = %s", token, recorder.Code, recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Body.String(), "media_user_token") || !strings.Contains(recorder.Body.String(), "unknown field") {
+			t.Fatalf("token %s: error body does not identify unknown field: %s", token, recorder.Body.String())
+		}
 	}
 }
 

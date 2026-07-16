@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"time"
 
 	"amdl/internal/config"
@@ -82,10 +83,11 @@ type Job struct {
 	ArtworkURL   string `json:"artwork_url,omitempty"`
 	CanonicalKey string `json:"-"`
 	Force        bool   `json:"force"`
-	// Overrides is the per-request download config overlay attached at
-	// submission; nil for jobs submitted without one. It is persisted with
-	// the job and applied on top of the live runtime config each time the
-	// job runs (including retries and post-restart requeues).
+	// Overrides is the per-request job config overlay attached at submission;
+	// nil for jobs submitted without one. It is persisted with the job and
+	// applied on top of the live runtime config each time the job runs
+	// (including retries and post-restart requeues). Credential fields are
+	// redacted from its public JSON representation.
 	Overrides   *config.DownloadOverrides `json:"overrides,omitempty"`
 	Status      JobStatus                 `json:"status"`
 	TotalItems  int                       `json:"total_items"`
@@ -94,6 +96,17 @@ type Job struct {
 	Error       string                    `json:"error,omitempty"`
 	CreatedAt   time.Time                 `json:"created_at"`
 	UpdatedAt   time.Time                 `json:"updated_at"`
+}
+
+// MarshalJSON is the public job representation used by create/list/detail and
+// live feeds. Per-job media-user-tokens are credentials: keep them available
+// in the internal/persisted Job for retry and recovery, but never echo them to
+// API clients. A token-only override collapses to nil and is omitted entirely.
+func (j Job) MarshalJSON() ([]byte, error) {
+	type publicJob Job
+	public := publicJob(j)
+	public.Overrides = j.Overrides.WithoutMediaUserToken()
+	return json.Marshal(public)
 }
 
 type JobItem struct {
@@ -294,17 +307,10 @@ type DownloadFeedMessage struct {
 type DownloadRequest struct {
 	URLs  []string `json:"urls"`
 	Force bool     `json:"force"`
-	// Overrides optionally overlays the download section of the runtime
-	// config for every job created from this request only. Omitted fields
-	// keep the runtime config's values.
+	// Overrides optionally overlays the job-mutable runtime config for every
+	// job created from this request. Omitted fields keep the runtime values;
+	// media_user_token overlays catalog.media_user_token for jobs that need it.
 	Overrides *config.DownloadOverrides `json:"overrides,omitempty"`
-	// MediaUserToken is an optional Apple Music subscription token
-	// (media-user-token) used only to resolve downloads that need user
-	// identity in this request. It is kept in memory for jobs created by this
-	// request; alternatively, catalog.media_user_token can persist a token in
-	// the runtime config, with catalog.media_user_token_priority choosing which
-	// source wins when both are provided.
-	MediaUserToken string `json:"media_user_token,omitempty"`
 }
 
 type SubmitStatus string

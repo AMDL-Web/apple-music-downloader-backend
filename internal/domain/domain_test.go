@@ -1,6 +1,38 @@
 package domain
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"amdl/internal/config"
+)
+
+func TestJobJSONRedactsMediaUserTokenOverride(t *testing.T) {
+	token := "secret-token"
+	embed := false
+	raw, err := json.Marshal(Job{
+		ID:        "job-1",
+		Overrides: &config.DownloadOverrides{MediaUserToken: &token, EmbedCover: &embed},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), token) || strings.Contains(string(raw), "media_user_token") {
+		t.Fatalf("job JSON leaked media-user-token: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"embed_cover":false`) {
+		t.Fatalf("job JSON lost ordinary override: %s", raw)
+	}
+
+	raw, err = json.Marshal(Job{ID: "job-2", Overrides: &config.DownloadOverrides{MediaUserToken: &token}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "overrides") {
+		t.Fatalf("token-only override should be omitted from job JSON: %s", raw)
+	}
+}
 
 func TestSummarizeHooksKeepsLatestStatePerHook(t *testing.T) {
 	events := []Event{

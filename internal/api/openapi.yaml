@@ -103,7 +103,7 @@ paths:
       summary: 读取当前运行时配置（仅可修改字段）
       description: >-
         返回当前生效配置中可运行时修改的部分：download 段（max_running_jobs
-        除外）、logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/media_user_token_priority/signed_mode_hls_source。
+        除外）、logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/signed_mode_hls_source。
         仅启动时生效的字段（server、database、logging 其它字段、wrapper、tools、catalog 其它字段）不返回——
         它们无法通过本 API 修改，请编辑 configs/config.yaml 并重启。
 
@@ -129,8 +129,10 @@ paths:
         （含整段）被替换。合并结果必须通过与配置文件相同的完整校验。
 
         仅 GET 返回的字段可以修改：download 段（max_running_jobs 除外）、
-        logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/media_user_token_priority/signed_mode_hls_source。其余字段只在进程启动时
+        logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/signed_mode_hls_source。其余字段只在进程启动时
         被消费，修改请求会被 422 拒绝——请改 configs/config.yaml 并重启。
+        作为唯一例外，旧客户端提交的 catalog.media_user_token_priority 仍会被
+        接受，但该字段已弃用且值会被忽略，不再参与令牌选择。
         被 AMDL_<大写段名>_<大写键名> 环境变量覆盖的字段同样返回 422：
         写入会在下一次配置重载时被环境变量的值重新遮盖，请改环境变量并
         重启。
@@ -467,7 +469,9 @@ paths:
       description: >-
         提交一批 URL，逐条返回入队结果；重复、不支持或队列已满的 URL 在
         results 中单独标记，不影响其他 URL 入队。可选的 overrides 字段
-        对本次请求创建的所有任务生效，覆盖运行时配置的 download 段。
+        对本次请求创建的任务生效，覆盖运行时配置的 download 段；其中
+        overrides.media_user_token 覆盖 catalog.media_user_token fallback，
+        并采用单独的按需持久化、终态清理和响应脱敏规则。
       operationId: createDownload
       requestBody:
         required: true
@@ -484,8 +488,8 @@ paths:
                 $ref: '#/components/schemas/BatchSubmitResponse'
         '400':
           description: >-
-            请求体无法解析、包含未知字段（例如 overrides 内的键拼写错误）、
-            urls 为空或超过单次上限（100 条）。
+            请求体无法解析、包含未知字段（例如旧顶层 media_user_token，或
+            overrides 内的键拼写错误）、urls 为空或超过单次上限（100 条）。
           content:
             application/json:
               schema:
@@ -1022,8 +1026,9 @@ components:
           description: >-
             Apple Music 链接列表（单曲/专辑/歌单/艺人/电台）。每个元素内允许包含换行或空白分隔的多个
             URL，服务端会自动拆分；拆分后单次最多 100 条。电台（station，形如
-            .../station/.../ra.xxxx）仅支持可解析为曲目列表的个性化/精选电台，需随请求提供
-            media_user_token（也可使用配置文件中的 catalog.media_user_token）；直播电台（Apple Music 1 等）没有静态曲目列表，无法下载。
+            .../station/.../ra.xxxx）仅支持可解析为曲目列表的个性化/精选电台，需要
+            overrides.media_user_token 或运行时配置中的 catalog.media_user_token fallback；
+            直播电台（Apple Music 1 等）没有静态曲目列表，无法下载。
           minItems: 1
           items:
             type: string
@@ -1037,26 +1042,31 @@ components:
         overrides:
           $ref: '#/components/schemas/DownloadOverrides'
           description: >-
-            可选：仅对本次请求创建的任务生效的下载配置覆盖。省略的字段沿用
-            当前运行时配置。覆盖随任务持久化，重试和重启恢复后依然生效，
-            不影响其它任务。
-        media_user_token:
-          type: string
-          description: >-
-            可选：Apple Music 订阅令牌（media-user-token），仅用于本次请求中需要用户身份的
-            解析：电台（station）下载，以及私人歌单（pl.u-xxx）的封面获取（公共目录不含其封
-            面，需以用户身份读取库中的副本）。随请求提供的值只保存在内存中、随这批任务的生命周期存在；写入 catalog.media_user_token
-            的值会随配置持久化。catalog.media_user_token_priority 控制两者同时存在时优先使用哪一
-            个；其余链接会忽略该字段。
+            可选：仅对本次请求创建的任务生效的配置覆盖。省略的字段沿用
+            当前运行时配置。下载配置覆盖随每个任务持久化，重试和重启恢复后
+            依然生效；media_user_token 采用 DownloadOverrides 中说明的更严格
+            生命周期与脱敏规则。所有覆盖均不影响其它任务。
     DownloadOverrides:
       type: object
       description: >-
-        下载配置的按需覆盖层，字段与运行时配置 download 段一一对应
-        （max_running_jobs 除外——工作池大小在启动时确定，无法按任务覆盖）。
+        按任务配置覆盖层：除 media_user_token 外，字段与运行时配置 download 段
+        一一对应（max_running_jobs 除外——工作池大小在启动时确定，无法按任务覆盖）。
         所有字段可选；提交时会以“当前运行时配置 + 覆盖”做完整校验。
         downloads_dir 和 temp_dir 只能选择管理员配置根目录本身或其子目录，
-        不能通过绝对路径、.. 或符号链接逃出对应根目录。
+        不能通过绝对路径、.. 或符号链接逃出对应根目录。media_user_token 具有
+        三态语义：省略时沿用 catalog.media_user_token fallback，非空字符串覆盖
+        fallback，显式空字符串清空该任务的 fallback。该令牌只持久化到实际需要
+        它的 station 和私人歌单（pl.u-xxx）任务；同批其它类型任务不保存。任务
+        完成或取消时清除，失败时保留以支持 retry，且在创建、列表、详情及
+        SSE/WebSocket 等任何任务响应中永不回显。
       properties:
+        media_user_token:
+          type: string
+          writeOnly: true
+          description: >-
+            Apple Music 订阅令牌（media-user-token），用于电台解析和私人歌单封面
+            获取。省略、非空和显式空字符串的三态语义，以及持久化、清理和响应
+            脱敏规则见 DownloadOverrides 描述。
         quality_priority:
           type: array
           items:
@@ -1117,9 +1127,18 @@ components:
               enum: [song, album]
             media_user_token:
               type: string
+              description: >-
+                电台下载和私人歌单封面获取使用的全局 media-user-token fallback。
+                可通过 PUT 修改并写回配置文件；GET 会返回当前值。请求中的
+                overrides.media_user_token 可以按任务覆盖或显式清空它。
             media_user_token_priority:
               type: string
               enum: [request, config]
+              deprecated: true
+              writeOnly: true
+              description: >-
+                已弃用、仅为旧客户端兼容而接受的输入字段；值会被忽略，不再
+                参与令牌选择。新客户端必须使用 overrides.media_user_token。
             signed_mode_hls_source:
               type: string
               enum: [wrapper, web_token]
@@ -1339,7 +1358,9 @@ components:
           type: boolean
         overrides:
           $ref: '#/components/schemas/DownloadOverrides'
-          description: 提交时附带的下载配置覆盖；未附带时省略。
+          description: >-
+            提交时附带的配置覆盖；未附带时省略。media_user_token 是 writeOnly，
+            即使失败任务仍在内部保留它以供重试，任何任务响应也不会包含该值。
         status:
           type: string
           enum: [queued, running, completed, failed, cancelled]

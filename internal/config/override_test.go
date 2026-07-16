@@ -23,7 +23,10 @@ func TestDownloadOverridesApplyMergesOnlySetFields(t *testing.T) {
 	format := "png"
 	parallel := 7
 	quality := []string{"aac"}
+	mediaUserToken := "job-token"
+	base.Catalog.MediaUserToken = "global-token"
 	overrides := &DownloadOverrides{
+		MediaUserToken:    &mediaUserToken,
 		QualityPriority:   &quality,
 		EmbedCover:        &embed,
 		CoverFormat:       &format,
@@ -37,6 +40,9 @@ func TestDownloadOverridesApplyMergesOnlySetFields(t *testing.T) {
 	if got.Download.EmbedCover != false || got.Download.CoverFormat != "png" || got.Download.MaxParallelTracks != 7 {
 		t.Fatalf("overridden fields not applied: %+v", got.Download)
 	}
+	if got.Catalog.MediaUserToken != "job-token" {
+		t.Fatalf("media_user_token = %q, want job-token", got.Catalog.MediaUserToken)
+	}
 	// Untouched fields keep the base values, including false-able booleans.
 	if got.Download.EmbedLyrics != base.Download.EmbedLyrics || got.Download.SongPathFormat != base.Download.SongPathFormat {
 		t.Fatalf("unset fields changed: %+v", got.Download)
@@ -44,6 +50,36 @@ func TestDownloadOverridesApplyMergesOnlySetFields(t *testing.T) {
 	// The base config must not be mutated in place.
 	if base.Download.EmbedCover != true || base.Download.CoverFormat != "jpg" {
 		t.Fatalf("Apply mutated the base config: %+v", base.Download)
+	}
+	if base.Catalog.MediaUserToken != "global-token" {
+		t.Fatalf("Apply mutated the base catalog config: %+v", base.Catalog)
+	}
+}
+
+func TestDownloadOverridesMediaUserTokenThreeState(t *testing.T) {
+	base := Default()
+	base.Catalog.MediaUserToken = "global-token"
+	if got := (&DownloadOverrides{}).Apply(base).Catalog.MediaUserToken; got != "global-token" {
+		t.Fatalf("absent override token = %q, want global-token", got)
+	}
+	empty := ""
+	if got := (&DownloadOverrides{MediaUserToken: &empty}).Apply(base).Catalog.MediaUserToken; got != "" {
+		t.Fatalf("explicit empty override token = %q, want empty", got)
+	}
+}
+
+func TestDownloadOverridesRequestJSONIncludesMediaUserToken(t *testing.T) {
+	token := "secret-token"
+	embed := false
+	raw, err := json.Marshal(&DownloadOverrides{MediaUserToken: &token, EmbedCover: &embed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"media_user_token":"secret-token"`) {
+		t.Fatalf("request override JSON lost media-user-token: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"embed_cover":false`) {
+		t.Fatalf("public override JSON lost ordinary field: %s", raw)
 	}
 }
 
@@ -176,8 +212,8 @@ func TestMutableViewOmitsStartupBoundFields(t *testing.T) {
 		t.Fatalf("download.cover_format = %v, want jpg", download["cover_format"])
 	}
 	catalog, ok := view["catalog"].(map[string]any)
-	if !ok || len(catalog) != 4 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["media_user_token_priority"] != "config" || catalog["signed_mode_hls_source"] != "wrapper" {
-		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/media_user_token_priority/signed_mode_hls_source", view["catalog"])
+	if !ok || len(catalog) != 3 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["signed_mode_hls_source"] != "wrapper" {
+		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/signed_mode_hls_source", view["catalog"])
 	}
 	logging, ok := view["logging"].(map[string]any)
 	if !ok || len(logging) != 2 || logging["level"] != "info" || logging["access_log"] != false {
