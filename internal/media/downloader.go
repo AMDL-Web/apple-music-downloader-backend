@@ -17,6 +17,7 @@ import (
 	"syscall"
 
 	"amdl/internal/applemusic"
+	"amdl/internal/concurrency"
 	"amdl/internal/config"
 	"amdl/internal/domain"
 	"amdl/internal/jobs"
@@ -45,8 +46,8 @@ type Downloader struct {
 	// Catalog and media CDN have lower independent capacity ceilings. These
 	// process-wide gates are shared by per-job clones so concurrent jobs cannot
 	// multiply their upstream pressure.
-	metadataSlots chan struct{}
-	mediaSlots    chan struct{}
+	metadataLimiter *concurrency.Limiter
+	mediaLimiter    *concurrency.Limiter
 
 	// Per-job suppression for standalone cover paths that were already handled
 	// (written, unavailable, or exhausted). Access is serialized by
@@ -89,8 +90,8 @@ func NewDownloader(store *config.Store, catalog *applemusic.CatalogClient, wrapp
 	return &Downloader{
 		store: store, cfg: cfg, catalog: catalog, wrapper: wrapperClient, tools: tools,
 		http: newHTTPClient(), mp4: newMP4Processor(cfg), logger: logger,
-		metadataSlots: make(chan struct{}, maxConcurrentMetadataRequests),
-		mediaSlots:    make(chan struct{}, maxConcurrentMediaDownloads),
+		metadataLimiter: concurrency.NewLimiter(func() int { return store.Get().Download.MaxParallelMetadataRequests }),
+		mediaLimiter:    concurrency.NewLimiter(func() int { return store.Get().Download.MaxParallelMediaDownloads }),
 	}
 }
 
@@ -533,7 +534,7 @@ func (r *trackMetadataResolver) song(ctx context.Context, initial applemusic.Son
 		return initial, nil
 	}
 
-	release, err := acquireOperationSlot(ctx, r.downloader.metadataSlots)
+	release, err := acquireOperationSlot(ctx, r.downloader.metadataLimiter)
 	if err != nil {
 		return applemusic.Song{}, err
 	}
@@ -1140,7 +1141,7 @@ func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected
 	// Stream-download to a temp file with per-chunk progress from 5% → 55%. The
 	// encrypted bytes stay on disk and are streamed back in during decrypt, so
 	// they never occupy a full-track []byte in memory.
-	release, err := acquireOperationSlot(ctx, d.mediaSlots)
+	release, err := acquireOperationSlot(ctx, d.mediaLimiter)
 	if err != nil {
 		return selectedDownloadMedia{}, err
 	}
@@ -1314,7 +1315,7 @@ func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *
 	})})
 
 	set(domain.ItemDownloading, 0.05, "downloading encrypted AAC-LC media")
-	release, err := acquireOperationSlot(ctx, d.mediaSlots)
+	release, err := acquireOperationSlot(ctx, d.mediaLimiter)
 	if err != nil {
 		return aacLCMedia{}, nil, err
 	}

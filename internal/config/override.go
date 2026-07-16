@@ -12,10 +12,13 @@ import (
 // retries and post-restart requeues without leaking into other jobs.
 //
 // Every field is optional: nil means "keep the runtime config's value". The
-// download-related JSON keys mirror configs/config.yaml exactly.
+// Download-related JSON keys mirror the job-scoped subset of
+// configs/config.yaml. Process-wide concurrency fields are deliberately absent:
+// max_running_jobs sizes the worker pool, while max_parallel_metadata_requests,
+// max_parallel_media_downloads, and max_parallel_wrapper_requests coordinate
+// all jobs and therefore cannot be meaningfully overridden by one job.
 // MediaUserToken similarly overlays catalog.media_user_token for a job that
-// needs Apple Music user identity. max_running_jobs is deliberately absent —
-// it sizes the worker pool at startup and cannot apply to a single job.
+// needs Apple Music user identity.
 // The two slice fields are *[]string rather than []string so an explicit
 // empty list survives the JSON round trip through the jobs table: nil (field
 // absent, keep config) marshals away under omitempty, while a pointer to an

@@ -173,6 +173,9 @@ func TestRuntimeLockedChanges(t *testing.T) {
 	updated := base
 	updated.Download.QualityPriority = []string{"aac"}
 	updated.Download.EmbedLyrics = false
+	updated.Download.MaxParallelMetadataRequests = 8
+	updated.Download.MaxParallelMediaDownloads = 24
+	updated.Download.MaxParallelWrapperRequests = 12
 	updated.Simulate.Enabled = true
 	updated.Simulate.MinSpeedKBps = 10
 	updated.Catalog.AlbumTrackURLMode = "album"
@@ -210,6 +213,9 @@ func TestMutableViewOmitsStartupBoundFields(t *testing.T) {
 	}
 	if download["cover_format"] != "jpg" {
 		t.Fatalf("download.cover_format = %v, want jpg", download["cover_format"])
+	}
+	if download["max_parallel_metadata_requests"] != float64(32) || download["max_parallel_media_downloads"] != float64(32) || download["max_parallel_wrapper_requests"] != float64(64) {
+		t.Fatalf("download section missing shared limits: %v", download)
 	}
 	catalog, ok := view["catalog"].(map[string]any)
 	if !ok || len(catalog) != 3 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["signed_mode_hls_source"] != "wrapper" {

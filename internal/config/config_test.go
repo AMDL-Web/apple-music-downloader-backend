@@ -39,6 +39,14 @@ func TestDefaultLyricsOptions(t *testing.T) {
 	}
 }
 
+func TestDefaultSharedOperationLimits(t *testing.T) {
+	download := Default().Download
+	if download.MaxParallelMetadataRequests != 32 || download.MaxParallelMediaDownloads != 32 || download.MaxParallelWrapperRequests != 64 {
+		t.Fatalf("shared operation defaults = metadata %d media %d wrapper %d, want 32/32/64",
+			download.MaxParallelMetadataRequests, download.MaxParallelMediaDownloads, download.MaxParallelWrapperRequests)
+	}
+}
+
 func TestDefaultLogging(t *testing.T) {
 	logging := Default().Logging
 	if logging.Level != "info" || logging.Format != "text" || !logging.Console || logging.AccessLog {
@@ -75,6 +83,9 @@ func TestValidateBoundsResourceAmplifyingDownloadSettings(t *testing.T) {
 	}{
 		{name: "running jobs", apply: func(c *Config, value int) { c.Download.MaxRunningJobs = value }, key: "max_running_jobs", max: maxRunningJobsLimit},
 		{name: "parallel tracks", apply: func(c *Config, value int) { c.Download.MaxParallelTracks = value }, key: "max_parallel_tracks", max: maxParallelTracksLimit},
+		{name: "metadata requests", apply: func(c *Config, value int) { c.Download.MaxParallelMetadataRequests = value }, key: "max_parallel_metadata_requests", max: maxSharedRequestsLimit},
+		{name: "media downloads", apply: func(c *Config, value int) { c.Download.MaxParallelMediaDownloads = value }, key: "max_parallel_media_downloads", max: maxSharedRequestsLimit},
+		{name: "wrapper requests", apply: func(c *Config, value int) { c.Download.MaxParallelWrapperRequests = value }, key: "max_parallel_wrapper_requests", max: maxSharedRequestsLimit},
 		{name: "attempts", apply: func(c *Config, value int) { c.Download.MaxAttempts = value }, key: "max_attempts", max: maxAttemptsLimit},
 	}
 	for _, tt := range tests {
@@ -305,13 +316,14 @@ func TestLoadRejectsEmptyPathFormat(t *testing.T) {
 // hard limits existed: the live config.yaml is machine-managed and may hold
 // larger values, so Load must clamp them instead of refusing to boot.
 func TestLoadClampsDownloadLimitsFromFile(t *testing.T) {
-	path := writeConfig(t, "download:\n  max_running_jobs: 100\n  max_parallel_tracks: 200\n  max_attempts: 50\n")
+	path := writeConfig(t, "download:\n  max_running_jobs: 100\n  max_parallel_tracks: 200\n  max_parallel_metadata_requests: 999\n  max_parallel_media_downloads: 999\n  max_parallel_wrapper_requests: 999\n  max_attempts: 50\n")
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load() with over-limit values failed: %v", err)
 	}
-	if cfg.Download.MaxRunningJobs != maxRunningJobsLimit || cfg.Download.MaxParallelTracks != maxParallelTracksLimit || cfg.Download.MaxAttempts != maxAttemptsLimit {
-		t.Fatalf("Load() did not clamp over-limit values: jobs=%d tracks=%d attempts=%d",
-			cfg.Download.MaxRunningJobs, cfg.Download.MaxParallelTracks, cfg.Download.MaxAttempts)
+	if cfg.Download.MaxRunningJobs != maxRunningJobsLimit || cfg.Download.MaxParallelTracks != maxParallelTracksLimit ||
+		cfg.Download.MaxParallelMetadataRequests != maxSharedRequestsLimit || cfg.Download.MaxParallelMediaDownloads != maxSharedRequestsLimit ||
+		cfg.Download.MaxParallelWrapperRequests != maxSharedRequestsLimit || cfg.Download.MaxAttempts != maxAttemptsLimit {
+		t.Fatalf("Load() did not clamp over-limit values: %+v", cfg.Download)
 	}
 }

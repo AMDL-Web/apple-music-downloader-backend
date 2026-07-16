@@ -123,32 +123,35 @@ func (c CatalogConfig) EnhancedHLSFromWebToken() bool {
 }
 
 type DownloadConfig struct {
-	QualityPriority    []string `yaml:"quality_priority" json:"quality_priority"`
-	CodecAlternative   bool     `yaml:"codec_alternative" json:"codec_alternative"`
-	MaxRunningJobs     int      `yaml:"max_running_jobs" json:"max_running_jobs"`
-	MaxParallelTracks  int      `yaml:"max_parallel_tracks" json:"max_parallel_tracks"`
-	MaxAttempts        int      `yaml:"max_attempts" json:"max_attempts"`
-	DownloadsDir       string   `yaml:"downloads_dir" json:"downloads_dir"`
-	SongPathFormat     string   `yaml:"song_path_format" json:"song_path_format"`
-	AlbumPathFormat    string   `yaml:"album_path_format" json:"album_path_format"`
-	ArtistPathFormat   string   `yaml:"artist_path_format" json:"artist_path_format"`
-	PlaylistPathFormat string   `yaml:"playlist_path_format" json:"playlist_path_format"`
-	StationPathFormat  string   `yaml:"station_path_format" json:"station_path_format"`
-	TempDir            string   `yaml:"temp_dir" json:"temp_dir"`
-	CoverSize          string   `yaml:"cover_size" json:"cover_size"`
-	CoverFormat        string   `yaml:"cover_format" json:"cover_format"`
-	EmbedCover         bool     `yaml:"embed_cover" json:"embed_cover"`
-	SaveAlbumCover     bool     `yaml:"save_album_cover" json:"save_album_cover"`
-	SaveArtistCover    bool     `yaml:"save_artist_cover" json:"save_artist_cover"`
-	SavePlaylistCover  bool     `yaml:"save_playlist_cover" json:"save_playlist_cover"`
-	EmbedLyrics        bool     `yaml:"embed_lyrics" json:"embed_lyrics"`
-	SaveLyricsFile     bool     `yaml:"save_lyrics_file" json:"save_lyrics_file"`
-	LyricsFormat       string   `yaml:"lyrics_format" json:"lyrics_format"`
-	LyricsType         string   `yaml:"lyrics_type" json:"lyrics_type"`
-	LyricsExtras       []string `yaml:"lyrics_extras" json:"lyrics_extras"`
-	ALACMaxSampleRate  int      `yaml:"alac_max_sample_rate" json:"alac_max_sample_rate"`
-	ALACMaxBitDepth    int      `yaml:"alac_max_bit_depth" json:"alac_max_bit_depth"`
-	CheckIntegrity     bool     `yaml:"check_integrity" json:"check_integrity"`
+	QualityPriority             []string `yaml:"quality_priority" json:"quality_priority"`
+	CodecAlternative            bool     `yaml:"codec_alternative" json:"codec_alternative"`
+	MaxRunningJobs              int      `yaml:"max_running_jobs" json:"max_running_jobs"`
+	MaxParallelTracks           int      `yaml:"max_parallel_tracks" json:"max_parallel_tracks"`
+	MaxParallelMetadataRequests int      `yaml:"max_parallel_metadata_requests" json:"max_parallel_metadata_requests"`
+	MaxParallelMediaDownloads   int      `yaml:"max_parallel_media_downloads" json:"max_parallel_media_downloads"`
+	MaxParallelWrapperRequests  int      `yaml:"max_parallel_wrapper_requests" json:"max_parallel_wrapper_requests"`
+	MaxAttempts                 int      `yaml:"max_attempts" json:"max_attempts"`
+	DownloadsDir                string   `yaml:"downloads_dir" json:"downloads_dir"`
+	SongPathFormat              string   `yaml:"song_path_format" json:"song_path_format"`
+	AlbumPathFormat             string   `yaml:"album_path_format" json:"album_path_format"`
+	ArtistPathFormat            string   `yaml:"artist_path_format" json:"artist_path_format"`
+	PlaylistPathFormat          string   `yaml:"playlist_path_format" json:"playlist_path_format"`
+	StationPathFormat           string   `yaml:"station_path_format" json:"station_path_format"`
+	TempDir                     string   `yaml:"temp_dir" json:"temp_dir"`
+	CoverSize                   string   `yaml:"cover_size" json:"cover_size"`
+	CoverFormat                 string   `yaml:"cover_format" json:"cover_format"`
+	EmbedCover                  bool     `yaml:"embed_cover" json:"embed_cover"`
+	SaveAlbumCover              bool     `yaml:"save_album_cover" json:"save_album_cover"`
+	SaveArtistCover             bool     `yaml:"save_artist_cover" json:"save_artist_cover"`
+	SavePlaylistCover           bool     `yaml:"save_playlist_cover" json:"save_playlist_cover"`
+	EmbedLyrics                 bool     `yaml:"embed_lyrics" json:"embed_lyrics"`
+	SaveLyricsFile              bool     `yaml:"save_lyrics_file" json:"save_lyrics_file"`
+	LyricsFormat                string   `yaml:"lyrics_format" json:"lyrics_format"`
+	LyricsType                  string   `yaml:"lyrics_type" json:"lyrics_type"`
+	LyricsExtras                []string `yaml:"lyrics_extras" json:"lyrics_extras"`
+	ALACMaxSampleRate           int      `yaml:"alac_max_sample_rate" json:"alac_max_sample_rate"`
+	ALACMaxBitDepth             int      `yaml:"alac_max_bit_depth" json:"alac_max_bit_depth"`
+	CheckIntegrity              bool     `yaml:"check_integrity" json:"check_integrity"`
 }
 
 const (
@@ -156,6 +159,7 @@ const (
 	// retry fan-out while remaining comfortably above normal deployments.
 	maxRunningJobsLimit    = 32
 	maxParallelTracksLimit = 64
+	maxSharedRequestsLimit = 256
 	maxAttemptsLimit       = 10
 )
 
@@ -191,7 +195,9 @@ func Default() Config {
 		},
 		Download: DownloadConfig{
 			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true,
-			MaxRunningJobs: 2, MaxParallelTracks: 3, MaxAttempts: 4,
+			MaxRunningJobs: 2, MaxParallelTracks: 3,
+			MaxParallelMetadataRequests: 32, MaxParallelMediaDownloads: 32, MaxParallelWrapperRequests: 64,
+			MaxAttempts:        4,
 			DownloadsDir:       "data/downloads",
 			SongPathFormat:     "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
 			AlbumPathFormat:    "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
@@ -254,6 +260,15 @@ func clampDownloadLimits(d *DownloadConfig) {
 	}
 	if d.MaxParallelTracks > maxParallelTracksLimit {
 		d.MaxParallelTracks = maxParallelTracksLimit
+	}
+	if d.MaxParallelMetadataRequests > maxSharedRequestsLimit {
+		d.MaxParallelMetadataRequests = maxSharedRequestsLimit
+	}
+	if d.MaxParallelMediaDownloads > maxSharedRequestsLimit {
+		d.MaxParallelMediaDownloads = maxSharedRequestsLimit
+	}
+	if d.MaxParallelWrapperRequests > maxSharedRequestsLimit {
+		d.MaxParallelWrapperRequests = maxSharedRequestsLimit
 	}
 	if d.MaxAttempts > maxAttemptsLimit {
 		d.MaxAttempts = maxAttemptsLimit
@@ -348,6 +363,15 @@ func (c Config) Validate() error {
 	}
 	if c.Download.MaxParallelTracks > maxParallelTracksLimit {
 		return fmt.Errorf("download.max_parallel_tracks must be at most %d", maxParallelTracksLimit)
+	}
+	if c.Download.MaxParallelMetadataRequests > maxSharedRequestsLimit {
+		return fmt.Errorf("download.max_parallel_metadata_requests must be at most %d", maxSharedRequestsLimit)
+	}
+	if c.Download.MaxParallelMediaDownloads > maxSharedRequestsLimit {
+		return fmt.Errorf("download.max_parallel_media_downloads must be at most %d", maxSharedRequestsLimit)
+	}
+	if c.Download.MaxParallelWrapperRequests > maxSharedRequestsLimit {
+		return fmt.Errorf("download.max_parallel_wrapper_requests must be at most %d", maxSharedRequestsLimit)
 	}
 	if c.Download.MaxAttempts > maxAttemptsLimit {
 		return fmt.Errorf("download.max_attempts must be at most %d", maxAttemptsLimit)

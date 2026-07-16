@@ -7,9 +7,45 @@ import (
 	"testing"
 	"time"
 
+	"amdl/internal/concurrency"
 	pb "github.com/AMDL-Web/wrapper-manager/proto"
 	"google.golang.org/grpc/metadata"
 )
+
+type closeTrackingSession struct{ closes atomic.Int32 }
+
+func (*closeTrackingSession) DecryptFragment(string, [][]byte) ([][]byte, error) { return nil, nil }
+func (s *closeTrackingSession) Close() error {
+	s.closes.Add(1)
+	return nil
+}
+
+func TestLimitedDecryptSessionHoldsSlotUntilClose(t *testing.T) {
+	client := &Client{dataLimiter: concurrency.NewLimiter(func() int { return 1 })}
+	release, err := client.acquireDataSlot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	underlying := &closeTrackingSession{}
+	session := &limitedDecryptSession{DecryptSession: underlying, release: release}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := client.acquireDataSlot(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second wrapper slot error=%v, want deadline exceeded", err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if underlying.closes.Load() != 1 {
+		t.Fatalf("underlying closes=%d, want 1", underlying.closes.Load())
+	}
+	secondRelease, err := client.acquireDataSlot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRelease()
+}
 
 // fakeDecryptStream is a minimal pb.WrapperManagerService_DecryptClient whose
 // Send blocks until the session context is cancelled, modelling a send stuck on

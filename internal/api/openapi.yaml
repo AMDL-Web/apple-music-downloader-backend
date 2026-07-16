@@ -1050,7 +1050,9 @@ components:
       type: object
       description: >-
         按任务配置覆盖层：除 media_user_token 外，字段与运行时配置 download 段
-        一一对应（max_running_jobs 除外——工作池大小在启动时确定，无法按任务覆盖）。
+        一一对应，但不包含进程级字段 max_running_jobs、max_parallel_metadata_requests、
+        max_parallel_media_downloads 和 max_parallel_wrapper_requests；这些值跨任务共享，
+        无法由单个任务覆盖。
         所有字段可选；提交时会以“当前运行时配置 + 覆盖”做完整校验。
         downloads_dir 和 temp_dir 只能选择管理员配置根目录本身或其子目录，
         不能通过绝对路径、.. 或符号链接逃出对应根目录。media_user_token 具有
@@ -1076,7 +1078,7 @@ components:
         max_parallel_tracks:
           type: integer
           maximum: 64
-          description: 正数允许 1-64；值 <=0 按 1 处理；提交时超过 64 返回 422（早于该上限持久化的任务覆盖在运行时按 64 截断，不会因此失败）。该值限制每任务活跃音轨流水线；进程内跨任务共享的安全门另将 Apple Catalog 逐轨元数据并发限制为 16、媒体 CDN 传输限制为 32。
+          description: 正数允许 1-64；值 <=0 按 1 处理；提交时超过 64 返回 422（早于该上限持久化的任务覆盖在运行时按 64 截断，不会因此失败）。该值限制每任务活跃音轨流水线。
         max_attempts:
           type: integer
           maximum: 10
@@ -1161,7 +1163,19 @@ components:
             max_parallel_tracks:
               type: integer
               maximum: 64
-              description: 正数允许 1-64；值 <=0 按 1 处理。该值限制每任务活跃音轨流水线；进程内跨任务共享的安全门另将 Apple Catalog 逐轨元数据并发限制为 16、媒体 CDN 传输限制为 32。
+              description: 正数允许 1-64；值 <=0 按 1 处理。该值限制每任务活跃音轨流水线。
+            max_parallel_metadata_requests:
+              type: integer
+              maximum: 256
+              description: 单个 backend 进程内跨任务共享的 Apple Catalog 逐轨元数据请求并发上限；正数允许 1-256，值 <=0 按 1 处理。默认 32，可运行时修改，不可按任务覆盖。
+            max_parallel_media_downloads:
+              type: integer
+              maximum: 256
+              description: 单个 backend 进程内跨任务共享的加密媒体 CDN 传输并发上限；正数允许 1-256，值 <=0 按 1 处理。默认 32，可运行时修改，不可按任务覆盖。
+            max_parallel_wrapper_requests:
+              type: integer
+              maximum: 256
+              description: 单个 backend 进程内跨任务共享的 wrapper 数据操作并发上限；完整 decrypt session 占一个槽位，Lyrics/M3U8/WebPlayback/License RPC 仅在调用期间占用；登录、登出和状态查询不受限。正数允许 1-256，值 <=0 按 1 处理。默认 64，可运行时修改，不可按任务覆盖。
             max_attempts:
               type: integer
               maximum: 10

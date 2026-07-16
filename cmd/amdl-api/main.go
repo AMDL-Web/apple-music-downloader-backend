@@ -89,7 +89,14 @@ func main() {
 	defer store.Close()
 
 	hub := events.NewHub()
-	wrapperClient, err := wrapper.NewClient(cfg.Wrapper)
+	// cfgStore is the live runtime config shared by the API layer, download
+	// pipeline, and process-wide operation limiters. Fields consumed directly
+	// in main remain startup-bound; runtime-mutable limits are read on every
+	// acquisition so updates apply without a restart.
+	cfgStore := config.NewFileStore(cfg, cfgPath)
+	wrapperClient, err := wrapper.NewClient(cfg.Wrapper, wrapper.WithDataConcurrencyLimit(func() int {
+		return cfgStore.Get().Download.MaxParallelWrapperRequests
+	}))
 	if err != nil {
 		logger.Error("connect wrapper-manager", "error", err)
 		os.Exit(1)
@@ -101,13 +108,6 @@ func main() {
 		logger.Error("sign apple music developer token", "error", err)
 		os.Exit(1)
 	}
-	// cfgStore is the live runtime config shared by the API layer and the
-	// download pipeline; GET/PUT /api/v1/config read and update it, and
-	// updates are written back to cfgPath so they survive restarts. Values
-	// consumed below in main (listen address, database path, wrapper
-	// connection, worker count, catalog client) are startup-bound and the
-	// update endpoint refuses to change them.
-	cfgStore := config.NewFileStore(cfg, cfgPath)
 	toolChecker := media.NewToolChecker(cfg.Tools)
 	downloader := media.NewDownloader(cfgStore, catalog, wrapperClient, toolChecker, logSystem.Logger.With("component", "media"))
 	qualityService := media.NewQualityService(cfgStore, catalog, wrapperClient)

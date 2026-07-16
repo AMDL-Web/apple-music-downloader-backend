@@ -127,10 +127,22 @@ download:
   max_running_jobs: 3
   # integer: maximum tracks downloaded in parallel per collection. Positive values allow 1-64; values <=0 behave as 1;
   # values above 64 in this file are clamped to 64 (the config API and new job submissions reject them;
-  # job overrides persisted before the limit existed are clamped when the job runs). This bounds active track pipelines;
-  # process-wide safety gates independently cap Apple Catalog metadata requests at 16 and media CDN transfers at 32,
-  # across all running jobs, to avoid upstream rate limits and HTTP/2 stream resets. Default: 5.
+  # job overrides persisted before the limit existed are clamped when the job runs). This bounds active track pipelines.
+  # Default: 5.
   max_parallel_tracks: 5
+  # integer: process-wide maximum concurrent per-track Apple Catalog metadata requests, shared across all running jobs.
+  # Positive values allow 1-256; values <=0 behave as 1; values above 256 in this file are clamped to 256
+  # (the config API rejects them). Lower values reduce Catalog 429 responses. Default: 32.
+  max_parallel_metadata_requests: 32
+  # integer: process-wide maximum concurrent encrypted-media CDN transfers, shared across all running jobs.
+  # Positive values allow 1-256; values <=0 behave as 1; values above 256 in this file are clamped to 256
+  # (the config API rejects them). Lower values reduce HTTP/2 stream resets. Default: 32.
+  max_parallel_media_downloads: 32
+  # integer: process-wide maximum concurrent wrapper data operations, shared across all running jobs and quality probes.
+  # One slot covers an entire decrypt-session lifetime; Lyrics, M3U8, WebPlayback, and License RPCs hold a slot only for
+  # that call. Login/logout and wrapper status calls are not limited. Positive values allow 1-256; values <=0 behave as 1;
+  # values above 256 in this file are clamped to 256 (the config API rejects them). Default: 64.
+  max_parallel_wrapper_requests: 64
   # integer: maximum total attempts (including the first) for metadata, cover, lyrics,
   # and each codec's download/decrypt phase. Positive values allow 1-10; values <=0 behave as 1;
   # values above 10 in this file are clamped to 10 (the config API and new job submissions reject them;
