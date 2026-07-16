@@ -251,7 +251,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 
 // getConfig returns the runtime-changeable part of the current config
 // (download minus max_running_jobs, logging level/access log, simulate,
-// catalog.album_track_url_mode/media_user_token/media_user_token_priority/signed_mode_hls_source).
+// catalog.album_track_url_mode/media_user_token/signed_mode_hls_source).
 // Startup-bound fields are omitted: clients cannot change them through this
 // API, so they have no reason to see them here.
 //
@@ -302,6 +302,13 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&merged); err != nil {
 			rejectStatus, rejectErr = http.StatusBadRequest, err
+			return config.Config{}, err
+		}
+		// v1.2 exposed catalog.media_user_token_priority. Keep accepting valid
+		// legacy payloads, but normalize the now-redundant field away so it is
+		// neither effective nor written back to the managed config.
+		if err := merged.NormalizeDeprecated(); err != nil {
+			rejectStatus, rejectErr = http.StatusUnprocessableEntity, err
 			return config.Config{}, err
 		}
 		if locked := config.RuntimeLockedChanges(current, merged); len(locked) > 0 {
@@ -390,6 +397,13 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("too many urls: max %d per request", maxBatchSubmitURLs))
 		return
 	}
+	// Normalize the canonical token override once here so downstream code sees
+	// one three-state value: absent inherits the runtime token, present-empty
+	// clears it for this job, and a non-empty value is trimmed before storage.
+	if req.Overrides != nil && req.Overrides.MediaUserToken != nil {
+		token := strings.TrimSpace(*req.Overrides.MediaUserToken)
+		req.Overrides.MediaUserToken = &token
+	}
 	if req.Overrides != nil {
 		// Validate the overlay against the same rules the runtime config must
 		// satisfy, applied to the config these jobs would actually run under.
@@ -400,8 +414,7 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	mediaUserToken := s.currentConfig().Catalog.EffectiveMediaUserToken(req.MediaUserToken)
-	resp := s.manager.SubmitBatch(r.Context(), urls, req.Force, req.Overrides, mediaUserToken)
+	resp := s.manager.SubmitBatch(r.Context(), urls, req.Force, req.Overrides)
 	status := http.StatusUnprocessableEntity
 	if resp.Accepted > 0 {
 		status = http.StatusAccepted

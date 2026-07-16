@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -60,6 +61,18 @@ func Open(path string) (*Store, error) {
 	if err := s.initSchema(context.Background()); err != nil {
 		_ = database.Close()
 		return nil, err
+	}
+	// Per-job overrides may contain a media-user-token while a station/private
+	// playlist is queued or retryable. Keep the database and its live WAL files
+	// owner-only, matching the managed config file that can hold the global
+	// fallback token. SQLite derives future sidecar modes from the main file.
+	if path != ":memory:" && !strings.HasPrefix(path, "file:") {
+		for _, databaseFile := range []string{path, path + "-wal", path + "-shm"} {
+			if err := os.Chmod(databaseFile, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+				_ = database.Close()
+				return nil, fmt.Errorf("restrict database permissions for %s: %w", databaseFile, err)
+			}
+		}
 	}
 	return s, nil
 }
@@ -246,7 +259,7 @@ func (s *Store) normalizeTimestampColumns(ctx context.Context) error {
 	return nil
 }
 
-// encodeOverrides serializes a job's download overrides for the jobs row;
+// encodeOverrides serializes a job's config overrides for the jobs row;
 // jobs without overrides store the empty string.
 func encodeOverrides(o *config.DownloadOverrides) (string, error) {
 	if o == nil {
@@ -296,6 +309,20 @@ type execer interface {
 func updateJob(ctx context.Context, x execer, job domain.Job) error {
 	_, err := x.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, title=?, artwork_url=?, force=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
 		job.Type, job.Storefront, job.Title, job.ArtworkURL, job.Force, string(job.Status), job.TotalItems, job.DoneItems, job.FailedItems, job.Error, formatTime(job.UpdatedAt), job.ID)
+	return err
+}
+
+// updateFinalJob also persists the final override value. In particular, the
+// manager removes media-user-token from completed/cancelled jobs before
+// finalization so credentials do not remain in terminal history; failed jobs
+// retain it for Retry.
+func updateFinalJob(ctx context.Context, x execer, job domain.Job) error {
+	overrides, err := encodeOverrides(job.Overrides)
+	if err != nil {
+		return err
+	}
+	_, err = x.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, title=?, artwork_url=?, force=?, overrides=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
+		job.Type, job.Storefront, job.Title, job.ArtworkURL, job.Force, overrides, string(job.Status), job.TotalItems, job.DoneItems, job.FailedItems, job.Error, formatTime(job.UpdatedAt), job.ID)
 	return err
 }
 
@@ -650,7 +677,7 @@ func (s *Store) FinalizeJob(ctx context.Context, job domain.Job, event domain.Ev
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := updateJob(ctx, tx, job); err != nil {
+	if err := updateFinalJob(ctx, tx, job); err != nil {
 		return domain.Event{}, err
 	}
 	stored, err := addEvent(ctx, tx, event)

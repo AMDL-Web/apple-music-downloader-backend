@@ -80,27 +80,12 @@ type CatalogConfig struct {
 	TokenCacheTTLHours       int      `yaml:"token_cache_ttl_hours" json:"token_cache_ttl_hours"`
 	AlbumTrackURLMode        string   `yaml:"album_track_url_mode" json:"album_track_url_mode"`
 	MediaUserToken           string   `yaml:"media_user_token" json:"media_user_token"`
-	MediaUserTokenPriority   string   `yaml:"media_user_token_priority" json:"media_user_token_priority"`
-	SignedModeHLSSource      string   `yaml:"signed_mode_hls_source" json:"signed_mode_hls_source"`
-}
-
-// EffectiveMediaUserToken selects the media-user-token for a submitted batch.
-// The configured priority wins when that token is non-empty; if the preferred
-// source is empty, the other source is used as a fallback so existing request
-// flows keep working unless a config token is actually present.
-func (c CatalogConfig) EffectiveMediaUserToken(requestToken string) string {
-	requestToken = strings.TrimSpace(requestToken)
-	configToken := strings.TrimSpace(c.MediaUserToken)
-	if c.MediaUserTokenPriority == "config" {
-		if configToken != "" {
-			return configToken
-		}
-		return requestToken
-	}
-	if requestToken != "" {
-		return requestToken
-	}
-	return configToken
+	// LegacyMediaUserTokenPriority keeps v1.2 config files, environment
+	// variables, and config API payloads readable during migration. Request
+	// tokens now use the ordinary per-job override semantics, so this value is
+	// validated and discarded by Config.NormalizeDeprecated.
+	LegacyMediaUserTokenPriority string `yaml:"media_user_token_priority,omitempty" json:"media_user_token_priority,omitempty"`
+	SignedModeHLSSource          string `yaml:"signed_mode_hls_source" json:"signed_mode_hls_source"`
 }
 
 // DeveloperTokenTTL returns the validity of developer tokens minted for
@@ -202,7 +187,7 @@ func Default() Config {
 			Address: "127.0.0.1:8080", Insecure: true, TimeoutSeconds: 30, LoginTimeoutSeconds: 120,
 		},
 		Catalog: CatalogConfig{
-			DefaultStorefront: "us", Language: "en-US", DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song", MediaUserTokenPriority: "config", SignedModeHLSSource: "wrapper",
+			DefaultStorefront: "us", Language: "en-US", DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song", SignedModeHLSSource: "wrapper",
 		},
 		Download: DownloadConfig{
 			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true,
@@ -246,6 +231,9 @@ func load(path string, environ []string) (Config, error) {
 	if err := applyEnvOverrides(&cfg, environ); err != nil {
 		return cfg, err
 	}
+	if err := cfg.NormalizeDeprecated(); err != nil {
+		return cfg, err
+	}
 	// Config files written before the limits existed may hold larger values;
 	// clamp them instead of refusing to boot. New values submitted through the
 	// runtime config API still fail Validate with an explicit error.
@@ -272,9 +260,26 @@ func clampDownloadLimits(d *DownloadConfig) {
 	}
 }
 
+// NormalizeDeprecated accepts compatibility-only fields from older config
+// files, environment variables, and API payloads, then removes them from the
+// effective snapshot so the next managed-file rewrite completes the migration.
+// media_user_token_priority became redundant when request tokens joined the
+// ordinary per-job override layer: a present override always wins, while an
+// absent one inherits catalog.media_user_token.
+func (c *Config) NormalizeDeprecated() error {
+	if c == nil {
+		return nil
+	}
+	if p := c.Catalog.LegacyMediaUserTokenPriority; p != "" && p != "request" && p != "config" {
+		return fmt.Errorf("catalog.media_user_token_priority must be request or config")
+	}
+	c.Catalog.LegacyMediaUserTokenPriority = ""
+	return nil
+}
+
 // Validate checks the semantic rules every Config must satisfy, whether it
 // was loaded from YAML at startup or assembled at runtime (config update API,
-// per-request download overrides applied to a base config).
+// per-request job overrides applied to a base config).
 func (c Config) Validate() error {
 	switch c.Logging.Level {
 	case "debug", "info", "warn", "error":
@@ -307,7 +312,7 @@ func (c Config) Validate() error {
 	if c.Catalog.AlbumTrackURLMode != "song" && c.Catalog.AlbumTrackURLMode != "album" {
 		return fmt.Errorf("catalog.album_track_url_mode must be song or album")
 	}
-	if c.Catalog.MediaUserTokenPriority != "request" && c.Catalog.MediaUserTokenPriority != "config" {
+	if p := c.Catalog.LegacyMediaUserTokenPriority; p != "" && p != "request" && p != "config" {
 		return fmt.Errorf("catalog.media_user_token_priority must be request or config")
 	}
 	if c.Catalog.SignedModeHLSSource != "wrapper" && c.Catalog.SignedModeHLSSource != "web_token" {

@@ -16,7 +16,6 @@ import (
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
 	"amdl/internal/domain"
-	"amdl/internal/jobs"
 	"amdl/internal/wrapper"
 )
 
@@ -321,16 +320,17 @@ func TestResolveCollectionArtistFlattensAlbumTracksAndDedupesSongs(t *testing.T)
 }
 
 func TestResolveCollectionStationPassesTokenAndTracks(t *testing.T) {
+	cfg := config.Default()
+	cfg.Catalog.MediaUserToken = "media-token-xyz"
 	downloader := &Downloader{
-		cfg: config.Default(),
+		cfg: cfg,
 		catalog: fakeDownloaderCatalog{station: applemusic.Collection{
 			ID: "ra.1", Type: applemusic.TypeStation, Name: "My Station", ArtworkURL: "station-art",
 			Tracks: []applemusic.Song{{ID: "song-1", Name: "One"}, {ID: "song-2", Name: "Two"}},
 		}},
 	}
 
-	ctx := jobs.WithMediaUserToken(context.Background(), "media-token-xyz")
-	resolved, err := downloader.resolveCollection(ctx, applemusic.ParsedURL{
+	resolved, err := downloader.resolveCollection(context.Background(), applemusic.ParsedURL{
 		Storefront: "us", Type: applemusic.TypeStation, ID: "ra.1",
 	})
 	if err != nil {
@@ -344,7 +344,7 @@ func TestResolveCollectionStationPassesTokenAndTracks(t *testing.T) {
 	}
 }
 
-func TestResolveCollectionStationFallsBackToConfiguredToken(t *testing.T) {
+func TestResolveCollectionStationUsesEffectiveConfigToken(t *testing.T) {
 	var gotToken string
 	cfg := config.Default()
 	cfg.Catalog.MediaUserToken = " configured-token "
@@ -356,26 +356,26 @@ func TestResolveCollectionStationFallsBackToConfiguredToken(t *testing.T) {
 		},
 	}
 
-	// No token on ctx, as for a job recovered after a restart: the configured
-	// catalog token is used instead of failing.
 	if _, err := downloader.resolveCollection(context.Background(), applemusic.ParsedURL{
 		Storefront: "us", Type: applemusic.TypeStation, ID: "ra.1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if gotToken != "configured-token" {
-		t.Fatalf("token = %q, want trimmed configured fallback", gotToken)
+		t.Fatalf("token = %q, want trimmed configured token", gotToken)
 	}
 
-	// A batch token attached at submission still wins over the config value.
-	ctx := jobs.WithMediaUserToken(context.Background(), "request-token")
-	if _, err := downloader.resolveCollection(ctx, applemusic.ParsedURL{
+	// ProcessJob applies the request override before resolution; model that
+	// effective snapshot directly here and verify it follows the same path.
+	requestToken := " request-token "
+	downloader.cfg = (&config.DownloadOverrides{MediaUserToken: &requestToken}).Apply(cfg)
+	if _, err := downloader.resolveCollection(context.Background(), applemusic.ParsedURL{
 		Storefront: "us", Type: applemusic.TypeStation, ID: "ra.1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if gotToken != "request-token" {
-		t.Fatalf("token = %q, want submission token to take precedence", gotToken)
+		t.Fatalf("token = %q, want job override to take precedence", gotToken)
 	}
 }
 

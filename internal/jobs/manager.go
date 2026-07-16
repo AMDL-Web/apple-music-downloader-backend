@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -84,9 +85,6 @@ type Manager struct {
 	finalizing map[string]bool
 	workers    int
 	hooks      *hooks.Dispatcher
-	// sessionTokens holds ephemeral per-job media-user-tokens attached at
-	// submission (station downloads). Never persisted; see SessionTokenStore.
-	sessionTokens *SessionTokenStore
 	// active counts jobs currently in ProcessJob. It gates the post-job memory
 	// scavenge so only the last-finishing job of a busy burst triggers it (see
 	// run).
@@ -117,7 +115,7 @@ func NewManager(store *db.Store, hub *events.Hub, processor Processor, workers i
 	return &Manager{
 		store: store, hub: hub, processor: processor, queue: make(chan string, 256),
 		logger: logger, cancels: map[string]context.CancelFunc{}, finalizing: map[string]bool{}, workers: workers,
-		sessionTokens: NewSessionTokenStore(), recoveryReady: make(chan struct{}, 1), workerDone: make(chan struct{}),
+		recoveryReady: make(chan struct{}, 1), workerDone: make(chan struct{}),
 	}
 }
 
@@ -261,15 +259,12 @@ func (m *Manager) enqueueRecovered(jobID string) {
 // against races. See docs/multi-link-submit-design.md.
 //
 // overrides, when non-nil, is attached to every job created from this batch
-// and overlays the download section of the runtime config while those jobs
-// run. Callers must validate it (apply to the current config and Validate)
-// before submitting.
-//
-// mediaUserToken, when non-empty, is the already-selected Apple subscription
-// token for this batch (request token or configured token, depending on
-// catalog.media_user_token_priority). It is kept with matching jobs in memory
-// only and never persisted with the job; see SessionTokenStore.
-func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool, overrides *config.DownloadOverrides, mediaUserToken string) domain.BatchSubmitResponse {
+// and overlays the runtime config while those jobs run. Callers must validate
+// it (apply to the current config and Validate) before submitting. A
+// media-user-token override is retained only by stations and private playlists,
+// the two job kinds that consume it; all other jobs keep the remaining
+// overrides without retaining the credential.
+func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool, overrides *config.DownloadOverrides) domain.BatchSubmitResponse {
 	results := make([]domain.SubmitResult, len(urls))
 
 	type candidate struct {
@@ -323,9 +318,13 @@ func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool, ov
 			continue
 		}
 
+		jobOverrides := overrides
+		if overrides != nil && !needsMediaUserToken(c.valid.Type, c.valid.ID) {
+			jobOverrides = overrides.WithoutMediaUserToken()
+		}
 		job := domain.Job{
 			ID: storage.NewID("job"), Input: c.url, Type: c.valid.Type, Storefront: c.valid.Storefront, CanonicalKey: c.key,
-			Force: force, Overrides: overrides, Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now,
+			Force: force, Overrides: jobOverrides, Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now,
 		}
 		if err := m.store.CreateJob(ctx, job); err != nil {
 			if errors.Is(err, db.ErrDuplicateActive) {
@@ -334,13 +333,6 @@ func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool, ov
 			}
 			results[c.index] = domain.SubmitResult{URL: c.url, Status: domain.SubmitInvalid, Error: err.Error()}
 			continue
-		}
-		// Record the ephemeral token before enqueue so a worker that claims the
-		// job immediately can already read it during resolution. Only jobs
-		// that actually read the token get an entry — a mixed batch must not
-		// retain the credential for song/album/artist jobs that never use it.
-		if needsMediaUserToken(c.valid.Type, c.valid.ID) {
-			m.sessionTokens.Set(job.ID, mediaUserToken)
 		}
 		_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_queued", Message: "job queued"})
 		// Fire creation hooks before enqueuing, so the job_queued hook is
@@ -487,6 +479,7 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 	}
 	job.Status = domain.JobCancelled
 	job.Error = "cancelled"
+	job = withoutTerminalMediaUserToken(job)
 	job.UpdatedAt = time.Now().UTC()
 	persistErr := m.persistTerminal(ctx, job, "job_cancelled", "job cancelled")
 	if persistErr == nil {
@@ -528,8 +521,6 @@ func (m *Manager) Delete(ctx context.Context, jobID string) error {
 	if err != nil {
 		return err
 	}
-	// The job is gone; drop any ephemeral token held for it.
-	m.sessionTokens.Delete(jobID)
 	// Broadcast the persisted tombstone so live overview subscribers can drop the
 	// job immediately; missed broadcasts are replayed from job_events by cursor.
 	m.hub.Publish(deleted)
@@ -646,13 +637,7 @@ func (m *Manager) run(parent context.Context, jobID string) {
 
 	_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_started", Message: "job started"})
 
-	// Attach the batch's ephemeral media-user-token (if any) so station
-	// resolution can read it. Absent after a restart, in which case the
-	// downloader falls back to the configured catalog.media_user_token, so a
-	// recovered or retried station job only fails when no token is configured
-	// either. Request-supplied tokens are never persisted, so they stay gone.
-	procCtx := WithMediaUserToken(ctx, m.sessionTokens.Get(jobID))
-	err = m.processor.ProcessJob(procCtx, job, m)
+	err = m.processor.ProcessJob(ctx, job, m)
 	if latest, loadErr := m.store.GetJob(context.Background(), job.ID); loadErr == nil {
 		job = latest
 	}
@@ -706,6 +691,7 @@ func (m *Manager) run(parent context.Context, jobID string) {
 // backend could not even record that fact. A persistence failure is returned
 // so callers can propagate or log it, and no hook fires.
 func (m *Manager) finalizeJob(ctx context.Context, job domain.Job, eventType, message string) error {
+	job = withoutTerminalMediaUserToken(job)
 	job.UpdatedAt = time.Now().UTC()
 	if err := m.persistTerminal(ctx, job, eventType, message); err != nil {
 		return err
@@ -732,15 +718,24 @@ func (m *Manager) persistTerminal(ctx context.Context, job domain.Job, eventType
 		return err
 	}
 	m.hub.Publish(stored)
-	// A completed or cancelled job can never run again (Retry only accepts
-	// failed jobs), so its ephemeral media-user-token has no further use —
-	// drop it now instead of letting the credential sit in memory until the
-	// job record is deleted. Failed jobs keep theirs so a retry can still
-	// resolve its station/private-playlist input.
-	if job.Status != domain.JobFailed {
-		m.sessionTokens.Delete(job.ID)
-	}
 	return nil
+}
+
+// needsMediaUserToken reports whether a job can consume the per-job credential:
+// stations require it for next-tracks, while private playlists use it for
+// best-effort library artwork enrichment.
+func needsMediaUserToken(jobType, id string) bool {
+	return jobType == "station" || (jobType == "playlist" && strings.HasPrefix(id, "pl.u-"))
+}
+
+// withoutTerminalMediaUserToken drops a persisted credential once a job can
+// no longer run. Failed jobs deliberately keep it because Retry may enqueue the
+// same row again, including after a process restart.
+func withoutTerminalMediaUserToken(job domain.Job) domain.Job {
+	if job.Status != domain.JobFailed && job.Overrides != nil {
+		job.Overrides = job.Overrides.WithoutMediaUserToken()
+	}
+	return job
 }
 
 // dispatchHooks fires any post-download hooks subscribed to job's terminal

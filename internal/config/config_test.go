@@ -164,26 +164,27 @@ func TestDeveloperTokenSigningEnabled(t *testing.T) {
 	}
 }
 
-func TestMediaUserTokenPriority(t *testing.T) {
-	if got := Default().Catalog.MediaUserTokenPriority; got != "config" {
-		t.Fatalf("default media-user-token priority = %q, want config", got)
+func TestLoadMigratesLegacyMediaUserTokenPriority(t *testing.T) {
+	path := writeConfig(t, "catalog:\n  media_user_token: configured-token\n  media_user_token_priority: request\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() legacy priority: %v", err)
 	}
-
-	requestFirst := CatalogConfig{MediaUserToken: " config-token ", MediaUserTokenPriority: "request"}
-	if got := requestFirst.EffectiveMediaUserToken(" request-token "); got != "request-token" {
-		t.Fatalf("request priority token = %q, want request-token", got)
+	if cfg.Catalog.MediaUserToken != "configured-token" {
+		t.Fatalf("media_user_token = %q, want configured-token", cfg.Catalog.MediaUserToken)
 	}
-	if got := requestFirst.EffectiveMediaUserToken("   "); got != "config-token" {
-		t.Fatalf("request priority fallback token = %q, want config-token", got)
+	if cfg.Catalog.LegacyMediaUserTokenPriority != "" {
+		t.Fatalf("legacy priority survived normalization: %q", cfg.Catalog.LegacyMediaUserTokenPriority)
 	}
-
-	configFirst := CatalogConfig{MediaUserToken: " config-token ", MediaUserTokenPriority: "config"}
-	if got := configFirst.EffectiveMediaUserToken(" request-token "); got != "config-token" {
-		t.Fatalf("config priority token = %q, want config-token", got)
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save() normalized config: %v", err)
 	}
-	configFirst.MediaUserToken = ""
-	if got := configFirst.EffectiveMediaUserToken(" request-token "); got != "request-token" {
-		t.Fatalf("config priority fallback token = %q, want request-token", got)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "media_user_token_priority") {
+		t.Fatalf("managed-file rewrite kept deprecated priority:\n%s", raw)
 	}
 }
 

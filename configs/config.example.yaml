@@ -91,13 +91,15 @@ catalog:
   token_cache_ttl_hours: 12
   # enum: song, album. song means album URLs containing ?i= are single-song tasks; album downloads the full album.
   album_track_url_mode: "song"
-  # string: optional Apple Music subscription token (media-user-token) used for station downloads and private playlist covers.
-  # Empty keeps the legacy per-request-only behavior. When set, the token is stored in config.yaml and may also be
-  # exposed by GET /api/v1/config; protect this service at the deployment layer if the token is sensitive.
+  # string: optional global Apple Music subscription token (media-user-token) used as the fallback for station downloads
+  # and private playlist covers. A download request may override it per job with overrides.media_user_token; omitting that
+  # override uses this value, while an explicitly empty override clears this fallback for that job. This value is
+  # runtime-mutable, is stored in config.yaml, and may also be exposed by GET /api/v1/config; protect this service at the
+  # deployment layer if the token is sensitive. Empty means no global fallback.
   media_user_token: ""
-  # enum: request, config. Selects which media-user-token source wins when both this config value and the
-  # create-download request body provide one. config is the default; request preserves the legacy request-first behavior.
-  # If the preferred source is empty, the other non-empty source is used as a fallback.
+  # deprecated compatibility enum: request, config. Accepted so config files, AMDL_CATALOG_MEDIA_USER_TOKEN_PRIORITY,
+  # and runtime-config updates from older clients keep working, but the value is ignored. New clients must use
+  # overrides.media_user_token; when that field is present it overrides (or explicitly clears) media_user_token above.
   media_user_token_priority: "config"
   # enum: wrapper, web_token. Only meaningful when developer-token signing is enabled above (the self-signed
   # token cannot read enhancedHls); ignored in legacy mode, where enhancedHls already comes from the catalog response.

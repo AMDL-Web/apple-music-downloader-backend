@@ -6,22 +6,23 @@ import (
 	"path/filepath"
 )
 
-// DownloadOverrides is a per-request overlay for the download section of the
-// runtime config. A batch submit may attach one; it is stored on every job
-// created from that submission and applied on top of the live config when the
-// job runs, so it survives retries and post-restart requeues without leaking
-// into other jobs.
+// DownloadOverrides is a per-request overlay for the job-mutable part of the
+// runtime config. A batch submit may attach one; it is stored on each relevant
+// job and applied on top of the live config when the job runs, so it survives
+// retries and post-restart requeues without leaking into other jobs.
 //
 // Every field is optional: nil means "keep the runtime config's value". The
-// JSON keys mirror the download section of configs/config.yaml exactly.
-// max_running_jobs is deliberately absent — it sizes the worker pool at
-// startup and cannot apply to a single job.
+// download-related JSON keys mirror configs/config.yaml exactly.
+// MediaUserToken similarly overlays catalog.media_user_token for a job that
+// needs Apple Music user identity. max_running_jobs is deliberately absent —
+// it sizes the worker pool at startup and cannot apply to a single job.
 // The two slice fields are *[]string rather than []string so an explicit
 // empty list survives the JSON round trip through the jobs table: nil (field
 // absent, keep config) marshals away under omitempty, while a pointer to an
 // empty slice marshals as [] and still means "override to none" after the
 // worker loads the job back.
 type DownloadOverrides struct {
+	MediaUserToken     *string   `json:"media_user_token,omitempty"`
 	QualityPriority    *[]string `json:"quality_priority,omitempty"`
 	CodecAlternative   *bool     `json:"codec_alternative,omitempty"`
 	MaxParallelTracks  *int      `json:"max_parallel_tracks,omitempty"`
@@ -49,11 +50,29 @@ type DownloadOverrides struct {
 	CheckIntegrity     *bool     `json:"check_integrity,omitempty"`
 }
 
-// Apply returns base with every non-nil override substituted into its
-// download section. Nil-safe: a nil receiver returns base unchanged.
+// WithoutMediaUserToken returns a shallow copy without the credential. It is
+// nil-safe and collapses an otherwise-empty override to nil, avoiding empty
+// override records for jobs that never use a media-user-token.
+func (o *DownloadOverrides) WithoutMediaUserToken() *DownloadOverrides {
+	if o == nil || o.MediaUserToken == nil {
+		return o
+	}
+	clean := *o
+	clean.MediaUserToken = nil
+	if clean == (DownloadOverrides{}) {
+		return nil
+	}
+	return &clean
+}
+
+// Apply returns base with every non-nil job-mutable override substituted.
+// Nil-safe: a nil receiver returns base unchanged.
 func (o *DownloadOverrides) Apply(base Config) Config {
 	if o == nil {
 		return base
+	}
+	if o.MediaUserToken != nil {
+		base.Catalog.MediaUserToken = *o.MediaUserToken
 	}
 	d := &base.Download
 	if o.QualityPriority != nil {

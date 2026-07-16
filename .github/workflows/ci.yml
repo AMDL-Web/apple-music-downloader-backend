@@ -1,11 +1,11 @@
 name: CI
 
-# 持续集成：每次 push 到 main/dev 以及所有 PR 都会构建并跑测试。
+# 持续集成：每次 push 到 main 以及所有 PR 都会构建并跑测试。
 # 此前只有 release.yml 在发版时才执行 go test，问题会拖到发版才暴露。
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
 
 permissions:
