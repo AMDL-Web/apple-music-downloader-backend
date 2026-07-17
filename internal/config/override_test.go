@@ -214,7 +214,7 @@ func TestMutableViewOmitsStartupBoundFields(t *testing.T) {
 	if download["cover_format"] != "jpg" {
 		t.Fatalf("download.cover_format = %v, want jpg", download["cover_format"])
 	}
-	if download["max_parallel_metadata_requests"] != float64(32) || download["max_parallel_media_downloads"] != float64(32) || download["max_parallel_wrapper_requests"] != float64(64) {
+	if download["max_parallel_metadata_requests"] != 32 || download["max_parallel_media_downloads"] != 32 || download["max_parallel_wrapper_requests"] != 64 {
 		t.Fatalf("download section missing shared limits: %v", download)
 	}
 	catalog, ok := view["catalog"].(map[string]any)

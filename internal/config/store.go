@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"sync"
 	"sync/atomic"
 )
@@ -11,14 +12,16 @@ import (
 // Callers must treat slices inside a returned Config as read-only — mutating
 // them in place would race with concurrent readers of the same snapshot.
 //
-// A Store created with NewFileStore is backed by the live config file:
-// SetAndSave writes the new snapshot back to it, so runtime updates survive a
-// restart. NewStore creates an in-memory Store for tests.
+// A Store created with NewFileStore is backed by the live runtime config
+// file: SetAndSave writes the runtime-managed subset of the new snapshot back
+// to it, so runtime updates survive a restart. Startup-bound fields are never
+// written anywhere — their file of record is the owner-edited startup config.
+// NewStore creates an in-memory Store for tests.
 type Store struct {
 	current atomic.Pointer[Config]
-	// path is the backing config file; empty for in-memory stores. saveMu
-	// serializes SetAndSave so concurrent updates cannot interleave the file
-	// write and the snapshot swap.
+	// path is the backing runtime config file; empty for in-memory stores.
+	// saveMu serializes SetAndSave so concurrent updates cannot interleave the
+	// file write and the snapshot swap.
 	path   string
 	saveMu sync.Mutex
 }
@@ -36,7 +39,7 @@ func NewFileStore(cfg Config, path string) *Store {
 }
 
 // Persistent reports whether updates to this store are written back to a
-// config file (and therefore survive a restart).
+// runtime config file (and therefore survive a restart).
 func (s *Store) Persistent() bool {
 	return s.path != ""
 }
@@ -71,7 +74,7 @@ func (s *Store) UpdateAndSave(mutate func(current Config) (Config, error)) (Conf
 		return Config{}, err
 	}
 	if s.path != "" {
-		if err := Save(s.path, updated); err != nil {
+		if err := saveRuntime(s.path, updated); err != nil {
 			return Config{}, err
 		}
 	}
@@ -79,12 +82,15 @@ func (s *Store) UpdateAndSave(mutate func(current Config) (Config, error)) (Conf
 	return updated, nil
 }
 
-// Reload re-reads the backing file into the snapshot, picking up manual
-// edits made while the backend is running. Only the runtime-mutable part is
-// taken from the file: startup-bound fields keep their in-memory values,
-// because the components built from them (listener, wrapper connection,
-// catalog client, tool checker, worker pool) cannot follow a live change —
-// those file edits apply on the next restart, as documented. On a read or
+// Reload re-reads the backing runtime file into the snapshot, picking up
+// manual edits made while the backend is running. Startup-bound fields keep
+// their in-memory values by construction — the runtime file cannot contain
+// them (strict key check), and the components built from them (listener,
+// wrapper connection, catalog client, tool checker, worker pool) cannot
+// follow a live change anyway; startup-file edits apply on the next restart,
+// as documented. A runtime key deleted from the file reads as its built-in
+// default, matching what a fresh load would produce, and AMDL_* environment
+// overrides are re-applied so overridden values stay pinned. On a read or
 // validation error the snapshot is left unchanged so callers can keep
 // serving the last good config. No-op for in-memory stores. It shares
 // saveMu with UpdateAndSave: without it, a reload that read the file just
@@ -96,10 +102,21 @@ func (s *Store) Reload() error {
 	if s.path == "" {
 		return nil
 	}
-	cfg, err := Load(s.path)
-	if err != nil {
+	cfg := s.Get()
+	resetRuntimeToDefaults(&cfg)
+	if err := decodeFileStrict(&cfg, s.path, roleRuntime); err != nil {
 		return err
 	}
-	s.Set(preserveRuntimeLocked(cfg, s.Get()))
+	if err := applyEnvOverrides(&cfg, os.Environ()); err != nil {
+		return err
+	}
+	if err := cfg.NormalizeDeprecated(); err != nil {
+		return err
+	}
+	clampDownloadLimits(&cfg.Download)
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	s.Set(cfg)
 	return nil
 }

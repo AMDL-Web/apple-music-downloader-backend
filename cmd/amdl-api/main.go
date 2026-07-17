@@ -32,16 +32,33 @@ func main() {
 	if cfgPath == "" {
 		cfgPath = "configs/config.yaml"
 	}
-	// First start: create the live config from the committed, commented
-	// config.example.yaml next to it. The live file is machine-managed —
-	// PUT /api/v1/config rewrites it — so it stays out of version control.
-	if created, err := config.BootstrapFromExample(cfgPath); err != nil {
+	// The runtime config file defaults to a sibling of the startup config, so
+	// a custom AMDL_CONFIG location carries both files along.
+	runtimeCfgPath := os.Getenv("AMDL_RUNTIME_CONFIG")
+	if runtimeCfgPath == "" {
+		runtimeCfgPath = filepath.Join(filepath.Dir(cfgPath), "runtime.yaml")
+	}
+	// First start: create the startup config from the committed, commented
+	// config.example.yaml next to it (the startup file is owner-edited from
+	// then on) and the machine-managed runtime file from runtime.example.yaml.
+	// A pre-split config.yaml still carrying runtime keys is migrated once:
+	// split in place with a backup of the combined file left behind.
+	bootstrap, err := config.EnsureFiles(cfgPath, runtimeCfgPath)
+	if err != nil {
 		bootstrapLogger.Error("bootstrap config", "error", err)
 		os.Exit(1)
-	} else if created {
-		bootstrapLogger.Info("created config from example", "path", cfgPath)
 	}
-	cfg, err := config.Load(cfgPath)
+	if bootstrap.CreatedStartup {
+		bootstrapLogger.Info("created startup config from example", "path", cfgPath)
+	}
+	if bootstrap.CreatedRuntime {
+		bootstrapLogger.Info("created runtime config", "path", runtimeCfgPath)
+	}
+	if bootstrap.MigratedLegacy {
+		bootstrapLogger.Info("split legacy config into startup and runtime files",
+			"startup", cfgPath, "runtime", runtimeCfgPath, "backup", bootstrap.LegacyBackupPath)
+	}
+	cfg, err := config.LoadPair(cfgPath, runtimeCfgPath)
 	if err != nil {
 		bootstrapLogger.Error("load config", "error", err)
 		os.Exit(1)
@@ -93,7 +110,7 @@ func main() {
 	// pipeline, and process-wide operation limiters. Fields consumed directly
 	// in main remain startup-bound; runtime-mutable limits are read on every
 	// acquisition so updates apply without a restart.
-	cfgStore := config.NewFileStore(cfg, cfgPath)
+	cfgStore := config.NewFileStore(cfg, runtimeCfgPath)
 	wrapperClient, err := wrapper.NewClient(cfg.Wrapper, wrapper.WithDataConcurrencyLimit(func() int {
 		return cfgStore.Get().Download.MaxParallelWrapperRequests
 	}))

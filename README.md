@@ -34,26 +34,34 @@ AMDL Backend 是 Apple Music 下载系统的核心后端服务。它负责解析
 go run ./cmd/amdl-api
 ```
 
-默认配置文件为：
+配置拆分为两个文件（可分别用 `AMDL_CONFIG`、`AMDL_RUNTIME_CONFIG` 指定路径）：
 
 ```text
-configs/config.yaml
+configs/config.yaml    # 启动配置：仅进程启动时读取，改动需重启生效
+configs/runtime.yaml   # 运行时配置：PUT /api/v1/config 可在线修改
 ```
 
-首次启动时该文件会自动以示例 `configs/config.example.yaml` 的值为模板
-生成（只取配置值，不带注释；字段文档都在示例文件里）。`config.yaml`
-本身由后端管理：`PUT /api/v1/config` 修改运行时配置时会整体重写它，
-因此它不纳入版本控制；手工编辑仍然可以，重启后生效，但会在下一次
-API 修改时被重写。
+首次启动时两个文件分别以 `configs/config.example.yaml` 和
+`configs/runtime.example.yaml` 为模板自动生成（字段文档都在示例文件里）。
+`config.yaml` 归使用者所有：后端不会重写它，注释和格式可长期保留。
+`runtime.yaml` 由后端管理：`PUT /api/v1/config` 修改运行时配置时会整体
+重写它（注释不保留），因此它不纳入版本控制；手工编辑仍然可以，下一次
+`GET /api/v1/config` 后即生效、无需重启，但会在下一次 API 修改时被重写。
+
+从旧版单文件 `config.yaml` 升级时无需手工操作：首次启动会自动把运行时
+字段拆到 `runtime.yaml`、把 `config.yaml` 重写为仅启动字段，并在旁边留
+一份 `config.yaml.pre-split.bak` 备份。
 
 启动前请按实际环境修改 `configs/config.yaml`（或先改示例文件再首次启动），尤其是：
 
 - `server.listen`：API 监听地址。
 - `wrapper.address`：`wrapper-manager` gRPC 地址。
 - `database.path`：SQLite 数据库路径（默认 `data/db/amdl.db`）。
-- `logging.*`：日志级别、格式、内存保留和可选轮转文件（字段完整说明见示例配置）。
-- `download.downloads_dir`：下载文件保存目录。
+- `logging.*`：日志格式、内存保留和可选轮转文件（级别与访问日志开关在 `runtime.yaml`；字段完整说明见示例配置）。
 - `tools.*`：外部媒体工具命令路径或命令名。
+
+下载相关选项（如 `download.downloads_dir` 下载保存目录）在 `runtime.yaml`，
+可随时通过 `PUT /api/v1/config` 或编辑文件调整。
 
 ### 环境变量覆盖
 
@@ -62,14 +70,14 @@ API 修改时被重写。
 `AMDL_LOGGING_LEVEL`、
 `AMDL_DOWNLOAD_QUALITY_PRIORITY`。规则：
 
-- 环境变量优先于 `config.yaml`，每次启动（以及每次配置重载）都生效，加载
+- 环境变量优先于两个配置文件，每次启动（以及每次配置重载）都生效，加载
   时不会写回文件——取消设置后下次启动即恢复文件里的值（注意
-  `PUT /api/v1/config` 重写整份文件时，写入的是包含环境变量在内的当前
-  生效值）。
+  `PUT /api/v1/config` 重写 `runtime.yaml` 时，写入的是包含环境变量在内
+  的当前生效值）。
 - 值的写法：字符串原样填写；布尔用 `true`/`false`；整数直接写数字；
   字符串列表用逗号分隔（如 `alac,aac`），空值表示空列表。
 - 无法识别的 `AMDL_*` 变量会让启动失败，避免拼写错误被静默忽略
-  （`AMDL_CONFIG`、`AMDL_HOOKS_CONFIG` 除外）。
+  （`AMDL_CONFIG`、`AMDL_RUNTIME_CONFIG`、`AMDL_HOOKS_CONFIG` 除外）。
 - 被环境变量覆盖的字段无法再通过 `PUT /api/v1/config` 修改（返回 422），
   请改环境变量并重启。
 
@@ -109,12 +117,12 @@ docker run -d --name amdl-backend \
 
 首次启动时入口脚本会把镜像内置的示例配置播种到配置目录 `/app/configs`：
 
-- `config.example.yaml`：原样复制（后端的 bootstrap 逻辑要求它与 `config.yaml` 同目录，同时充当字段文档）。
+- `config.example.yaml`、`runtime.example.yaml`：原样复制（后端的 bootstrap 逻辑要求它们与 `config.yaml` 同目录，同时充当字段文档）。
 - `hooks.yaml`：复制注释完整的模板（默认禁用）。
 
-`config.yaml` 由后端自己在首次启动时从示例生成（只取配置值，不带注释，与 `PUT /api/v1/config` 重写后的机器管理格式一致）。两个容器内不可用的仓库默认值不再写进文件，而是由入口脚本通过环境变量覆盖机制在每次启动时改写：`server.listen` 覆盖为 `AMDL_SERVER_LISTEN`（默认 `:18080`，容器内必须监听非回环地址），`wrapper.address` 覆盖为 `AMDL_WRAPPER_ADDRESS`（默认 `host.docker.internal:8080`）。
+`config.yaml`（启动配置）与 `runtime.yaml`（运行时配置）由后端自己在首次启动时从各自示例生成；旧版单文件 `config.yaml` 会被自动拆分迁移并留下备份。两个容器内不可用的仓库默认值不再写进文件，而是由入口脚本通过环境变量覆盖机制在每次启动时改写：`server.listen` 覆盖为 `AMDL_SERVER_LISTEN`（默认 `:18080`，容器内必须监听非回环地址），`wrapper.address` 覆盖为 `AMDL_WRAPPER_ADDRESS`（默认 `host.docker.internal:8080`）。
 
-已存在的文件永远不会被覆盖，因此 `PUT /api/v1/config` 写回的配置在容器重建后保持不变。
+已存在的文件永远不会被覆盖，因此 `PUT /api/v1/config` 写回的运行时配置在容器重建后保持不变。
 
 ### 环境变量
 
@@ -129,10 +137,11 @@ docker run -d --name amdl-backend \
 | `TZ` | UTC | 容器时区（IANA 名称，如 `Asia/Shanghai`），影响日志时间戳与 exec hooks 命令看到的本地时间。镜像已内置 tzdata，Go 运行时自动识别。 |
 | `AMDL_SERVER_LISTEN` | `:18080`（入口脚本的容器默认值） | API 监听地址，每次启动覆盖 `server.listen`。健康检查端口也从它推导。 |
 | `AMDL_WRAPPER_ADDRESS` | `host.docker.internal:8080`（入口脚本的容器默认值） | `wrapper-manager` gRPC 地址，每次启动覆盖 `wrapper.address`。 |
-| `AMDL_CONFIG` | `/app/configs/config.yaml` | 主配置文件路径（后端原生支持）。 |
+| `AMDL_CONFIG` | `/app/configs/config.yaml` | 启动配置文件路径（后端原生支持）。 |
+| `AMDL_RUNTIME_CONFIG` | 与启动配置同目录的 `runtime.yaml` | 运行时配置文件路径（后端原生支持）。 |
 | `AMDL_HOOKS_CONFIG` | `/app/configs/hooks.yaml` | hooks 配置文件路径（后端原生支持）。 |
 
-修改配置的三种方式：运行期字段用 `PUT /api/v1/config`，立即生效；任意字段用环境变量覆盖后 `docker compose up -d`；或编辑挂载目录里的 `config.yaml` 后重启容器（启动期字段需重启，且监听地址与 wrapper 地址在容器内始终以环境变量为准）。
+修改配置的三种方式：运行期字段用 `PUT /api/v1/config`，立即生效；任意字段用环境变量覆盖后 `docker compose up -d`；或编辑挂载目录里的配置文件后重启容器——运行期字段改 `runtime.yaml`（下一次 `GET /api/v1/config` 即生效，无需重启），启动期字段改 `config.yaml` 并重启（监听地址与 wrapper 地址在容器内始终以环境变量为准）。
 
 > **破坏性变更**：旧变量名 `AMDL_LISTEN`、`AMDL_WRAPPER_ADDR` 已移除。仍设置它们会因「未知配置环境变量」导致启动失败，请改用 `AMDL_SERVER_LISTEN`、`AMDL_WRAPPER_ADDRESS`。
 
@@ -142,11 +151,11 @@ docker run -d --name amdl-backend \
 
 `docker-compose.yml` 默认把四个目录绑定挂载到宿主机：
 
-- `./configs` → `/app/configs`：配置目录（`config.yaml`、`config.example.yaml`、`hooks.yaml`）。
+- `./configs` → `/app/configs`：配置目录（`config.yaml`、`runtime.yaml`、两个示例文件、`hooks.yaml`）。
 - `./data/db` → `/app/data/db`：SQLite 数据库目录（`database.path` 默认 `data/db/amdl.db`）。
 - `./data/logs` → `/app/data/logs`：轮转日志目录；仅在 `logging.file_enabled: true` 时写入。
 - `./data/downloads` → `/app/data/downloads`：下载产物目录。想放到宿主机其它位置，改冒号左边的宿主机路径即可（例如 `/path/to/music:/app/data/downloads`）。
-- 临时目录 `data/tmp` 默认留在容器内，无需挂载。它承担下载/解密/转封装/校验/打标签这几步的落盘中转（见 `configs/config.example.yaml` 里 `download.temp_dir` 的注释），如果容器存储驱动较慢，可以把它单独挂载到宿主机的快速磁盘（如 SSD）上，与 `data/downloads` 分开。
+- 临时目录 `data/tmp` 默认留在容器内，无需挂载。它承担下载/解密/转封装/校验/打标签这几步的落盘中转（见 `configs/runtime.example.yaml` 里 `download.temp_dir` 的注释），如果容器存储驱动较慢，可以把它单独挂载到宿主机的快速磁盘（如 SSD）上，与 `data/downloads` 分开。
 - 启用开发者令牌签名时，把 `.p8` 私钥以只读方式挂载进容器（例如 `-v ./keys:/app/keys:ro`），并将 `catalog.apple_music_private_key_path` 指向容器内路径。密钥不会也不应打进镜像（`.dockerignore` 已排除 `keys/` 与 `*.p8`）。
 - 把 `PUID`/`PGID` 设成宿主机目录属主的 uid/gid 即可，入口脚本会自动修正容器内挂载目录的属主。
 
@@ -340,7 +349,7 @@ curl -X DELETE http://localhost:18080/api/v1/downloads/{job_id}
 data/downloads/albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
 ```
 
-模板变量列表见 `configs/config.example.yaml` 注释。目录段中的 `{ArtistName}` 使用集合的归档艺术家（优先专辑艺术家），保证同一专辑的曲目落在同一目录；文件名段使用曲目自身的艺术家。
+模板变量列表见 `configs/runtime.example.yaml` 注释。目录段中的 `{ArtistName}` 使用集合的归档艺术家（优先专辑艺术家），保证同一专辑的曲目落在同一目录；文件名段使用曲目自身的艺术家。
 
 可选择在音频文件外额外保存独立封面：
 
