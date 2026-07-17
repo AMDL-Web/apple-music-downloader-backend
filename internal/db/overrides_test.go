@@ -69,3 +69,32 @@ func TestMediaUserTokenOverrideSurvivesStorageRoundTrip(t *testing.T) {
 		t.Fatalf("stored explicit-empty media_user_token = %+v, want non-nil empty pointer", loaded.Overrides)
 	}
 }
+
+func TestRemovedParallelTracksOverrideDoesNotBlockHistoricalJobLoad(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	job := domain.Job{
+		ID: "job-old-parallel", Input: "song|us|1", Type: "song", CanonicalKey: "song:us:old-parallel",
+		Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE jobs SET overrides=? WHERE id=?`, `{"max_parallel_tracks":64,"embed_lyrics":false}`, job.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := store.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("load historical job: %v", err)
+	}
+	if loaded.Overrides == nil || loaded.Overrides.EmbedLyrics == nil || *loaded.Overrides.EmbedLyrics {
+		t.Fatalf("historical supported overrides not retained: %+v", loaded.Overrides)
+	}
+}

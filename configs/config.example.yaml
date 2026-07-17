@@ -64,6 +64,19 @@ catalog:
   default_storefront: "cn"
   # string: Apple Music catalog language tag passed as the "l" query parameter, for example "en-US", "zh-Hans_CN", "ja-JP".
   language: "zh-Hans_CN"
+  # integer: maximum Apple control-plane HTTP requests in flight across the whole process, including Catalog API,
+  # web-player token discovery, Enhanced HLS manifests, and artwork. Positive values allow 1-64; values <=0 behave
+  # as 1; values above 64 in this file or AMDL_CATALOG_MAX_PARALLEL_REQUESTS are clamped to 64. Default: 16.
+  # This sizes a process-wide pool at startup; changing the file or environment variable requires a restart.
+  max_parallel_requests: 16
+  # integer requests/second: sustained process-wide Catalog API request rate. Positive values allow 1-64; values
+  # <=0 behave as 1; values above 64 in this file or AMDL_CATALOG_REQUESTS_PER_SECOND are clamped to 64. Default: 10.
+  # This rate limiter is fixed at startup; changing the file or environment variable requires a restart.
+  requests_per_second: 10
+  # integer requests: token-bucket burst capacity for Catalog API traffic. Positive values allow 1-64; values <=0
+  # behave as 1; values above 64 in this file or AMDL_CATALOG_REQUEST_BURST are clamped to 64. Default: 16.
+  # This rate limiter is fixed at startup; changing the file or environment variable requires a restart.
+  request_burst: 16
   # Apple Music developer-token signing (all three keys form one unit):
   # - all three empty: signing disabled; the bearer token is auto-discovered from music.apple.com (legacy behavior)
   #     and catalog metadata is read from amp-api.music.apple.com with enhancedHls manifests.
@@ -126,24 +139,15 @@ download:
   # integer: maximum concurrently running jobs. Positive values allow 1-32; values <=0 behave as 1;
   # values above 32 in this file are clamped to 32 (the config API rejects them). Default: 3.
   max_running_jobs: 3
-  # integer: maximum tracks downloaded in parallel per collection. Positive values allow 1-64; values <=0 behave as 1;
-  # values above 64 in this file are clamped to 64 (the config API and new job submissions reject them;
-  # job overrides persisted before the limit existed are clamped when the job runs). This bounds active track pipelines.
-  # Default: 5.
-  max_parallel_tracks: 5
-  # integer: process-wide maximum concurrent per-track Apple Catalog metadata requests, shared across all running jobs.
-  # Positive values allow 1-256; values <=0 behave as 1; values above 256 in this file are clamped to 256
-  # (the config API rejects them). Lower values reduce Catalog 429 responses. Default: 32.
-  max_parallel_metadata_requests: 32
-  # integer: process-wide maximum concurrent encrypted-media CDN transfers, shared across all running jobs.
-  # Positive values allow 1-256; values <=0 behave as 1; values above 256 in this file are clamped to 256
-  # (the config API rejects them). Lower values reduce HTTP/2 stream resets. Default: 32.
-  max_parallel_media_downloads: 32
-  # integer: process-wide maximum concurrent wrapper data operations, shared across all running jobs and quality probes.
-  # One slot covers an entire decrypt-session lifetime; Lyrics, M3U8, WebPlayback, and License RPCs hold a slot only for
-  # that call. Login/logout and wrapper status calls are not limited. Positive values allow 1-256; values <=0 behave as 1;
-  # values above 256 in this file are clamped to 256 (the config API rejects them). Default: 64.
-  max_parallel_wrapper_requests: 64
+  # integer: maximum media transfers in flight across all jobs. Positive values allow 1-64; values <=0 behave as 1;
+  # values above 64 in this file or AMDL_DOWNLOAD_MAX_PARALLEL_DOWNLOADS are clamped to 64. Default: 16.
+  # This sizes a process-wide pool at startup, cannot be overridden per job, and requires a restart to change.
+  # Upgrade note: this replaces the removed max_parallel_tracks key; old configs must be edited or startup fails.
+  max_parallel_downloads: 16
+  # integer: maximum media decrypt operations in flight across all jobs. Positive values allow 1-64; values <=0
+  # behave as 1; values above 64 in this file or AMDL_DOWNLOAD_MAX_PARALLEL_DECRYPTS are clamped to 64. Default: 4.
+  # This sizes a process-wide pool at startup, cannot be overridden per job, and requires a restart to change.
+  max_parallel_decrypts: 4
   # integer: maximum total attempts (including the first) for metadata, cover, lyrics,
   # and each codec's download/decrypt phase. Positive values allow 1-10; values <=0 behave as 1;
   # values above 10 in this file are clamped to 10 (the config API and new job submissions reject them;
@@ -182,10 +186,10 @@ download:
   # moved to downloads_dir. If temp_dir shares a filesystem with downloads_dir the
   # move is a cheap rename; if not, the finished file is copied across once. Put
   # temp_dir on fast local storage (e.g. SSD) to keep the flatten/verify/tag work
-  # off a slower downloads volume. Peak usage is up to roughly three times one
-  # track's size per parallel track (see max_parallel_tracks): during flatten the
-  # encrypted download, the decrypted fragmented MP4, and the flattened output
-  # briefly coexist. Assumed single-writer: stale scratch is swept on startup.
+  # off a slower downloads volume. During flatten, one track can briefly have
+  # encrypted, decrypted fragmented, and flattened copies; size this directory
+  # for the process-wide media pipeline governed by max_parallel_downloads and
+  # max_parallel_decrypts. Assumed single-writer: stale scratch is swept on startup.
   temp_dir: "data/tmp"
   # string: cover artwork size as "{width}x{height}", for example "5000x5000", "3000x3000", "1400x1400".
   cover_size: "5000x5000"

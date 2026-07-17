@@ -17,7 +17,12 @@ func TestEnvOverrides(t *testing.T) {
 		"AMDL_LOGGING_LEVEL=debug",
 		"AMDL_SIMULATE_ENABLED=true",
 		"AMDL_DOWNLOAD_MAX_ATTEMPTS=7",
+		"AMDL_DOWNLOAD_MAX_PARALLEL_DOWNLOADS=8",
+		"AMDL_DOWNLOAD_MAX_PARALLEL_DECRYPTS=3",
 		"AMDL_DOWNLOAD_QUALITY_PRIORITY=aac, alac,",
+		"AMDL_CATALOG_MAX_PARALLEL_REQUESTS=12",
+		"AMDL_CATALOG_REQUESTS_PER_SECOND=9",
+		"AMDL_CATALOG_REQUEST_BURST=14",
 		"AMDL_CATALOG_ALLOWED_ORIGINS=",
 		"AMDL_CATALOG_MEDIA_USER_TOKEN_PRIORITY=request",
 		"UNRELATED=1",
@@ -43,6 +48,12 @@ func TestEnvOverrides(t *testing.T) {
 	}
 	if cfg.Download.MaxAttempts != 7 {
 		t.Fatalf("max attempts = %d, want 7", cfg.Download.MaxAttempts)
+	}
+	if cfg.Download.MaxParallelDownloads != 8 || cfg.Download.MaxParallelDecrypts != 3 {
+		t.Fatalf("download pools = (%d, %d), want (8, 3)", cfg.Download.MaxParallelDownloads, cfg.Download.MaxParallelDecrypts)
+	}
+	if cfg.Catalog.MaxParallelRequests != 12 || cfg.Catalog.RequestsPerSecond != 9 || cfg.Catalog.RequestBurst != 14 {
+		t.Fatalf("catalog controls = %+v", cfg.Catalog)
 	}
 	if !reflect.DeepEqual(cfg.Download.QualityPriority, []string{"aac", "alac"}) {
 		t.Fatalf("quality priority = %#v, want trimmed comma-separated items", cfg.Download.QualityPriority)
@@ -82,6 +93,16 @@ func TestEnvOverridesRejectUnknownVariables(t *testing.T) {
 		name, _, _ := strings.Cut(legacy, "=")
 		if _, err := load(path, []string{legacy}); err == nil || !strings.Contains(err.Error(), name) {
 			t.Fatalf("load with %s error = %v, want unknown variable error naming it", name, err)
+		}
+	}
+	for _, name := range []string{
+		"AMDL_DOWNLOAD_MAX_PARALLEL_TRACKS",
+		"AMDL_DOWNLOAD_MAX_PARALLEL_METADATA_REQUESTS",
+		"AMDL_DOWNLOAD_MAX_PARALLEL_MEDIA_DOWNLOADS",
+		"AMDL_DOWNLOAD_MAX_PARALLEL_WRAPPER_REQUESTS",
+	} {
+		if _, err := load(path, []string{name + "=5"}); err == nil || !strings.Contains(err.Error(), name) {
+			t.Fatalf("removed concurrency environment variable %s error = %v", name, err)
 		}
 	}
 }

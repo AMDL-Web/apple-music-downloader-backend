@@ -19,21 +19,17 @@ import (
 	"amdl/internal/wrapper"
 )
 
-func TestRunParallelTrackTasksWaitsForStartedTaskOnCancellation(t *testing.T) {
+func TestRunTrackTasksJoinsStartedTasksAndHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	started := make(chan struct{})
+	started := make(chan struct{}, 2)
 	release := make(chan struct{})
 	var calls atomic.Int32
 	done := make(chan error, 1)
 
 	go func() {
-		done <- runParallelTrackTasks(ctx, 2, 1, []bool{false, false}, func(int) error {
+		done <- runTrackTasks(ctx, 3, []bool{false, true, false}, func(int) error {
 			calls.Add(1)
-			select {
-			case <-started:
-			default:
-				close(started)
-			}
+			started <- struct{}{}
 			// Deliberately ignore ctx to prove the scheduler joins work that it
 			// has already launched instead of returning early on cancellation.
 			<-release
@@ -46,26 +42,40 @@ func TestRunParallelTrackTasksWaitsForStartedTaskOnCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("first track task did not start")
 	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("second unfinished track task did not start")
+	}
 	cancel()
 	select {
 	case err := <-done:
 		t.Fatalf("scheduler returned before started task exited: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("started tasks after cancellation = %d, want 1", got)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("started tasks after cancellation = %d, want 2 unfinished tracks", got)
 	}
 	close(release)
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("scheduler error = %v, want context.Canceled", err)
+		if err != nil {
+			t.Fatalf("scheduler error = %v, want nil after all tasks were launched", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("scheduler did not return after started task exited")
 	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("total started tasks = %d, want 1", got)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("total started tasks = %d, want 2", got)
+	}
+
+	preCanceled, preCancel := context.WithCancel(context.Background())
+	preCancel()
+	if err := runTrackTasks(preCanceled, 1, []bool{false}, func(int) error {
+		t.Fatal("task started after cancellation")
+		return nil
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-cancelled scheduler error = %v, want context.Canceled", err)
 	}
 }
 
@@ -173,6 +183,7 @@ func (f fakeDownloaderCatalog) EnhancedHLSViaWebToken(context.Context, string, s
 }
 
 type recordingReporter struct {
+	mu       sync.Mutex
 	events   []domain.Event
 	items    []domain.JobItem
 	existing []domain.JobItem
@@ -251,21 +262,31 @@ func (c *metadataCountingCatalog) counts() (map[string]int, map[string]int, map[
 
 func (*recordingReporter) SetJob(context.Context, domain.Job) error { return nil }
 func (r *recordingReporter) AddItem(_ context.Context, item domain.JobItem) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.added = append(r.added, item)
 	return nil
 }
 func (r *recordingReporter) RemoveItem(_ context.Context, itemID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.removed = append(r.removed, itemID)
 	return nil
 }
 func (r *recordingReporter) ListItems(context.Context, string) ([]domain.JobItem, error) {
-	return r.existing, nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]domain.JobItem(nil), r.existing...), nil
 }
 func (r *recordingReporter) UpdateItem(_ context.Context, item domain.JobItem) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.items = append(r.items, item)
 	return nil
 }
 func (r *recordingReporter) Event(_ context.Context, ev domain.Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.events = append(r.events, ev)
 	return nil
 }
@@ -636,7 +657,8 @@ func TestProcessJobAvoidsDuplicateSingleSongMetadataReads(t *testing.T) {
 	cfg.Simulate = config.SimulateConfig{Enabled: true, MinSpeedKBps: 1_000_000, MaxSpeedKBps: 1_000_000}
 	cfg.Download.DownloadsDir = t.TempDir()
 	cfg.Download.MaxAttempts = 1
-	cfg.Download.MaxParallelTracks = 1
+	cfg.Download.MaxParallelDownloads = 1
+	cfg.Download.MaxParallelDecrypts = 1
 	cfg.Download.EmbedCover = false
 	cfg.Download.EmbedLyrics = false
 	cfg.Download.QualityPriority = []string{"alac"}
@@ -680,7 +702,8 @@ func TestProcessJobDoesNotRefetchResolvedAlbumPerTrack(t *testing.T) {
 	cfg.Simulate = config.SimulateConfig{Enabled: true, MinSpeedKBps: 1_000_000, MaxSpeedKBps: 1_000_000}
 	cfg.Download.DownloadsDir = t.TempDir()
 	cfg.Download.MaxAttempts = 1
-	cfg.Download.MaxParallelTracks = 1
+	cfg.Download.MaxParallelDownloads = 1
+	cfg.Download.MaxParallelDecrypts = 1
 	cfg.Download.EmbedCover = false
 	cfg.Download.EmbedLyrics = false
 	cfg.Download.QualityPriority = []string{"alac"}

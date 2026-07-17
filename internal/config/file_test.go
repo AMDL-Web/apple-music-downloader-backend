@@ -227,6 +227,11 @@ func TestReloadPreservesLockedFields(t *testing.T) {
 	edited.Logging.Level = "debug"
 	edited.Logging.Format = "json"
 	edited.Download.MaxRunningJobs = maxRunningJobsLimit
+	edited.Download.MaxParallelDownloads = maxGlobalPoolLimit
+	edited.Download.MaxParallelDecrypts = maxGlobalPoolLimit
+	edited.Catalog.MaxParallelRequests = maxGlobalPoolLimit
+	edited.Catalog.RequestsPerSecond = maxGlobalPoolLimit
+	edited.Catalog.RequestBurst = maxGlobalPoolLimit
 	if err := Save(path, edited); err != nil {
 		t.Fatal(err)
 	}
@@ -238,8 +243,8 @@ func TestReloadPreservesLockedFields(t *testing.T) {
 		t.Fatalf("mutable edits not reloaded: %+v", got.Download)
 	}
 	base := Default()
-	if got.Tools.FFmpeg != base.Tools.FFmpeg || got.Wrapper.Address != base.Wrapper.Address || got.Logging.Format != base.Logging.Format || got.Download.MaxRunningJobs != base.Download.MaxRunningJobs {
-		t.Fatalf("startup-bound file edits leaked into the live snapshot: tools=%+v wrapper=%+v logging=%+v max_running_jobs=%d", got.Tools, got.Wrapper, got.Logging, got.Download.MaxRunningJobs)
+	if got.Tools.FFmpeg != base.Tools.FFmpeg || got.Wrapper.Address != base.Wrapper.Address || got.Logging.Format != base.Logging.Format || got.Download.MaxRunningJobs != base.Download.MaxRunningJobs || got.Download.MaxParallelDownloads != base.Download.MaxParallelDownloads || got.Download.MaxParallelDecrypts != base.Download.MaxParallelDecrypts || got.Catalog.MaxParallelRequests != base.Catalog.MaxParallelRequests || got.Catalog.RequestsPerSecond != base.Catalog.RequestsPerSecond || got.Catalog.RequestBurst != base.Catalog.RequestBurst {
+		t.Fatalf("startup-bound file edits leaked into live snapshot: catalog=%+v download=%+v", got.Catalog, got.Download)
 	}
 }
 

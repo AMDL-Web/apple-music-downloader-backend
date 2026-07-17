@@ -250,7 +250,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 // getConfig returns the runtime-changeable part of the current config
-// (download minus max_running_jobs, logging level/access log, simulate,
+// (mutable download fields, logging level/access log, simulate,
 // catalog.album_track_url_mode/media_user_token/signed_mode_hls_source).
 // Startup-bound fields are omitted: clients cannot change them through this
 // API, so they have no reason to see them here.
@@ -276,8 +276,9 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 // omitted fields keep their current values, present fields (including whole
 // sections) are replaced. The merged result must pass full config validation,
 // and fields consumed only at startup (server, database, logging outputs,
-// wrapper, tools, catalog client/signing, download.max_running_jobs) are
-// rejected — changing them at runtime would silently do nothing. Accepted
+// wrapper, tools, catalog client/signing/request limits, and process-wide
+// download worker/media pools) are rejected — changing them at runtime would
+// silently do nothing. Accepted
 // changes apply to new requests and newly started jobs immediately and are
 // written back to the live config file, so they survive restarts.
 func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {

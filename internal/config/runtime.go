@@ -9,13 +9,15 @@ import (
 // GET/PUT /api/v1/config exchange with clients, which have no use for the
 // startup-bound fields the update endpoint refuses to change anyway. The
 // download section is derived from its json tags so a field added to
-// DownloadConfig shows up here automatically; max_running_jobs is dropped to
-// stay in sync with RuntimeLockedChanges below.
+// DownloadConfig shows up here automatically; process-wide startup controls
+// are dropped to stay in sync with RuntimeLockedChanges below.
 func MutableView(cfg Config) map[string]any {
 	raw, _ := json.Marshal(cfg.Download)
 	download := map[string]any{}
 	_ = json.Unmarshal(raw, &download)
 	delete(download, "max_running_jobs")
+	delete(download, "max_parallel_downloads")
+	delete(download, "max_parallel_decrypts")
 	return map[string]any{
 		"catalog": map[string]any{
 			"album_track_url_mode":   cfg.Catalog.AlbumTrackURLMode,
@@ -31,11 +33,12 @@ func MutableView(cfg Config) map[string]any {
 // RuntimeLockedChanges returns the dotted keys of fields that differ between
 // old and updated but are consumed only at process startup (listen address,
 // database path, logging outputs, wrapper connection, catalog client/token
-// signing, worker pool size, tool paths). Changing them through the runtime
-// config API would silently do nothing, so PUT /api/v1/config rejects an
+// signing and Apple request limits, worker/resource pool sizes, tool paths).
+// Changing them through the runtime config API would silently do nothing, so
+// PUT /api/v1/config rejects an
 // update whenever this returns a non-empty list. Everything not listed here —
-// logging.level, logging.access_log, the download section (minus
-// max_running_jobs), the simulate section, and
+// logging.level, logging.access_log, the mutable download fields, the simulate
+// section, and
 // catalog.album_track_url_mode/media_user_token/signed_mode_hls_source —
 // takes effect immediately for new requests and newly started jobs.
 func RuntimeLockedChanges(old, updated Config) []string {
@@ -69,14 +72,19 @@ func RuntimeLockedChanges(old, updated Config) []string {
 	lock("catalog.developer_token_ttl_hours", old.Catalog.DeveloperTokenTTLHours != updated.Catalog.DeveloperTokenTTLHours)
 	lock("catalog.allowed_origins", !slices.Equal(old.Catalog.AllowedOrigins, updated.Catalog.AllowedOrigins))
 	lock("catalog.token_cache_ttl_hours", old.Catalog.TokenCacheTTLHours != updated.Catalog.TokenCacheTTLHours)
+	lock("catalog.max_parallel_requests", old.Catalog.MaxParallelRequests != updated.Catalog.MaxParallelRequests)
+	lock("catalog.requests_per_second", old.Catalog.RequestsPerSecond != updated.Catalog.RequestsPerSecond)
+	lock("catalog.request_burst", old.Catalog.RequestBurst != updated.Catalog.RequestBurst)
 	lock("download.max_running_jobs", old.Download.MaxRunningJobs != updated.Download.MaxRunningJobs)
+	lock("download.max_parallel_downloads", old.Download.MaxParallelDownloads != updated.Download.MaxParallelDownloads)
+	lock("download.max_parallel_decrypts", old.Download.MaxParallelDecrypts != updated.Download.MaxParallelDecrypts)
 	lock("tools.ffmpeg", old.Tools.FFmpeg != updated.Tools.FFmpeg)
 	return changed
 }
 
 // preserveRuntimeLocked returns loaded with every startup-bound field forced
-// back to current's values, leaving only the runtime-mutable part (download
-// minus max_running_jobs, logging level/access log, simulate,
+// back to current's values, leaving only the runtime-mutable part (mutable
+// download fields, logging level/access log, simulate,
 // catalog.album_track_url_mode/media_user_token/signed_mode_hls_source) from
 // loaded. Store.Reload uses it so a manual
 // file edit to a locked field never half-applies to a running process. Must
@@ -97,5 +105,7 @@ func preserveRuntimeLocked(loaded, current Config) Config {
 	loaded.Catalog.MediaUserToken = mediaUserToken
 	loaded.Catalog.SignedModeHLSSource = signedModeHLSSource
 	loaded.Download.MaxRunningJobs = current.Download.MaxRunningJobs
+	loaded.Download.MaxParallelDownloads = current.Download.MaxParallelDownloads
+	loaded.Download.MaxParallelDecrypts = current.Download.MaxParallelDecrypts
 	return loaded
 }

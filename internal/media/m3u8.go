@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"amdl/internal/limits"
 )
 
 const (
@@ -69,8 +71,8 @@ var codecPatterns = map[string]*regexp.Regexp{
 	"ac3":          regexp.MustCompile(`audio-ac3-\d{3}$`),
 }
 
-func extractMedia(ctx context.Context, httpClient *http.Client, masterURL, codec string, maxSampleRate, maxBitDepth int) (m3u8Info, error) {
-	master, err := downloadText(ctx, httpClient, masterURL)
+func extractMedia(ctx context.Context, httpClient *http.Client, masterURL, codec string, maxSampleRate, maxBitDepth int, gates ...*limits.RequestGate) (m3u8Info, error) {
+	master, err := downloadText(ctx, httpClient, masterURL, gates...)
 	if err != nil {
 		return m3u8Info{}, err
 	}
@@ -96,7 +98,7 @@ func extractMedia(ctx context.Context, httpClient *http.Client, masterURL, codec
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].Bandwidth > filtered[j].Bandwidth })
 	selected := filtered[0]
-	media, err := downloadText(ctx, httpClient, selected.URI)
+	media, err := downloadText(ctx, httpClient, selected.URI, gates...)
 	if err != nil {
 		return m3u8Info{}, err
 	}
@@ -151,8 +153,8 @@ func ParseMasterPlaylist(body, base string) []PlaylistVariant {
 	return out
 }
 
-func FetchMasterVariants(ctx context.Context, client *http.Client, masterURL string) ([]PlaylistVariant, error) {
-	body, err := downloadText(ctx, client, masterURL)
+func FetchMasterVariants(ctx context.Context, client *http.Client, masterURL string, gates ...*limits.RequestGate) ([]PlaylistVariant, error) {
+	body, err := downloadText(ctx, client, masterURL, gates...)
 	if err != nil {
 		return nil, err
 	}
@@ -224,12 +226,17 @@ func parseAttrs(v string) map[string]string {
 	return out
 }
 
-func downloadText(ctx context.Context, client *http.Client, uri string) (string, error) {
+func downloadText(ctx context.Context, client *http.Client, uri string, gates ...*limits.RequestGate) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
 		return "", err
 	}
-	resp, err := client.Do(req)
+	var resp *http.Response
+	if len(gates) > 0 && gates[0] != nil {
+		resp, err = gates[0].DoWith429Retry(ctx, client, req, false, limits.DefaultRetryDelay)
+	} else {
+		resp, err = client.Do(req)
+	}
 	if err != nil {
 		return "", err
 	}

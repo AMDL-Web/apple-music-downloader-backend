@@ -89,14 +89,11 @@ func main() {
 	defer store.Close()
 
 	hub := events.NewHub()
-	// cfgStore is the live runtime config shared by the API layer, download
-	// pipeline, and process-wide operation limiters. Fields consumed directly
-	// in main remain startup-bound; runtime-mutable limits are read on every
-	// acquisition so updates apply without a restart.
+	// cfgStore is the live runtime config shared by the API layer and download
+	// pipeline. Process-wide concurrency pools are sized once from this startup
+	// snapshot; runtime-mutable fields are read when each job starts.
 	cfgStore := config.NewFileStore(cfg, cfgPath)
-	wrapperClient, err := wrapper.NewClient(cfg.Wrapper, wrapper.WithDataConcurrencyLimit(func() int {
-		return cfgStore.Get().Download.MaxParallelWrapperRequests
-	}))
+	wrapperClient, err := wrapper.NewClient(cfg.Wrapper)
 	if err != nil {
 		logger.Error("connect wrapper-manager", "error", err)
 		os.Exit(1)
