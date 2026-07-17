@@ -32,6 +32,51 @@ func (recoveryProcessor) ProcessJob(context.Context, domain.Job, Reporter) error
 	return nil
 }
 
+type artifactCleanerProcessor struct {
+	recoveryProcessor
+	mu      sync.Mutex
+	cleaned []string
+}
+
+func (p *artifactCleanerProcessor) CleanupJobArtifacts(job domain.Job) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cleaned = append(p.cleaned, job.ID)
+}
+
+func (p *artifactCleanerProcessor) cleanedJobs() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.cleaned...)
+}
+
+func TestManagerCleansArtifactsForQueuedCancelAndTerminalDelete(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	queued := domain.Job{ID: "job-queued-clean", Input: "queued", Type: "song", Storefront: "cn", Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now}
+	failed := domain.Job{ID: "job-failed-clean", Input: "failed", Type: "song", Storefront: "cn", Status: domain.JobFailed, CreatedAt: now, UpdatedAt: now}
+	for _, job := range []domain.Job{queued, failed} {
+		if err := store.CreateJob(context.Background(), job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	processor := &artifactCleanerProcessor{}
+	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
+	if err := manager.Cancel(context.Background(), queued.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Delete(context.Background(), failed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := processor.cleanedJobs(); len(got) != 2 || got[0] != queued.ID || got[1] != failed.ID {
+		t.Fatalf("cleaned jobs = %v, want queued cancel then failed delete", got)
+	}
+}
+
 type tokenRecoveryProcessor struct {
 	jobs chan domain.Job
 }

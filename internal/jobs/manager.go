@@ -26,6 +26,14 @@ type Processor interface {
 	ProcessJob(ctx context.Context, job domain.Job, reporter Reporter) error
 }
 
+// ArtifactCleaner is an optional processor capability for durable scratch that
+// outlives a ProcessJob call. Manager invokes it only when a job can no longer
+// be retried: queued cancellation or terminal deletion. Active cancellation is
+// cleaned by ProcessJob after its context has stopped, avoiding a writer race.
+type ArtifactCleaner interface {
+	CleanupJobArtifacts(job domain.Job)
+}
+
 type ValidationResult struct {
 	Type       string
 	Storefront string
@@ -471,6 +479,9 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 	job, err := m.store.GetJob(ctx, jobID)
 	if err != nil {
 		m.mu.Unlock()
+		if errors.Is(err, sql.ErrNoRows) {
+			return db.ErrJobNotFound
+		}
 		return err
 	}
 	if job.Status.IsTerminal() {
@@ -496,6 +507,9 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 	if persistErr != nil {
 		return persistErr
 	}
+	if cleaner, ok := m.processor.(ArtifactCleaner); ok {
+		cleaner.CleanupJobArtifacts(job)
+	}
 	m.dispatchHooks(ctx, job)
 	m.mu.Lock()
 	delete(m.finalizing, jobID)
@@ -516,10 +530,21 @@ func (m *Manager) Delete(ctx context.Context, jobID string) error {
 		m.mu.Unlock()
 		return db.ErrJobNotTerminal
 	}
+	job, err := m.store.GetJob(ctx, jobID)
+	if err != nil {
+		m.mu.Unlock()
+		if errors.Is(err, sql.ErrNoRows) {
+			return db.ErrJobNotFound
+		}
+		return err
+	}
 	deleted, err := m.store.DeleteJob(ctx, jobID)
 	m.mu.Unlock()
 	if err != nil {
 		return err
+	}
+	if cleaner, ok := m.processor.(ArtifactCleaner); ok {
+		cleaner.CleanupJobArtifacts(job)
 	}
 	// Broadcast the persisted tombstone so live overview subscribers can drop the
 	// job immediately; missed broadcasts are replayed from job_events by cursor.

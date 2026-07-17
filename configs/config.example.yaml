@@ -185,7 +185,10 @@ download:
   # off a slower downloads volume. Peak usage is up to roughly three times one
   # track's size per parallel track (see max_parallel_tracks): during flatten the
   # encrypted download, the decrypted fragmented MP4, and the flattened output
-  # briefly coexist. Assumed single-writer: stale scratch is swept on startup.
+  # briefly coexist. Assumed single-writer: stale non-resumable scratch is swept
+  # on startup. Encrypted HLS checkpoints are grouped by task: failed/recoverable
+  # tasks retain them for retry, while completed, cancelled, and deleted tasks
+  # remove them.
   temp_dir: "data/tmp"
   # string: cover artwork size as "{width}x{height}", for example "5000x5000", "3000x3000", "1400x1400".
   cover_size: "5000x5000"
