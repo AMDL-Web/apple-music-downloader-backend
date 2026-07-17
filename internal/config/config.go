@@ -198,7 +198,7 @@ func Default() Config {
 		},
 		Download: DownloadConfig{
 			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true,
-			MaxRunningJobs: 2, MaxParallelDownloads: 16, MaxParallelDecrypts: 4, MaxParallelWrapperRequests: 16, MaxAttempts: 4,
+			MaxRunningJobs: 2, MaxParallelDownloads: 16, MaxParallelDecrypts: 32, MaxParallelWrapperRequests: 24, MaxAttempts: 4,
 			DownloadsDir:       "data/downloads",
 			SongPathFormat:     "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
 			AlbumPathFormat:    "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",

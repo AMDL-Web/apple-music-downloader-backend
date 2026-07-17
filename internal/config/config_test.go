@@ -54,7 +54,7 @@ func TestDefaultGlobalConcurrencyControls(t *testing.T) {
 	if cfg.Catalog.MaxParallelRequests != 16 || cfg.Catalog.RequestsPerSecond != 10 || cfg.Catalog.RequestBurst != 16 {
 		t.Fatalf("default catalog controls = %+v", cfg.Catalog)
 	}
-	if cfg.Download.MaxParallelDownloads != 16 || cfg.Download.MaxParallelDecrypts != 4 {
+	if cfg.Download.MaxParallelDownloads != 16 || cfg.Download.MaxParallelDecrypts != 32 || cfg.Download.MaxParallelWrapperRequests != 24 {
 		t.Fatalf("default media pools = %+v", cfg.Download)
 	}
 }
