@@ -56,6 +56,9 @@ func TestGetConfigReturnsOnlyMutableFields(t *testing.T) {
 	if download["max_parallel_metadata_requests"] != float64(32) || download["max_parallel_media_downloads"] != float64(32) || download["max_parallel_wrapper_requests"] != float64(64) {
 		t.Fatalf("download section missing shared limits: %v", download)
 	}
+	if download["memory_mode"] != config.MemoryModeLow {
+		t.Fatalf("download.memory_mode = %v, want low", download["memory_mode"])
+	}
 	var catalog map[string]any
 	if err := json.Unmarshal(resp.Config["catalog"], &catalog); err != nil {
 		t.Fatal(err)
@@ -77,7 +80,7 @@ func TestUpdateConfigMergesAndTakesEffect(t *testing.T) {
 	server := &Server{cfg: store}
 
 	recorder := requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config",
-		`{"download":{"embed_lyrics":false,"cover_format":"png","max_parallel_metadata_requests":8,"max_parallel_media_downloads":24,"max_parallel_wrapper_requests":12},"simulate":{"enabled":true,"min_speed_kbps":10,"max_speed_kbps":20},"catalog":{"signed_mode_hls_source":"web_token"}}`)
+		`{"download":{"embed_lyrics":false,"cover_format":"png","memory_mode":"high","max_parallel_metadata_requests":8,"max_parallel_media_downloads":24,"max_parallel_wrapper_requests":12},"simulate":{"enabled":true,"min_speed_kbps":10,"max_speed_kbps":20},"catalog":{"signed_mode_hls_source":"web_token"}}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -87,7 +90,7 @@ func TestUpdateConfigMergesAndTakesEffect(t *testing.T) {
 	}
 
 	got := store.Get()
-	if got.Download.EmbedLyrics || got.Download.CoverFormat != "png" || !got.Simulate.Enabled {
+	if got.Download.EmbedLyrics || got.Download.CoverFormat != "png" || got.Download.MemoryMode != config.MemoryModeHigh || !got.Simulate.Enabled {
 		t.Fatalf("update not applied to store: %+v %+v", got.Download, got.Simulate)
 	}
 	if got.Download.MaxParallelMetadataRequests != 8 || got.Download.MaxParallelMediaDownloads != 24 || got.Download.MaxParallelWrapperRequests != 12 {
@@ -229,6 +232,7 @@ func TestUpdateConfigRejectsBadInput(t *testing.T) {
 		{name: "metadata limit", body: `{"download":{"max_parallel_metadata_requests":257}}`, status: http.StatusUnprocessableEntity, want: "max_parallel_metadata_requests"},
 		{name: "media limit", body: `{"download":{"max_parallel_media_downloads":257}}`, status: http.StatusUnprocessableEntity, want: "max_parallel_media_downloads"},
 		{name: "wrapper limit", body: `{"download":{"max_parallel_wrapper_requests":257}}`, status: http.StatusUnprocessableEntity, want: "max_parallel_wrapper_requests"},
+		{name: "invalid memory mode", body: `{"download":{"memory_mode":"auto"}}`, status: http.StatusUnprocessableEntity, want: "memory_mode"},
 		{name: "locked field", body: `{"server":{"listen":"0.0.0.0:1"}}`, status: http.StatusUnprocessableEntity, want: "server.listen"},
 		{name: "locked worker count", body: `{"download":{"max_running_jobs":99}}`, status: http.StatusUnprocessableEntity, want: "download.max_running_jobs"},
 		{name: "locked logging output", body: `{"logging":{"format":"json"}}`, status: http.StatusUnprocessableEntity, want: "logging.format"},
@@ -285,7 +289,7 @@ func TestCreateDownloadWithOverrides(t *testing.T) {
 	server := &Server{cfg: config.NewStore(config.Default()), store: store, manager: manager}
 
 	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads",
-		`{"urls":["song|us|1"],"overrides":{"embed_lyrics":false,"quality_priority":["aac"]}}`)
+		`{"urls":["song|us|1"],"overrides":{"embed_lyrics":false,"quality_priority":["aac"],"memory_mode":"high"}}`)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -311,6 +315,9 @@ func TestCreateDownloadWithOverrides(t *testing.T) {
 	}
 	if qp := persisted.Overrides.QualityPriority; qp == nil || len(*qp) != 1 || (*qp)[0] != "aac" {
 		t.Fatalf("persisted quality_priority override = %v, want [aac]", qp)
+	}
+	if mode := persisted.Overrides.MemoryMode; mode == nil || *mode != config.MemoryModeHigh {
+		t.Fatalf("persisted memory_mode override = %v, want high", mode)
 	}
 }
 

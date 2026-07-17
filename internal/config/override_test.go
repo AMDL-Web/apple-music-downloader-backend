@@ -22,6 +22,7 @@ func TestDownloadOverridesApplyMergesOnlySetFields(t *testing.T) {
 	embed := false
 	format := "png"
 	parallel := 7
+	memoryMode := MemoryModeHigh
 	quality := []string{"aac"}
 	mediaUserToken := "job-token"
 	base.Catalog.MediaUserToken = "global-token"
@@ -30,6 +31,7 @@ func TestDownloadOverridesApplyMergesOnlySetFields(t *testing.T) {
 		QualityPriority:   &quality,
 		EmbedCover:        &embed,
 		CoverFormat:       &format,
+		MemoryMode:        &memoryMode,
 		MaxParallelTracks: &parallel,
 	}
 	got := overrides.Apply(base)
@@ -37,7 +39,7 @@ func TestDownloadOverridesApplyMergesOnlySetFields(t *testing.T) {
 	if !reflect.DeepEqual(got.Download.QualityPriority, []string{"aac"}) {
 		t.Fatalf("quality_priority = %v, want [aac]", got.Download.QualityPriority)
 	}
-	if got.Download.EmbedCover != false || got.Download.CoverFormat != "png" || got.Download.MaxParallelTracks != 7 {
+	if got.Download.EmbedCover != false || got.Download.CoverFormat != "png" || got.Download.MemoryMode != MemoryModeHigh || got.Download.MaxParallelTracks != 7 {
 		t.Fatalf("overridden fields not applied: %+v", got.Download)
 	}
 	if got.Catalog.MediaUserToken != "job-token" {
@@ -93,6 +95,10 @@ func TestDownloadOverridesApplyThenValidate(t *testing.T) {
 	overrides = &DownloadOverrides{CoverFormat: &good}
 	if err := overrides.Apply(Default()).Validate(); err != nil {
 		t.Fatalf("valid overrides rejected: %v", err)
+	}
+	badMemoryMode := "auto"
+	if err := (&DownloadOverrides{MemoryMode: &badMemoryMode}).Apply(Default()).Validate(); err == nil || !strings.Contains(err.Error(), "memory_mode") {
+		t.Fatalf("invalid memory_mode override error = %v, want memory_mode validation error", err)
 	}
 }
 
@@ -216,6 +222,9 @@ func TestMutableViewOmitsStartupBoundFields(t *testing.T) {
 	}
 	if download["max_parallel_metadata_requests"] != float64(32) || download["max_parallel_media_downloads"] != float64(32) || download["max_parallel_wrapper_requests"] != float64(64) {
 		t.Fatalf("download section missing shared limits: %v", download)
+	}
+	if download["memory_mode"] != MemoryModeLow {
+		t.Fatalf("download.memory_mode = %v, want low", download["memory_mode"])
 	}
 	catalog, ok := view["catalog"].(map[string]any)
 	if !ok || len(catalog) != 3 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["signed_mode_hls_source"] != "wrapper" {

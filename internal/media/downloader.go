@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -78,10 +79,14 @@ type downloaderWrapper interface {
 
 type selectedDownloadMedia struct {
 	info selectedMediaInfo
+	// raw holds the still-encrypted whole track only in high-memory mode. Keeping
+	// one immutable copy allows decrypt retries without another CDN request while
+	// avoiding the raw-* scratch file and its write/read round trip.
+	raw []byte
 	// rawPath is the on-disk location of the still-encrypted media downloaded by
-	// downloadSelectedEnhancedMedia. It is kept on disk (not in memory) so a
-	// whole Hi-Res track's encrypted bytes aren't pinned across the decrypt
-	// phase, and so a decrypt-phase retry can re-read them without re-fetching.
+	// downloadSelectedEnhancedMedia in low-memory mode. It is kept on disk so a
+	// whole Hi-Res track's encrypted bytes aren't pinned across the decrypt phase,
+	// and so a decrypt-phase retry can re-read them without re-fetching.
 	rawPath string
 }
 
@@ -893,9 +898,9 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 		attemptOutPath := ""
 		skipped := false
 
-		// Fetch phase: acquire the still-encrypted media into memory. Retried on
-		// its own so a later decrypt failure doesn't force a redundant re-download
-		// of bytes that were already fetched successfully.
+		// Fetch phase: acquire the still-encrypted media into the configured memory
+		// or disk backing. Retried on its own so a later decrypt failure doesn't
+		// force a redundant re-download of bytes already fetched successfully.
 		var aacMedia aacLCMedia
 		var enhanced selectedDownloadMedia
 		var rawAACLC []byte
@@ -981,10 +986,11 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			d.setRetryFailure(ctx, reporter, &item, "decrypt", strings.ToUpper(codec), failure)
 			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "decrypt", codec, failure)
 		})
-		// The encrypted media on disk is no longer needed once the decrypt phase
-		// has run (whether it succeeded or exhausted its retries); a fallback
-		// codec re-fetches its own. aac-lc keeps its bytes in memory, so its
-		// rawPath is empty and this is a no-op.
+		// Low-memory mode's encrypted scratch file is no longer needed once the
+		// decrypt phase has run (whether it succeeded or exhausted its retries); a
+		// fallback codec fetches its own. High-memory mode and AAC-LC have an empty
+		// rawPath, so this is a no-op and their byte slices become collectible when
+		// the current codec scope is replaced or returns.
 		cleanupTempFile(enhanced.rawPath)
 		if decryptErr != nil {
 			releaseOutput()
@@ -1154,21 +1160,33 @@ func (d *Downloader) selectEnhancedMedia(ctx context.Context, job domain.Job, it
 func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected selectedDownloadMedia, codec string, set func(domain.ItemStatus, float64, string)) (selectedDownloadMedia, error) {
 	codecName := strings.ToUpper(codec)
 	set(domain.ItemDownloading, 0.05, fmt.Sprintf("Downloading %s encrypted media", codecName))
-	// Stream-download to a temp file with per-chunk progress from 5% → 55%. The
-	// encrypted bytes stay on disk and are streamed back in during decrypt, so
-	// they never occupy a full-track []byte in memory.
-	release, err := acquireOperationSlot(ctx, d.mediaLimiter)
-	if err != nil {
-		return selectedDownloadMedia{}, err
-	}
-	defer release()
-	rawPath, err := downloadToFile(ctx, d.http, selected.info.MediaURI, d.cfg.Download.TempDir, func(p float64) {
+	onProgress := func(p float64) {
 		if p < 0 {
 			return // Content-Length unknown, stay at 5%
 		}
 		// map [0,1] → [0.05, 0.55]
 		set(domain.ItemDownloading, 0.05+p*0.50, fmt.Sprintf("%s download %.0f%%", codecName, p*100))
-	})
+	}
+	release, err := acquireOperationSlot(ctx, d.mediaLimiter)
+	if err != nil {
+		return selectedDownloadMedia{}, err
+	}
+	defer release()
+	if d.cfg.Download.MemoryMode == config.MemoryModeHigh {
+		// High-memory mode keeps exactly one whole-track encrypted copy. The
+		// fragment decrypt/remux stage remains streaming, so parsed, plaintext,
+		// and remuxed whole-track copies never accumulate beside it.
+		raw, err := downloadBytes(ctx, d.http, selected.info.MediaURI, onProgress)
+		if err != nil {
+			return selectedDownloadMedia{}, fmt.Errorf("download encrypted media: %w", err)
+		}
+		selected.raw = raw
+		return selected, nil
+	}
+
+	// Low-memory mode streams the encrypted response to scratch and reads it back
+	// fragment-by-fragment during decrypt.
+	rawPath, err := downloadToFile(ctx, d.http, selected.info.MediaURI, d.cfg.Download.TempDir, onProgress)
 	if err != nil {
 		return selectedDownloadMedia{}, fmt.Errorf("download encrypted media: %w", err)
 	}
@@ -1178,27 +1196,37 @@ func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected
 
 func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, codec, lyrics string, cover []byte, outPath string, selected selectedDownloadMedia, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) error {
 	info := selected.info
-	rawFile, err := os.Open(selected.rawPath)
-	if err != nil {
-		return fmt.Errorf("open downloaded media: %w", err)
-	}
-	defer rawFile.Close()
-	var rawSize int64
-	if fi, statErr := rawFile.Stat(); statErr == nil {
-		rawSize = fi.Size()
+	var (
+		rawReader io.Reader
+		rawSize   int64
+		rawFile   *os.File
+		err       error
+	)
+	if d.cfg.Download.MemoryMode == config.MemoryModeHigh {
+		rawReader = bytes.NewReader(selected.raw)
+		rawSize = int64(len(selected.raw))
+	} else {
+		rawFile, err = os.Open(selected.rawPath)
+		if err != nil {
+			return fmt.Errorf("open downloaded media: %w", err)
+		}
+		defer rawFile.Close()
+		rawReader = rawFile
+		if fi, statErr := rawFile.Stat(); statErr == nil {
+			rawSize = fi.Size()
+		}
 	}
 
-	// The decrypted, still-fragmented MP4 is written fragment-by-fragment to a
-	// temp file, then flattened onto the .part file. Neither the encrypted input
-	// nor the decrypted output is ever fully resident in memory: peak memory is
-	// one fragment, not one track.
-	decFile, err := os.CreateTemp(d.cfg.Download.TempDir, "dec-*.mp4")
+	// Both modes stage the flattened, verified and tagged output here before the
+	// atomic final move. Low mode first writes a dec-* fragmented intermediate;
+	// high mode pipes that same fragment stream straight into ffmpeg.
+	flatFile, err := os.CreateTemp(d.cfg.Download.TempDir, "flat-*.m4a")
 	if err != nil {
-		return fmt.Errorf("create decrypt output: %w", err)
+		return fmt.Errorf("create flatten output: %w", err)
 	}
-	decPath := decFile.Name()
-	decFile.Close()
-	defer os.Remove(decPath)
+	flatPath := flatFile.Name()
+	flatFile.Close()
+	defer os.Remove(flatPath)
 
 	session, err := d.wrapper.NewDecryptSession(ctx, song.ID)
 	if err != nil {
@@ -1207,29 +1235,58 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	set(domain.ItemDecrypting, 0.55, "decrypting")
 	// Progress tracks encrypted bytes consumed (55% → 90%); the total sample
 	// count isn't known until the last fragment is read.
-	streamErr := d.mp4.streamDecryptToFile(ctx, rawFile, decPath, info.Keys,
-		func(key string, samples [][]byte) ([][]byte, error) {
-			return session.DecryptFragment(key, samples)
-		},
-		func(consumed uint64) {
-			if rawSize <= 0 {
-				return
-			}
-			p := float64(consumed) / float64(rawSize)
-			if p > 1 {
-				p = 1
-			}
-			set(domain.ItemDecrypting, 0.55+p*0.35, fmt.Sprintf("decrypting %.0f%%", p*100))
-		})
-	closeErr := session.Close()
-	if streamErr != nil {
-		return fmt.Errorf("decrypt media: %w", streamErr)
+	decryptFragment := func(key string, samples [][]byte) ([][]byte, error) {
+		return session.DecryptFragment(key, samples)
 	}
-	if closeErr != nil {
-		return fmt.Errorf("close decrypt session: %w", closeErr)
+	onProgress := func(consumed uint64) {
+		if rawSize <= 0 {
+			return
+		}
+		p := float64(consumed) / float64(rawSize)
+		if p > 1 {
+			p = 1
+		}
+		set(domain.ItemDecrypting, 0.55+p*0.35, fmt.Sprintf("decrypting %.0f%%", p*100))
 	}
 
-	set(domain.ItemRemuxing, 0.90, "remuxing")
+	if d.cfg.Download.MemoryMode == config.MemoryModeHigh {
+		// The encrypted track is the only whole-track allocation. mp4ff parses one
+		// fragment, the wrapper returns one plaintext fragment, and DataParts writes
+		// those samples directly into ffmpeg's stdin without another concatenation.
+		streamErr := d.mp4.streamDecryptToFlatFile(ctx, rawReader, flatPath, info.Keys, decryptFragment, onProgress)
+		closeErr := session.Close()
+		if streamErr != nil {
+			return fmt.Errorf("decrypt and flatten media: %w", streamErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close decrypt session: %w", closeErr)
+		}
+		// Flattening already ran behind the decrypt stream, but preserve the public
+		// lifecycle transition before verification/saving.
+		set(domain.ItemRemuxing, 0.90, "remuxing")
+	} else {
+		decFile, createErr := os.CreateTemp(d.cfg.Download.TempDir, "dec-*.mp4")
+		if createErr != nil {
+			_ = session.Close()
+			return fmt.Errorf("create decrypt output: %w", createErr)
+		}
+		decPath := decFile.Name()
+		decFile.Close()
+		defer os.Remove(decPath)
+		streamErr := d.mp4.streamDecryptToFile(ctx, rawReader, decPath, info.Keys,
+			decryptFragment, onProgress)
+		closeErr := session.Close()
+		if streamErr != nil {
+			return fmt.Errorf("decrypt media: %w", streamErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close decrypt session: %w", closeErr)
+		}
+		set(domain.ItemRemuxing, 0.90, "remuxing")
+		if err := d.mp4.flattenFileToFile(ctx, decPath, flatPath); err != nil {
+			return fmt.Errorf("fix encapsulation: %w", err)
+		}
+	}
 	// Flatten the decrypted fragmented MP4 into a regular progressive MP4 (also
 	// normalises the ftyp brand) on temp storage, then verify and tag it there,
 	// and only move the finished file to its final path. Keeping the flatten
@@ -1237,16 +1294,6 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	// fast local disk) means a possibly-slow downloads volume sees just one
 	// sequential write; see finalizeToOutput. The decoder configuration is
 	// carried over from the original init segment, so no esds fixup is needed.
-	flatFile, err := os.CreateTemp(d.cfg.Download.TempDir, "flat-*.m4a")
-	if err != nil {
-		return fmt.Errorf("create flatten output: %w", err)
-	}
-	flatPath := flatFile.Name()
-	flatFile.Close()
-	defer os.Remove(flatPath)
-	if err := d.mp4.flattenFileToFile(ctx, decPath, flatPath); err != nil {
-		return fmt.Errorf("fix encapsulation: %w", err)
-	}
 	set(domain.ItemSaving, 0.94, "saving")
 	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrityFile(ctx, flatPath) {
 		if codec != "alac" {

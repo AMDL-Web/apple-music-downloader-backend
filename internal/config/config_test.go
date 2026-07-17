@@ -47,6 +47,34 @@ func TestDefaultSharedOperationLimits(t *testing.T) {
 	}
 }
 
+func TestMemoryModeDefaultLoadAndValidate(t *testing.T) {
+	if got := Default().Download.MemoryMode; got != MemoryModeLow {
+		t.Fatalf("default memory mode = %q, want %q", got, MemoryModeLow)
+	}
+
+	// Configs written before memory_mode existed inherit the low-memory
+	// default, preserving the current production behavior.
+	cfg, err := Load(writeConfig(t, "download:\n  cover_format: jpg\n"))
+	if err != nil {
+		t.Fatalf("Load() legacy config: %v", err)
+	}
+	if cfg.Download.MemoryMode != MemoryModeLow {
+		t.Fatalf("legacy config memory mode = %q, want %q", cfg.Download.MemoryMode, MemoryModeLow)
+	}
+
+	cfg, err = Load(writeConfig(t, "download:\n  memory_mode: high\n"))
+	if err != nil {
+		t.Fatalf("Load() high memory mode: %v", err)
+	}
+	if cfg.Download.MemoryMode != MemoryModeHigh {
+		t.Fatalf("loaded memory mode = %q, want %q", cfg.Download.MemoryMode, MemoryModeHigh)
+	}
+
+	if _, err := Load(writeConfig(t, "download:\n  memory_mode: auto\n")); err == nil || !strings.Contains(err.Error(), "memory_mode") {
+		t.Fatalf("Load() invalid memory mode error = %v, want memory_mode validation error", err)
+	}
+}
+
 func TestDefaultLogging(t *testing.T) {
 	logging := Default().Logging
 	if logging.Level != "info" || logging.Format != "text" || !logging.Console || logging.AccessLog {
