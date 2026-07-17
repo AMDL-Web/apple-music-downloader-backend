@@ -534,7 +534,16 @@ func loadResumeCheckpoint(path, metadataPath, uri string) (int64, resumeMetadata
 		return 0, resumeMetadata{}
 	}
 	var metadata resumeMetadata
-	if json.Unmarshal(raw, &metadata) != nil || metadata.Version != resumeMetadataVersion || metadata.SourceHash == "" {
+	if json.Unmarshal(raw, &metadata) != nil || metadata.Version != resumeMetadataVersion {
+		cleanupResumableDownload(path)
+		return 0, resumeMetadata{}
+	}
+	// The resume key is the output path, so a retry or codec fallback that
+	// resolves the same output to a different media object would otherwise pick
+	// up the previous object's partial bytes. If-Range alone cannot catch that
+	// when validators collide across variants, so bind the checkpoint to its
+	// source and restart cleanly on any mismatch.
+	if metadata.SourceHash != sourceFingerprint(uri) {
 		cleanupResumableDownload(path)
 		return 0, resumeMetadata{}
 	}
@@ -560,7 +569,14 @@ func loadResumeCheckpoint(path, metadataPath, uri string) (int64, resumeMetadata
 	return info.Size(), metadata
 }
 
+// sourceFingerprint identifies the object a checkpoint belongs to. CDN URLs
+// for the same media commonly rotate query-string signatures between fetches,
+// so only the scheme, host, and path participate; a different variant or codec
+// lands on a different path and invalidates the checkpoint.
 func sourceFingerprint(uri string) string {
+	if u, err := url.Parse(uri); err == nil && u.Host != "" {
+		uri = u.Scheme + "://" + u.Host + u.Path
+	}
 	sum := sha256.Sum256([]byte(uri))
 	return hex.EncodeToString(sum[:])
 }

@@ -530,20 +530,23 @@ func (m *Manager) Delete(ctx context.Context, jobID string) error {
 		m.mu.Unlock()
 		return db.ErrJobNotTerminal
 	}
-	job, err := m.store.GetJob(ctx, jobID)
-	if err != nil {
+	// The full row is only needed to locate leftover artifacts. A terminal row
+	// whose persisted overrides no longer decode must stay deletable — its
+	// cleanup metadata is unavailable either way — so a scan failure degrades
+	// to deleting without artifact cleanup instead of wedging the job forever.
+	job, jobErr := m.store.GetJob(ctx, jobID)
+	if jobErr != nil && errors.Is(jobErr, sql.ErrNoRows) {
 		m.mu.Unlock()
-		if errors.Is(err, sql.ErrNoRows) {
-			return db.ErrJobNotFound
-		}
-		return err
+		return db.ErrJobNotFound
 	}
 	deleted, err := m.store.DeleteJob(ctx, jobID)
 	m.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	if cleaner, ok := m.processor.(ArtifactCleaner); ok {
+	if jobErr != nil {
+		logging.FromContext(ctx, m.logger).Warn("job deleted without artifact cleanup", "job_id", jobID, "error", jobErr)
+	} else if cleaner, ok := m.processor.(ArtifactCleaner); ok {
 		cleaner.CleanupJobArtifacts(job)
 	}
 	// Broadcast the persisted tombstone so live overview subscribers can drop the

@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -74,6 +75,42 @@ func TestManagerCleansArtifactsForQueuedCancelAndTerminalDelete(t *testing.T) {
 	}
 	if got := processor.cleanedJobs(); len(got) != 2 || got[0] != queued.ID || got[1] != failed.ID {
 		t.Fatalf("cleaned jobs = %v, want queued cancel then failed delete", got)
+	}
+}
+
+func TestManagerDeleteSurvivesCorruptOverridesRow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "amdl.db")
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	failed := domain.Job{ID: "job-corrupt-overrides", Input: "failed", Type: "song", Storefront: "cn", Status: domain.JobFailed, CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateJob(context.Background(), failed); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE jobs SET overrides='{broken' WHERE id=?`, failed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	processor := &artifactCleanerProcessor{}
+	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
+	if err := manager.Delete(context.Background(), failed.ID); err != nil {
+		t.Fatalf("Delete with corrupt overrides = %v, want success", err)
+	}
+	if _, err := store.GetJob(context.Background(), failed.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("job still present after delete: %v", err)
+	}
+	if got := processor.cleanedJobs(); len(got) != 0 {
+		t.Fatalf("cleanup ran without decodable metadata: %v", got)
 	}
 }
 

@@ -110,9 +110,6 @@ func TestDownloadToFileTruncatesWhenServerIgnoresRange(t *testing.T) {
 	if err := os.WriteFile(checkpoint, oldPrefix, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeResumeMetadata(metadataPath, resumeMetadata{Version: resumeMetadataVersion, SourceHash: sourceFingerprint("placeholder"), ETag: `"v1"`, Total: int64(len(payload))}); err != nil {
-		t.Fatal(err)
-	}
 
 	var rangeHeader, ifRangeHeader string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +120,9 @@ func TestDownloadToFileTruncatesWhenServerIgnoresRange(t *testing.T) {
 		_, _ = w.Write(payload) // 200 means Range/If-Range was not usable.
 	}))
 	defer server.Close()
+	if err := writeResumeMetadata(metadataPath, resumeMetadata{Version: resumeMetadataVersion, SourceHash: sourceFingerprint(server.URL), ETag: `"v1"`, Total: int64(len(payload))}); err != nil {
+		t.Fatal(err)
+	}
 
 	path, err := downloadToFile(context.Background(), server.Client(), server.URL, dir, testResumeOwner, key, nil)
 	if err != nil {
@@ -141,9 +141,6 @@ func TestDownloadToFileRejectsMismatchedPartialContent(t *testing.T) {
 	checkpoint, metadataPath := mustResumePaths(t, dir, testResumeOwner, key)
 	partial := payload[:4096]
 	if err := os.WriteFile(checkpoint, partial, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeResumeMetadata(metadataPath, resumeMetadata{Version: resumeMetadataVersion, SourceHash: sourceFingerprint("old-url"), ETag: `"old"`, Total: int64(len(payload))}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -165,6 +162,9 @@ func TestDownloadToFileRejectsMismatchedPartialContent(t *testing.T) {
 		_, _ = w.Write(payload)
 	}))
 	defer server.Close()
+	if err := writeResumeMetadata(metadataPath, resumeMetadata{Version: resumeMetadataVersion, SourceHash: sourceFingerprint(server.URL), ETag: `"old"`, Total: int64(len(payload))}); err != nil {
+		t.Fatal(err)
+	}
 
 	path, err := downloadToFile(context.Background(), server.Client(), server.URL, dir, testResumeOwner, key, nil)
 	if err != nil {
@@ -174,6 +174,47 @@ func TestDownloadToFileRejectsMismatchedPartialContent(t *testing.T) {
 		t.Fatalf("requests = %d, want mismatched 206 plus clean GET", requests)
 	}
 	assertFileBytes(t, path, payload)
+}
+
+func TestDownloadToFileRestartsWhenSourceChanged(t *testing.T) {
+	payload := []byte("different variant representation")
+	dir := t.TempDir()
+	key := "output"
+	checkpoint, metadataPath := mustResumePaths(t, dir, testResumeOwner, key)
+	if err := os.WriteFile(checkpoint, []byte("bytes from the previous variant"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "" || r.Header.Get("If-Range") != "" {
+			t.Errorf("foreign-source checkpoint sent Range=%q If-Range=%q", r.Header.Get("Range"), r.Header.Get("If-Range"))
+		}
+		w.Header().Set("ETag", `"variant"`)
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+	// A codec fallback resolves the same output path to a different media URI;
+	// even with a matching validator the checkpoint must be discarded.
+	if err := writeResumeMetadata(metadataPath, resumeMetadata{
+		Version: resumeMetadataVersion, SourceHash: sourceFingerprint(server.URL + "/other-variant"), ETag: `"variant"`, Total: int64(len(payload)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := downloadToFile(context.Background(), server.Client(), server.URL, dir, testResumeOwner, key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFileBytes(t, path, payload)
+}
+
+func TestSourceFingerprintIgnoresQuerySignatures(t *testing.T) {
+	base := "https://cdn.example.com/item/track.mp4"
+	if sourceFingerprint(base+"?sig=abc&expires=1") != sourceFingerprint(base+"?sig=def&expires=2") {
+		t.Fatal("rotated query signatures must map to the same fingerprint")
+	}
+	if sourceFingerprint(base) == sourceFingerprint("https://cdn.example.com/item/other.mp4") {
+		t.Fatal("different paths must map to different fingerprints")
+	}
 }
 
 func TestDownloadToFileAcceptsCompleteCheckpointOn416(t *testing.T) {
@@ -277,7 +318,7 @@ func TestDownloadToFileRestartsCompletedCheckpointWhenETagChanged(t *testing.T) 
 	}))
 	defer server.Close()
 	if err := writeResumeMetadata(metadataPath, resumeMetadata{
-		Version: resumeMetadataVersion, SourceHash: sourceFingerprint("old-signed-url"), ETag: `"old"`, Total: int64(len(oldPayload)), Complete: true,
+		Version: resumeMetadataVersion, SourceHash: sourceFingerprint(server.URL), ETag: `"old"`, Total: int64(len(oldPayload)), Complete: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
