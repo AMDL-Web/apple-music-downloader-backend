@@ -52,6 +52,24 @@ download:
   quality_priority: ["alac"]
   # bool: true tries the next codec in quality_priority after failure; false only tries the first codec.
   codec_alternative: true
+  # enum: low, high. Controls the per-track RAM/disk trade-off for Enhanced HLS processing; default: low.
+  # - low: streams encrypted and decrypted Enhanced HLS media through temp_dir. The normal path uses bounded
+  #     fragment-sized RAM, but up to roughly three track-sized files can coexist there per parallel track.
+  # - high: keeps one encrypted track in RAM and decrypts it fragment by fragment directly into ffmpeg. The live
+  #     media payload per parallel track is roughly one encrypted track plus the current encrypted and plaintext
+  #     fragments; pathological single-fragment media can approach three track sizes. The observed Go heap may
+  #     temporarily approach about twice the track size (or more for unusually large fragments) because garbage
+  #     collection retains allocation headroom; ffmpeg and runtime overhead are additional. Only the flattened
+  #     output remains in temp_dir, so its peak is roughly one track per parallel track. In-memory media is limited
+  #     to 512 MiB per track; larger enhanced-media responses fail explicitly instead of risking process OOM.
+  # AAC-LC WebPlayback is unchanged by this option: both modes keep its encrypted and decrypted track bytes in
+  # memory and use the same 512 MiB download limit. The rare ALAC integrity-repair fallback also reads and copies
+  # one full flattened track in either mode; the fragment-sized low-mode estimate applies to the normal path.
+  # Metadata tagging currently creates one additional track-sized rewrite file under the operating system temp
+  # directory in either mode; that file is outside temp_dir and is not included in the one/three-track estimates.
+  # Total RAM and temporary disk usage scale with max_running_jobs * max_parallel_tracks. A per-task
+  # overrides.memory_mode may select a different mode without changing the runtime default.
+  memory_mode: "low"
   # integer: maximum tracks downloaded in parallel per collection. Positive values allow 1-64; values <=0 behave as 1;
   # values above 64 in this file are clamped to 64 (the config API and new job submissions reject them;
   # job overrides persisted before the limit existed are clamped when the job runs). This bounds active track pipelines.
@@ -103,18 +121,19 @@ download:
   # name/id; {SongNumber} is the 1-based position.
   station_path_format: "stations/{StationName}/{SongNumber:02d}. {SongName}"
   # string path: temporary media working directory. Relative paths are resolved from the backend working directory.
-  # All per-track scratch (encrypted download, streamed decrypt output, and the
-  # flattened/verified/tagged file) is staged here and only the finished file is
+  # All disk-backed per-track scratch and the flattened/verified/tagged file are
+  # staged here and only the finished file is
   # moved to downloads_dir. If temp_dir shares a filesystem with downloads_dir the
   # move is a cheap rename; if not, the finished file is copied across once. Put
   # temp_dir on fast local storage (e.g. SSD) to keep the flatten/verify/tag work
-  # off a slower downloads volume. Peak usage is up to roughly three times one
-  # track's size per parallel track (see max_parallel_tracks): during flatten the
-  # encrypted download, the decrypted fragmented MP4, and the flattened output
-  # briefly coexist. Assumed single-writer: stale non-resumable scratch is swept
-  # on startup. Encrypted HLS checkpoints are grouped by task: failed/recoverable
-  # tasks retain them for retry, while completed, cancelled, and deleted tasks
-  # remove them.
+  # off a slower downloads volume. For Enhanced HLS, peak usage in this directory depends
+  # on memory_mode: roughly three times one track's size per parallel track in low mode,
+  # or one track's size per parallel track in high mode. AAC-LC uses roughly one track here
+  # in either mode. The metadata rewrite also briefly uses one track-sized file in the
+  # operating system temp directory. Assumed single-writer: stale non-resumable scratch
+  # in temp_dir is swept on startup. Encrypted HLS checkpoints (low mode) are grouped by
+  # task: failed/recoverable tasks retain them for retry, while completed, cancelled,
+  # and deleted tasks remove them.
   temp_dir: "data/tmp"
   # string: cover artwork size as "{width}x{height}", for example "5000x5000", "3000x3000", "1400x1400".
   cover_size: "5000x5000"

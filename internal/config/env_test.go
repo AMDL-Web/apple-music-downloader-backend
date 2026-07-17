@@ -17,6 +17,7 @@ func TestEnvOverrides(t *testing.T) {
 		"AMDL_LOGGING_LEVEL=debug",
 		"AMDL_SIMULATE_ENABLED=true",
 		"AMDL_DOWNLOAD_MAX_ATTEMPTS=7",
+		"AMDL_DOWNLOAD_MEMORY_MODE=high",
 		"AMDL_DOWNLOAD_QUALITY_PRIORITY=aac, alac,",
 		"AMDL_CATALOG_ALLOWED_ORIGINS=",
 		"AMDL_CATALOG_MEDIA_USER_TOKEN_PRIORITY=request",
@@ -43,6 +44,9 @@ func TestEnvOverrides(t *testing.T) {
 	}
 	if cfg.Download.MaxAttempts != 7 {
 		t.Fatalf("max attempts = %d, want 7", cfg.Download.MaxAttempts)
+	}
+	if cfg.Download.MemoryMode != MemoryModeHigh {
+		t.Fatalf("memory mode = %q, want high", cfg.Download.MemoryMode)
 	}
 	if !reflect.DeepEqual(cfg.Download.QualityPriority, []string{"aac", "alac"}) {
 		t.Fatalf("quality priority = %#v, want trimmed comma-separated items", cfg.Download.QualityPriority)
@@ -103,6 +107,10 @@ func TestEnvOverridesGoThroughValidation(t *testing.T) {
 	if _, err := load(path, []string{"AMDL_DOWNLOAD_COVER_FORMAT=webp"}); err == nil ||
 		!strings.Contains(err.Error(), "cover_format") {
 		t.Fatalf("load error = %v, want cover_format validation error", err)
+	}
+	if _, err := load(path, []string{"AMDL_DOWNLOAD_MEMORY_MODE=auto"}); err == nil ||
+		!strings.Contains(err.Error(), "memory_mode") {
+		t.Fatalf("load error = %v, want memory_mode validation error", err)
 	}
 }
 

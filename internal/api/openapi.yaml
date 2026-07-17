@@ -1076,6 +1076,16 @@ components:
             type: string
             enum: [alac, aac, aac-binaural, aac-downmix, ec3, ac3]
         codec_alternative: {type: boolean}
+        memory_mode:
+          type: string
+          enum: [low, high]
+          description: >-
+            任务级 Enhanced HLS 内存模式。正常路径中，low 使用片段级有界内存并以更多
+            临时磁盘换取较低 RAM；high 将一份加密整轨保留在内存，减少临时磁盘和磁盘往返（单轨内存媒体上限
+            512 MiB；受 Go GC 分配余量影响，实际堆峰值可能接近整轨大小的两倍）。省略时
+            沿用运行时配置。AAC-LC 不受此选项影响，在两种模式下均整轨驻留内存；罕见的
+            ALAC 完整性修复也会读取并复制整轨。两种模式写标签时都会在系统临时目录短暂
+            创建一份整轨重写文件。
         max_parallel_tracks:
           type: integer
           maximum: 64
@@ -1161,6 +1171,17 @@ components:
                 type: string
                 enum: [alac, aac, aac-binaural, aac-downmix, ec3, ac3]
             codec_alternative: {type: boolean}
+            memory_mode:
+              type: string
+              enum: [low, high]
+              description: >-
+                控制 Enhanced HLS 路径。正常路径中，low（默认）使用片段级有界内存，临时
+                磁盘峰值通常约为每并行曲目三份文件；
+                high 将一份加密整轨保留在内存并逐片段解密（单轨内存媒体上限 512 MiB；
+                受 Go GC 分配余量影响，实际堆峰值可能接近整轨大小的两倍），配置的临时目录
+                通常仅保留最终展平输出。AAC-LC 在两种模式下均整轨驻留内存；罕见 ALAC
+                完整性修复也会读取并复制整轨。两种模式写标签时还会在系统临时目录短暂创建
+                一份整轨重写文件。
             max_parallel_tracks:
               type: integer
               maximum: 64

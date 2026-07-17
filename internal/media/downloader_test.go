@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -869,6 +870,9 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 	if selected.rawPath != "" {
 		t.Fatalf("selected.rawPath = %q, want empty before download step", selected.rawPath)
 	}
+	if len(selected.raw) != 0 {
+		t.Fatalf("selected.raw has %d bytes before download step, want 0", len(selected.raw))
+	}
 	if got, want := qualityLabel(selected.info), "24-bit/96 kHz"; got != want {
 		t.Fatalf("qualityLabel = %q, want %q", got, want)
 	}
@@ -899,6 +903,48 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 	}
 	if string(gotRaw) != "encrypted media bytes" {
 		t.Fatalf("downloaded media = %q, want encrypted media bytes", string(gotRaw))
+	}
+	if len(selected.raw) != 0 {
+		t.Fatalf("low-memory download retained %d bytes in memory, want 0", len(selected.raw))
+	}
+}
+
+func TestDownloadSelectedEnhancedMediaHighKeepsOnlyMemoryCopy(t *testing.T) {
+	const payload = "encrypted media bytes"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer server.Close()
+
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Download.MemoryMode = config.MemoryModeHigh
+	cfg.Download.TempDir = tempDir
+	downloader := &Downloader{cfg: cfg, http: server.Client()}
+	selected, err := downloader.downloadSelectedEnhancedMedia(
+		context.Background(),
+		selectedDownloadMedia{info: selectedMediaInfo{MediaURI: server.URL}},
+		"alac",
+		"job-high",
+		filepath.Join(cfg.Download.DownloadsDir, "song.m4a"),
+		func(domain.ItemStatus, float64, string) {},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(selected.raw); got != payload {
+		t.Fatalf("selected.raw = %q, want %q", got, payload)
+	}
+	if selected.rawPath != "" {
+		t.Fatalf("selected.rawPath = %q, want no scratch file in high-memory mode", selected.rawPath)
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("high-memory download created temp entries: %v", entries)
 	}
 }
 

@@ -125,6 +125,7 @@ func (c CatalogConfig) EnhancedHLSFromWebToken() bool {
 type DownloadConfig struct {
 	QualityPriority             []string `yaml:"quality_priority" json:"quality_priority"`
 	CodecAlternative            bool     `yaml:"codec_alternative" json:"codec_alternative"`
+	MemoryMode                  string   `yaml:"memory_mode" json:"memory_mode"`
 	MaxRunningJobs              int      `yaml:"max_running_jobs" json:"max_running_jobs"`
 	MaxParallelTracks           int      `yaml:"max_parallel_tracks" json:"max_parallel_tracks"`
 	MaxParallelMetadataRequests int      `yaml:"max_parallel_metadata_requests" json:"max_parallel_metadata_requests"`
@@ -155,6 +156,9 @@ type DownloadConfig struct {
 }
 
 const (
+	MemoryModeLow  = "low"
+	MemoryModeHigh = "high"
+
 	// These limits bound the two multiplicative concurrency controls and the
 	// retry fan-out while remaining comfortably above normal deployments.
 	maxRunningJobsLimit    = 32
@@ -194,7 +198,7 @@ func Default() Config {
 			DefaultStorefront: "us", Language: "en-US", DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song", SignedModeHLSSource: "wrapper",
 		},
 		Download: DownloadConfig{
-			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true,
+			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true, MemoryMode: MemoryModeLow,
 			MaxRunningJobs: 2, MaxParallelTracks: 3,
 			MaxParallelMetadataRequests: 32, MaxParallelMediaDownloads: 32, MaxParallelWrapperRequests: 64,
 			MaxAttempts:        4,
@@ -408,6 +412,11 @@ func (c Config) Validate() error {
 	}
 	if c.Download.MaxAttempts > maxAttemptsLimit {
 		return fmt.Errorf("download.max_attempts must be at most %d", maxAttemptsLimit)
+	}
+	switch c.Download.MemoryMode {
+	case MemoryModeLow, MemoryModeHigh:
+	default:
+		return fmt.Errorf("download.memory_mode must be low or high")
 	}
 	switch c.Download.CoverFormat {
 	case "jpg", "jpeg", "png":

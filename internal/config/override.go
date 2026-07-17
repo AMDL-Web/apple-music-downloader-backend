@@ -28,6 +28,7 @@ type DownloadOverrides struct {
 	MediaUserToken     *string   `json:"media_user_token,omitempty"`
 	QualityPriority    *[]string `json:"quality_priority,omitempty"`
 	CodecAlternative   *bool     `json:"codec_alternative,omitempty"`
+	MemoryMode         *string   `json:"memory_mode,omitempty"`
 	MaxParallelTracks  *int      `json:"max_parallel_tracks,omitempty"`
 	MaxAttempts        *int      `json:"max_attempts,omitempty"`
 	DownloadsDir       *string   `json:"downloads_dir,omitempty"`
@@ -83,6 +84,9 @@ func (o *DownloadOverrides) Apply(base Config) Config {
 	}
 	if o.CodecAlternative != nil {
 		d.CodecAlternative = *o.CodecAlternative
+	}
+	if o.MemoryMode != nil {
+		d.MemoryMode = *o.MemoryMode
 	}
 	if o.MaxParallelTracks != nil {
 		d.MaxParallelTracks = *o.MaxParallelTracks
