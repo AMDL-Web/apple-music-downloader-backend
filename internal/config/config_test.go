@@ -187,8 +187,8 @@ func TestLoadMigratesLegacyMediaUserTokenPriority(t *testing.T) {
 	if cfg.Catalog.LegacyMediaUserTokenPriority != "" {
 		t.Fatalf("legacy priority survived normalization: %q", cfg.Catalog.LegacyMediaUserTokenPriority)
 	}
-	if err := Save(path, cfg); err != nil {
-		t.Fatalf("Save() normalized config: %v", err)
+	if err := SaveRuntime(path, cfg); err != nil {
+		t.Fatalf("SaveRuntime() normalized config: %v", err)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {

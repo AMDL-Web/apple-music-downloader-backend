@@ -172,27 +172,33 @@ func TestEnvLockedChanges(t *testing.T) {
 // keep the value pinned even after the variable is unset.
 func TestBootstrapDoesNotBakeEnvOverrides(t *testing.T) {
 	t.Setenv("AMDL_WRAPPER_ADDRESS", "wrapper-manager:8080")
+	t.Setenv("AMDL_DOWNLOAD_COVER_FORMAT", "png")
 	dir := t.TempDir()
 	example := "wrapper:\n  address: \"127.0.0.1:8080\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "config.example.yaml"), []byte(example), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "config.yaml")
-	if created, err := BootstrapFromExample(path); err != nil || !created {
-		t.Fatalf("bootstrap = (%v, %v), want created", created, err)
+	startup := filepath.Join(dir, "config.yaml")
+	runtime := filepath.Join(dir, "runtime.yaml")
+	if result, err := EnsureFiles(startup, runtime); err != nil || !result.CreatedStartup || !result.CreatedRuntime {
+		t.Fatalf("bootstrap = (%+v, %v), want both created", result, err)
 	}
-	raw, err := os.ReadFile(path)
+	startupRaw, err := os.ReadFile(startup)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "wrapper-manager:8080") {
-		t.Fatalf("env override leaked into the bootstrapped file:\n%s", raw)
-	}
-	cfg, err := Load(path)
+	runtimeRaw, err := os.ReadFile(runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Wrapper.Address != "wrapper-manager:8080" {
-		t.Fatalf("loaded wrapper address = %q, want env overlay on top of the file", cfg.Wrapper.Address)
+	if strings.Contains(string(startupRaw), "wrapper-manager:8080") || strings.Contains(string(runtimeRaw), "cover_format: png") {
+		t.Fatalf("env override leaked into a bootstrapped file:\n%s\n---\n%s", startupRaw, runtimeRaw)
+	}
+	cfg, err := LoadPair(startup, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Wrapper.Address != "wrapper-manager:8080" || cfg.Download.CoverFormat != "png" {
+		t.Fatalf("loaded config = wrapper %q cover %q, want env overlay on top of the files", cfg.Wrapper.Address, cfg.Download.CoverFormat)
 	}
 }
