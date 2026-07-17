@@ -142,9 +142,7 @@ download:
   # integer: maximum media transfers in flight across all jobs. Positive values allow 1-64; values <=0 behave as 1;
   # values above 64 in this file or AMDL_DOWNLOAD_MAX_PARALLEL_DOWNLOADS are clamped to 64. Default: 16.
   # This sizes a process-wide pool at startup, cannot be overridden per job, and requires a restart to change.
-  # Upgrade note: this replaces the per-job max_parallel_tracks key. The removed keys max_parallel_tracks,
-  # max_parallel_metadata_requests, and max_parallel_media_downloads still load from old config files and
-  # AMDL_* environments but are ignored; delete them at your convenience.
+  # Upgrade note: this replaces the removed max_parallel_tracks key; old configs must be edited or startup fails.
   max_parallel_downloads: 16
   # integer: maximum media decrypt operations in flight across all jobs. Positive values allow 1-64; values <=0
   # behave as 1; values above 64 in this file or AMDL_DOWNLOAD_MAX_PARALLEL_DECRYPTS are clamped to 64. Default: 4.

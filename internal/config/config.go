@@ -154,16 +154,6 @@ type DownloadConfig struct {
 	ALACMaxSampleRate          int      `yaml:"alac_max_sample_rate" json:"alac_max_sample_rate"`
 	ALACMaxBitDepth            int      `yaml:"alac_max_bit_depth" json:"alac_max_bit_depth"`
 	CheckIntegrity             bool     `yaml:"check_integrity" json:"check_integrity"`
-
-	// The Legacy* fields keep config files and AMDL_* environments written for
-	// the pre-pool per-job limits loading: the roles they tuned are covered by
-	// the global download/decrypt pools and the catalog request gate, so their
-	// values are validated only for shape and discarded by NormalizeDeprecated.
-	// They are YAML/env-only on purpose — the runtime config API and per-job
-	// overrides keep rejecting them explicitly.
-	LegacyMaxParallelTracks           int `yaml:"max_parallel_tracks,omitempty" json:"-"`
-	LegacyMaxParallelMetadataRequests int `yaml:"max_parallel_metadata_requests,omitempty" json:"-"`
-	LegacyMaxParallelMediaDownloads   int `yaml:"max_parallel_media_downloads,omitempty" json:"-"`
 }
 
 const (
@@ -311,12 +301,6 @@ func (c *Config) NormalizeDeprecated() error {
 		return fmt.Errorf("catalog.media_user_token_priority must be request or config")
 	}
 	c.Catalog.LegacyMediaUserTokenPriority = ""
-	// The pre-pool per-job concurrency knobs have no equivalent to migrate a
-	// value into: the global pools deliberately size by process, not by job.
-	// Accept and drop them so a previously working deployment still boots.
-	c.Download.LegacyMaxParallelTracks = 0
-	c.Download.LegacyMaxParallelMetadataRequests = 0
-	c.Download.LegacyMaxParallelMediaDownloads = 0
 	return nil
 }
 

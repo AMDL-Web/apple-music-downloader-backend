@@ -150,23 +150,14 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 	}
 }
 
-func TestLoadIgnoresRemovedConcurrencyKeys(t *testing.T) {
-	// A managed config.yaml written by the previous version still carries the
-	// per-job limits; loading it must boot with the new pool defaults instead
-	// of demanding a hand edit.
-	path := writeConfig(t, "download:\n  max_parallel_tracks: 5\n  max_parallel_metadata_requests: 32\n  max_parallel_media_downloads: 32\n")
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load() legacy concurrency keys: %v", err)
-	}
-	if cfg.Download.LegacyMaxParallelTracks != 0 || cfg.Download.LegacyMaxParallelMetadataRequests != 0 || cfg.Download.LegacyMaxParallelMediaDownloads != 0 {
-		t.Fatalf("legacy keys survived normalization: %+v", cfg.Download)
-	}
-	want := Default().Download
-	if cfg.Download.MaxParallelDownloads != want.MaxParallelDownloads || cfg.Download.MaxParallelDecrypts != want.MaxParallelDecrypts || cfg.Download.MaxParallelWrapperRequests != want.MaxParallelWrapperRequests {
-		t.Fatalf("pool sizes = (%d, %d, %d), want defaults (%d, %d, %d)",
-			cfg.Download.MaxParallelDownloads, cfg.Download.MaxParallelDecrypts, cfg.Download.MaxParallelWrapperRequests,
-			want.MaxParallelDownloads, want.MaxParallelDecrypts, want.MaxParallelWrapperRequests)
+func TestLoadRejectsRemovedConcurrencyKeys(t *testing.T) {
+	for _, key := range []string{"max_parallel_tracks", "max_parallel_metadata_requests", "max_parallel_media_downloads"} {
+		t.Run(key, func(t *testing.T) {
+			path := writeConfig(t, "download:\n  "+key+": 5\n")
+			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "field "+key+" not found") {
+				t.Fatalf("Load() error = %v, want removed-field error for %s", err, key)
+			}
+		})
 	}
 }
 

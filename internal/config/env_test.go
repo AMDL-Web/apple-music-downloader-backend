@@ -95,20 +95,13 @@ func TestEnvOverridesRejectUnknownVariables(t *testing.T) {
 			t.Fatalf("load with %s error = %v, want unknown variable error naming it", name, err)
 		}
 	}
-	// The pre-pool per-job limits keep loading (from files and env alike) so
-	// existing deployments boot, but their values are dropped during
-	// normalization instead of steering the new pools.
 	for _, name := range []string{
 		"AMDL_DOWNLOAD_MAX_PARALLEL_TRACKS",
 		"AMDL_DOWNLOAD_MAX_PARALLEL_METADATA_REQUESTS",
 		"AMDL_DOWNLOAD_MAX_PARALLEL_MEDIA_DOWNLOADS",
 	} {
-		cfg, err := load(path, []string{name + "=5"})
-		if err != nil {
-			t.Fatalf("legacy concurrency environment variable %s error = %v", name, err)
-		}
-		if cfg.Download.LegacyMaxParallelTracks != 0 || cfg.Download.LegacyMaxParallelMetadataRequests != 0 || cfg.Download.LegacyMaxParallelMediaDownloads != 0 {
-			t.Fatalf("%s survived normalization: %+v", name, cfg.Download)
+		if _, err := load(path, []string{name + "=5"}); err == nil || !strings.Contains(err.Error(), name) {
+			t.Fatalf("removed concurrency environment variable %s error = %v", name, err)
 		}
 	}
 	if cfg, err := load(path, []string{"AMDL_DOWNLOAD_MAX_PARALLEL_WRAPPER_REQUESTS=7"}); err != nil || cfg.Download.MaxParallelWrapperRequests != 7 {
