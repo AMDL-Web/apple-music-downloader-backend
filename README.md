@@ -304,7 +304,7 @@ curl -X DELETE http://localhost:18080/api/v1/downloads/{job_id}
 
 ### 重试与编码降级
 
-- `download.max_parallel_downloads` 和 `download.max_parallel_decrypts` 分别限制单个 backend 进程内、跨全部任务共享的加密媒体下载与解密阶段，默认 `16` 和 `4`；已下载但尚未完成解密的媒体还受内部 in-flight 背压保护。旧 `download.max_parallel_tracks` 已删除，升级时必须手工迁移配置。
+- `download.max_parallel_downloads` 和 `download.max_parallel_decrypts` 分别限制单个 backend 进程内、跨全部任务共享的加密媒体下载与解密阶段，默认 `16` 和 `4`；已下载但尚未完成解密的媒体还受内部 in-flight 背压保护。`download.max_parallel_wrapper_requests`（默认 `16`）限制 wrapper-manager 的数据类 RPC（M3U8、歌词、web playback、license）的进程级并发，登录/登出不受限，解密流由 `max_parallel_decrypts` 约束。旧的按任务键 `download.max_parallel_tracks`、`max_parallel_metadata_requests`、`max_parallel_media_downloads` 已弃用：旧配置文件与环境变量仍可加载（值被忽略），建议升级后顺手删除。
 - `catalog.max_parallel_requests`（默认 `16`）限制 Catalog API、web token、封面和 HLS 清单等 Apple 小请求的进程级并发；认证 Catalog/amp-api 请求另受 `catalog.requests_per_second`（默认 `10`）和 `catalog.request_burst`（默认 `16`）约束。Apple 返回 429 时会遵循 `Retry-After`、触发全局冷却并自动重试一次。这五个并发/速率值均在启动时固定，修改配置后需要重启；多个 backend 副本之间不共享槽位。
 - `download.max_attempts`：元数据、封面、歌词以及每个编码的下载/解密阶段的最大总尝试次数（含首次）；正数允许 `1-10`。例如 `4` 表示每个操作最多尝试 4 次；值 `<= 0` 仍按 1 处理（仅尝试一次，不重试）。
 - 可重试错误使用带随机抖动的指数退避；Apple Catalog 返回 `Retry-After` 时，等待时间不会短于该提示，避免同一批请求同步重放。

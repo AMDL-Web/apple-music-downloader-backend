@@ -225,7 +225,7 @@ func TestUpdateConfigRejectsBadInput(t *testing.T) {
 		{name: "removed tracks limit", body: `{"download":{"max_parallel_tracks":5}}`, status: http.StatusBadRequest, want: "max_parallel_tracks"},
 		{name: "removed metadata limit", body: `{"download":{"max_parallel_metadata_requests":32}}`, status: http.StatusBadRequest, want: "max_parallel_metadata_requests"},
 		{name: "removed media limit", body: `{"download":{"max_parallel_media_downloads":32}}`, status: http.StatusBadRequest, want: "max_parallel_media_downloads"},
-		{name: "removed wrapper limit", body: `{"download":{"max_parallel_wrapper_requests":64}}`, status: http.StatusBadRequest, want: "max_parallel_wrapper_requests"},
+		{name: "locked wrapper pool", body: `{"download":{"max_parallel_wrapper_requests":8}}`, status: http.StatusUnprocessableEntity, want: "download.max_parallel_wrapper_requests"},
 		{name: "locked field", body: `{"server":{"listen":"0.0.0.0:1"}}`, status: http.StatusUnprocessableEntity, want: "server.listen"},
 		{name: "locked worker count", body: `{"download":{"max_running_jobs":99}}`, status: http.StatusUnprocessableEntity, want: "download.max_running_jobs"},
 		{name: "locked download pool", body: `{"download":{"max_parallel_downloads":8}}`, status: http.StatusUnprocessableEntity, want: "download.max_parallel_downloads"},

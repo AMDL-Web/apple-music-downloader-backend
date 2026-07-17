@@ -103,7 +103,7 @@ paths:
       summary: 读取当前运行时配置（仅可修改字段）
       description: >-
         返回当前生效配置中可运行时修改的部分：download 段（max_running_jobs、
-        max_parallel_downloads、max_parallel_decrypts 除外）、logging.level/access_log、simulate 段、
+        max_parallel_downloads、max_parallel_decrypts、max_parallel_wrapper_requests 除外）、logging.level/access_log、simulate 段、
         catalog.album_track_url_mode/media_user_token/signed_mode_hls_source。
         仅启动时生效的字段（server、database、logging 其它字段、wrapper、tools、catalog 其它字段）不返回——
         它们无法通过本 API 修改，请编辑 configs/config.yaml 并重启。
@@ -130,7 +130,7 @@ paths:
         （含整段）被替换。合并结果必须通过与配置文件相同的完整校验。
 
         仅 GET 返回的字段可以修改：download 段（max_running_jobs、max_parallel_downloads、
-        max_parallel_decrypts 除外）、
+        max_parallel_decrypts、max_parallel_wrapper_requests 除外）、
         logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/signed_mode_hls_source。其余字段只在进程启动时
         被消费，修改请求会被 422 拒绝——请改 configs/config.yaml 并重启。
         作为唯一例外，旧客户端提交的 catalog.media_user_token_priority 仍会被
@@ -1052,8 +1052,8 @@ components:
       type: object
       description: >-
         按任务配置覆盖层：除 media_user_token 外，字段与运行时配置 download 段
-        一一对应。max_running_jobs、max_parallel_downloads、max_parallel_decrypts
-        在启动时确定并全局共享，无法按任务覆盖。
+        一一对应。max_running_jobs、max_parallel_downloads、max_parallel_decrypts、
+        max_parallel_wrapper_requests 在启动时确定并全局共享，无法按任务覆盖。
         所有字段可选；提交时会以“当前运行时配置 + 覆盖”做完整校验。
         downloads_dir 和 temp_dir 只能选择管理员配置根目录本身或其子目录，
         不能通过绝对路径、.. 或符号链接逃出对应根目录。media_user_token 具有
@@ -1152,8 +1152,8 @@ components:
         download:
           type: object
           description: >-
-            max_running_jobs、max_parallel_downloads、max_parallel_decrypts
-            仅启动时生效，不在此出现、不可修改。
+            max_running_jobs、max_parallel_downloads、max_parallel_decrypts、
+            max_parallel_wrapper_requests 仅启动时生效，不在此出现、不可修改。
           properties:
             quality_priority:
               type: array

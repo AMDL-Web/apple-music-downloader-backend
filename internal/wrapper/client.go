@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"amdl/internal/config"
+	"amdl/internal/limits"
 	pb "github.com/AMDL-Web/wrapper-manager/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -25,6 +26,7 @@ type Client struct {
 	api          pb.WrapperManagerServiceClient
 	cfg          config.WrapperConfig
 	loginTimeout time.Duration
+	dataLimit    *limits.Semaphore
 	sessionsMu   sync.Mutex
 	sessions     map[string]*loginSession
 }
@@ -86,13 +88,38 @@ type LyricsRequestOptions struct {
 	ExtendTtmlLocalizations bool
 }
 
-func NewClient(cfg config.WrapperConfig) (*Client, error) {
+type ClientOption func(*Client)
+
+// WithDataConcurrencyLimit applies a process-wide, cross-job bound to wrapper
+// data RPCs (M3U8, Lyrics, WebPlayback, License). Tracks no longer queue on a
+// per-job limit before reaching the wrapper, so these unary RPCs need their
+// own pool. Login/logout are deliberately excluded so operator access cannot
+// be starved by a busy download queue, and Decrypt streams are excluded
+// because the downloader's decrypt pool already bounds them.
+func WithDataConcurrencyLimit(limit int) ClientOption {
+	return func(client *Client) {
+		client.dataLimit = limits.NewSemaphore(limit)
+	}
+}
+
+func NewClient(cfg config.WrapperConfig, options ...ClientOption) (*Client, error) {
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(wrapperTransportCredentials(cfg))}
 	conn, err := grpc.NewClient(cfg.Address, opts...)
 	if err != nil {
 		return nil, err
 	}
-	return &Client{conn: conn, api: pb.NewWrapperManagerServiceClient(conn), cfg: cfg, sessions: make(map[string]*loginSession)}, nil
+	client := &Client{conn: conn, api: pb.NewWrapperManagerServiceClient(conn), cfg: cfg, sessions: make(map[string]*loginSession)}
+	for _, option := range options {
+		option(client)
+	}
+	return client, nil
+}
+
+func (c *Client) acquireDataSlot(ctx context.Context) (func(), error) {
+	if c.dataLimit == nil {
+		return func() {}, nil
+	}
+	return c.dataLimit.Acquire(ctx)
 }
 
 func wrapperTransportCredentials(cfg config.WrapperConfig) credentials.TransportCredentials {
@@ -300,6 +327,11 @@ func statusAccountsSupported(data *pb.StatusData) bool {
 }
 
 func (c *Client) M3U8(ctx context.Context, adamID string) (string, error) {
+	release, err := c.acquireDataSlot(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout())
 	defer cancel()
 	resp, err := c.api.M3U8(ctx, &pb.M3U8Request{Data: &pb.M3U8DataRequest{AdamId: adamID}})
@@ -313,6 +345,11 @@ func (c *Client) M3U8(ctx context.Context, adamID string) (string, error) {
 }
 
 func (c *Client) Lyrics(ctx context.Context, adamID string, opts LyricsRequestOptions) (string, error) {
+	release, err := c.acquireDataSlot(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout())
 	defer cancel()
 	resp, err := c.api.Lyrics(ctx, &pb.LyricsRequest{Data: &pb.LyricsDataRequest{
@@ -329,6 +366,11 @@ func (c *Client) Lyrics(ctx context.Context, adamID string, opts LyricsRequestOp
 }
 
 func (c *Client) WebPlayback(ctx context.Context, adamID string) (string, error) {
+	release, err := c.acquireDataSlot(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout())
 	defer cancel()
 	resp, err := c.api.WebPlayback(ctx, &pb.WebPlaybackRequest{Data: &pb.WebPlaybackDataRequest{AdamId: adamID}})
@@ -342,6 +384,11 @@ func (c *Client) WebPlayback(ctx context.Context, adamID string) (string, error)
 }
 
 func (c *Client) License(ctx context.Context, adamID, challenge, uri string) (string, error) {
+	release, err := c.acquireDataSlot(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout())
 	defer cancel()
 	resp, err := c.api.License(ctx, &pb.LicenseRequest{Data: &pb.LicenseDataRequest{

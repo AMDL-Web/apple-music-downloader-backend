@@ -93,7 +93,7 @@ func main() {
 	// pipeline. Process-wide concurrency pools are sized once from this startup
 	// snapshot; runtime-mutable fields are read when each job starts.
 	cfgStore := config.NewFileStore(cfg, cfgPath)
-	wrapperClient, err := wrapper.NewClient(cfg.Wrapper)
+	wrapperClient, err := wrapper.NewClient(cfg.Wrapper, wrapper.WithDataConcurrencyLimit(cfg.Download.MaxParallelWrapperRequests))
 	if err != nil {
 		logger.Error("connect wrapper-manager", "error", err)
 		os.Exit(1)

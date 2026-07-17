@@ -126,33 +126,44 @@ func (c CatalogConfig) EnhancedHLSFromWebToken() bool {
 }
 
 type DownloadConfig struct {
-	QualityPriority      []string `yaml:"quality_priority" json:"quality_priority"`
-	CodecAlternative     bool     `yaml:"codec_alternative" json:"codec_alternative"`
-	MaxRunningJobs       int      `yaml:"max_running_jobs" json:"max_running_jobs"`
-	MaxParallelDownloads int      `yaml:"max_parallel_downloads" json:"max_parallel_downloads"`
-	MaxParallelDecrypts  int      `yaml:"max_parallel_decrypts" json:"max_parallel_decrypts"`
-	MaxAttempts          int      `yaml:"max_attempts" json:"max_attempts"`
-	DownloadsDir         string   `yaml:"downloads_dir" json:"downloads_dir"`
-	SongPathFormat       string   `yaml:"song_path_format" json:"song_path_format"`
-	AlbumPathFormat      string   `yaml:"album_path_format" json:"album_path_format"`
-	ArtistPathFormat     string   `yaml:"artist_path_format" json:"artist_path_format"`
-	PlaylistPathFormat   string   `yaml:"playlist_path_format" json:"playlist_path_format"`
-	StationPathFormat    string   `yaml:"station_path_format" json:"station_path_format"`
-	TempDir              string   `yaml:"temp_dir" json:"temp_dir"`
-	CoverSize            string   `yaml:"cover_size" json:"cover_size"`
-	CoverFormat          string   `yaml:"cover_format" json:"cover_format"`
-	EmbedCover           bool     `yaml:"embed_cover" json:"embed_cover"`
-	SaveAlbumCover       bool     `yaml:"save_album_cover" json:"save_album_cover"`
-	SaveArtistCover      bool     `yaml:"save_artist_cover" json:"save_artist_cover"`
-	SavePlaylistCover    bool     `yaml:"save_playlist_cover" json:"save_playlist_cover"`
-	EmbedLyrics          bool     `yaml:"embed_lyrics" json:"embed_lyrics"`
-	SaveLyricsFile       bool     `yaml:"save_lyrics_file" json:"save_lyrics_file"`
-	LyricsFormat         string   `yaml:"lyrics_format" json:"lyrics_format"`
-	LyricsType           string   `yaml:"lyrics_type" json:"lyrics_type"`
-	LyricsExtras         []string `yaml:"lyrics_extras" json:"lyrics_extras"`
-	ALACMaxSampleRate    int      `yaml:"alac_max_sample_rate" json:"alac_max_sample_rate"`
-	ALACMaxBitDepth      int      `yaml:"alac_max_bit_depth" json:"alac_max_bit_depth"`
-	CheckIntegrity       bool     `yaml:"check_integrity" json:"check_integrity"`
+	QualityPriority            []string `yaml:"quality_priority" json:"quality_priority"`
+	CodecAlternative           bool     `yaml:"codec_alternative" json:"codec_alternative"`
+	MaxRunningJobs             int      `yaml:"max_running_jobs" json:"max_running_jobs"`
+	MaxParallelDownloads       int      `yaml:"max_parallel_downloads" json:"max_parallel_downloads"`
+	MaxParallelDecrypts        int      `yaml:"max_parallel_decrypts" json:"max_parallel_decrypts"`
+	MaxParallelWrapperRequests int      `yaml:"max_parallel_wrapper_requests" json:"max_parallel_wrapper_requests"`
+	MaxAttempts                int      `yaml:"max_attempts" json:"max_attempts"`
+	DownloadsDir               string   `yaml:"downloads_dir" json:"downloads_dir"`
+	SongPathFormat             string   `yaml:"song_path_format" json:"song_path_format"`
+	AlbumPathFormat            string   `yaml:"album_path_format" json:"album_path_format"`
+	ArtistPathFormat           string   `yaml:"artist_path_format" json:"artist_path_format"`
+	PlaylistPathFormat         string   `yaml:"playlist_path_format" json:"playlist_path_format"`
+	StationPathFormat          string   `yaml:"station_path_format" json:"station_path_format"`
+	TempDir                    string   `yaml:"temp_dir" json:"temp_dir"`
+	CoverSize                  string   `yaml:"cover_size" json:"cover_size"`
+	CoverFormat                string   `yaml:"cover_format" json:"cover_format"`
+	EmbedCover                 bool     `yaml:"embed_cover" json:"embed_cover"`
+	SaveAlbumCover             bool     `yaml:"save_album_cover" json:"save_album_cover"`
+	SaveArtistCover            bool     `yaml:"save_artist_cover" json:"save_artist_cover"`
+	SavePlaylistCover          bool     `yaml:"save_playlist_cover" json:"save_playlist_cover"`
+	EmbedLyrics                bool     `yaml:"embed_lyrics" json:"embed_lyrics"`
+	SaveLyricsFile             bool     `yaml:"save_lyrics_file" json:"save_lyrics_file"`
+	LyricsFormat               string   `yaml:"lyrics_format" json:"lyrics_format"`
+	LyricsType                 string   `yaml:"lyrics_type" json:"lyrics_type"`
+	LyricsExtras               []string `yaml:"lyrics_extras" json:"lyrics_extras"`
+	ALACMaxSampleRate          int      `yaml:"alac_max_sample_rate" json:"alac_max_sample_rate"`
+	ALACMaxBitDepth            int      `yaml:"alac_max_bit_depth" json:"alac_max_bit_depth"`
+	CheckIntegrity             bool     `yaml:"check_integrity" json:"check_integrity"`
+
+	// The Legacy* fields keep config files and AMDL_* environments written for
+	// the pre-pool per-job limits loading: the roles they tuned are covered by
+	// the global download/decrypt pools and the catalog request gate, so their
+	// values are validated only for shape and discarded by NormalizeDeprecated.
+	// They are YAML/env-only on purpose — the runtime config API and per-job
+	// overrides keep rejecting them explicitly.
+	LegacyMaxParallelTracks           int `yaml:"max_parallel_tracks,omitempty" json:"-"`
+	LegacyMaxParallelMetadataRequests int `yaml:"max_parallel_metadata_requests,omitempty" json:"-"`
+	LegacyMaxParallelMediaDownloads   int `yaml:"max_parallel_media_downloads,omitempty" json:"-"`
 }
 
 const (
@@ -197,7 +208,7 @@ func Default() Config {
 		},
 		Download: DownloadConfig{
 			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true,
-			MaxRunningJobs: 2, MaxParallelDownloads: 16, MaxParallelDecrypts: 4, MaxAttempts: 4,
+			MaxRunningJobs: 2, MaxParallelDownloads: 16, MaxParallelDecrypts: 4, MaxParallelWrapperRequests: 16, MaxAttempts: 4,
 			DownloadsDir:       "data/downloads",
 			SongPathFormat:     "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
 			AlbumPathFormat:    "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
@@ -278,6 +289,9 @@ func clampDownloadLimits(d *DownloadConfig) {
 	if d.MaxParallelDecrypts > maxGlobalPoolLimit {
 		d.MaxParallelDecrypts = maxGlobalPoolLimit
 	}
+	if d.MaxParallelWrapperRequests > maxGlobalPoolLimit {
+		d.MaxParallelWrapperRequests = maxGlobalPoolLimit
+	}
 	if d.MaxAttempts > maxAttemptsLimit {
 		d.MaxAttempts = maxAttemptsLimit
 	}
@@ -297,6 +311,12 @@ func (c *Config) NormalizeDeprecated() error {
 		return fmt.Errorf("catalog.media_user_token_priority must be request or config")
 	}
 	c.Catalog.LegacyMediaUserTokenPriority = ""
+	// The pre-pool per-job concurrency knobs have no equivalent to migrate a
+	// value into: the global pools deliberately size by process, not by job.
+	// Accept and drop them so a previously working deployment still boots.
+	c.Download.LegacyMaxParallelTracks = 0
+	c.Download.LegacyMaxParallelMetadataRequests = 0
+	c.Download.LegacyMaxParallelMediaDownloads = 0
 	return nil
 }
 
@@ -383,6 +403,9 @@ func (c Config) Validate() error {
 	}
 	if c.Download.MaxParallelDecrypts > maxGlobalPoolLimit {
 		return fmt.Errorf("download.max_parallel_decrypts must be at most %d", maxGlobalPoolLimit)
+	}
+	if c.Download.MaxParallelWrapperRequests > maxGlobalPoolLimit {
+		return fmt.Errorf("download.max_parallel_wrapper_requests must be at most %d", maxGlobalPoolLimit)
 	}
 	if c.Download.MaxAttempts > maxAttemptsLimit {
 		return fmt.Errorf("download.max_attempts must be at most %d", maxAttemptsLimit)

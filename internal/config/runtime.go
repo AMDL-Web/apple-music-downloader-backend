@@ -18,6 +18,7 @@ func MutableView(cfg Config) map[string]any {
 	delete(download, "max_running_jobs")
 	delete(download, "max_parallel_downloads")
 	delete(download, "max_parallel_decrypts")
+	delete(download, "max_parallel_wrapper_requests")
 	return map[string]any{
 		"catalog": map[string]any{
 			"album_track_url_mode":   cfg.Catalog.AlbumTrackURLMode,
@@ -78,6 +79,7 @@ func RuntimeLockedChanges(old, updated Config) []string {
 	lock("download.max_running_jobs", old.Download.MaxRunningJobs != updated.Download.MaxRunningJobs)
 	lock("download.max_parallel_downloads", old.Download.MaxParallelDownloads != updated.Download.MaxParallelDownloads)
 	lock("download.max_parallel_decrypts", old.Download.MaxParallelDecrypts != updated.Download.MaxParallelDecrypts)
+	lock("download.max_parallel_wrapper_requests", old.Download.MaxParallelWrapperRequests != updated.Download.MaxParallelWrapperRequests)
 	lock("tools.ffmpeg", old.Tools.FFmpeg != updated.Tools.FFmpeg)
 	return changed
 }
@@ -107,5 +109,6 @@ func preserveRuntimeLocked(loaded, current Config) Config {
 	loaded.Download.MaxRunningJobs = current.Download.MaxRunningJobs
 	loaded.Download.MaxParallelDownloads = current.Download.MaxParallelDownloads
 	loaded.Download.MaxParallelDecrypts = current.Download.MaxParallelDecrypts
+	loaded.Download.MaxParallelWrapperRequests = current.Download.MaxParallelWrapperRequests
 	return loaded
 }
