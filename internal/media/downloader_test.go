@@ -284,7 +284,7 @@ func TestValidateRequestAcceptsArtistURL(t *testing.T) {
 	}
 }
 
-func TestResolveCollectionArtistFlattensAlbumTracksAndDedupesSongs(t *testing.T) {
+func TestResolveCollectionArtistKeepsSharedSongInEveryAlbum(t *testing.T) {
 	downloader := &Downloader{
 		cfg: config.Default(),
 		catalog: fakeDownloaderCatalog{artistAlbums: applemusic.ArtistAlbums{
@@ -308,8 +308,11 @@ func TestResolveCollectionArtistFlattensAlbumTracksAndDedupesSongs(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := trackIDsForTest(resolved.Tracks), []string{"song-1", "song-2", "song-3"}; !equalStrings(got, want) {
+	if got, want := trackIDsForTest(resolved.Tracks), []string{"song-1", "song-2", "song-2", "song-3"}; !equalStrings(got, want) {
 		t.Fatalf("tracks = %#v, want %#v", got, want)
+	}
+	if resolved.Tracks[1].AlbumName != "First" || resolved.Tracks[2].AlbumName != "Second" {
+		t.Fatalf("shared song album contexts = %q/%q, want First/Second", resolved.Tracks[1].AlbumName, resolved.Tracks[2].AlbumName)
 	}
 	if resolved.Name != "Artist" {
 		t.Fatalf("collection name = %q, want Artist", resolved.Name)
@@ -491,6 +494,35 @@ func TestTrackMetadataResolverMergesResolvedAlbumWithoutRefetch(t *testing.T) {
 	_, metadataCalls, albumCalls := catalog.counts()
 	if metadataCalls["song-1"] != 1 || len(albumCalls) != 0 {
 		t.Fatalf("metadata calls = %v, album calls = %v, want one lightweight song read and no album read", metadataCalls, albumCalls)
+	}
+}
+
+func TestTrackMetadataResolverPreservesArtistAlbumPlacement(t *testing.T) {
+	catalog := &metadataCountingCatalog{
+		metadataSongs: map[string]applemusic.Song{
+			"song-1": {
+				ID: "song-1", Name: "Fresh Song", AlbumID: "default-album", AlbumName: "Default Album",
+				ArtworkURL: "default-art", TrackNumber: 1, DiscNumber: 1,
+			},
+		},
+		metadataCalls: make(map[string]int),
+		albumCalls:    make(map[string]int),
+	}
+	downloader := &Downloader{cfg: config.Default(), catalog: catalog}
+	initial := applemusic.Song{
+		ID: "song-1", Name: "Song", AlbumID: "second-album", AlbumName: "Second Album",
+		ArtworkURL: "second-art", TrackNumber: 7, DiscNumber: 2,
+	}
+
+	got, err := newTrackMetadataResolver(downloader, "cn").song(context.Background(), initial, applemusic.TypeArtist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "Fresh Song" {
+		t.Fatalf("song name = %q, want refreshed name Fresh Song", got.Name)
+	}
+	if got.AlbumID != "second-album" || got.AlbumName != "Second Album" || got.ArtworkURL != "second-art" || got.TrackNumber != 7 || got.DiscNumber != 2 {
+		t.Fatalf("artist album placement was not preserved: %+v", got)
 	}
 }
 

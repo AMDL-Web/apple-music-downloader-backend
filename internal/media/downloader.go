@@ -474,19 +474,15 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 
 func (d *Downloader) artistTracks(ctx context.Context, storefront string, albums []applemusic.Collection) ([]applemusic.Song, error) {
 	tracks := make([]applemusic.Song, 0)
-	seen := make(map[string]struct{})
 	for _, summary := range albums {
 		album, err := d.catalog.Album(ctx, storefront, summary.ID)
 		if err != nil {
 			return nil, err
 		}
-		for _, track := range album.Tracks {
-			if _, exists := seen[track.ID]; exists {
-				continue
-			}
-			seen[track.ID] = struct{}{}
-			tracks = append(tracks, track)
-		}
+		// Keep the complete track list of every album. A catalog song may be
+		// related to more than one album with the same Adam ID; artist downloads
+		// still need one output in each album directory.
+		tracks = append(tracks, album.Tracks...)
 	}
 	return tracks, nil
 }
@@ -544,6 +540,13 @@ func (r *trackMetadataResolver) song(ctx context.Context, initial applemusic.Son
 		return applemusic.Song{}, err
 	}
 	song = mergeResolvedSong(song, initial)
+	if collectionType == applemusic.TypeAlbum || collectionType == applemusic.TypeArtist {
+		// Album track relationships are authoritative for placement. In
+		// particular, the same catalog song ID can belong to multiple albums;
+		// the lightweight song refresh may describe only its default album and
+		// must not redirect every occurrence into that album's output path.
+		song = preserveCollectionTrackContext(song, initial)
+	}
 	if (collectionType != applemusic.TypePlaylist && collectionType != applemusic.TypeStation) || song.AlbumID == "" {
 		return song, nil
 	}
@@ -630,6 +633,19 @@ func mergeResolvedSong(song, initial applemusic.Song) applemusic.Song {
 	}
 	if initial.DiscCount > 0 {
 		song.DiscCount = initial.DiscCount
+	}
+	return song
+}
+
+func preserveCollectionTrackContext(song, initial applemusic.Song) applemusic.Song {
+	song.AlbumID = firstNonEmpty(initial.AlbumID, song.AlbumID)
+	song.AlbumName = firstNonEmpty(initial.AlbumName, song.AlbumName)
+	song.ArtworkURL = firstNonEmpty(initial.ArtworkURL, song.ArtworkURL)
+	if initial.TrackNumber > 0 {
+		song.TrackNumber = initial.TrackNumber
+	}
+	if initial.DiscNumber > 0 {
+		song.DiscNumber = initial.DiscNumber
 	}
 	return song
 }
