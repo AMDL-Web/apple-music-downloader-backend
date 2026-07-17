@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +11,29 @@ import (
 	"amdl/internal/config"
 	"amdl/internal/domain"
 )
+
+func TestCleanupJobArtifactsUsesJobTempOverride(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.Download.TempDir = filepath.Join(root, "temp")
+	overrideDir := filepath.Join(cfg.Download.TempDir, "job-scratch")
+	downloader := &Downloader{store: config.NewStore(cfg)}
+	job := domain.Job{ID: "job-clean", Overrides: &config.DownloadOverrides{TempDir: &overrideDir}}
+	path, metadataPath := resumableDownloadPaths(overrideDir, job.ID, "output")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []string{path, metadataPath} {
+		if err := os.WriteFile(candidate, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	downloader.CleanupJobArtifacts(job)
+	if _, err := os.Stat(resumeOwnerDir(overrideDir, job.ID)); !os.IsNotExist(err) {
+		t.Fatalf("job resume directory still exists: %v", err)
+	}
+}
 
 // TestProcessJobAppliesPerJobOverrides runs two jobs through the same
 // Downloader in simulate mode: one carrying a song_path_format override and

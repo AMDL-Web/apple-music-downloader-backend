@@ -4,11 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -310,69 +314,349 @@ func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
 	return raw, nil
 }
 
-// downloadToFile streams uri into a newly created temp file under dir and
-// returns its path, so a large encrypted track never has to sit in memory as a
-// single []byte. onProgress follows the same contract as downloadBytes. The
-// caller owns the returned file and must remove it; on any error the partial
-// file is removed and no path is returned.
-func downloadToFile(ctx context.Context, client *http.Client, uri, dir string, onProgress func(float64)) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("download %s failed: %s", uri, resp.Status)
-	}
+const resumeMetadataVersion = 1
 
-	total, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
+type resumeMetadata struct {
+	Version      int    `json:"version"`
+	SourceHash   string `json:"source_hash"`
+	ETag         string `json:"etag,omitempty"`
+	LastModified string `json:"last_modified,omitempty"`
+	Total        int64  `json:"total,omitempty"`
+	Complete     bool   `json:"complete,omitempty"`
+}
+
+// downloadToFile streams uri into a stable checkpoint under dir. resumeKey is
+// the final output path, which is already protected by the downloader's output
+// lock, so retries and a recovered job resolve to the same checkpoint without
+// allowing two tracks to append concurrently. A failed transfer deliberately
+// leaves both the partial media and its small metadata sidecar in place.
+//
+// When a checkpoint exists, the request uses Range and, when the server supplied
+// one, If-Range. A server that ignores the range or reports a changed validator
+// causes a safe full restart instead of mixing bytes from different objects.
+// The caller must call cleanupResumableDownload after the encrypted media is no
+// longer needed.
+func downloadToFile(ctx context.Context, client *http.Client, uri, dir, owner, resumeKey string, onProgress func(float64)) (string, error) {
+	path, metadataPath := resumableDownloadPaths(dir, owner, resumeKey)
+	offset, metadata := loadResumeCheckpoint(path, metadataPath, uri)
+
+	// One retry is sufficient here: it is used only when a stale/invalid Range
+	// response tells us to discard the checkpoint and issue a clean GET.
+	for restart := 0; restart < 2; restart++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Accept-Encoding", "identity")
+		if offset > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+			if validator := resumeValidator(metadata); validator != "" {
+				req.Header.Set("If-Range", validator)
+			}
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", err
+		}
+
+		restartClean := func() {
+			_ = resp.Body.Close()
+			cleanupResumableDownload(path)
+			offset = 0
+			metadata = resumeMetadata{}
+		}
+
+		var total, rangeStart, rangeEnd int64
+		rangeEnd = -1
+		switch {
+		case offset > 0 && resp.StatusCode == http.StatusPartialContent:
+			start, end, parsedTotal, ok := parseContentRange(resp.Header.Get("Content-Range"))
+			expectedBody := end - start + 1
+			if !ok || start != offset || (resp.ContentLength >= 0 && resp.ContentLength != expectedBody) ||
+				(metadata.Total > 0 && metadata.Total != parsedTotal) || resumeObjectChanged(metadata, resp.Header) {
+				restartClean()
+				continue
+			}
+			total = parsedTotal
+			rangeStart, rangeEnd = start, end
+		case offset > 0 && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable:
+			parsedTotal, ok := parseUnsatisfiedContentRange(resp.Header.Get("Content-Range"))
+			_ = resp.Body.Close()
+			if ok && parsedTotal == offset && metadata.Complete && !resumeObjectChanged(metadata, resp.Header) {
+				metadata.Total = parsedTotal
+				if err := writeResumeMetadata(metadataPath, metadata); err != nil {
+					return "", err
+				}
+				if onProgress != nil {
+					onProgress(1)
+				}
+				return path, nil
+			}
+			cleanupResumableDownload(path)
+			offset = 0
+			metadata = resumeMetadata{}
+			continue
+		case offset > 0 && resp.StatusCode == http.StatusOK:
+			// Range was ignored or If-Range did not match. Reuse this full body,
+			// but truncate the old checkpoint before writing it.
+			offset = 0
+			metadata = resumeMetadata{}
+			total = responseContentLength(resp.Header)
+		case offset > 0:
+			_ = resp.Body.Close()
+			return "", fmt.Errorf("download %s range request failed: %s", uri, resp.Status)
+		case resp.StatusCode == http.StatusPartialContent:
+			start, end, parsedTotal, ok := parseContentRange(resp.Header.Get("Content-Range"))
+			expectedBody := end - start + 1
+			if !ok || start != 0 || (resp.ContentLength >= 0 && resp.ContentLength != expectedBody) {
+				_ = resp.Body.Close()
+				return "", fmt.Errorf("download %s returned invalid Content-Range %q", uri, resp.Header.Get("Content-Range"))
+			}
+			total = parsedTotal
+			rangeStart, rangeEnd = start, end
+		case resp.StatusCode >= 300:
+			_ = resp.Body.Close()
+			return "", fmt.Errorf("download %s failed: %s", uri, resp.Status)
+		default:
+			total = responseContentLength(resp.Header)
+		}
+
+		flags := os.O_CREATE | os.O_WRONLY
+		if offset > 0 {
+			flags |= os.O_APPEND
+		} else {
+			flags |= os.O_TRUNC
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			_ = resp.Body.Close()
+			return "", err
+		}
+		f, err := os.OpenFile(path, flags, 0o600)
+		if err != nil {
+			_ = resp.Body.Close()
+			return "", err
+		}
+
+		metadata = resumeMetadata{
+			Version:      resumeMetadataVersion,
+			SourceHash:   sourceFingerprint(uri),
+			ETag:         firstNonEmpty(resp.Header.Get("ETag"), metadata.ETag),
+			LastModified: firstNonEmpty(resp.Header.Get("Last-Modified"), metadata.LastModified),
+			Total:        total,
+			Complete:     false,
+		}
+		if err := writeResumeMetadata(metadataPath, metadata); err != nil {
+			_ = f.Close()
+			_ = resp.Body.Close()
+			return "", err
+		}
+
+		downloaded := offset
+		if onProgress != nil {
+			if total > 0 {
+				onProgress(min(1, float64(downloaded)/float64(total)))
+			} else {
+				onProgress(-1)
+			}
+		}
+		chunk := make([]byte, 32*1024)
+		var transferErr error
+		for {
+			n, readErr := resp.Body.Read(chunk)
+			if n > 0 {
+				if _, writeErr := f.Write(chunk[:n]); writeErr != nil {
+					transferErr = writeErr
+					break
+				}
+				downloaded += int64(n)
+				if onProgress != nil && total > 0 {
+					onProgress(min(1, float64(downloaded)/float64(total)))
+				}
+			}
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				transferErr = readErr
+				break
+			}
+		}
+		_ = resp.Body.Close()
+		if syncErr := f.Sync(); transferErr == nil {
+			transferErr = syncErr
+		}
+		if closeErr := f.Close(); transferErr == nil {
+			transferErr = closeErr
+		}
+		if transferErr != nil {
+			return "", transferErr
+		}
+		if rangeEnd >= 0 && downloaded-offset != rangeEnd-rangeStart+1 {
+			return "", fmt.Errorf("download %s returned %d range bytes, want %d", uri, downloaded-offset, rangeEnd-rangeStart+1)
+		}
+		if total > 0 && downloaded != total {
+			return "", fmt.Errorf("download %s ended at %d of %d bytes", uri, downloaded, total)
+		}
+		if total <= 0 {
+			metadata.Total = downloaded
+		}
+		metadata.Complete = true
+		if err := writeResumeMetadata(metadataPath, metadata); err != nil {
+			return "", err
+		}
+		return path, nil
+	}
+	return "", fmt.Errorf("download %s returned an invalid range response", uri)
+}
+
+func resumableDownloadPaths(dir, owner, resumeKey string) (string, string) {
+	sum := sha256.Sum256([]byte(resumeKey))
+	name := "resume-" + hex.EncodeToString(sum[:]) + ".mp4"
+	path := filepath.Join(resumeOwnerDir(dir, owner), name)
+	return path, path + ".json"
+}
+
+func resumeOwnerDir(dir, owner string) string {
+	sum := sha256.Sum256([]byte(owner))
+	return filepath.Join(dir, "resume-job-"+hex.EncodeToString(sum[:]))
+}
+
+func loadResumeCheckpoint(path, metadataPath, uri string) (int64, resumeMetadata) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+		cleanupResumableDownload(path)
+		return 0, resumeMetadata{}
+	}
+	raw, err := os.ReadFile(metadataPath)
+	if err != nil {
+		cleanupResumableDownload(path)
+		return 0, resumeMetadata{}
+	}
+	var metadata resumeMetadata
+	if json.Unmarshal(raw, &metadata) != nil || metadata.Version != resumeMetadataVersion {
+		cleanupResumableDownload(path)
+		return 0, resumeMetadata{}
+	}
+	// The resume key is the output path, so a retry or codec fallback that
+	// resolves the same output to a different media object would otherwise pick
+	// up the previous object's partial bytes. If-Range alone cannot catch that
+	// when validators collide across variants, so bind the checkpoint to its
+	// source and restart cleanly on any mismatch.
+	if metadata.SourceHash != sourceFingerprint(uri) {
+		cleanupResumableDownload(path)
+		return 0, resumeMetadata{}
+	}
+	// Without a strong ETag or Last-Modified, a same-URL/same-size object can
+	// change between requests and a naked Range would silently splice two
+	// representations. Restart from zero rather than trade integrity for reuse.
+	if resumeValidator(metadata) == "" {
+		cleanupResumableDownload(path)
+		return 0, resumeMetadata{}
+	}
+	if metadata.Total > 0 && info.Size() > metadata.Total {
+		cleanupResumableDownload(path)
+		return 0, resumeMetadata{}
+	}
+	// Total is written before the body so progress survives interruption. Only
+	// the complete marker is committed after the media file has been synced and
+	// closed; a crash in that final window must restart rather than trust length
+	// alone (a sparse/page-cache tail can have the right stat size).
+	if metadata.Total > 0 && info.Size() == metadata.Total && !metadata.Complete {
+		cleanupResumableDownload(path)
+		return 0, resumeMetadata{}
+	}
+	return info.Size(), metadata
+}
+
+// sourceFingerprint identifies the object a checkpoint belongs to. CDN URLs
+// for the same media commonly rotate query-string signatures between fetches,
+// so only the scheme, host, and path participate; a different variant or codec
+// lands on a different path and invalidates the checkpoint.
+func sourceFingerprint(uri string) string {
+	if u, err := url.Parse(uri); err == nil && u.Host != "" {
+		uri = u.Scheme + "://" + u.Host + u.Path
+	}
+	sum := sha256.Sum256([]byte(uri))
+	return hex.EncodeToString(sum[:])
+}
+
+func writeResumeMetadata(path string, metadata resumeMetadata) error {
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func resumeValidator(metadata resumeMetadata) string {
+	if metadata.ETag != "" && !strings.HasPrefix(strings.TrimSpace(metadata.ETag), "W/") {
+		return metadata.ETag
+	}
+	return metadata.LastModified
+}
+
+func resumeObjectChanged(metadata resumeMetadata, header http.Header) bool {
+	if metadata.ETag != "" && header.Get("ETag") != "" && metadata.ETag != header.Get("ETag") {
+		return true
+	}
+	return metadata.LastModified != "" && header.Get("Last-Modified") != "" && metadata.LastModified != header.Get("Last-Modified")
+}
+
+func responseContentLength(header http.Header) int64 {
+	total, _ := strconv.ParseInt(header.Get("Content-Length"), 10, 64)
 	if total <= 0 {
-		total, _ = strconv.ParseInt(resp.Header.Get("X-Apple-MS-Content-Length"), 10, 64)
+		total, _ = strconv.ParseInt(header.Get("X-Apple-MS-Content-Length"), 10, 64)
 	}
+	return total
+}
 
-	f, err := os.CreateTemp(dir, "raw-*.mp4")
-	if err != nil {
-		return "", err
+func parseContentRange(value string) (start, end, total int64, ok bool) {
+	if _, err := fmt.Sscanf(value, "bytes %d-%d/%d", &start, &end, &total); err != nil || start < 0 || end < start || total <= end {
+		return 0, 0, 0, false
 	}
-	path := f.Name()
-	fail := func(e error) (string, error) {
-		f.Close()
-		os.Remove(path)
-		return "", e
-	}
+	return start, end, total, true
+}
 
-	if onProgress != nil && total <= 0 {
-		onProgress(-1)
+func parseUnsatisfiedContentRange(value string) (int64, bool) {
+	var total int64
+	if _, err := fmt.Sscanf(value, "bytes */%d", &total); err != nil || total < 0 {
+		return 0, false
 	}
-	chunk := make([]byte, 32*1024)
-	var downloaded int64
-	for {
-		n, readErr := resp.Body.Read(chunk)
-		if n > 0 {
-			if _, werr := f.Write(chunk[:n]); werr != nil {
-				return fail(werr)
-			}
-			downloaded += int64(n)
-			if onProgress != nil && total > 0 {
-				onProgress(float64(downloaded) / float64(total))
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return fail(readErr)
-		}
+	return total, true
+}
+
+func cleanupResumableDownload(path string) {
+	if path == "" {
+		return
 	}
-	if err := f.Close(); err != nil {
-		os.Remove(path)
-		return "", err
+	_ = os.Remove(path)
+	_ = os.Remove(path + ".json")
+	_ = os.Remove(path + ".json.tmp")
+	parent := filepath.Dir(path)
+	if strings.HasPrefix(filepath.Base(parent), "resume-job-") {
+		_ = os.Remove(parent) // removes only an already-empty owner dir
 	}
-	return path, nil
+}
+
+func cleanupResumeForKey(dir, owner, resumeKey string) {
+	path, _ := resumableDownloadPaths(dir, owner, resumeKey)
+	cleanupResumableDownload(path)
+}
+
+func cleanupResumeOwner(dir, owner string) {
+	if dir == "" || owner == "" {
+		return
+	}
+	_ = os.RemoveAll(resumeOwnerDir(dir, owner))
 }
 
 func absURL(base, ref string) string {

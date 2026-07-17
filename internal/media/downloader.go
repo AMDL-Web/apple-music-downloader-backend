@@ -188,7 +188,26 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	jobDownloader := d.withConfig(cfg)
 	jobDownloader.covers = newCoverCache(jobDownloader.catalog)
 	jobDownloader.standaloneCoverHandled = make(map[string]struct{})
-	return jobDownloader.processJob(ctx, job, reporter)
+	err = jobDownloader.processJob(ctx, job, reporter)
+	// Failed jobs retain their checkpoints for Retry. Completed and cancelled
+	// jobs cannot be retried, so remove every codec/track checkpoint owned by
+	// this job, including an earlier codec that later fell back successfully.
+	if err == nil || ctx.Err() != nil {
+		cleanupResumeOwner(cfg.Download.TempDir, job.ID)
+	}
+	return err
+}
+
+// CleanupJobArtifacts implements jobs.ArtifactCleaner for queued cancellation
+// and terminal deletion, where no ProcessJob call is available to run the
+// lifecycle cleanup above. Invalid historical overrides are ignored safely;
+// startup cleanup still leaves unrelated files untouched.
+func (d *Downloader) CleanupJobArtifacts(job domain.Job) {
+	cfg, err := job.Overrides.ApplyValidated(d.baseConfig())
+	if err != nil {
+		return
+	}
+	cleanupResumeOwner(cfg.Download.TempDir, job.ID)
 }
 
 // parseJobInput reconstructs the submission-time parse result from the job's
@@ -933,7 +952,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 				skipped = skip
 				return struct{}{}, err
 			}
-			selected, downloadErr := d.downloadSelectedEnhancedMedia(ctx, selected, codec, set)
+			selected, downloadErr := d.downloadSelectedEnhancedMedia(ctx, selected, codec, job.ID, attemptOutPath, set)
 			if downloadErr != nil {
 				return struct{}{}, downloadErr
 			}
@@ -981,11 +1000,11 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			d.setRetryFailure(ctx, reporter, &item, "decrypt", strings.ToUpper(codec), failure)
 			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "decrypt", codec, failure)
 		})
-		// The encrypted media on disk is no longer needed once the decrypt phase
-		// has run (whether it succeeded or exhausted its retries); a fallback
-		// codec re-fetches its own. aac-lc keeps its bytes in memory, so its
-		// rawPath is empty and this is a no-op.
-		cleanupTempFile(enhanced.rawPath)
+		// Once the decrypt phase has returned, the encrypted media is no longer
+		// useful to this run and a decrypt error may indicate corrupt bytes. Remove
+		// both checkpoint files as before; a hard process stop during download or
+		// decrypt still leaves them for the recovered job.
+		cleanupResumableDownload(enhanced.rawPath)
 		if decryptErr != nil {
 			releaseOutput()
 			lastErr = decryptErr
@@ -1099,6 +1118,7 @@ func attemptsForCodec(configuredMaxAttempts, _ int) int {
 func (d *Downloader) handleExistingOutput(ctx context.Context, reporter jobs.Reporter, job domain.Job, item *domain.JobItem, outPath string) (bool, error) {
 	item.OutputPath = outPath
 	if _, err := os.Stat(outPath); err == nil && !job.Force {
+		cleanupResumeForKey(d.cfg.Download.TempDir, job.ID, outPath)
 		item.Status = domain.ItemSkipped
 		item.Progress = 1
 		item.RetryKind = ""
@@ -1151,7 +1171,7 @@ func (d *Downloader) selectEnhancedMedia(ctx context.Context, job domain.Job, it
 	return selectedDownloadMedia{info: info}, nil
 }
 
-func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected selectedDownloadMedia, codec string, set func(domain.ItemStatus, float64, string)) (selectedDownloadMedia, error) {
+func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected selectedDownloadMedia, codec, jobID, outPath string, set func(domain.ItemStatus, float64, string)) (selectedDownloadMedia, error) {
 	codecName := strings.ToUpper(codec)
 	set(domain.ItemDownloading, 0.05, fmt.Sprintf("Downloading %s encrypted media", codecName))
 	// Stream-download to a temp file with per-chunk progress from 5% → 55%. The
@@ -1162,7 +1182,7 @@ func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected
 		return selectedDownloadMedia{}, err
 	}
 	defer release()
-	rawPath, err := downloadToFile(ctx, d.http, selected.info.MediaURI, d.cfg.Download.TempDir, func(p float64) {
+	rawPath, err := downloadToFile(ctx, d.http, selected.info.MediaURI, d.cfg.Download.TempDir, jobID, outPath, func(p float64) {
 		if p < 0 {
 			return // Content-Length unknown, stay at 5%
 		}
@@ -1484,14 +1504,6 @@ func marshalPayload(value any) string {
 // finalize step renames it onto the bare outPath only after metadata is in,
 // so existence at the final path always implies a complete, tagged file.
 const partSuffix = ".part"
-
-// cleanupTempFile removes a temp file created during processing, tolerating an
-// empty path (e.g. the aac-lc codec, which keeps its media in memory).
-func cleanupTempFile(path string) {
-	if path != "" {
-		_ = os.Remove(path)
-	}
-}
 
 // finalizeToOutput moves the finished, tagged file at src (staged on temp
 // storage) to its final path dst. When src and dst share a filesystem this is a

@@ -89,9 +89,10 @@ func main() {
 		logger.Error("create temp dir", "error", err)
 		os.Exit(1)
 	}
-	// Remove scratch files a previous run left behind (a crash mid-download can
-	// leak encrypted/decrypted/flatten temp files). Safe to do unconditionally
-	// at startup: the temp dir is single-writer and no job has started yet.
+	// Remove non-resumable scratch files a previous run left behind. Encrypted
+	// resume-* checkpoints deliberately survive this sweep so recovered jobs can
+	// continue their HLS transfer. Safe before any job has started because the
+	// temp dir is single-writer.
 	media.CleanupStaleTemp(cfg.Download.TempDir, logSystem.Logger.With("component", "media"))
 	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o755); err != nil {
 		logger.Error("create database dir", "error", err)
