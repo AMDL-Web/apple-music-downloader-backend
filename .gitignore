@@ -25,6 +25,10 @@ keys/
 coverage.txt
 
 *.local.yaml
-# Live runtime config: bootstrapped from configs/config.example.yaml on first
-# start and rewritten by PUT /api/v1/config, so it must not be tracked.
+# Live config files: bootstrapped from the example files on first start.
+# config.yaml is the owner-edited startup config; runtime.yaml is rewritten
+# by PUT /api/v1/config. Neither is tracked, nor is the one-time backup left
+# by the legacy single-file migration.
 configs/config.yaml
+configs/runtime.yaml
+configs/config.yaml.pre-split.bak

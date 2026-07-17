@@ -887,7 +887,7 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 		t.Fatalf("persisted item quality = %+v, want bit_depth=24 sample_rate=96000 bitrate=2500000", last)
 	}
 
-	selected, err = downloader.downloadSelectedEnhancedMedia(context.Background(), selected, "alac", func(domain.ItemStatus, float64, string) {})
+	selected, err = downloader.downloadSelectedEnhancedMedia(context.Background(), selected, "alac", "job-1", filepath.Join(cfg.Download.DownloadsDir, "song.m4a"), func(domain.ItemStatus, float64, string) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -926,6 +926,8 @@ func TestDownloadSelectedEnhancedMediaHighKeepsOnlyMemoryCopy(t *testing.T) {
 		context.Background(),
 		selectedDownloadMedia{info: selectedMediaInfo{MediaURI: server.URL}},
 		"alac",
+		"job-high",
+		filepath.Join(cfg.Download.DownloadsDir, "song.m4a"),
 		func(domain.ItemStatus, float64, string) {},
 	)
 	if err != nil {
