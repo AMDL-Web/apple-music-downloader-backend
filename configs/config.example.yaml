@@ -50,7 +50,8 @@ logging:
 wrapper:
   # string: wrapper-manager gRPC address in "host:port" form.
   address: "127.0.0.1:8080"
-  # bool: true uses insecure gRPC transport; false requires transport credentials support in code/config.
+  # bool: true uses plaintext gRPC; false uses TLS 1.2+ and verifies the wrapper certificate
+  # against the operating system trust store and the hostname in address. Requires a restart.
   insecure: true
   # integer seconds: wrapper unary-RPC timeout and per-decrypt-fragment inactivity timeout.
   # It is not a whole-track deadline, so long tracks may run longer. Values <= 0 fall back to 30 seconds.

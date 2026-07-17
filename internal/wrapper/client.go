@@ -3,6 +3,7 @@ package wrapper
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"amdl/internal/config"
 	pb "github.com/AMDL-Web/wrapper-manager/proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -98,10 +100,7 @@ func WithDataConcurrencyLimit(limit func() int) ClientOption {
 }
 
 func NewClient(cfg config.WrapperConfig, options ...ClientOption) (*Client, error) {
-	opts := []grpc.DialOption{}
-	if cfg.Insecure {
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	}
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(wrapperTransportCredentials(cfg))}
 	conn, err := grpc.NewClient(cfg.Address, opts...)
 	if err != nil {
 		return nil, err
@@ -111,6 +110,13 @@ func NewClient(cfg config.WrapperConfig, options ...ClientOption) (*Client, erro
 		option(client)
 	}
 	return client, nil
+}
+
+func wrapperTransportCredentials(cfg config.WrapperConfig) credentials.TransportCredentials {
+	if cfg.Insecure {
+		return insecure.NewCredentials()
+	}
+	return credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
 }
 
 func (c *Client) acquireDataSlot(ctx context.Context) (func(), error) {
