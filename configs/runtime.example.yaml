@@ -63,7 +63,10 @@ download:
   #     temporarily approach about twice the track size (or more for unusually large fragments) because garbage
   #     collection retains allocation headroom; ffmpeg and runtime overhead are additional. Only the flattened
   #     output remains in temp_dir, so its peak is roughly one track per parallel track. In-memory media is limited
-  #     to 512 MiB per track; larger enhanced-media responses fail explicitly instead of risking process OOM.
+  #     to 512 MiB per track; larger enhanced-media responses fail explicitly instead of risking process OOM. If a
+  #     CDN response has a usable ETag or Last-Modified validator and is interrupted after making progress, high
+  #     mode retries one Range request from its in-memory prefix. It does not persist that prefix, so process or
+  #     container restarts still begin at byte zero.
   # AAC-LC WebPlayback is unchanged by this option: both modes keep its encrypted and decrypted track bytes in
   # memory and use the same 512 MiB download limit. The rare ALAC integrity-repair fallback also reads and copies
   # one full flattened track in either mode; the fragment-sized low-mode estimate applies to the normal path.

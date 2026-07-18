@@ -252,62 +252,164 @@ func downloadText(ctx context.Context, client *http.Client, uri string, gates ..
 	return string(raw), err
 }
 
-// downloadBytes fetches uri into memory. onProgress, if non-nil, is called
-// periodically with a value in [0,1] representing download progress based on
-// Content-Length. If the server does not advertise Content-Length the callback
-// receives -1 on every call.
+// downloadBytes fetches uri into memory without an internal reconnect. AAC-LC
+// uses this path and leaves retry/backoff to its caller.
 func downloadBytes(ctx context.Context, client *http.Client, uri string, onProgress func(float64)) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("download %s failed: %s", uri, resp.Status)
-	}
+	return downloadBytesInternal(ctx, client, uri, false, onProgress)
+}
 
-	total, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
-	if total <= 0 {
-		// Fallback: try X-Apple-MS-Content-Length used by Apple CDN
-		total, _ = strconv.ParseInt(resp.Header.Get("X-Apple-MS-Content-Length"), 10, 64)
-	}
-	if total > maxInMemoryMediaBytes {
-		return nil, fmt.Errorf("download %s is too large for in-memory processing: %d bytes (max %d)", uri, total, maxInMemoryMediaBytes)
-	}
+// downloadBytesWithRangeResume fetches uri into memory. If a response body is
+// interrupted after making progress and the server supplied a usable If-Range
+// validator, one transparent Range/If-Range reconnect preserves the bytes
+// already held in memory. The reconnect is deliberately bounded to one request;
+// the caller's outer retry policy remains responsible for backoff and further
+// attempts.
+//
+// onProgress, if non-nil, is called periodically with a value in [0,1]
+// representing cumulative download progress. If the total size is unknown the
+// callback receives -1.
+func downloadBytesWithRangeResume(ctx context.Context, client *http.Client, uri string, onProgress func(float64)) ([]byte, error) {
+	return downloadBytesInternal(ctx, client, uri, true, onProgress)
+}
 
-	if onProgress == nil || total <= 0 {
-		// No progress tracking possible – just read all at once
-		if onProgress != nil {
-			onProgress(-1)
-		}
-		return readAllLimited(resp.Body, maxInMemoryMediaBytes)
-	}
-
-	buf := bytes.NewBuffer(make([]byte, 0, total))
+func downloadBytesInternal(ctx context.Context, client *http.Client, uri string, allowRangeResume bool, onProgress func(float64)) ([]byte, error) {
+	var buf bytes.Buffer
+	var metadata resumeMetadata
+	var total int64
+	resumeAttempted := false
 	chunk := make([]byte, 32*1024)
-	var downloaded int64
+
 	for {
-		n, readErr := resp.Body.Read(chunk)
-		if n > 0 {
-			if downloaded+int64(n) > maxInMemoryMediaBytes {
-				return nil, fmt.Errorf("download %s exceeded in-memory limit of %d bytes", uri, maxInMemoryMediaBytes)
+		offset := int64(buf.Len())
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept-Encoding", "identity")
+		if offset > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+			req.Header.Set("If-Range", resumeValidator(metadata))
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		rangeStart, rangeEnd := int64(0), int64(-1)
+		switch {
+		case offset > 0 && resp.StatusCode == http.StatusPartialContent:
+			start, end, parsedTotal, ok := parseContentRange(resp.Header.Get("Content-Range"))
+			expectedBody := end - start + 1
+			if !ok || start != offset || (resp.ContentLength >= 0 && resp.ContentLength != expectedBody) ||
+				(metadata.Total > 0 && metadata.Total != parsedTotal) || resumeObjectChanged(metadata, resp.Header) {
+				_ = resp.Body.Close()
+				return nil, fmt.Errorf("download %s returned invalid resume range %q", uri, resp.Header.Get("Content-Range"))
 			}
-			buf.Write(chunk[:n])
-			downloaded += int64(n)
-			onProgress(float64(downloaded) / float64(total))
+			total = parsedTotal
+			rangeStart, rangeEnd = start, end
+		case offset > 0 && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable:
+			parsedTotal, ok := parseUnsatisfiedContentRange(resp.Header.Get("Content-Range"))
+			_ = resp.Body.Close()
+			if ok && parsedTotal == offset && (metadata.Total <= 0 || metadata.Total == parsedTotal) &&
+				!resumeObjectChanged(metadata, resp.Header) {
+				if onProgress != nil {
+					onProgress(1)
+				}
+				return buf.Bytes(), nil
+			}
+			return nil, fmt.Errorf("download %s could not resume at byte %d", uri, offset)
+		case offset > 0 && resp.StatusCode == http.StatusOK:
+			// Range was ignored or If-Range did not match. Reuse the full response,
+			// but discard the old prefix so representations can never be mixed.
+			buf.Reset()
+			offset = 0
+			metadata = resumeMetadata{}
+			total = responseContentLength(resp.Header)
+		case offset > 0:
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("download %s range request failed: %s", uri, resp.Status)
+		case resp.StatusCode == http.StatusPartialContent:
+			start, end, parsedTotal, ok := parseContentRange(resp.Header.Get("Content-Range"))
+			expectedBody := end - start + 1
+			if !ok || start != 0 || (resp.ContentLength >= 0 && resp.ContentLength != expectedBody) {
+				_ = resp.Body.Close()
+				return nil, fmt.Errorf("download %s returned invalid Content-Range %q", uri, resp.Header.Get("Content-Range"))
+			}
+			total = parsedTotal
+			rangeStart, rangeEnd = start, end
+		case resp.StatusCode >= 300:
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("download %s failed: %s", uri, resp.Status)
+		default:
+			total = responseContentLength(resp.Header)
 		}
-		if readErr == io.EOF {
-			break
+
+		if total > maxInMemoryMediaBytes {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("download %s is too large for in-memory processing: %d bytes (max %d)", uri, total, maxInMemoryMediaBytes)
 		}
-		if readErr != nil {
-			return nil, readErr
+		metadata = resumeMetadata{
+			ETag:         firstNonEmpty(resp.Header.Get("ETag"), metadata.ETag),
+			LastModified: firstNonEmpty(resp.Header.Get("Last-Modified"), metadata.LastModified),
+			Total:        total,
 		}
+		if total > int64(buf.Cap()) {
+			buf.Grow(int(total) - buf.Len())
+		}
+		if onProgress != nil {
+			if total > 0 {
+				onProgress(min(1, float64(offset)/float64(total)))
+			} else {
+				onProgress(-1)
+			}
+		}
+
+		responseStart := int64(buf.Len())
+		var transferErr error
+		resumeEligible := true
+		for {
+			n, readErr := resp.Body.Read(chunk)
+			if n > 0 {
+				if int64(buf.Len())+int64(n) > maxInMemoryMediaBytes {
+					transferErr = fmt.Errorf("download %s exceeded in-memory limit of %d bytes", uri, maxInMemoryMediaBytes)
+					resumeEligible = false
+					break
+				}
+				_, _ = buf.Write(chunk[:n])
+				if onProgress != nil && total > 0 {
+					onProgress(min(1, float64(buf.Len())/float64(total)))
+				}
+			}
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				transferErr = readErr
+				break
+			}
+		}
+		_ = resp.Body.Close()
+
+		if transferErr == nil && rangeEnd >= 0 && int64(buf.Len())-responseStart != rangeEnd-rangeStart+1 {
+			transferErr = fmt.Errorf("download %s returned %d range bytes, want %d", uri, int64(buf.Len())-responseStart, rangeEnd-rangeStart+1)
+		}
+		if transferErr == nil && total > 0 && int64(buf.Len()) != total {
+			transferErr = fmt.Errorf("download %s ended at %d of %d bytes", uri, buf.Len(), total)
+		}
+		if transferErr == nil {
+			return buf.Bytes(), nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		// A naked Range could splice two objects at the same URL. Only preserve
+		// the in-memory prefix when If-Range can bind the follow-up request.
+		if !allowRangeResume || !resumeEligible || resumeAttempted || buf.Len() == 0 || resumeValidator(metadata) == "" {
+			return nil, transferErr
+		}
+		resumeAttempted = true
 	}
-	return buf.Bytes(), nil
 }
 
 func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
