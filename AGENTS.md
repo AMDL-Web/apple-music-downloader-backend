@@ -41,6 +41,10 @@ This backend is the **download core**. It intentionally has NO authentication la
 - Release notes may be provided at `.github/release-notes/<version>.md` (for example, `v1.4.0.md`); the release workflow uses that file when non-empty and falls back to the existing automatic changelog generator otherwise.
 - When an agent creates or updates a manual release-notes file with per-commit change entries, it MUST append that commit's primary author and all `Co-authored-by` contributors to the corresponding entry, deduplicate them, and use `@username` whenever a GitHub account can be identified reliably; otherwise use the contributor's plain name. Map `Codex <noreply@openai.com>` to the official GitHub account `@codex`.
 
+## Protected-branch bypass authorization
+
+- Before merging a pull request with `--admin` or any other administrator bypass of branch protection, an agent MUST obtain the user's explicit approval for that specific bypass. General instructions to open, merge, publish, or release a pull request do NOT count as approval to bypass required reviews, status checks, conversation resolution, or other branch-protection rules. If protection blocks a normal merge, report the blocking requirement and wait for explicit bypass approval instead of bypassing it automatically.
+
 ---
 
 # 4. Commit Requirements
