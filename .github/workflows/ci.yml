@@ -33,7 +33,7 @@ jobs:
           node-version: '24'
 
       - name: Test release tooling
-        run: node --test tools/generate-changelog.test.mjs
+        run: node --test .github/scripts/generate-changelog.test.mjs
 
       - name: Check formatting
         run: |

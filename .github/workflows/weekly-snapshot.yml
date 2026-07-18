@@ -33,10 +33,10 @@ jobs:
         id: version
         run: |
           # 生成下一个周快照版本号
-          VERSION=$(node tools/weekly-snapshot.js)
+          VERSION=$(node .github/scripts/weekly-snapshot.js)
           
           # 获取基础标签
-          BASE_TAG=$(node tools/weekly-snapshot.js --get-base-tag)
+          BASE_TAG=$(node .github/scripts/weekly-snapshot.js --get-base-tag)
           
           # 如果手动指定了基础标签，使用手动指定的
           if [ -n "${{ github.event.inputs.base_tag }}" ]; then
@@ -80,7 +80,7 @@ jobs:
           fi
           
           # 生成 changelog
-          CHANGELOG_CONTENT=$(node tools/generate-changelog.js $ARGS --output-only)
+          CHANGELOG_CONTENT=$(node .github/scripts/generate-changelog.js $ARGS --output-only)
           
           # 保存到输出
           echo "changelog_content<<EOF" >> $GITHUB_OUTPUT

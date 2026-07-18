@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// GitHub Actions 周快照发版辅助脚本。
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 

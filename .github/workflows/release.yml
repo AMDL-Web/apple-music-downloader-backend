@@ -148,7 +148,7 @@ jobs:
               ARGS+=(--base "$BASE_TAG")
             fi
 
-            CHANGELOG_CONTENT=$(node tools/generate-changelog.js "${ARGS[@]}" --output-only)
+            CHANGELOG_CONTENT=$(node .github/scripts/generate-changelog.js "${ARGS[@]}" --output-only)
           fi
 
           # 使用随机分隔符，避免版本说明中恰好出现 EOF 时截断输出。

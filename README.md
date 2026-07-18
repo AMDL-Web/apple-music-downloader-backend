@@ -427,7 +427,7 @@ go test ./... -count=1
 例如发布 `v1.4.0` 时使用 `.github/release-notes/v1.4.0.md`。该文件不存在或为空时，workflow 才会回退到现有的提交记录自动生成逻辑。自动生成的每条说明会在末尾包含提交作者，以及 commit message 中通过 `Co-authored-by` trailer 声明的协作者，并自动去重。自动生成逻辑位于：
 
 ```text
-tools/generate-changelog.js
+.github/scripts/generate-changelog.js
 ```
 
 发版成功后 `Release` workflow 会调用 `Docker Publish` workflow，构建多架构镜像（linux/amd64 + linux/arm64）并推送到 `ghcr.io/amdl-web/apple-music-downloader-backend`，镜像 tag 为 `{version}`、`{major}.{minor}` 与 `latest`。`Docker Publish` 也可对已存在的版本标签手动触发（补发或重发镜像），在 GitHub 页面手工发布 Release 时同样会自动运行。手动触发默认不移动 `latest`（避免重发旧版本时把 `latest` 拉回去），仅在勾选 `latest` 选项时才更新；页面手工发布的预发布（prerelease）Release 也不会移动 `latest`。首次推送会在 GHCR 创建私有 package，如需公开拉取，请到仓库 Packages 设置里将其改为 public。

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+// 回归测试仅服务于 GitHub Actions 的自动发版说明生成流程。
+
 import {
   classifyCommits,
   formatAuthors,

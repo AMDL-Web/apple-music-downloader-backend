@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const changelogPath = path.join(__dirname, '..', 'CHANGELOG.md');
+const changelogPath = path.join(__dirname, '..', '..', 'CHANGELOG.md');
 
 // 分类映射
 const typeMap = {
