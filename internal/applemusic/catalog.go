@@ -9,18 +9,24 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"amdl/internal/config"
+	"amdl/internal/limits"
 )
 
 type CatalogClient struct {
 	cfg    config.CatalogConfig
 	http   *http.Client
 	logger *slog.Logger
-	mu     sync.Mutex
+	gate   *limits.RequestGate
+	// retryDelay is replaceable by same-package tests so 429 behavior can be
+	// verified without sleeping through the production fallback delay.
+	retryDelay func(http.Header) time.Duration
+	mu         sync.Mutex
 	// Refresh locks serialize cache misses without holding mu across network
 	// requests. The cache is checked again after acquiring each lock so a burst
 	// of callers shares one scrape/sign operation instead of stampeding Apple.
@@ -37,6 +43,46 @@ type CatalogClient struct {
 	webTokenUntil time.Time
 }
 
+type catalogRequestError struct {
+	statusCode int
+	status     string
+	body       string
+	retryAfter time.Duration
+}
+
+func (e catalogRequestError) Error() string {
+	return fmt.Sprintf("catalog request failed: %s: %s", e.status, e.body)
+}
+
+// NonRetryable lets download operations stop immediately on deterministic
+// client errors such as a missing artist. Rate limits and request timeouts are
+// transient and retain the normal retry path.
+func (e catalogRequestError) NonRetryable() bool {
+	return e.statusCode >= 400 && e.statusCode < 500 && e.statusCode != http.StatusRequestTimeout && e.statusCode != http.StatusTooManyRequests
+}
+
+// RetryDelay exposes Apple's Retry-After hint without coupling the generic
+// retry helper to the catalog package.
+func (e catalogRequestError) RetryDelay() time.Duration { return e.retryAfter }
+
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+		return 0
+	}
+	when, err := http.ParseTime(value)
+	if err != nil || !when.After(now) {
+		return 0
+	}
+	return when.Sub(now)
+}
+
 const (
 	maxCatalogResponseBytes int64 = 64 << 20
 	maxArtworkBytes         int64 = 64 << 20
@@ -46,10 +92,19 @@ const (
 
 func NewCatalogClient(cfg config.CatalogConfig, logger *slog.Logger) *CatalogClient {
 	return &CatalogClient{
-		cfg:    cfg,
-		http:   &http.Client{Timeout: 30 * time.Second},
-		logger: logger,
+		cfg:        cfg,
+		http:       &http.Client{Timeout: 30 * time.Second},
+		logger:     logger,
+		gate:       limits.NewRequestGate(cfg.MaxParallelRequests, cfg.RequestsPerSecond, cfg.RequestBurst),
+		retryDelay: defaultRetryDelay,
 	}
+}
+
+// RequestGate exposes the process-wide Apple small-request gate owned by this
+// singleton. Callers fetching Apple manifests must reuse it rather than create
+// a per-job limiter.
+func (c *CatalogClient) RequestGate() *limits.RequestGate {
+	return c.gate
 }
 
 // InitDeveloperToken loads the signing key and mints the first developer token
@@ -509,7 +564,7 @@ func (c *CatalogClient) fetchCoverOnce(ctx context.Context, artworkURL, format, 
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 	req.Header.Set("Referer", "https://music.apple.com/")
-	resp, err := c.http.Do(req)
+	resp, err := c.doAppleRequest(ctx, req, false)
 	if err != nil {
 		return nil, err
 	}
@@ -555,7 +610,12 @@ func (c *CatalogClient) getWithUserToken(ctx context.Context, endpoint string, p
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("catalog request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return catalogRequestError{
+			statusCode: resp.StatusCode,
+			status:     resp.Status,
+			body:       strings.TrimSpace(string(body)),
+			retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+		}
 	}
 	return decodeJSONLimited(resp.Body, maxCatalogResponseBytes, out)
 }
@@ -643,7 +703,7 @@ func (c *CatalogClient) doWithCatalogAuth(ctx context.Context, buildReq func(tok
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.doAppleRequest(ctx, req, true)
 	if err != nil {
 		return nil, err
 	}
@@ -661,13 +721,24 @@ func (c *CatalogClient) doWithCatalogAuth(ctx context.Context, buildReq func(tok
 	if err != nil {
 		return nil, err
 	}
-	return c.http.Do(req)
+	return c.doAppleRequest(ctx, req, true)
+}
+
+// doAppleRequest applies the singleton Apple request gate. A 429 penalizes
+// every caller through the shared cooldown and is retried once; a second 429
+// is returned to the existing status handling at the call site.
+func (c *CatalogClient) doAppleRequest(ctx context.Context, req *http.Request, rateLimited bool) (*http.Response, error) {
+	return c.gate.DoWith429Retry(ctx, c.http, req, rateLimited, c.retryDelay)
+}
+
+func defaultRetryDelay(header http.Header) time.Duration {
+	return limits.DefaultRetryDelay(header)
 }
 
 func (c *CatalogClient) fetchToken(ctx context.Context) (string, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://music.apple.com", nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
-	resp, err := c.http.Do(req)
+	resp, err := c.doAppleRequest(ctx, req, false)
 	if err != nil {
 		return "", err
 	}
@@ -685,7 +756,7 @@ func (c *CatalogClient) fetchToken(ctx context.Context) (string, error) {
 	}
 	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, "https://music.apple.com"+jsPath, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
-	jsResp, err := c.http.Do(req)
+	jsResp, err := c.doAppleRequest(ctx, req, false)
 	if err != nil {
 		return "", err
 	}
@@ -760,7 +831,7 @@ func (c *CatalogClient) doWithWebAuth(ctx context.Context, buildReq func(token s
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.doAppleRequest(ctx, req, true)
 	if err != nil {
 		return nil, err
 	}
@@ -778,7 +849,7 @@ func (c *CatalogClient) doWithWebAuth(ctx context.Context, buildReq func(token s
 	if err != nil {
 		return nil, err
 	}
-	return c.http.Do(req)
+	return c.doAppleRequest(ctx, req, true)
 }
 
 // EnhancedHLSViaWebToken fetches a song's Enhanced HLS master playlist URL

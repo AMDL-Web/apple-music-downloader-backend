@@ -15,6 +15,8 @@ require github.com/coder/websocket v1.8.15
 
 require gopkg.in/natefinch/lumberjack.v2 v2.2.1
 
+require golang.org/x/time v0.14.0
+
 require (
 	github.com/AMDL-Web/wrapper-manager/proto v0.1.0
 	github.com/Eyevinn/mp4ff v0.48.0

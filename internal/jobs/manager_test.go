@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -20,6 +21,7 @@ import (
 	"amdl/internal/domain"
 	"amdl/internal/events"
 	"amdl/internal/hooks"
+	"amdl/internal/limits"
 )
 
 type recoveryProcessor struct{}
@@ -30,6 +32,87 @@ func (recoveryProcessor) ValidateRequest(context.Context, string) (ValidationRes
 
 func (recoveryProcessor) ProcessJob(context.Context, domain.Job, Reporter) error {
 	return nil
+}
+
+type artifactCleanerProcessor struct {
+	recoveryProcessor
+	mu      sync.Mutex
+	cleaned []string
+}
+
+func (p *artifactCleanerProcessor) CleanupJobArtifacts(job domain.Job) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cleaned = append(p.cleaned, job.ID)
+}
+
+func (p *artifactCleanerProcessor) cleanedJobs() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.cleaned...)
+}
+
+func TestManagerCleansArtifactsForQueuedCancelAndTerminalDelete(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	queued := domain.Job{ID: "job-queued-clean", Input: "queued", Type: "song", Storefront: "cn", Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now}
+	failed := domain.Job{ID: "job-failed-clean", Input: "failed", Type: "song", Storefront: "cn", Status: domain.JobFailed, CreatedAt: now, UpdatedAt: now}
+	for _, job := range []domain.Job{queued, failed} {
+		if err := store.CreateJob(context.Background(), job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	processor := &artifactCleanerProcessor{}
+	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
+	if err := manager.Cancel(context.Background(), queued.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Delete(context.Background(), failed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := processor.cleanedJobs(); len(got) != 2 || got[0] != queued.ID || got[1] != failed.ID {
+		t.Fatalf("cleaned jobs = %v, want queued cancel then failed delete", got)
+	}
+}
+
+func TestManagerDeleteSurvivesCorruptOverridesRow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "amdl.db")
+	store, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	failed := domain.Job{ID: "job-corrupt-overrides", Input: "failed", Type: "song", Storefront: "cn", Status: domain.JobFailed, CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateJob(context.Background(), failed); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE jobs SET overrides='{broken' WHERE id=?`, failed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	processor := &artifactCleanerProcessor{}
+	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
+	if err := manager.Delete(context.Background(), failed.ID); err != nil {
+		t.Fatalf("Delete with corrupt overrides = %v, want success", err)
+	}
+	if _, err := store.GetJob(context.Background(), failed.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("job still present after delete: %v", err)
+	}
+	if got := processor.cleanedJobs(); len(got) != 0 {
+		t.Fatalf("cleanup ran without decodable metadata: %v", got)
+	}
 }
 
 type tokenRecoveryProcessor struct {
@@ -1491,5 +1574,54 @@ func TestRetryRefusesWhilePreviousRunIsFinalizing(t *testing.T) {
 	}
 	if len(manager.queue) != 1 || <-manager.queue != job.ID {
 		t.Fatal("retry after finalize did not enqueue the job")
+	}
+}
+
+// priorityCaptureProcessor reports the limits priority the manager stamped on
+// each job's processing context.
+type priorityCaptureProcessor struct {
+	keyedProcessor
+	priorities chan int64
+}
+
+func (p *priorityCaptureProcessor) ProcessJob(ctx context.Context, _ domain.Job, _ Reporter) error {
+	priority, ok := limits.PriorityFromContext(ctx)
+	if !ok {
+		priority = -1
+	}
+	p.priorities <- priority
+	return nil
+}
+
+func TestRunStampsPoolPriorityFromJobCreationTime(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	processor := &priorityCaptureProcessor{priorities: make(chan int64, 1)}
+	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
+	manager.Start(context.Background())
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = manager.Shutdown(shutdownCtx)
+	}()
+
+	resp := manager.SubmitBatch(context.Background(), []string{"song|cn|priority"}, false, nil)
+	if resp.Accepted != 1 {
+		t.Fatalf("submit = %+v", resp)
+	}
+	job, err := store.GetJob(context.Background(), resp.Results[0].Job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-processor.priorities:
+		if want := job.CreatedAt.UnixNano(); got != want {
+			t.Fatalf("pool priority = %d, want job CreatedAt %d", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("job was not processed")
 	}
 }

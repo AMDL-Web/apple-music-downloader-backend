@@ -39,6 +39,34 @@ func TestDefaultLyricsOptions(t *testing.T) {
 	}
 }
 
+func TestMemoryModeDefaultLoadAndValidate(t *testing.T) {
+	if got := Default().Download.MemoryMode; got != MemoryModeLow {
+		t.Fatalf("default memory mode = %q, want %q", got, MemoryModeLow)
+	}
+
+	// Configs written before memory_mode existed inherit the low-memory
+	// default, preserving the current production behavior.
+	cfg, err := Load(writeConfig(t, "download:\n  cover_format: jpg\n"))
+	if err != nil {
+		t.Fatalf("Load() legacy config: %v", err)
+	}
+	if cfg.Download.MemoryMode != MemoryModeLow {
+		t.Fatalf("legacy config memory mode = %q, want %q", cfg.Download.MemoryMode, MemoryModeLow)
+	}
+
+	cfg, err = Load(writeConfig(t, "download:\n  memory_mode: high\n"))
+	if err != nil {
+		t.Fatalf("Load() high memory mode: %v", err)
+	}
+	if cfg.Download.MemoryMode != MemoryModeHigh {
+		t.Fatalf("loaded memory mode = %q, want %q", cfg.Download.MemoryMode, MemoryModeHigh)
+	}
+
+	if _, err := Load(writeConfig(t, "download:\n  memory_mode: auto\n")); err == nil || !strings.Contains(err.Error(), "memory_mode") {
+		t.Fatalf("Load() invalid memory mode error = %v, want memory_mode validation error", err)
+	}
+}
+
 func TestDefaultLogging(t *testing.T) {
 	logging := Default().Logging
 	if logging.Level != "info" || logging.Format != "text" || !logging.Console || logging.AccessLog {
@@ -46,6 +74,16 @@ func TestDefaultLogging(t *testing.T) {
 	}
 	if logging.FileEnabled || logging.BufferSize != 2000 {
 		t.Fatalf("default logging outputs = %+v", logging)
+	}
+}
+
+func TestDefaultGlobalConcurrencyControls(t *testing.T) {
+	cfg := Default()
+	if cfg.Catalog.MaxParallelRequests != 16 || cfg.Catalog.RequestsPerSecond != 10 || cfg.Catalog.RequestBurst != 16 {
+		t.Fatalf("default catalog controls = %+v", cfg.Catalog)
+	}
+	if cfg.Download.MaxParallelDownloads != 16 || cfg.Download.MaxParallelDecrypts != 32 || cfg.Download.MaxParallelWrapperRequests != 24 {
+		t.Fatalf("default media pools = %+v", cfg.Download)
 	}
 }
 
@@ -74,7 +112,11 @@ func TestValidateBoundsResourceAmplifyingDownloadSettings(t *testing.T) {
 		max   int
 	}{
 		{name: "running jobs", apply: func(c *Config, value int) { c.Download.MaxRunningJobs = value }, key: "max_running_jobs", max: maxRunningJobsLimit},
-		{name: "parallel tracks", apply: func(c *Config, value int) { c.Download.MaxParallelTracks = value }, key: "max_parallel_tracks", max: maxParallelTracksLimit},
+		{name: "parallel downloads", apply: func(c *Config, value int) { c.Download.MaxParallelDownloads = value }, key: "max_parallel_downloads", max: maxGlobalPoolLimit},
+		{name: "parallel decrypts", apply: func(c *Config, value int) { c.Download.MaxParallelDecrypts = value }, key: "max_parallel_decrypts", max: maxGlobalPoolLimit},
+		{name: "catalog parallel requests", apply: func(c *Config, value int) { c.Catalog.MaxParallelRequests = value }, key: "max_parallel_requests", max: maxGlobalPoolLimit},
+		{name: "catalog requests per second", apply: func(c *Config, value int) { c.Catalog.RequestsPerSecond = value }, key: "requests_per_second", max: maxGlobalPoolLimit},
+		{name: "catalog request burst", apply: func(c *Config, value int) { c.Catalog.RequestBurst = value }, key: "request_burst", max: maxGlobalPoolLimit},
 		{name: "attempts", apply: func(c *Config, value int) { c.Download.MaxAttempts = value }, key: "max_attempts", max: maxAttemptsLimit},
 	}
 	for _, tt := range tests {
@@ -136,6 +178,28 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsRemovedConcurrencyKeys(t *testing.T) {
+	for _, key := range []string{"max_parallel_tracks", "max_parallel_metadata_requests", "max_parallel_media_downloads"} {
+		t.Run(key, func(t *testing.T) {
+			path := writeConfig(t, "download:\n  "+key+": 5\n")
+			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "field "+key+" not found") {
+				t.Fatalf("Load() error = %v, want removed-field error for %s", err, key)
+			}
+		})
+	}
+}
+
+func TestLoadClampsWrapperRequestLimit(t *testing.T) {
+	path := writeConfig(t, "download:\n  max_parallel_wrapper_requests: 999\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() oversized wrapper limit: %v", err)
+	}
+	if cfg.Download.MaxParallelWrapperRequests != maxGlobalPoolLimit {
+		t.Fatalf("max_parallel_wrapper_requests = %d, want clamped %d", cfg.Download.MaxParallelWrapperRequests, maxGlobalPoolLimit)
+	}
+}
+
 func TestLoadRejectsExplicitEmptyValues(t *testing.T) {
 	path := writeConfig(t, "catalog:\n  album_track_url_mode: \"\"\n")
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "album_track_url_mode") {
@@ -176,8 +240,8 @@ func TestLoadMigratesLegacyMediaUserTokenPriority(t *testing.T) {
 	if cfg.Catalog.LegacyMediaUserTokenPriority != "" {
 		t.Fatalf("legacy priority survived normalization: %q", cfg.Catalog.LegacyMediaUserTokenPriority)
 	}
-	if err := Save(path, cfg); err != nil {
-		t.Fatalf("Save() normalized config: %v", err)
+	if err := SaveRuntime(path, cfg); err != nil {
+		t.Fatalf("SaveRuntime() normalized config: %v", err)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -301,17 +365,18 @@ func TestLoadRejectsEmptyPathFormat(t *testing.T) {
 	}
 }
 
-// TestLoadClampsDownloadLimitsFromFile covers config files written before the
-// hard limits existed: the live config.yaml is machine-managed and may hold
-// larger values, so Load must clamp them instead of refusing to boot.
-func TestLoadClampsDownloadLimitsFromFile(t *testing.T) {
-	path := writeConfig(t, "download:\n  max_running_jobs: 100\n  max_parallel_tracks: 200\n  max_attempts: 50\n")
+// TestLoadClampsResourceLimitsFromFile covers machine-managed config files
+// that may hold values above limits introduced by a newer backend.
+func TestLoadClampsResourceLimitsFromFile(t *testing.T) {
+	path := writeConfig(t, "catalog:\n  max_parallel_requests: 200\n  requests_per_second: 200\n  request_burst: 200\ndownload:\n  max_running_jobs: 100\n  max_parallel_downloads: 200\n  max_parallel_decrypts: 200\n  max_attempts: 50\n")
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load() with over-limit values failed: %v", err)
 	}
-	if cfg.Download.MaxRunningJobs != maxRunningJobsLimit || cfg.Download.MaxParallelTracks != maxParallelTracksLimit || cfg.Download.MaxAttempts != maxAttemptsLimit {
-		t.Fatalf("Load() did not clamp over-limit values: jobs=%d tracks=%d attempts=%d",
-			cfg.Download.MaxRunningJobs, cfg.Download.MaxParallelTracks, cfg.Download.MaxAttempts)
+	if cfg.Catalog.MaxParallelRequests != maxGlobalPoolLimit || cfg.Catalog.RequestsPerSecond != maxGlobalPoolLimit || cfg.Catalog.RequestBurst != maxGlobalPoolLimit {
+		t.Fatalf("Load() did not clamp catalog values: %+v", cfg.Catalog)
+	}
+	if cfg.Download.MaxRunningJobs != maxRunningJobsLimit || cfg.Download.MaxParallelDownloads != maxGlobalPoolLimit || cfg.Download.MaxParallelDecrypts != maxGlobalPoolLimit || cfg.Download.MaxAttempts != maxAttemptsLimit {
+		t.Fatalf("Load() did not clamp download values: %+v", cfg.Download)
 	}
 }

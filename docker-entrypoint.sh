@@ -1,8 +1,10 @@
 #!/bin/sh
 # 容器入口:把镜像内置的示例配置播种到配置卷,然后以目标用户启动后端。
 # 只在目标文件不存在时写入,已有配置(含 PUT /api/v1/config 重写的
-# config.yaml)永远不会被覆盖。config.yaml 本身由后端首次启动时从同目录
-# 的 config.example.yaml 引导生成,入口脚本不再改写它。
+# runtime.yaml)永远不会被覆盖。config.yaml(启动配置)与 runtime.yaml
+# (运行时配置)由后端首次启动时从同目录的 config.example.yaml /
+# runtime.example.yaml 引导生成,旧版单文件 config.yaml 也由后端自动
+# 拆分迁移,入口脚本不改写它们。
 #
 # 运行用户:镜像默认以 root 启动本脚本,播种并修正卷属主后通过 su-exec
 # 降权到 PUID:PGID(默认 1000:1000)运行后端。用 docker run --user(或
@@ -27,11 +29,14 @@ export AMDL_WRAPPER_ADDRESS="${AMDL_WRAPPER_ADDRESS:-host.docker.internal:8080}"
 
 mkdir -p "$CONFIG_DIR"
 
-# 后端首次启动的 bootstrap 逻辑要求 config.example.yaml 与 config.yaml
-# 同目录,所以示例文件也要进配置卷(同时充当字段文档)。
-if [ ! -f "$CONFIG_DIR/config.example.yaml" ]; then
-    cp "$DIST_DIR/config.example.yaml" "$CONFIG_DIR/config.example.yaml"
-fi
+# 后端首次启动的 bootstrap 逻辑要求 config.example.yaml 与
+# runtime.example.yaml 和 config.yaml 同目录,所以示例文件也要进配置卷
+# (同时充当字段文档)。
+for example in config.example.yaml runtime.example.yaml; do
+    if [ ! -f "$CONFIG_DIR/$example" ]; then
+        cp "$DIST_DIR/$example" "$CONFIG_DIR/$example"
+    fi
+done
 
 # hooks.yaml 缺失时后端只是禁用 hooks,播种一份注释完整的模板方便编辑。
 if [ ! -f "$HOOKS_PATH" ]; then

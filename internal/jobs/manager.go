@@ -17,6 +17,7 @@ import (
 	"amdl/internal/domain"
 	"amdl/internal/events"
 	"amdl/internal/hooks"
+	"amdl/internal/limits"
 	"amdl/internal/logging"
 	"amdl/internal/storage"
 )
@@ -24,6 +25,14 @@ import (
 type Processor interface {
 	ValidateRequest(ctx context.Context, url string) (ValidationResult, error)
 	ProcessJob(ctx context.Context, job domain.Job, reporter Reporter) error
+}
+
+// ArtifactCleaner is an optional processor capability for durable scratch that
+// outlives a ProcessJob call. Manager invokes it only when a job can no longer
+// be retried: queued cancellation or terminal deletion. Active cancellation is
+// cleaned by ProcessJob after its context has stopped, avoiding a writer race.
+type ArtifactCleaner interface {
+	CleanupJobArtifacts(job domain.Job)
 }
 
 type ValidationResult struct {
@@ -471,6 +480,9 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 	job, err := m.store.GetJob(ctx, jobID)
 	if err != nil {
 		m.mu.Unlock()
+		if errors.Is(err, sql.ErrNoRows) {
+			return db.ErrJobNotFound
+		}
 		return err
 	}
 	if job.Status.IsTerminal() {
@@ -496,6 +508,9 @@ func (m *Manager) Cancel(ctx context.Context, jobID string) error {
 	if persistErr != nil {
 		return persistErr
 	}
+	if cleaner, ok := m.processor.(ArtifactCleaner); ok {
+		cleaner.CleanupJobArtifacts(job)
+	}
 	m.dispatchHooks(ctx, job)
 	m.mu.Lock()
 	delete(m.finalizing, jobID)
@@ -516,10 +531,24 @@ func (m *Manager) Delete(ctx context.Context, jobID string) error {
 		m.mu.Unlock()
 		return db.ErrJobNotTerminal
 	}
+	// The full row is only needed to locate leftover artifacts. A terminal row
+	// whose persisted overrides no longer decode must stay deletable — its
+	// cleanup metadata is unavailable either way — so a scan failure degrades
+	// to deleting without artifact cleanup instead of wedging the job forever.
+	job, jobErr := m.store.GetJob(ctx, jobID)
+	if jobErr != nil && errors.Is(jobErr, sql.ErrNoRows) {
+		m.mu.Unlock()
+		return db.ErrJobNotFound
+	}
 	deleted, err := m.store.DeleteJob(ctx, jobID)
 	m.mu.Unlock()
 	if err != nil {
 		return err
+	}
+	if jobErr != nil {
+		logging.FromContext(ctx, m.logger).Warn("job deleted without artifact cleanup", "job_id", jobID, "error", jobErr)
+	} else if cleaner, ok := m.processor.(ArtifactCleaner); ok {
+		cleaner.CleanupJobArtifacts(job)
 	}
 	// Broadcast the persisted tombstone so live overview subscribers can drop the
 	// job immediately; missed broadcasts are replayed from job_events by cursor.
@@ -610,6 +639,11 @@ func (m *Manager) run(parent context.Context, jobID string) {
 	started := time.Now()
 	jobLogger := m.logger.With("job_id", job.ID, "job_type", job.Type, "storefront", job.Storefront)
 	ctx = logging.NewContext(ctx, jobLogger)
+	// Rank every pool acquire this job makes by its submission time, so when
+	// the process-wide pools are contended the oldest unfinished job drains
+	// first instead of interleaving with later ones. Recovered jobs keep their
+	// original CreatedAt and therefore their place in line across restarts.
+	ctx = limits.WithPriority(ctx, job.CreatedAt.UnixNano())
 	jobLogger.Info("job started")
 
 	defer func() {

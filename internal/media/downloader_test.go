@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,21 +20,17 @@ import (
 	"amdl/internal/wrapper"
 )
 
-func TestRunParallelTrackTasksWaitsForStartedTaskOnCancellation(t *testing.T) {
+func TestRunTrackTasksJoinsStartedTasksAndHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	started := make(chan struct{})
+	started := make(chan struct{}, 2)
 	release := make(chan struct{})
 	var calls atomic.Int32
 	done := make(chan error, 1)
 
 	go func() {
-		done <- runParallelTrackTasks(ctx, 2, 1, []bool{false, false}, func(int) error {
+		done <- runTrackTasks(ctx, 3, []bool{false, true, false}, func(int) error {
 			calls.Add(1)
-			select {
-			case <-started:
-			default:
-				close(started)
-			}
+			started <- struct{}{}
 			// Deliberately ignore ctx to prove the scheduler joins work that it
 			// has already launched instead of returning early on cancellation.
 			<-release
@@ -46,26 +43,40 @@ func TestRunParallelTrackTasksWaitsForStartedTaskOnCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("first track task did not start")
 	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("second unfinished track task did not start")
+	}
 	cancel()
 	select {
 	case err := <-done:
 		t.Fatalf("scheduler returned before started task exited: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("started tasks after cancellation = %d, want 1", got)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("started tasks after cancellation = %d, want 2 unfinished tracks", got)
 	}
 	close(release)
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("scheduler error = %v, want context.Canceled", err)
+		if err != nil {
+			t.Fatalf("scheduler error = %v, want nil after all tasks were launched", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("scheduler did not return after started task exited")
 	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("total started tasks = %d, want 1", got)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("total started tasks = %d, want 2", got)
+	}
+
+	preCanceled, preCancel := context.WithCancel(context.Background())
+	preCancel()
+	if err := runTrackTasks(preCanceled, 1, []bool{false}, func(int) error {
+		t.Fatal("task started after cancellation")
+		return nil
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-cancelled scheduler error = %v, want context.Canceled", err)
 	}
 }
 
@@ -173,6 +184,7 @@ func (f fakeDownloaderCatalog) EnhancedHLSViaWebToken(context.Context, string, s
 }
 
 type recordingReporter struct {
+	mu       sync.Mutex
 	events   []domain.Event
 	items    []domain.JobItem
 	existing []domain.JobItem
@@ -251,21 +263,31 @@ func (c *metadataCountingCatalog) counts() (map[string]int, map[string]int, map[
 
 func (*recordingReporter) SetJob(context.Context, domain.Job) error { return nil }
 func (r *recordingReporter) AddItem(_ context.Context, item domain.JobItem) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.added = append(r.added, item)
 	return nil
 }
 func (r *recordingReporter) RemoveItem(_ context.Context, itemID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.removed = append(r.removed, itemID)
 	return nil
 }
 func (r *recordingReporter) ListItems(context.Context, string) ([]domain.JobItem, error) {
-	return r.existing, nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]domain.JobItem(nil), r.existing...), nil
 }
 func (r *recordingReporter) UpdateItem(_ context.Context, item domain.JobItem) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.items = append(r.items, item)
 	return nil
 }
 func (r *recordingReporter) Event(_ context.Context, ev domain.Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.events = append(r.events, ev)
 	return nil
 }
@@ -284,7 +306,7 @@ func TestValidateRequestAcceptsArtistURL(t *testing.T) {
 	}
 }
 
-func TestResolveCollectionArtistFlattensAlbumTracksAndDedupesSongs(t *testing.T) {
+func TestResolveCollectionArtistKeepsSharedSongInEveryAlbum(t *testing.T) {
 	downloader := &Downloader{
 		cfg: config.Default(),
 		catalog: fakeDownloaderCatalog{artistAlbums: applemusic.ArtistAlbums{
@@ -308,8 +330,11 @@ func TestResolveCollectionArtistFlattensAlbumTracksAndDedupesSongs(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := trackIDsForTest(resolved.Tracks), []string{"song-1", "song-2", "song-3"}; !equalStrings(got, want) {
+	if got, want := trackIDsForTest(resolved.Tracks), []string{"song-1", "song-2", "song-2", "song-3"}; !equalStrings(got, want) {
 		t.Fatalf("tracks = %#v, want %#v", got, want)
+	}
+	if resolved.Tracks[1].AlbumName != "First" || resolved.Tracks[2].AlbumName != "Second" {
+		t.Fatalf("shared song album contexts = %q/%q, want First/Second", resolved.Tracks[1].AlbumName, resolved.Tracks[2].AlbumName)
 	}
 	if resolved.Name != "Artist" {
 		t.Fatalf("collection name = %q, want Artist", resolved.Name)
@@ -494,6 +519,35 @@ func TestTrackMetadataResolverMergesResolvedAlbumWithoutRefetch(t *testing.T) {
 	}
 }
 
+func TestTrackMetadataResolverPreservesArtistAlbumPlacement(t *testing.T) {
+	catalog := &metadataCountingCatalog{
+		metadataSongs: map[string]applemusic.Song{
+			"song-1": {
+				ID: "song-1", Name: "Fresh Song", AlbumID: "default-album", AlbumName: "Default Album",
+				ArtworkURL: "default-art", TrackNumber: 1, DiscNumber: 1,
+			},
+		},
+		metadataCalls: make(map[string]int),
+		albumCalls:    make(map[string]int),
+	}
+	downloader := &Downloader{cfg: config.Default(), catalog: catalog}
+	initial := applemusic.Song{
+		ID: "song-1", Name: "Song", AlbumID: "second-album", AlbumName: "Second Album",
+		ArtworkURL: "second-art", TrackNumber: 7, DiscNumber: 2,
+	}
+
+	got, err := newTrackMetadataResolver(downloader, "cn").song(context.Background(), initial, applemusic.TypeArtist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "Fresh Song" {
+		t.Fatalf("song name = %q, want refreshed name Fresh Song", got.Name)
+	}
+	if got.AlbumID != "second-album" || got.AlbumName != "Second Album" || got.ArtworkURL != "second-art" || got.TrackNumber != 7 || got.DiscNumber != 2 {
+		t.Fatalf("artist album placement was not preserved: %+v", got)
+	}
+}
+
 func TestTrackMetadataResolverCoalescesPlaylistAlbumReads(t *testing.T) {
 	albumWait := make(chan struct{})
 	albumStarted := make(chan struct{}, 1)
@@ -604,7 +658,8 @@ func TestProcessJobAvoidsDuplicateSingleSongMetadataReads(t *testing.T) {
 	cfg.Simulate = config.SimulateConfig{Enabled: true, MinSpeedKBps: 1_000_000, MaxSpeedKBps: 1_000_000}
 	cfg.Download.DownloadsDir = t.TempDir()
 	cfg.Download.MaxAttempts = 1
-	cfg.Download.MaxParallelTracks = 1
+	cfg.Download.MaxParallelDownloads = 1
+	cfg.Download.MaxParallelDecrypts = 1
 	cfg.Download.EmbedCover = false
 	cfg.Download.EmbedLyrics = false
 	cfg.Download.QualityPriority = []string{"alac"}
@@ -648,7 +703,8 @@ func TestProcessJobDoesNotRefetchResolvedAlbumPerTrack(t *testing.T) {
 	cfg.Simulate = config.SimulateConfig{Enabled: true, MinSpeedKBps: 1_000_000, MaxSpeedKBps: 1_000_000}
 	cfg.Download.DownloadsDir = t.TempDir()
 	cfg.Download.MaxAttempts = 1
-	cfg.Download.MaxParallelTracks = 1
+	cfg.Download.MaxParallelDownloads = 1
+	cfg.Download.MaxParallelDecrypts = 1
 	cfg.Download.EmbedCover = false
 	cfg.Download.EmbedLyrics = false
 	cfg.Download.QualityPriority = []string{"alac"}
@@ -837,6 +893,9 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 	if selected.rawPath != "" {
 		t.Fatalf("selected.rawPath = %q, want empty before download step", selected.rawPath)
 	}
+	if len(selected.raw) != 0 {
+		t.Fatalf("selected.raw has %d bytes before download step, want 0", len(selected.raw))
+	}
 	if got, want := qualityLabel(selected.info), "24-bit/96 kHz"; got != want {
 		t.Fatalf("qualityLabel = %q, want %q", got, want)
 	}
@@ -851,7 +910,7 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 		t.Fatalf("persisted item quality = %+v, want bit_depth=24 sample_rate=96000 bitrate=2500000", last)
 	}
 
-	selected, err = downloader.downloadSelectedEnhancedMedia(context.Background(), selected, "alac", func(domain.ItemStatus, float64, string) {})
+	selected, err = downloader.downloadSelectedEnhancedMedia(context.Background(), selected, "alac", "job-1", filepath.Join(cfg.Download.DownloadsDir, "song.m4a"), func(domain.ItemStatus, float64, string) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -867,6 +926,48 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 	}
 	if string(gotRaw) != "encrypted media bytes" {
 		t.Fatalf("downloaded media = %q, want encrypted media bytes", string(gotRaw))
+	}
+	if len(selected.raw) != 0 {
+		t.Fatalf("low-memory download retained %d bytes in memory, want 0", len(selected.raw))
+	}
+}
+
+func TestDownloadSelectedEnhancedMediaHighKeepsOnlyMemoryCopy(t *testing.T) {
+	const payload = "encrypted media bytes"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer server.Close()
+
+	tempDir := t.TempDir()
+	cfg := config.Default()
+	cfg.Download.MemoryMode = config.MemoryModeHigh
+	cfg.Download.TempDir = tempDir
+	downloader := &Downloader{cfg: cfg, http: server.Client()}
+	selected, err := downloader.downloadSelectedEnhancedMedia(
+		context.Background(),
+		selectedDownloadMedia{info: selectedMediaInfo{MediaURI: server.URL}},
+		"alac",
+		"job-high",
+		filepath.Join(cfg.Download.DownloadsDir, "song.m4a"),
+		func(domain.ItemStatus, float64, string) {},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(selected.raw); got != payload {
+		t.Fatalf("selected.raw = %q, want %q", got, payload)
+	}
+	if selected.rawPath != "" {
+		t.Fatalf("selected.rawPath = %q, want no scratch file in high-memory mode", selected.rawPath)
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("high-memory download created temp entries: %v", entries)
 	}
 }
 

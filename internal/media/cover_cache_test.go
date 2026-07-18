@@ -220,3 +220,98 @@ func TestStandaloneAndEmbeddedCoversShareJobCache(t *testing.T) {
 		t.Fatalf("cover requests = %d, want 1 shared request", got)
 	}
 }
+
+func TestStandaloneCoverFailureIsHandledOncePerJob(t *testing.T) {
+	cfg := config.Default()
+	cfg.Download.MaxAttempts = 1
+	downloader := &Downloader{cfg: cfg, standaloneCoverState: newStandaloneCoverState()}
+	path := filepath.Join(t.TempDir(), "artist", "artist.jpg")
+	wantErr := errors.New("artist not found")
+	var calls int
+	resolve := func(context.Context) (string, error) {
+		calls++
+		return "", wantErr
+	}
+
+	if err := downloader.ensureStandaloneCover(context.Background(), path, resolve); !errors.Is(err, wantErr) {
+		t.Fatalf("first ensure error=%v, want %v", err, wantErr)
+	}
+	if err := downloader.ensureStandaloneCover(context.Background(), path, resolve); err != nil {
+		t.Fatalf("second ensure error=%v, want suppressed duplicate", err)
+	}
+	if calls != 1 {
+		t.Fatalf("resolver calls=%d, want 1", calls)
+	}
+}
+
+func TestStandaloneCoversForDifferentPathsProceedConcurrently(t *testing.T) {
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+
+	catalog := &countingCoverCatalog{
+		calls: make(map[coverCacheKey]int),
+		fetch: func(ctx context.Context, url, _, _ string) ([]byte, error) {
+			started <- url
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-release:
+				return []byte(url), nil
+			}
+		},
+	}
+	cfg := config.Default()
+	cfg.Download.MaxAttempts = 1
+	downloader := &Downloader{
+		cfg: cfg, catalog: catalog, standaloneCoverState: newStandaloneCoverState(),
+	}
+	dir := t.TempDir()
+	type request struct {
+		path string
+		url  string
+	}
+	requests := []request{
+		{path: filepath.Join(dir, "album-a", "cover.jpg"), url: "art-a"},
+		{path: filepath.Join(dir, "album-b", "cover.jpg"), url: "art-b"},
+	}
+	errs := make(chan error, len(requests))
+	for _, req := range requests {
+		req := req
+		go func() {
+			errs <- downloader.ensureStandaloneCover(context.Background(), req.path, func(context.Context) (string, error) {
+				return req.url, nil
+			})
+		}()
+	}
+
+	seen := make(map[string]bool)
+	for range requests {
+		select {
+		case url := <-started:
+			seen[url] = true
+		case <-time.After(time.Second):
+			t.Fatal("standalone covers for different paths were serialized")
+		}
+	}
+	unblock()
+	for range requests {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, req := range requests {
+		if !seen[req.url] {
+			t.Fatalf("cover fetch %q did not start", req.url)
+		}
+		data, err := os.ReadFile(req.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != req.url {
+			t.Fatalf("cover %q = %q", req.path, data)
+		}
+	}
+}

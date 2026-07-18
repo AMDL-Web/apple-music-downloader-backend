@@ -12,10 +12,13 @@ import (
 // retries and post-restart requeues without leaking into other jobs.
 //
 // Every field is optional: nil means "keep the runtime config's value". The
-// download-related JSON keys mirror configs/config.yaml exactly.
-// MediaUserToken similarly overlays catalog.media_user_token for a job that
-// needs Apple Music user identity. max_running_jobs is deliberately absent —
-// it sizes the worker pool at startup and cannot apply to a single job.
+// Download-related JSON keys mirror the job-scoped subset of
+// configs/config.yaml. MediaUserToken overlays catalog.media_user_token for a
+// job that
+// needs Apple Music user identity. max_running_jobs, max_parallel_downloads,
+// max_parallel_decrypts, and max_parallel_wrapper_requests are deliberately
+// absent — they size process-wide pools at startup and cannot apply to a
+// single job.
 // The two slice fields are *[]string rather than []string so an explicit
 // empty list survives the JSON round trip through the jobs table: nil (field
 // absent, keep config) marshals away under omitempty, while a pointer to an
@@ -25,7 +28,7 @@ type DownloadOverrides struct {
 	MediaUserToken     *string   `json:"media_user_token,omitempty"`
 	QualityPriority    *[]string `json:"quality_priority,omitempty"`
 	CodecAlternative   *bool     `json:"codec_alternative,omitempty"`
-	MaxParallelTracks  *int      `json:"max_parallel_tracks,omitempty"`
+	MemoryMode         *string   `json:"memory_mode,omitempty"`
 	MaxAttempts        *int      `json:"max_attempts,omitempty"`
 	DownloadsDir       *string   `json:"downloads_dir,omitempty"`
 	SongPathFormat     *string   `json:"song_path_format,omitempty"`
@@ -81,8 +84,8 @@ func (o *DownloadOverrides) Apply(base Config) Config {
 	if o.CodecAlternative != nil {
 		d.CodecAlternative = *o.CodecAlternative
 	}
-	if o.MaxParallelTracks != nil {
-		d.MaxParallelTracks = *o.MaxParallelTracks
+	if o.MemoryMode != nil {
+		d.MemoryMode = *o.MemoryMode
 	}
 	if o.MaxAttempts != nil {
 		d.MaxAttempts = *o.MaxAttempts

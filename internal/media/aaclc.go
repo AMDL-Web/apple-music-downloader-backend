@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 
+	"amdl/internal/limits"
+
 	widevine "github.com/iyear/gowidevine"
 	wvpb "github.com/iyear/gowidevine/widevinepb"
 	"google.golang.org/protobuf/proto"
@@ -20,8 +22,8 @@ type aacLCMedia struct {
 	KID      string
 }
 
-func extractAACLCMedia(ctx context.Context, client *http.Client, playlistURL string) (aacLCMedia, error) {
-	body, err := downloadText(ctx, client, playlistURL)
+func extractAACLCMedia(ctx context.Context, client *http.Client, playlistURL string, gates ...*limits.RequestGate) (aacLCMedia, error) {
+	body, err := downloadText(ctx, client, playlistURL, gates...)
 	if err != nil {
 		return aacLCMedia{}, err
 	}

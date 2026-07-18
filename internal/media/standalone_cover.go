@@ -11,7 +11,27 @@ import (
 	"amdl/internal/applemusic"
 )
 
-var standaloneCoverMu sync.Mutex
+type standaloneCoverState struct {
+	mu      sync.Mutex
+	handled map[string]struct{}
+}
+
+func newStandaloneCoverState() *standaloneCoverState {
+	return &standaloneCoverState{handled: make(map[string]struct{})}
+}
+
+func (s *standaloneCoverState) wasHandled(path string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.handled[path]
+	return ok
+}
+
+func (s *standaloneCoverState) markHandled(path string) {
+	s.mu.Lock()
+	s.handled[path] = struct{}{}
+	s.mu.Unlock()
+}
 
 func (d *Downloader) savePlaylistCover(ctx context.Context, artworkURL, playlistDir string) error {
 	if artworkURL == "" {
@@ -72,15 +92,32 @@ func (d *Downloader) saveStandaloneCovers(ctx context.Context, song applemusic.S
 }
 
 func (d *Downloader) ensureStandaloneCover(ctx context.Context, path string, resolveURL func(context.Context) (string, error)) error {
-	standaloneCoverMu.Lock()
-	defer standaloneCoverMu.Unlock()
+	// Reuse the process-wide keyed output locks: callers targeting the same
+	// canonical path remain serialized, while unrelated album and artist covers
+	// can resolve and download concurrently. Waiting is cancellation-aware.
+	unlock, err := processOutputLocks.acquireContext(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
+	if d.standaloneCoverState != nil {
+		if d.standaloneCoverState.wasHandled(path) {
+			return nil
+		}
+		// Every outcome below is final for this job. A failed lookup or fetch has
+		// already spent the configured retry budget; letting every remaining
+		// track repeat it only amplifies pressure on the same upstream resource.
+		defer d.standaloneCoverState.markHandled(path)
+	}
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	artworkURL, err := resolveURL(ctx)
+	artworkURL, _, err := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(int) (string, error) {
+		return resolveURL(ctx)
+	}, nil)
 	if err != nil {
 		return err
 	}

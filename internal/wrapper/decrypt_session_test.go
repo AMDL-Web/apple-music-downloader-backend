@@ -22,11 +22,16 @@ type fakeDecryptStream struct {
 }
 
 type blockingDecryptStream struct {
-	ctx         context.Context
-	sendReturns atomic.Int32
+	ctx             context.Context
+	sendActive      atomic.Int32
+	sendReturns     atomic.Int32
+	closeSends      atomic.Int32
+	closeDuringSend atomic.Int32
 }
 
 func (f *blockingDecryptStream) Send(*pb.DecryptRequest) error {
+	f.sendActive.Add(1)
+	defer f.sendActive.Add(-1)
 	<-f.ctx.Done()
 	f.sendReturns.Add(1)
 	return f.ctx.Err()
@@ -37,10 +42,16 @@ func (f *blockingDecryptStream) Recv() (*pb.DecryptReply, error) {
 }
 func (f *blockingDecryptStream) Header() (metadata.MD, error) { return nil, nil }
 func (f *blockingDecryptStream) Trailer() metadata.MD         { return nil }
-func (f *blockingDecryptStream) CloseSend() error             { return nil }
-func (f *blockingDecryptStream) Context() context.Context     { return f.ctx }
-func (f *blockingDecryptStream) SendMsg(any) error            { return nil }
-func (f *blockingDecryptStream) RecvMsg(any) error            { return nil }
+func (f *blockingDecryptStream) CloseSend() error {
+	f.closeSends.Add(1)
+	if f.sendActive.Load() != 0 {
+		f.closeDuringSend.Add(1)
+	}
+	return nil
+}
+func (f *blockingDecryptStream) Context() context.Context { return f.ctx }
+func (f *blockingDecryptStream) SendMsg(any) error        { return nil }
+func (f *blockingDecryptStream) RecvMsg(any) error        { return nil }
 
 type echoDecryptStream struct {
 	ctx      context.Context
@@ -138,6 +149,15 @@ func TestDecryptFragmentTimeoutCancelsAndDrainsStream(t *testing.T) {
 	}
 	if got := fake.sendReturns.Load(); got != 1 {
 		t.Fatalf("sender returns = %d, want 1 before DecryptFragment returns", got)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := fake.closeSends.Load(); got != 1 {
+		t.Fatalf("CloseSend called %d times, want 1", got)
+	}
+	if got := fake.closeDuringSend.Load(); got != 0 {
+		t.Fatalf("CloseSend overlapped %d active Send calls, want 0", got)
 	}
 }
 

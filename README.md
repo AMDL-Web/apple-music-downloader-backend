@@ -34,26 +34,37 @@ AMDL Backend 是 Apple Music 下载系统的核心后端服务。它负责解析
 go run ./cmd/amdl-api
 ```
 
-默认配置文件为：
+配置拆分为两个文件（可分别用 `AMDL_CONFIG`、`AMDL_RUNTIME_CONFIG` 指定路径）：
 
 ```text
-configs/config.yaml
+configs/config.yaml    # 启动配置：仅进程启动时读取，改动需重启生效
+configs/runtime.yaml   # 运行时配置：PUT /api/v1/config 可在线修改
 ```
 
-首次启动时该文件会自动以示例 `configs/config.example.yaml` 的值为模板
-生成（只取配置值，不带注释；字段文档都在示例文件里）。`config.yaml`
-本身由后端管理：`PUT /api/v1/config` 修改运行时配置时会整体重写它，
-因此它不纳入版本控制；手工编辑仍然可以，重启后生效，但会在下一次
-API 修改时被重写。
+首次启动时两个文件分别以 `configs/config.example.yaml` 和
+`configs/runtime.example.yaml` 为模板自动生成（字段文档都在示例文件里）。
+`config.yaml` 归使用者所有：后端不会重写它，注释和格式可长期保留。
+`runtime.yaml` 由后端管理：`PUT /api/v1/config` 修改运行时配置时会整体
+重写它（注释不保留），因此它不纳入版本控制；手工编辑仍然可以，下一次
+`GET /api/v1/config` 后即生效、无需重启，但会在下一次 API 修改时被重写。
+
+从旧版单文件 `config.yaml` 升级时，文件拆分本身无需手工操作：首次启动
+会自动把运行时字段拆到 `runtime.yaml`、把 `config.yaml` 重写为仅启动字
+段，并在旁边留一份 `config.yaml.pre-split.bak` 备份。但若旧配置里还有
+已删除的键（如 `download.max_parallel_tracks` 等按任务并发键），启动会
+以明确的未知字段错误拒绝加载，需要先手工删掉这些键再启动（见
+[下载行为](#重试与编码降级)一节的破坏性变更说明）。
 
 启动前请按实际环境修改 `configs/config.yaml`（或先改示例文件再首次启动），尤其是：
 
 - `server.listen`：API 监听地址。
 - `wrapper.address`：`wrapper-manager` gRPC 地址。
 - `database.path`：SQLite 数据库路径（默认 `data/db/amdl.db`）。
-- `logging.*`：日志级别、格式、内存保留和可选轮转文件（字段完整说明见示例配置）。
-- `download.downloads_dir`：下载文件保存目录。
+- `logging.*`：日志格式、内存保留和可选轮转文件（级别与访问日志开关在 `runtime.yaml`；字段完整说明见示例配置）。
 - `tools.*`：外部媒体工具命令路径或命令名。
+
+下载相关选项（如 `download.downloads_dir` 下载保存目录）在 `runtime.yaml`，
+可随时通过 `PUT /api/v1/config` 或编辑文件调整。
 
 ### 环境变量覆盖
 
@@ -62,14 +73,14 @@ API 修改时被重写。
 `AMDL_LOGGING_LEVEL`、
 `AMDL_DOWNLOAD_QUALITY_PRIORITY`。规则：
 
-- 环境变量优先于 `config.yaml`，每次启动（以及每次配置重载）都生效，加载
+- 环境变量优先于两个配置文件，每次启动（以及每次配置重载）都生效，加载
   时不会写回文件——取消设置后下次启动即恢复文件里的值（注意
-  `PUT /api/v1/config` 重写整份文件时，写入的是包含环境变量在内的当前
-  生效值）。
+  `PUT /api/v1/config` 重写 `runtime.yaml` 时，写入的是包含环境变量在内
+  的当前生效值）。
 - 值的写法：字符串原样填写；布尔用 `true`/`false`；整数直接写数字；
   字符串列表用逗号分隔（如 `alac,aac`），空值表示空列表。
 - 无法识别的 `AMDL_*` 变量会让启动失败，避免拼写错误被静默忽略
-  （`AMDL_CONFIG`、`AMDL_HOOKS_CONFIG` 除外）。
+  （`AMDL_CONFIG`、`AMDL_RUNTIME_CONFIG`、`AMDL_HOOKS_CONFIG` 除外）。
 - 被环境变量覆盖的字段无法再通过 `PUT /api/v1/config` 修改（返回 422），
   请改环境变量并重启。
 
@@ -109,12 +120,12 @@ docker run -d --name amdl-backend \
 
 首次启动时入口脚本会把镜像内置的示例配置播种到配置目录 `/app/configs`：
 
-- `config.example.yaml`：原样复制（后端的 bootstrap 逻辑要求它与 `config.yaml` 同目录，同时充当字段文档）。
+- `config.example.yaml`、`runtime.example.yaml`：原样复制（后端的 bootstrap 逻辑要求它们与 `config.yaml` 同目录，同时充当字段文档）。
 - `hooks.yaml`：复制注释完整的模板（默认禁用）。
 
-`config.yaml` 由后端自己在首次启动时从示例生成（只取配置值，不带注释，与 `PUT /api/v1/config` 重写后的机器管理格式一致）。两个容器内不可用的仓库默认值不再写进文件，而是由入口脚本通过环境变量覆盖机制在每次启动时改写：`server.listen` 覆盖为 `AMDL_SERVER_LISTEN`（默认 `:18080`，容器内必须监听非回环地址），`wrapper.address` 覆盖为 `AMDL_WRAPPER_ADDRESS`（默认 `host.docker.internal:8080`）。
+`config.yaml`（启动配置）与 `runtime.yaml`（运行时配置）由后端自己在首次启动时从各自示例生成；旧版单文件 `config.yaml` 会被自动拆分迁移并留下备份。两个容器内不可用的仓库默认值不再写进文件，而是由入口脚本通过环境变量覆盖机制在每次启动时改写：`server.listen` 覆盖为 `AMDL_SERVER_LISTEN`（默认 `:18080`，容器内必须监听非回环地址），`wrapper.address` 覆盖为 `AMDL_WRAPPER_ADDRESS`（默认 `host.docker.internal:8080`）。
 
-已存在的文件永远不会被覆盖，因此 `PUT /api/v1/config` 写回的配置在容器重建后保持不变。
+已存在的文件永远不会被覆盖，因此 `PUT /api/v1/config` 写回的运行时配置在容器重建后保持不变。
 
 ### 环境变量
 
@@ -129,10 +140,11 @@ docker run -d --name amdl-backend \
 | `TZ` | UTC | 容器时区（IANA 名称，如 `Asia/Shanghai`），影响日志时间戳与 exec hooks 命令看到的本地时间。镜像已内置 tzdata，Go 运行时自动识别。 |
 | `AMDL_SERVER_LISTEN` | `:18080`（入口脚本的容器默认值） | API 监听地址，每次启动覆盖 `server.listen`。健康检查端口也从它推导。 |
 | `AMDL_WRAPPER_ADDRESS` | `host.docker.internal:8080`（入口脚本的容器默认值） | `wrapper-manager` gRPC 地址，每次启动覆盖 `wrapper.address`。 |
-| `AMDL_CONFIG` | `/app/configs/config.yaml` | 主配置文件路径（后端原生支持）。 |
+| `AMDL_CONFIG` | `/app/configs/config.yaml` | 启动配置文件路径（后端原生支持）。 |
+| `AMDL_RUNTIME_CONFIG` | 与启动配置同目录的 `runtime.yaml` | 运行时配置文件路径（后端原生支持）。 |
 | `AMDL_HOOKS_CONFIG` | `/app/configs/hooks.yaml` | hooks 配置文件路径（后端原生支持）。 |
 
-修改配置的三种方式：运行期字段用 `PUT /api/v1/config`，立即生效；任意字段用环境变量覆盖后 `docker compose up -d`；或编辑挂载目录里的 `config.yaml` 后重启容器（启动期字段需重启，且监听地址与 wrapper 地址在容器内始终以环境变量为准）。
+修改配置的三种方式：运行期字段用 `PUT /api/v1/config`，立即生效；任意字段用环境变量覆盖后 `docker compose up -d`；或编辑挂载目录里的配置文件后重启容器——运行期字段改 `runtime.yaml`（下一次 `GET /api/v1/config` 即生效，无需重启），启动期字段改 `config.yaml` 并重启（监听地址与 wrapper 地址在容器内始终以环境变量为准）。
 
 > **破坏性变更**：旧变量名 `AMDL_LISTEN`、`AMDL_WRAPPER_ADDR` 已移除。仍设置它们会因「未知配置环境变量」导致启动失败，请改用 `AMDL_SERVER_LISTEN`、`AMDL_WRAPPER_ADDRESS`。
 
@@ -142,11 +154,11 @@ docker run -d --name amdl-backend \
 
 `docker-compose.yml` 默认把四个目录绑定挂载到宿主机：
 
-- `./configs` → `/app/configs`：配置目录（`config.yaml`、`config.example.yaml`、`hooks.yaml`）。
+- `./configs` → `/app/configs`：配置目录（`config.yaml`、`runtime.yaml`、两个示例文件、`hooks.yaml`）。
 - `./data/db` → `/app/data/db`：SQLite 数据库目录（`database.path` 默认 `data/db/amdl.db`）。
 - `./data/logs` → `/app/data/logs`：轮转日志目录；仅在 `logging.file_enabled: true` 时写入。
 - `./data/downloads` → `/app/data/downloads`：下载产物目录。想放到宿主机其它位置，改冒号左边的宿主机路径即可（例如 `/path/to/music:/app/data/downloads`）。
-- 临时目录 `data/tmp` 默认留在容器内，无需挂载。它承担下载/解密/转封装/校验/打标签这几步的落盘中转（见 `configs/config.example.yaml` 里 `download.temp_dir` 的注释），如果容器存储驱动较慢，可以把它单独挂载到宿主机的快速磁盘（如 SSD）上，与 `data/downloads` 分开。
+- 临时目录 `data/tmp` 默认留在容器内，无需挂载。它承担下载/解密/转封装/校验/打标签这几步的落盘中转（见 `configs/runtime.example.yaml` 里 `download.temp_dir` 的注释），如果容器存储驱动较慢，可以把它单独挂载到宿主机的快速磁盘（如 SSD）上，与 `data/downloads` 分开。
 - 启用开发者令牌签名时，把 `.p8` 私钥以只读方式挂载进容器（例如 `-v ./keys:/app/keys:ro`），并将 `catalog.apple_music_private_key_path` 指向容器内路径。密钥不会也不应打进镜像（`.dockerignore` 已排除 `keys/` 与 `*.p8`）。
 - 把 `PUID`/`PGID` 设成宿主机目录属主的 uid/gid 即可，入口脚本会自动修正容器内挂载目录的属主。
 
@@ -304,12 +316,50 @@ curl -X DELETE http://localhost:18080/api/v1/downloads/{job_id}
 
 ### 重试与编码降级
 
+- `download.max_parallel_downloads` 和 `download.max_parallel_decrypts` 分别限制单个 backend 进程内、跨全部任务共享的加密媒体下载与解密阶段，默认 `16` 和 `32`；已下载但尚未完成解密的媒体还受内部 in-flight 背压保护。`download.max_parallel_wrapper_requests`（默认 `24`）限制 wrapper-manager 的数据类 RPC（M3U8、歌词、web playback、license）的进程级并发，登录/登出不受限，解密流由 `max_parallel_decrypts` 约束。旧 `download.max_parallel_tracks` 等按任务键已删除，升级时必须手工迁移配置。
+- `catalog.max_parallel_requests`（默认 `16`）限制 Catalog API、web token、封面和 HLS 清单等 Apple 小请求的进程级并发；认证 Catalog/amp-api 请求另受 `catalog.requests_per_second`（默认 `10`）和 `catalog.request_burst`（默认 `16`）约束。Apple 返回 429 时会遵循 `Retry-After`、触发全局冷却并自动重试一次。这五个并发/速率值均在启动时固定，修改配置后需要重启；多个 backend 副本之间不共享槽位。
+- 多任务争抢池容量时按任务提交时间分配：最早提交且未完成的任务优先拿到许可，因此任务倾向于逐个完成而非交错推进；被恢复的任务保留原提交时间、重启后不丢排位。优先级只在池满时起作用——前面的任务喂不满池子时，空闲许可立即分给后续任务，不浪费吞吐。URL 校验、音质探测等交互式 API 请求不参与任务排队，始终优先放行。
 - `download.max_attempts`：元数据、封面、歌词以及每个编码的下载/解密阶段的最大总尝试次数（含首次）；正数允许 `1-10`。例如 `4` 表示每个操作最多尝试 4 次；值 `<= 0` 仍按 1 处理（仅尝试一次，不重试）。
+- 可重试错误使用带随机抖动的指数退避；Apple Catalog 返回 `Retry-After` 时，等待时间不会短于该提示，避免同一批请求同步重放。
 - `download.quality_priority`：按顺序尝试的 Enhanced HLS 编码回退链，支持 `alac`、`aac`、`aac-binaural`、`aac-downmix`、`ec3` 和 `ac3`。
+- `download.memory_mode`：控制 Enhanced HLS 路径的内存/磁盘取舍。`low`（默认）用逐片段内存和更多临时磁盘；`high` 将一份加密整轨保留在内存并把逐片段解密结果直接送入 ffmpeg，以减少临时文件和磁盘往返。高模式的单轨内存媒体上限为 512 MiB；由于 Go GC 会保留分配余量，实际堆峰值可能接近整轨大小的两倍，进程内存和临时盘占用也会随任务及曲目并发数放大。AAC-LC 回退不受此选项影响，在两种模式下均采用整轨内存处理。
 - `download.codec_alternative`：是否在前一个编码重试耗尽后继续尝试回退链；关闭时只尝试第一个编码。
 - `aac-lc` 无需写入 `quality_priority`；开启编码回退时会自动追加为最后的 WebPlayback 保底格式。
 - 回退链中的每个编码（含隐式 AAC-LC 保底）均使用 `download.max_attempts`；每个编码的下载阶段和解密阶段分别独立计数重试。
 - 重试、耗尽、恢复和编码回退会通过任务 SSE 事件返回；任务详情中的每个项目也会返回 `retry_kind`、`attempt`、`max_attempts` 和 `status_message`，其中 `attempt` 为当前阶段（`retry_kind`）的尝试序号（从 1 开始）。
+
+### 内存模式实测（v1.3.0）
+
+为排除 Apple CDN 速度波动，测试先缓存两张真实专辑的原始加密 ALAC 媒体，再以只读、禁止回源的本地 HTTP 响应重放；API、元数据解析、`wrapper-manager` 解密、ffmpeg 重封装、完整性解码、标签写入和最终文件保存仍走完整生产链路。每个测试单元使用全新的后端容器、数据库和临时目录，并在 `wrapper-manager` 恢复两个 Ready 实例后开始计时。
+
+- [月姫 -A piece of blue glass moon- THEME SONG E.P](https://music.apple.com/cn/album/1580904295)：8 首，原始媒体约 841 MiB。
+- [Fate/stay night [Realta Nua] Soundtrack Reproduction](https://music.apple.com/cn/album/1576634760)：62 首，原始媒体约 1.14 GiB。
+- 每个“专辑 × 模式 × 并发”组合交错运行 3 轮；下表为三轮平均值。
+- 表中“曲目并发”表示单个专辑任务同时处理的 Enhanced HLS 轨道数；v1.3.0 实际由进程级共享池统一调度，跨任务总量受 `download.max_parallel_downloads`、`download.max_parallel_decrypts` 和内部 in-flight 背压共同约束。
+- 内存是整个后端容器的 cgroup 峰值（包含进程内存和计入 cgroup 的文件页缓存）；临时空间是 `download.temp_dir` 与操作系统临时目录的同时峰值，不包含最终下载目录。
+- 全部 48 个测试单元成功完成，强制命中 ALAC，缓存回源次数为 0；两种模式、所有并发下的逐轨音频 packet SHA-256 完全一致。
+
+月姫（长曲目、Hi-Res，较容易放大单轨内存和中间文件成本）：
+
+| 曲目并发 | Low 用时 | High 用时 | High 提速 | Low 内存 | High 内存 | Low 临时空间 | High 临时空间 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 122.4 s | 96.9 s | 20.8% | 80 MiB | 409 MiB | 471 MiB | 237 MiB |
+| 2 | 67.7 s | 52.7 s | 22.2% | 110 MiB | 706 MiB | 851 MiB | 391 MiB |
+| 4 | 42.7 s | 33.5 s | 21.6% | 147 MiB | 1,180 MiB | 1,591 MiB | 761 MiB |
+| 8 | 33.8 s | 27.0 s | 20.3% | 269 MiB | 2,054 MiB | 3,055 MiB | 1,328 MiB |
+
+Fate（大量短曲目，固定的 session、ffmpeg 启动、校验和标签开销占比更高）：
+
+| 曲目并发 | Low 用时 | High 用时 | High 提速 | Low 内存 | High 内存 | Low 临时空间 | High 临时空间 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 300.5 s | 267.4 s | 11.0% | 211 MiB | 365 MiB | 258 MiB | 122 MiB |
+| 2 | 172.6 s | 143.4 s | 16.9% | 210 MiB | 363 MiB | 282 MiB | 128 MiB |
+| 4 | 102.8 s | 87.0 s | 15.4% | 210 MiB | 479 MiB | 343 MiB | 143 MiB |
+| 8 | 76.9 s | 68.8 s | 10.5% | 216 MiB | 604 MiB | 398 MiB | 152 MiB |
+
+High 并不是使用了更快的解密算法。Low 每轨需要写入并重读加密 `raw-*`，再写入并由 ffmpeg 重读解密后的 `dec-*`，合计约产生 `4 × 轨道大小` 的额外临时文件流量；High 将一份加密整轨保留在内存，并通过 pipe 让逐片段解密与 ffmpeg 重封装并行进行，因此同时减少磁盘往返、内核/用户态复制和串行等待。本次实测 High 还减少了约 6%-12% 的容器 CPU 时间。
+
+选择建议：内存紧张或曲目大小不可预估时保留默认的 `low`；一般机器使用 `high` 时，应结合 `download.max_parallel_downloads` 与 `download.max_parallel_decrypts` 控制总 in-flight 轨道，以约 4 条同时活跃的高内存轨道作为保守起点，再根据多个任务的实测内存峰值上调。并发 8 在本次测试中仍有吞吐收益，但已进入收益递减区，而且 High 的内存峰值由“同时活跃的最大几首曲目”决定，不能只按专辑平均曲目大小估算。上述本地重放结果表示排除公网下载后的后端处理能力上限，不代表普通 CDN 环境中的绝对下载时间。
 
 ### 歌词
 
@@ -337,7 +387,7 @@ curl -X DELETE http://localhost:18080/api/v1/downloads/{job_id}
 data/downloads/albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
 ```
 
-模板变量列表见 `configs/config.example.yaml` 注释。目录段中的 `{ArtistName}` 使用集合的归档艺术家（优先专辑艺术家），保证同一专辑的曲目落在同一目录；文件名段使用曲目自身的艺术家。
+模板变量列表见 `configs/runtime.example.yaml` 注释。目录段中的 `{ArtistName}` 使用集合的归档艺术家（优先专辑艺术家），保证同一专辑的曲目落在同一目录；文件名段使用曲目自身的艺术家。
 
 可选择在音频文件外额外保存独立封面：
 

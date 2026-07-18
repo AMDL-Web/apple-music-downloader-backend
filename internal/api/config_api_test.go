@@ -47,11 +47,16 @@ func TestGetConfigReturnsOnlyMutableFields(t *testing.T) {
 	if err := json.Unmarshal(resp.Config["download"], &download); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := download["max_running_jobs"]; ok {
-		t.Fatal("download section exposes startup-bound max_running_jobs")
+	for _, key := range []string{"max_running_jobs", "max_parallel_downloads", "max_parallel_decrypts", "max_parallel_wrapper_requests"} {
+		if _, ok := download[key]; ok {
+			t.Fatalf("download section exposes startup-bound %s", key)
+		}
 	}
 	if download["cover_format"] != "jpg" {
 		t.Fatalf("download.cover_format = %v, want jpg", download["cover_format"])
+	}
+	if download["memory_mode"] != config.MemoryModeLow {
+		t.Fatalf("download.memory_mode = %v, want low", download["memory_mode"])
 	}
 	var catalog map[string]any
 	if err := json.Unmarshal(resp.Config["catalog"], &catalog); err != nil {
@@ -74,17 +79,17 @@ func TestUpdateConfigMergesAndTakesEffect(t *testing.T) {
 	server := &Server{cfg: store}
 
 	recorder := requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config",
-		`{"download":{"embed_lyrics":false,"cover_format":"png"},"simulate":{"enabled":true,"min_speed_kbps":10,"max_speed_kbps":20},"catalog":{"signed_mode_hls_source":"web_token"}}`)
+		`{"download":{"embed_lyrics":false,"cover_format":"png","memory_mode":"high"},"simulate":{"enabled":true,"min_speed_kbps":10,"max_speed_kbps":20},"catalog":{"signed_mode_hls_source":"web_token"}}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	// The response echoes the mutable view only, never startup-bound sections.
-	if strings.Contains(recorder.Body.String(), `"server"`) || strings.Contains(recorder.Body.String(), `"max_running_jobs"`) {
+	if strings.Contains(recorder.Body.String(), `"server"`) || strings.Contains(recorder.Body.String(), `"max_running_jobs"`) || strings.Contains(recorder.Body.String(), `"max_parallel_downloads"`) || strings.Contains(recorder.Body.String(), `"max_parallel_decrypts"`) || strings.Contains(recorder.Body.String(), `"max_parallel_requests"`) {
 		t.Fatalf("update response leaks startup-bound fields: %s", recorder.Body.String())
 	}
 
 	got := store.Get()
-	if got.Download.EmbedLyrics || got.Download.CoverFormat != "png" || !got.Simulate.Enabled {
+	if got.Download.EmbedLyrics || got.Download.CoverFormat != "png" || got.Download.MemoryMode != config.MemoryModeHigh || !got.Simulate.Enabled {
 		t.Fatalf("update not applied to store: %+v %+v", got.Download, got.Simulate)
 	}
 	if got.Catalog.SignedModeHLSSource != "web_token" {
@@ -141,9 +146,9 @@ func TestUpdateConfigAppliesLoggingLevel(t *testing.T) {
 }
 
 func TestGetConfigReloadsManualFileEdits(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(t.TempDir(), "runtime.yaml")
 	base := config.Default()
-	if err := config.Save(path, base); err != nil {
+	if err := config.SaveRuntime(path, base); err != nil {
 		t.Fatal(err)
 	}
 	server := &Server{cfg: config.NewFileStore(base, path)}
@@ -152,7 +157,7 @@ func TestGetConfigReloadsManualFileEdits(t *testing.T) {
 	edited := base
 	edited.Download.CoverFormat = "png"
 	edited.Catalog.SignedModeHLSSource = "web_token"
-	if err := config.Save(path, edited); err != nil {
+	if err := config.SaveRuntime(path, edited); err != nil {
 		t.Fatal(err)
 	}
 	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/config", "")
@@ -190,7 +195,7 @@ func TestGetConfigReloadsManualFileEdits(t *testing.T) {
 }
 
 func TestUpdateConfigPersistsToBackingFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
+	path := filepath.Join(t.TempDir(), "runtime.yaml")
 	server := &Server{cfg: config.NewFileStore(config.Default(), path)}
 
 	recorder := requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config", `{"download":{"cover_format":"png"}}`)
@@ -220,8 +225,18 @@ func TestUpdateConfigRejectsBadInput(t *testing.T) {
 		{name: "unknown field", body: `{"download":{"nope":true}}`, status: http.StatusBadRequest, want: "unknown field"},
 		{name: "malformed json", body: `{`, status: http.StatusBadRequest, want: ""},
 		{name: "validation failure", body: `{"download":{"cover_format":"gif"}}`, status: http.StatusUnprocessableEntity, want: "cover_format"},
+		{name: "removed tracks limit", body: `{"download":{"max_parallel_tracks":5}}`, status: http.StatusBadRequest, want: "max_parallel_tracks"},
+		{name: "removed metadata limit", body: `{"download":{"max_parallel_metadata_requests":32}}`, status: http.StatusBadRequest, want: "max_parallel_metadata_requests"},
+		{name: "removed media limit", body: `{"download":{"max_parallel_media_downloads":32}}`, status: http.StatusBadRequest, want: "max_parallel_media_downloads"},
+		{name: "locked wrapper pool", body: `{"download":{"max_parallel_wrapper_requests":8}}`, status: http.StatusUnprocessableEntity, want: "download.max_parallel_wrapper_requests"},
+		{name: "invalid memory mode", body: `{"download":{"memory_mode":"auto"}}`, status: http.StatusUnprocessableEntity, want: "memory_mode"},
 		{name: "locked field", body: `{"server":{"listen":"0.0.0.0:1"}}`, status: http.StatusUnprocessableEntity, want: "server.listen"},
 		{name: "locked worker count", body: `{"download":{"max_running_jobs":99}}`, status: http.StatusUnprocessableEntity, want: "download.max_running_jobs"},
+		{name: "locked download pool", body: `{"download":{"max_parallel_downloads":8}}`, status: http.StatusUnprocessableEntity, want: "download.max_parallel_downloads"},
+		{name: "locked decrypt pool", body: `{"download":{"max_parallel_decrypts":8}}`, status: http.StatusUnprocessableEntity, want: "download.max_parallel_decrypts"},
+		{name: "locked catalog concurrency", body: `{"catalog":{"max_parallel_requests":8}}`, status: http.StatusUnprocessableEntity, want: "catalog.max_parallel_requests"},
+		{name: "locked catalog rate", body: `{"catalog":{"requests_per_second":8}}`, status: http.StatusUnprocessableEntity, want: "catalog.requests_per_second"},
+		{name: "locked catalog burst", body: `{"catalog":{"request_burst":8}}`, status: http.StatusUnprocessableEntity, want: "catalog.request_burst"},
 		{name: "locked logging output", body: `{"logging":{"format":"json"}}`, status: http.StatusUnprocessableEntity, want: "logging.format"},
 	}
 	for _, tc := range cases {
@@ -276,7 +291,7 @@ func TestCreateDownloadWithOverrides(t *testing.T) {
 	server := &Server{cfg: config.NewStore(config.Default()), store: store, manager: manager}
 
 	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads",
-		`{"urls":["song|us|1"],"overrides":{"embed_lyrics":false,"quality_priority":["aac"]}}`)
+		`{"urls":["song|us|1"],"overrides":{"embed_lyrics":false,"quality_priority":["aac"],"memory_mode":"high"}}`)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
@@ -302,6 +317,9 @@ func TestCreateDownloadWithOverrides(t *testing.T) {
 	}
 	if qp := persisted.Overrides.QualityPriority; qp == nil || len(*qp) != 1 || (*qp)[0] != "aac" {
 		t.Fatalf("persisted quality_priority override = %v, want [aac]", qp)
+	}
+	if mode := persisted.Overrides.MemoryMode; mode == nil || *mode != config.MemoryModeHigh {
+		t.Fatalf("persisted memory_mode override = %v, want high", mode)
 	}
 }
 
@@ -378,13 +396,15 @@ func TestCreateDownloadRejectsLegacyTopLevelMediaUserToken(t *testing.T) {
 
 func TestCreateDownloadRejectsUnknownFields(t *testing.T) {
 	server := &Server{cfg: config.NewStore(config.Default())}
-	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads",
-		`{"urls":["song|us|1"],"overrides":{"embedd_lyrics":false}}`)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, body = %s (a typo inside overrides must not be silently ignored)", recorder.Code, recorder.Body.String())
-	}
-	if !strings.Contains(recorder.Body.String(), "embedd_lyrics") {
-		t.Fatalf("error body %q does not name the unknown field", recorder.Body.String())
+	for _, field := range []string{"embedd_lyrics", "max_parallel_tracks", "max_parallel_metadata_requests", "max_parallel_media_downloads", "max_parallel_wrapper_requests", "max_parallel_downloads", "max_parallel_decrypts"} {
+		recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads",
+			`{"urls":["song|us|1"],"overrides":{"`+field+`":1}}`)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("field %s: status = %d, body = %s (unknown/process-wide overrides must not be silently accepted)", field, recorder.Code, recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Body.String(), field) {
+			t.Fatalf("field %s: error body %q does not name the unknown field", field, recorder.Body.String())
+		}
 	}
 }
 

@@ -32,16 +32,33 @@ func main() {
 	if cfgPath == "" {
 		cfgPath = "configs/config.yaml"
 	}
-	// First start: create the live config from the committed, commented
-	// config.example.yaml next to it. The live file is machine-managed —
-	// PUT /api/v1/config rewrites it — so it stays out of version control.
-	if created, err := config.BootstrapFromExample(cfgPath); err != nil {
+	// The runtime config file defaults to a sibling of the startup config, so
+	// a custom AMDL_CONFIG location carries both files along.
+	runtimeCfgPath := os.Getenv("AMDL_RUNTIME_CONFIG")
+	if runtimeCfgPath == "" {
+		runtimeCfgPath = filepath.Join(filepath.Dir(cfgPath), "runtime.yaml")
+	}
+	// First start: create the startup config from the committed, commented
+	// config.example.yaml next to it (the startup file is owner-edited from
+	// then on) and the machine-managed runtime file from runtime.example.yaml.
+	// A pre-split config.yaml still carrying runtime keys is migrated once:
+	// split in place with a backup of the combined file left behind.
+	bootstrap, err := config.EnsureFiles(cfgPath, runtimeCfgPath)
+	if err != nil {
 		bootstrapLogger.Error("bootstrap config", "error", err)
 		os.Exit(1)
-	} else if created {
-		bootstrapLogger.Info("created config from example", "path", cfgPath)
 	}
-	cfg, err := config.Load(cfgPath)
+	if bootstrap.CreatedStartup {
+		bootstrapLogger.Info("created startup config from example", "path", cfgPath)
+	}
+	if bootstrap.CreatedRuntime {
+		bootstrapLogger.Info("created runtime config", "path", runtimeCfgPath)
+	}
+	if bootstrap.MigratedLegacy {
+		bootstrapLogger.Info("split legacy config into startup and runtime files",
+			"startup", cfgPath, "runtime", runtimeCfgPath, "backup", bootstrap.LegacyBackupPath)
+	}
+	cfg, err := config.LoadPair(cfgPath, runtimeCfgPath)
 	if err != nil {
 		bootstrapLogger.Error("load config", "error", err)
 		os.Exit(1)
@@ -72,9 +89,10 @@ func main() {
 		logger.Error("create temp dir", "error", err)
 		os.Exit(1)
 	}
-	// Remove scratch files a previous run left behind (a crash mid-download can
-	// leak encrypted/decrypted/flatten temp files). Safe to do unconditionally
-	// at startup: the temp dir is single-writer and no job has started yet.
+	// Remove non-resumable scratch files a previous run left behind. Encrypted
+	// resume-* checkpoints deliberately survive this sweep so recovered jobs can
+	// continue their HLS transfer. Safe before any job has started because the
+	// temp dir is single-writer.
 	media.CleanupStaleTemp(cfg.Download.TempDir, logSystem.Logger.With("component", "media"))
 	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o755); err != nil {
 		logger.Error("create database dir", "error", err)
@@ -89,7 +107,11 @@ func main() {
 	defer store.Close()
 
 	hub := events.NewHub()
-	wrapperClient, err := wrapper.NewClient(cfg.Wrapper)
+	// cfgStore is the live runtime config shared by the API layer and download
+	// pipeline. Process-wide concurrency pools are sized once from this startup
+	// snapshot; runtime-mutable fields are read when each job starts.
+	cfgStore := config.NewFileStore(cfg, runtimeCfgPath)
+	wrapperClient, err := wrapper.NewClient(cfg.Wrapper, wrapper.WithDataConcurrencyLimit(cfg.Download.MaxParallelWrapperRequests))
 	if err != nil {
 		logger.Error("connect wrapper-manager", "error", err)
 		os.Exit(1)
@@ -101,13 +123,6 @@ func main() {
 		logger.Error("sign apple music developer token", "error", err)
 		os.Exit(1)
 	}
-	// cfgStore is the live runtime config shared by the API layer and the
-	// download pipeline; GET/PUT /api/v1/config read and update it, and
-	// updates are written back to cfgPath so they survive restarts. Values
-	// consumed below in main (listen address, database path, wrapper
-	// connection, worker count, catalog client) are startup-bound and the
-	// update endpoint refuses to change them.
-	cfgStore := config.NewFileStore(cfg, cfgPath)
 	toolChecker := media.NewToolChecker(cfg.Tools)
 	downloader := media.NewDownloader(cfgStore, catalog, wrapperClient, toolChecker, logSystem.Logger.With("component", "media"))
 	qualityService := media.NewQualityService(cfgStore, catalog, wrapperClient)

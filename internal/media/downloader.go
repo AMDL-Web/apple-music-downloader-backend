@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -20,6 +21,7 @@ import (
 	"amdl/internal/config"
 	"amdl/internal/domain"
 	"amdl/internal/jobs"
+	"amdl/internal/limits"
 	"amdl/internal/logging"
 	"amdl/internal/storage"
 	"amdl/internal/wrapper"
@@ -40,6 +42,17 @@ type Downloader struct {
 	mp4     *MP4Processor
 	covers  *coverCache
 	logger  *slog.Logger
+	// These limiters are created once by NewDownloader and deliberately remain
+	// shared by every shallow withConfig clone, so limits apply across jobs.
+	downloadLimit *limits.Semaphore
+	decryptLimit  *limits.Semaphore
+	inFlightLimit *limits.Semaphore
+	requestGate   *limits.RequestGate
+
+	// Per-job suppression for standalone cover paths that were already handled
+	// (written, unavailable, or exhausted). The state has its own mutex because
+	// different cover paths are allowed to proceed concurrently.
+	standaloneCoverState *standaloneCoverState
 }
 
 type downloaderCatalog interface {
@@ -65,16 +78,31 @@ type downloaderWrapper interface {
 
 type selectedDownloadMedia struct {
 	info selectedMediaInfo
+	// raw holds the still-encrypted whole track only in high-memory mode. Keeping
+	// one immutable copy allows decrypt retries without another CDN request while
+	// avoiding the raw-* scratch file and its write/read round trip.
+	raw []byte
 	// rawPath is the on-disk location of the still-encrypted media downloaded by
-	// downloadSelectedEnhancedMedia. It is kept on disk (not in memory) so a
-	// whole Hi-Res track's encrypted bytes aren't pinned across the decrypt
-	// phase, and so a decrypt-phase retry can re-read them without re-fetching.
+	// downloadSelectedEnhancedMedia in low-memory mode. It is kept on disk so a
+	// whole Hi-Res track's encrypted bytes aren't pinned across the decrypt phase,
+	// and so a decrypt-phase retry can re-read them without re-fetching.
 	rawPath string
+	// releaseInFlight owns the global media-backpressure permit acquired just
+	// before rawPath was downloaded. It stays held while the media waits for
+	// decryption and is idempotent so cleanup paths can safely converge.
+	releaseInFlight func()
 }
 
 func NewDownloader(store *config.Store, catalog *applemusic.CatalogClient, wrapperClient *wrapper.Client, tools *ToolChecker, logger *slog.Logger) *Downloader {
 	cfg := store.Get()
-	return &Downloader{store: store, cfg: cfg, catalog: catalog, wrapper: wrapperClient, tools: tools, http: newHTTPClient(), mp4: newMP4Processor(cfg), logger: logger}
+	return &Downloader{
+		store: store, cfg: cfg, catalog: catalog, wrapper: wrapperClient, tools: tools,
+		http: newHTTPClient(), mp4: newMP4Processor(cfg), logger: logger,
+		downloadLimit: limits.NewSemaphore(cfg.Download.MaxParallelDownloads),
+		decryptLimit:  limits.NewSemaphore(cfg.Download.MaxParallelDecrypts),
+		inFlightLimit: limits.NewSemaphore(cfg.Download.MaxParallelDownloads + cfg.Download.MaxParallelDecrypts),
+		requestGate:   catalog.RequestGate(),
+	}
 }
 
 // baseConfig returns the current runtime config, falling back to the fixed
@@ -95,7 +123,32 @@ func (d *Downloader) withConfig(cfg config.Config) *Downloader {
 	clone.cfg = cfg
 	clone.mp4 = newMP4Processor(cfg)
 	clone.covers = nil
+	clone.standaloneCoverState = nil
+	// Direct Downloader literals are common in unit tests. Production always
+	// arrives with the process-wide instances from NewDownloader; initialize a
+	// private fallback only when such a test literal has no limiter at all.
+	if clone.downloadLimit == nil {
+		clone.downloadLimit = limits.NewSemaphore(cfg.Download.MaxParallelDownloads)
+	}
+	if clone.decryptLimit == nil {
+		clone.decryptLimit = limits.NewSemaphore(cfg.Download.MaxParallelDecrypts)
+	}
+	if clone.inFlightLimit == nil {
+		clone.inFlightLimit = limits.NewSemaphore(cfg.Download.MaxParallelDownloads + cfg.Download.MaxParallelDecrypts)
+	}
 	return &clone
+}
+
+func (d *Downloader) ensureMediaLimits() {
+	if d.downloadLimit == nil {
+		d.downloadLimit = limits.NewSemaphore(d.cfg.Download.MaxParallelDownloads)
+	}
+	if d.decryptLimit == nil {
+		d.decryptLimit = limits.NewSemaphore(d.cfg.Download.MaxParallelDecrypts)
+	}
+	if d.inFlightLimit == nil {
+		d.inFlightLimit = limits.NewSemaphore(d.cfg.Download.MaxParallelDownloads + d.cfg.Download.MaxParallelDecrypts)
+	}
 }
 
 func (d *Downloader) ValidateRequest(ctx context.Context, url string) (jobs.ValidationResult, error) {
@@ -169,7 +222,27 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	}
 	jobDownloader := d.withConfig(cfg)
 	jobDownloader.covers = newCoverCache(jobDownloader.catalog)
-	return jobDownloader.processJob(ctx, job, reporter)
+	jobDownloader.standaloneCoverState = newStandaloneCoverState()
+	err = jobDownloader.processJob(ctx, job, reporter)
+	// Failed jobs retain their checkpoints for Retry. Completed and cancelled
+	// jobs cannot be retried, so remove every codec/track checkpoint owned by
+	// this job, including an earlier codec that later fell back successfully.
+	if err == nil || ctx.Err() != nil {
+		cleanupResumeOwner(cfg.Download.TempDir, job.ID)
+	}
+	return err
+}
+
+// CleanupJobArtifacts implements jobs.ArtifactCleaner for queued cancellation
+// and terminal deletion, where no ProcessJob call is available to run the
+// lifecycle cleanup above. Invalid historical overrides are ignored safely;
+// startup cleanup still leaves unrelated files untouched.
+func (d *Downloader) CleanupJobArtifacts(job domain.Job) {
+	cfg, err := job.Overrides.ApplyValidated(d.baseConfig())
+	if err != nil {
+		return
+	}
+	cleanupResumeOwner(cfg.Download.TempDir, job.ID)
 }
 
 // parseJobInput reconstructs the submission-time parse result from the job's
@@ -249,11 +322,7 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 	}
 	metadata := newTrackMetadataResolver(d, parsed.Storefront)
 
-	parallel := d.cfg.Download.MaxParallelTracks
-	if parallel <= 0 {
-		parallel = 1
-	}
-	return runParallelTrackTasks(ctx, len(tracks), parallel, finished, func(i int) error {
+	return runTrackTasks(ctx, len(tracks), finished, func(i int) error {
 		err := d.processTrackWithMetadata(ctx, job, items[i], tracks[i], parsed.Storefront, parsed.Type, collectionName, collectionID, i+1, folderArtist, metadata, reporter)
 		if err != nil {
 			logging.FromContext(ctx, d.logger).Error("track failed", "item_id", items[i].ID, "adam_id", tracks[i].ID, "error", err)
@@ -262,12 +331,11 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 	})
 }
 
-// runParallelTrackTasks bounds track concurrency and, critically, does not
-// return while any task it started is still running. A cancellation can arrive
-// while the caller is waiting for a semaphore slot; in that case no more tasks
-// are launched and the already-started tasks are joined before returning.
-func runParallelTrackTasks(ctx context.Context, total, parallel int, finished []bool, task func(int) error) error {
-	sem := make(chan struct{}, parallel)
+// runTrackTasks starts every unfinished track without a per-job concurrency
+// cap. Global resource pools inside the track pipeline provide the actual
+// bounds. It never returns before tasks already started have exited, and it
+// stops launching new work once cancellation is observed.
+func runTrackTasks(ctx context.Context, total int, finished []bool, task func(int) error) error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var firstErr error
@@ -276,17 +344,7 @@ func runParallelTrackTasks(ctx context.Context, total, parallel int, finished []
 			// Finished in a previous run of this job; keep the item as-is.
 			continue
 		}
-		select {
-		case <-ctx.Done():
-			wg.Wait()
-			return ctx.Err()
-		case sem <- struct{}{}:
-		}
-		// Cancellation and a free semaphore slot may become ready together.
-		// Re-check before launching so cancellation never knowingly starts the
-		// next track after acquiring the slot.
 		if err := ctx.Err(); err != nil {
-			<-sem
 			wg.Wait()
 			return err
 		}
@@ -294,7 +352,6 @@ func runParallelTrackTasks(ctx context.Context, total, parallel int, finished []
 		i := i
 		go func() {
 			defer wg.Done()
-			defer func() { <-sem }()
 			if err := task(i); err != nil {
 				mu.Lock()
 				if firstErr == nil {
@@ -455,19 +512,15 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 
 func (d *Downloader) artistTracks(ctx context.Context, storefront string, albums []applemusic.Collection) ([]applemusic.Song, error) {
 	tracks := make([]applemusic.Song, 0)
-	seen := make(map[string]struct{})
 	for _, summary := range albums {
 		album, err := d.catalog.Album(ctx, storefront, summary.ID)
 		if err != nil {
 			return nil, err
 		}
-		for _, track := range album.Tracks {
-			if _, exists := seen[track.ID]; exists {
-				continue
-			}
-			seen[track.ID] = struct{}{}
-			tracks = append(tracks, track)
-		}
+		// Keep the complete track list of every album. A catalog song may be
+		// related to more than one album with the same Adam ID; artist downloads
+		// still need one output in each album directory.
+		tracks = append(tracks, album.Tracks...)
 	}
 	return tracks, nil
 }
@@ -515,11 +568,21 @@ func (r *trackMetadataResolver) song(ctx context.Context, initial applemusic.Son
 		return initial, nil
 	}
 
+	// CatalogClient owns the process-wide Apple request gate; do not layer a
+	// second metadata limiter here or a track could hold one global resource
+	// while waiting for another.
 	song, err := r.downloader.catalog.SongMetadata(ctx, r.storefront, initial.ID)
 	if err != nil {
 		return applemusic.Song{}, err
 	}
 	song = mergeResolvedSong(song, initial)
+	if collectionType == applemusic.TypeAlbum || collectionType == applemusic.TypeArtist {
+		// Album track relationships are authoritative for placement. In
+		// particular, the same catalog song ID can belong to multiple albums;
+		// the lightweight song refresh may describe only its default album and
+		// must not redirect every occurrence into that album's output path.
+		song = preserveCollectionTrackContext(song, initial)
+	}
 	if (collectionType != applemusic.TypePlaylist && collectionType != applemusic.TypeStation) || song.AlbumID == "" {
 		return song, nil
 	}
@@ -606,6 +669,19 @@ func mergeResolvedSong(song, initial applemusic.Song) applemusic.Song {
 	}
 	if initial.DiscCount > 0 {
 		song.DiscCount = initial.DiscCount
+	}
+	return song
+}
+
+func preserveCollectionTrackContext(song, initial applemusic.Song) applemusic.Song {
+	song.AlbumID = firstNonEmpty(initial.AlbumID, song.AlbumID)
+	song.AlbumName = firstNonEmpty(initial.AlbumName, song.AlbumName)
+	song.ArtworkURL = firstNonEmpty(initial.ArtworkURL, song.ArtworkURL)
+	if initial.TrackNumber > 0 {
+		song.TrackNumber = initial.TrackNumber
+	}
+	if initial.DiscNumber > 0 {
+		song.DiscNumber = initial.DiscNumber
 	}
 	return song
 }
@@ -836,6 +912,12 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 		return d.failItem(ctx, reporter, job, item, err)
 	}
 	var lastErr error
+	var releaseInFlight func()
+	defer func() {
+		if releaseInFlight != nil {
+			releaseInFlight()
+		}
+	}()
 	for codecIndex, codec := range codecs {
 		codecMaxAttempts := attemptsForCodec(d.cfg.Download.MaxAttempts, codecIndex)
 		if codecIndex > 0 {
@@ -853,9 +935,9 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 		attemptOutPath := ""
 		skipped := false
 
-		// Fetch phase: acquire the still-encrypted media into memory. Retried on
-		// its own so a later decrypt failure doesn't force a redundant re-download
-		// of bytes that were already fetched successfully.
+		// Fetch phase: acquire the still-encrypted media into the configured memory
+		// or disk backing. Retried on its own so a later decrypt failure doesn't
+		// force a redundant re-download of bytes already fetched successfully.
 		var aacMedia aacLCMedia
 		var enhanced selectedDownloadMedia
 		var rawAACLC []byte
@@ -873,10 +955,11 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 					skipped = skip
 					return struct{}{}, err
 				}
-				media, raw, err := d.fetchAACLCMedia(ctx, job, &item, song, reporter, set)
+				media, raw, release, err := d.fetchAACLCMedia(ctx, job, &item, song, reporter, set)
 				if err != nil {
 					return struct{}{}, err
 				}
+				releaseInFlight = release
 				aacMedia, rawAACLC = media, raw
 				return struct{}{}, nil
 			}
@@ -893,11 +976,12 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 				skipped = skip
 				return struct{}{}, err
 			}
-			selected, downloadErr := d.downloadSelectedEnhancedMedia(ctx, selected, codec, set)
+			selected, downloadErr := d.downloadSelectedEnhancedMedia(ctx, selected, codec, job.ID, attemptOutPath, set)
 			if downloadErr != nil {
 				return struct{}{}, downloadErr
 			}
 			enhanced = selected
+			releaseInFlight = selected.releaseInFlight
 			return struct{}{}, nil
 		}, func(failure retryFailure) {
 			if unlockOutput != nil && attemptOutPath != "" {
@@ -931,7 +1015,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 		_, decryptAttempts, decryptErr := retryValue(ctx, codecMaxAttempts, retryBackoff, func(attempt int) (struct{}, error) {
 			d.setItemAttempt(ctx, reporter, &item, "decrypt", attempt, clampAttempts(codecMaxAttempts), fmt.Sprintf("Decrypting %s (%d/%d)", strings.ToUpper(codec), attempt, clampAttempts(codecMaxAttempts)))
 			if codec == "aac-lc" {
-				return struct{}{}, d.decryptAACLC(ctx, &item, song, aacMedia, rawAACLC, lyrics, cover, attemptOutPath, set)
+				return struct{}{}, d.decryptAACLC(ctx, &item, song, aacMedia, rawAACLC, lyrics, cover, attemptOutPath, releaseInFlight, set)
 			}
 			return struct{}{}, d.downloadEnhancedCodec(ctx, job, &item, song, codec, lyrics, cover, attemptOutPath, enhanced, reporter, set)
 		}, func(failure retryFailure) {
@@ -941,11 +1025,18 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			d.setRetryFailure(ctx, reporter, &item, "decrypt", strings.ToUpper(codec), failure)
 			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "decrypt", codec, failure)
 		})
-		// The encrypted media on disk is no longer needed once the decrypt phase
-		// has run (whether it succeeded or exhausted its retries); a fallback
-		// codec re-fetches its own. aac-lc keeps its bytes in memory, so its
-		// rawPath is empty and this is a no-op.
-		cleanupTempFile(enhanced.rawPath)
+		// Once the decrypt phase has returned, low-memory mode's encrypted
+		// checkpoint is no longer useful to this run (a decrypt error may
+		// indicate corrupt bytes, and a fallback codec fetches its own), so both
+		// checkpoint files are removed; a hard process stop during download or
+		// decrypt still leaves them for the recovered job. High-memory mode and
+		// AAC-LC have an empty rawPath, so this is a no-op and their byte slices
+		// become collectible when the current codec scope is replaced or returns.
+		cleanupResumableDownload(enhanced.rawPath)
+		if releaseInFlight != nil {
+			releaseInFlight()
+			releaseInFlight = nil
+		}
 		if decryptErr != nil {
 			releaseOutput()
 			lastErr = decryptErr
@@ -1059,6 +1150,7 @@ func attemptsForCodec(configuredMaxAttempts, _ int) int {
 func (d *Downloader) handleExistingOutput(ctx context.Context, reporter jobs.Reporter, job domain.Job, item *domain.JobItem, outPath string) (bool, error) {
 	item.OutputPath = outPath
 	if _, err := os.Stat(outPath); err == nil && !job.Force {
+		cleanupResumeForKey(d.cfg.Download.TempDir, job.ID, outPath)
 		item.Status = domain.ItemSkipped
 		item.Progress = 1
 		item.RetryKind = ""
@@ -1100,7 +1192,7 @@ func (d *Downloader) selectEnhancedMedia(ctx context.Context, job domain.Job, it
 	if master == "" {
 		return selectedDownloadMedia{}, fmt.Errorf("no enhanced hls manifest")
 	}
-	info, err := extractMedia(ctx, d.http, master, codec, d.cfg.Download.ALACMaxSampleRate, d.cfg.Download.ALACMaxBitDepth)
+	info, err := extractMedia(ctx, d.http, master, codec, d.cfg.Download.ALACMaxSampleRate, d.cfg.Download.ALACMaxBitDepth, d.requestGate)
 	if err != nil {
 		return selectedDownloadMedia{}, fmt.Errorf("select %s media: %w", codec, err)
 	}
@@ -1111,87 +1203,87 @@ func (d *Downloader) selectEnhancedMedia(ctx context.Context, job domain.Job, it
 	return selectedDownloadMedia{info: info}, nil
 }
 
-func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected selectedDownloadMedia, codec string, set func(domain.ItemStatus, float64, string)) (selectedDownloadMedia, error) {
+func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected selectedDownloadMedia, codec, jobID, outPath string, set func(domain.ItemStatus, float64, string)) (selectedDownloadMedia, error) {
+	d.ensureMediaLimits()
 	codecName := strings.ToUpper(codec)
 	set(domain.ItemDownloading, 0.05, fmt.Sprintf("Downloading %s encrypted media", codecName))
-	// Stream-download to a temp file with per-chunk progress from 5% → 55%. The
-	// encrypted bytes stay on disk and are streamed back in during decrypt, so
-	// they never occupy a full-track []byte in memory.
-	rawPath, err := downloadToFile(ctx, d.http, selected.info.MediaURI, d.cfg.Download.TempDir, func(p float64) {
+	onProgress := func(p float64) {
 		if p < 0 {
 			return // Content-Length unknown, stay at 5%
 		}
 		// map [0,1] → [0.05, 0.55]
 		set(domain.ItemDownloading, 0.05+p*0.50, fmt.Sprintf("%s download %.0f%%", codecName, p*100))
-	})
+	}
+	releaseInFlight, err := d.inFlightLimit.Acquire(ctx)
 	if err != nil {
+		return selectedDownloadMedia{}, err
+	}
+	releaseDownload, err := d.downloadLimit.Acquire(ctx)
+	if err != nil {
+		releaseInFlight()
+		return selectedDownloadMedia{}, err
+	}
+	if d.cfg.Download.MemoryMode == config.MemoryModeHigh {
+		// High-memory mode keeps exactly one whole-track encrypted copy. The
+		// fragment decrypt/remux stage remains streaming, so parsed, plaintext,
+		// and remuxed whole-track copies never accumulate beside it. The
+		// in-flight permit stays held until decrypt has consumed the bytes.
+		raw, err := func() ([]byte, error) {
+			defer releaseDownload()
+			return downloadBytes(ctx, d.http, selected.info.MediaURI, onProgress)
+		}()
+		if err != nil {
+			releaseInFlight()
+			return selectedDownloadMedia{}, fmt.Errorf("download encrypted media: %w", err)
+		}
+		selected.raw = raw
+		selected.releaseInFlight = releaseInFlight
+		return selected, nil
+	}
+
+	// Low-memory mode streams the encrypted response to a resumable checkpoint
+	// and reads it back fragment-by-fragment during decrypt. The encrypted bytes
+	// stay on disk, so they never occupy a full-track []byte in memory.
+	rawPath, err := func() (string, error) {
+		defer releaseDownload()
+		return downloadToFile(ctx, d.http, selected.info.MediaURI, d.cfg.Download.TempDir, jobID, outPath, onProgress)
+	}()
+	if err != nil {
+		releaseInFlight()
 		return selectedDownloadMedia{}, fmt.Errorf("download encrypted media: %w", err)
 	}
 	selected.rawPath = rawPath
+	selected.releaseInFlight = releaseInFlight
 	return selected, nil
 }
 
 func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, codec, lyrics string, cover []byte, outPath string, selected selectedDownloadMedia, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) error {
+	d.ensureMediaLimits()
 	info := selected.info
-	rawFile, err := os.Open(selected.rawPath)
-	if err != nil {
-		return fmt.Errorf("open downloaded media: %w", err)
-	}
-	defer rawFile.Close()
-	var rawSize int64
-	if fi, statErr := rawFile.Stat(); statErr == nil {
-		rawSize = fi.Size()
-	}
-
-	// The decrypted, still-fragmented MP4 is written fragment-by-fragment to a
-	// temp file, then flattened onto the .part file. Neither the encrypted input
-	// nor the decrypted output is ever fully resident in memory: peak memory is
-	// one fragment, not one track.
-	decFile, err := os.CreateTemp(d.cfg.Download.TempDir, "dec-*.mp4")
-	if err != nil {
-		return fmt.Errorf("create decrypt output: %w", err)
-	}
-	decPath := decFile.Name()
-	decFile.Close()
-	defer os.Remove(decPath)
-
-	session, err := d.wrapper.NewDecryptSession(ctx, song.ID)
-	if err != nil {
-		return fmt.Errorf("open decrypt session: %w", err)
-	}
-	set(domain.ItemDecrypting, 0.55, "decrypting")
-	// Progress tracks encrypted bytes consumed (55% → 90%); the total sample
-	// count isn't known until the last fragment is read.
-	streamErr := d.mp4.streamDecryptToFile(ctx, rawFile, decPath, info.Keys,
-		func(key string, samples [][]byte) ([][]byte, error) {
-			return session.DecryptFragment(key, samples)
-		},
-		func(consumed uint64) {
-			if rawSize <= 0 {
-				return
-			}
-			p := float64(consumed) / float64(rawSize)
-			if p > 1 {
-				p = 1
-			}
-			set(domain.ItemDecrypting, 0.55+p*0.35, fmt.Sprintf("decrypting %.0f%%", p*100))
-		})
-	closeErr := session.Close()
-	if streamErr != nil {
-		return fmt.Errorf("decrypt media: %w", streamErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close decrypt session: %w", closeErr)
+	var (
+		rawReader io.Reader
+		rawSize   int64
+		rawFile   *os.File
+		err       error
+	)
+	if d.cfg.Download.MemoryMode == config.MemoryModeHigh {
+		rawReader = bytes.NewReader(selected.raw)
+		rawSize = int64(len(selected.raw))
+	} else {
+		rawFile, err = os.Open(selected.rawPath)
+		if err != nil {
+			return fmt.Errorf("open downloaded media: %w", err)
+		}
+		defer rawFile.Close()
+		rawReader = rawFile
+		if fi, statErr := rawFile.Stat(); statErr == nil {
+			rawSize = fi.Size()
+		}
 	}
 
-	set(domain.ItemRemuxing, 0.90, "remuxing")
-	// Flatten the decrypted fragmented MP4 into a regular progressive MP4 (also
-	// normalises the ftyp brand) on temp storage, then verify and tag it there,
-	// and only move the finished file to its final path. Keeping the flatten
-	// write, the integrity read-back, and the tag rewrite on temp (typically
-	// fast local disk) means a possibly-slow downloads volume sees just one
-	// sequential write; see finalizeToOutput. The decoder configuration is
-	// carried over from the original init segment, so no esds fixup is needed.
+	// Both modes stage the flattened, verified and tagged output here before the
+	// atomic final move. Low mode first writes a dec-* fragmented intermediate;
+	// high mode pipes that same fragment stream straight into ffmpeg.
 	flatFile, err := os.CreateTemp(d.cfg.Download.TempDir, "flat-*.m4a")
 	if err != nil {
 		return fmt.Errorf("create flatten output: %w", err)
@@ -1199,9 +1291,79 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	flatPath := flatFile.Name()
 	flatFile.Close()
 	defer os.Remove(flatPath)
-	if err := d.mp4.flattenFileToFile(ctx, decPath, flatPath); err != nil {
-		return fmt.Errorf("fix encapsulation: %w", err)
+
+	releaseDecrypt, err := d.decryptLimit.Acquire(ctx)
+	if err != nil {
+		return err
 	}
+	highMemory := d.cfg.Download.MemoryMode == config.MemoryModeHigh
+	// decPath is created only in low-memory mode; high mode pipes the fragment
+	// stream straight into ffmpeg behind flatPath.
+	var decPath string
+	streamErr, closeErr := func() (error, error) {
+		defer releaseDecrypt()
+		session, openErr := d.wrapper.NewDecryptSession(ctx, song.ID)
+		if openErr != nil {
+			return fmt.Errorf("open decrypt session: %w", openErr), nil
+		}
+		set(domain.ItemDecrypting, 0.55, "decrypting")
+		// Progress tracks encrypted bytes consumed (55% → 90%); the total sample
+		// count isn't known until the last fragment is read.
+		decryptFragment := func(key string, samples [][]byte) ([][]byte, error) {
+			return session.DecryptFragment(key, samples)
+		}
+		onProgress := func(consumed uint64) {
+			if rawSize > 0 {
+				p := math.Min(1, float64(consumed)/float64(rawSize))
+				set(domain.ItemDecrypting, 0.55+p*0.35, fmt.Sprintf("decrypting %.0f%%", p*100))
+			}
+		}
+		if highMemory {
+			// The encrypted track is the only whole-track allocation. mp4ff parses one
+			// fragment, the wrapper returns one plaintext fragment, and DataParts writes
+			// those samples directly into ffmpeg's stdin without another concatenation.
+			return d.mp4.streamDecryptToFlatFile(ctx, rawReader, flatPath, info.Keys, decryptFragment, onProgress), session.Close()
+		}
+		decFile, createErr := os.CreateTemp(d.cfg.Download.TempDir, "dec-*.mp4")
+		if createErr != nil {
+			_ = session.Close()
+			return fmt.Errorf("create decrypt output: %w", createErr), nil
+		}
+		decPath = decFile.Name()
+		decFile.Close()
+		return d.mp4.streamDecryptToFile(ctx, rawReader, decPath, info.Keys, decryptFragment, onProgress), session.Close()
+	}()
+	if decPath != "" {
+		defer os.Remove(decPath)
+	}
+	if streamErr != nil {
+		if highMemory {
+			return fmt.Errorf("decrypt and flatten media: %w", streamErr)
+		}
+		return fmt.Errorf("decrypt media: %w", streamErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close decrypt session: %w", closeErr)
+	}
+	if selected.releaseInFlight != nil {
+		selected.releaseInFlight()
+	}
+
+	// In high mode flattening already ran behind the decrypt stream; preserve
+	// the public lifecycle transition before verification/saving either way.
+	set(domain.ItemRemuxing, 0.90, "remuxing")
+	if !highMemory {
+		if err := d.mp4.flattenFileToFile(ctx, decPath, flatPath); err != nil {
+			return fmt.Errorf("fix encapsulation: %w", err)
+		}
+	}
+	// Flatten the decrypted fragmented MP4 into a regular progressive MP4 (also
+	// normalises the ftyp brand) on temp storage, then verify and tag it there,
+	// and only move the finished file to its final path. Keeping the flatten
+	// write, the integrity read-back, and the tag rewrite on temp (typically
+	// fast local disk) means a possibly-slow downloads volume sees just one
+	// sequential write; see finalizeToOutput. The decoder configuration is
+	// carried over from the original init segment, so no esds fixup is needed.
 	set(domain.ItemSaving, 0.94, "saving")
 	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrityFile(ctx, flatPath) {
 		if codec != "alac" {
@@ -1271,51 +1433,74 @@ func (d *Downloader) repairALACFile(ctx context.Context, job domain.Job, item *d
 // fetchAACLCMedia resolves the AAC-LC media playlist and downloads the
 // still-encrypted stream into memory. Kept separate from decryptAACLC so a
 // decrypt-phase retry can reuse these bytes instead of re-hitting the CDN.
-func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) (aacLCMedia, []byte, error) {
+func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) (aacLCMedia, []byte, func(), error) {
+	d.ensureMediaLimits()
 	set(domain.ItemDownloading, 0.03, "requesting AAC-LC WebPlayback asset")
 	playlistURL, err := d.wrapper.WebPlayback(ctx, song.ID)
 	if err != nil {
-		return aacLCMedia{}, nil, fmt.Errorf("request AAC-LC WebPlayback: %w", err)
+		return aacLCMedia{}, nil, nil, fmt.Errorf("request AAC-LC WebPlayback: %w", err)
 	}
-	media, err := extractAACLCMedia(ctx, d.http, playlistURL)
+	media, err := extractAACLCMedia(ctx, d.http, playlistURL, d.requestGate)
 	if err != nil {
-		return aacLCMedia{}, nil, fmt.Errorf("parse AAC-LC media playlist: %w", err)
+		return aacLCMedia{}, nil, nil, fmt.Errorf("parse AAC-LC media playlist: %w", err)
 	}
 	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_selected", Phase: "aac-lc", Payload: marshalPayload(map[string]any{
 		"codec_id": "aac-lc", "attempt": item.Attempt, "max_attempts": item.MaxAttempts,
 	})})
 
 	set(domain.ItemDownloading, 0.05, "downloading encrypted AAC-LC media")
-	// Stream-download with per-chunk progress from 5% → 55%
-	raw, err := downloadBytes(ctx, d.http, media.MediaURI, func(p float64) {
-		if p < 0 {
-			return
-		}
-		// map [0,1] → [0.05, 0.55]
-		set(domain.ItemDownloading, 0.05+p*0.50, fmt.Sprintf("downloading %.0f%%", p*100))
-	})
+	releaseInFlight, err := d.inFlightLimit.Acquire(ctx)
 	if err != nil {
-		return aacLCMedia{}, nil, fmt.Errorf("download encrypted AAC-LC media: %w", err)
+		return aacLCMedia{}, nil, nil, err
 	}
-	return media, raw, nil
+	releaseDownload, err := d.downloadLimit.Acquire(ctx)
+	if err != nil {
+		releaseInFlight()
+		return aacLCMedia{}, nil, nil, err
+	}
+	// Stream-download with per-chunk progress from 5% → 55%
+	raw, err := func() ([]byte, error) {
+		defer releaseDownload()
+		return downloadBytes(ctx, d.http, media.MediaURI, func(p float64) {
+			if p >= 0 {
+				set(domain.ItemDownloading, 0.05+p*0.50, fmt.Sprintf("downloading %.0f%%", p*100))
+			}
+		})
+	}()
+	if err != nil {
+		releaseInFlight()
+		return aacLCMedia{}, nil, nil, fmt.Errorf("download encrypted AAC-LC media: %w", err)
+	}
+	return media, raw, releaseInFlight, nil
 }
 
 // decryptAACLC takes the already-downloaded encrypted bytes from
 // fetchAACLCMedia and acquires the license, decrypts, and writes the final
 // file. On retry this re-runs without downloading media again.
-func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, song applemusic.Song, media aacLCMedia, raw []byte, lyrics string, cover []byte, outPath string, set func(domain.ItemStatus, float64, string)) error {
+func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, song applemusic.Song, media aacLCMedia, raw []byte, lyrics string, cover []byte, outPath string, releaseInFlight func(), set func(domain.ItemStatus, float64, string)) error {
+	d.ensureMediaLimits()
 	set(domain.ItemDecrypting, 0.55, "acquiring Widevine license")
-	challenge, parseLicense, err := newWidevineSession(media.KID)
+	releaseDecrypt, err := d.decryptLimit.Acquire(ctx)
 	if err != nil {
 		return err
 	}
-	license, err := d.wrapper.License(ctx, song.ID, base64.StdEncoding.EncodeToString(challenge), media.KeyURI)
-	if err != nil {
-		return fmt.Errorf("request AAC-LC license: %w", err)
-	}
-	decrypted, err := decryptWidevineMP4(raw, license, parseLicense)
+	decrypted, err := func() ([]byte, error) {
+		defer releaseDecrypt()
+		challenge, parseLicense, err := newWidevineSession(media.KID)
+		if err != nil {
+			return nil, err
+		}
+		license, err := d.wrapper.License(ctx, song.ID, base64.StdEncoding.EncodeToString(challenge), media.KeyURI)
+		if err != nil {
+			return nil, fmt.Errorf("request AAC-LC license: %w", err)
+		}
+		return decryptWidevineMP4(raw, license, parseLicense)
+	}()
 	if err != nil {
 		return err
+	}
+	if releaseInFlight != nil {
+		releaseInFlight()
 	}
 
 	set(domain.ItemSaving, 0.94, "saving AAC-LC")
@@ -1434,14 +1619,6 @@ func marshalPayload(value any) string {
 // finalize step renames it onto the bare outPath only after metadata is in,
 // so existence at the final path always implies a complete, tagged file.
 const partSuffix = ".part"
-
-// cleanupTempFile removes a temp file created during processing, tolerating an
-// empty path (e.g. the aac-lc codec, which keeps its media in memory).
-func cleanupTempFile(path string) {
-	if path != "" {
-		_ = os.Remove(path)
-	}
-}
 
 // finalizeToOutput moves the finished, tagged file at src (staged on temp
 // storage) to its final path dst. When src and dst share a filesystem this is a
