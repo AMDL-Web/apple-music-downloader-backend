@@ -39,16 +39,16 @@ test('parseGitLog keeps the primary author and parsed co-authors', () => {
   }]);
 });
 
-test('formatAuthors formats GitHub users and removes duplicate identities', () => {
+test('formatAuthors maps known GitHub users and removes duplicate identities', () => {
   assert.equal(formatAuthors([
     { author: 'Alice', email: 'Alice@users.noreply.github.com' },
     { author: 'Alice Duplicate', email: '123+Alice@users.noreply.github.com' },
     { author: 'Bob Example', email: 'bob@example.com' },
     { author: 'Codex', email: 'noreply@openai.com' },
-  ]), '@Alice, Bob Example, Codex');
+  ]), '@Alice, Bob Example, @codex');
 });
 
-test('generated changelog includes the author and all co-authors', () => {
+test('generated changelog appends the author and all co-authors to each entry', () => {
   const classified = classifyCommits([{
     hash: '0123456789abcdef',
     author: 'Alice',
@@ -61,5 +61,6 @@ test('generated changelog includes the author and all co-authors', () => {
   }]);
 
   const markdown = generateMd(classified, 'v1.4.0', null);
-  assert.match(markdown, /\* add release notes @Alice, @Bob, Codex/);
+  assert.match(markdown, /\* add release notes @Alice, @Bob, @codex/);
+  assert.doesNotMatch(markdown, /### 协作者 \| Contributors/);
 });
