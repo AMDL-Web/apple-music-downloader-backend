@@ -48,9 +48,12 @@ configs/runtime.yaml   # 运行时配置：PUT /api/v1/config 可在线修改
 重写它（注释不保留），因此它不纳入版本控制；手工编辑仍然可以，下一次
 `GET /api/v1/config` 后即生效、无需重启，但会在下一次 API 修改时被重写。
 
-从旧版单文件 `config.yaml` 升级时无需手工操作：首次启动会自动把运行时
-字段拆到 `runtime.yaml`、把 `config.yaml` 重写为仅启动字段，并在旁边留
-一份 `config.yaml.pre-split.bak` 备份。
+从旧版单文件 `config.yaml` 升级时，文件拆分本身无需手工操作：首次启动
+会自动把运行时字段拆到 `runtime.yaml`、把 `config.yaml` 重写为仅启动字
+段，并在旁边留一份 `config.yaml.pre-split.bak` 备份。但若旧配置里还有
+已删除的键（如 `download.max_parallel_tracks` 等按任务并发键），启动会
+以明确的未知字段错误拒绝加载，需要先手工删掉这些键再启动（见
+[下载行为](#重试与编码降级)一节的破坏性变更说明）。
 
 启动前请按实际环境修改 `configs/config.yaml`（或先改示例文件再首次启动），尤其是：
 
