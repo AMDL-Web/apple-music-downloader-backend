@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
@@ -43,8 +44,14 @@ type QualityResult struct {
 	Storefront string          `json:"storefront"`
 	Type       string          `json:"type"`
 	AdamID     string          `json:"adam_id"`
-	Song       QualitySong     `json:"song"`
-	Qualities  []QualityOption `json:"qualities"`
+	Song       *QualitySong    `json:"song,omitempty"`
+	Qualities  []QualityOption `json:"qualities,omitempty"`
+	Tracks     []QualityTrack  `json:"tracks,omitempty"`
+}
+
+type QualityTrack struct {
+	Song      QualitySong     `json:"song"`
+	Qualities []QualityOption `json:"qualities"`
 }
 
 type QualityService struct {
@@ -60,6 +67,11 @@ type QualityService struct {
 
 type qualityCatalog interface {
 	Song(context.Context, string, string) (applemusic.Song, error)
+	SongMetadata(context.Context, string, string) (applemusic.Song, error)
+	Album(context.Context, string, string) (applemusic.Collection, error)
+	Playlist(context.Context, string, string, string) (applemusic.Collection, error)
+	StationTracks(context.Context, string, string, string) (applemusic.Collection, error)
+	ArtistAlbums(context.Context, string, string) (applemusic.ArtistAlbums, error)
 	EnhancedHLSViaWebToken(context.Context, string, string) (string, error)
 }
 
@@ -88,47 +100,197 @@ func (s *QualityService) QueryQuality(ctx context.Context, req QualityRequest) (
 	if err != nil {
 		return QualityResult{}, err
 	}
-	if parsed.Type != applemusic.TypeSong {
-		return QualityResult{}, fmt.Errorf("quality query only supports song URLs")
-	}
-	song, err := s.catalog.Song(ctx, parsed.Storefront, parsed.ID)
+	songs, err := s.resolveQualityTracks(ctx, cfg, parsed)
 	if err != nil {
 		return QualityResult{}, err
 	}
+	if len(songs) == 0 {
+		return QualityResult{}, fmt.Errorf("%s %s has no songs", parsed.Type, parsed.ID)
+	}
+
+	tracks, err := s.queryTrackQualities(ctx, cfg, parsed.Storefront, songs, parsed.Type != applemusic.TypeSong)
+	if err != nil {
+		return QualityResult{}, err
+	}
+	result := QualityResult{
+		Input: req.URL, Storefront: parsed.Storefront, Type: string(parsed.Type), AdamID: parsed.ID,
+	}
+	if parsed.Type == applemusic.TypeSong {
+		result.Song = &tracks[0].Song
+		result.Qualities = tracks[0].Qualities
+	} else {
+		result.Tracks = tracks
+	}
+	return result, nil
+}
+
+func (s *QualityService) resolveQualityTracks(ctx context.Context, cfg config.Config, parsed applemusic.ParsedURL) ([]applemusic.Song, error) {
+	switch parsed.Type {
+	case applemusic.TypeSong:
+		song, err := s.catalog.Song(ctx, parsed.Storefront, parsed.ID)
+		if err != nil {
+			return nil, err
+		}
+		return []applemusic.Song{song}, nil
+	case applemusic.TypeAlbum:
+		album, err := s.catalog.Album(ctx, parsed.Storefront, parsed.ID)
+		if err != nil {
+			return nil, err
+		}
+		return album.Tracks, nil
+	case applemusic.TypePlaylist:
+		playlist, err := s.catalog.Playlist(ctx, parsed.Storefront, parsed.ID, strings.TrimSpace(cfg.Catalog.MediaUserToken))
+		if err != nil {
+			return nil, err
+		}
+		return playlist.Tracks, nil
+	case applemusic.TypeStation:
+		station, err := s.catalog.StationTracks(ctx, parsed.Storefront, parsed.ID, strings.TrimSpace(cfg.Catalog.MediaUserToken))
+		if err != nil {
+			return nil, err
+		}
+		return station.Tracks, nil
+	case applemusic.TypeArtist:
+		artist, err := s.catalog.ArtistAlbums(ctx, parsed.Storefront, parsed.ID)
+		if err != nil {
+			return nil, err
+		}
+		var songs []applemusic.Song
+		for _, summary := range artist.Albums {
+			album, err := s.catalog.Album(ctx, parsed.Storefront, summary.ID)
+			if err != nil {
+				return nil, err
+			}
+			songs = append(songs, album.Tracks...)
+		}
+		return songs, nil
+	default:
+		return nil, fmt.Errorf("quality query does not support input type %s", parsed.Type)
+	}
+}
+
+const maxQualityProbeWorkers = 4
+
+type qualityProbeResult struct {
+	song      applemusic.Song
+	qualities []QualityOption
+}
+
+func (s *QualityService) queryTrackQualities(ctx context.Context, cfg config.Config, storefront string, songs []applemusic.Song, refreshManifest bool) ([]QualityTrack, error) {
+	unique := make([]applemusic.Song, 0, len(songs))
+	indexes := make(map[string]int, len(songs))
+	for _, song := range songs {
+		if _, exists := indexes[song.ID]; exists {
+			continue
+		}
+		indexes[song.ID] = len(unique)
+		unique = append(unique, song)
+	}
+
+	probeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make([]qualityProbeResult, len(unique))
+	jobs := make(chan int, len(unique))
+	for i := range unique {
+		jobs <- i
+	}
+	close(jobs)
+
+	workers := min(maxQualityProbeWorkers, len(unique))
+	var wg sync.WaitGroup
+	var errOnce sync.Once
+	var firstErr error
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				if probeCtx.Err() != nil {
+					return
+				}
+				song, qualities, err := s.querySongQuality(probeCtx, cfg, storefront, unique[i], refreshManifest)
+				if err != nil {
+					errOnce.Do(func() {
+						firstErr = fmt.Errorf("query quality for song %s: %w", unique[i].ID, err)
+						cancel()
+					})
+					return
+				}
+				results[i] = qualityProbeResult{song: song, qualities: qualities}
+			}
+		}()
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	tracks := make([]QualityTrack, len(songs))
+	for i, song := range songs {
+		probe := results[indexes[song.ID]]
+		tracks[i] = QualityTrack{
+			Song:      qualitySong(mergeQualitySong(song, probe.song)),
+			Qualities: probe.qualities,
+		}
+	}
+	return tracks, nil
+}
+
+func (s *QualityService) querySongQuality(ctx context.Context, cfg config.Config, storefront string, song applemusic.Song, refreshManifest bool) (applemusic.Song, []QualityOption, error) {
 	master := song.EnhancedHLS
 	if cfg.Catalog.DeveloperTokenSigningEnabled() {
 		// A self-signed developer token cannot read enhancedHls, so quality is
 		// analyzed from either the authorized device manifest or a scraped
 		// web-player token, per catalog.signed_mode_hls_source.
 		if cfg.Catalog.EnhancedHLSFromWebToken() {
-			hls, err := s.catalog.EnhancedHLSViaWebToken(ctx, parsed.Storefront, song.ID)
+			hls, err := s.catalog.EnhancedHLSViaWebToken(ctx, storefront, song.ID)
 			if err != nil {
-				return QualityResult{}, fmt.Errorf("fetch enhanced hls via web token: %w", err)
+				return applemusic.Song{}, nil, fmt.Errorf("fetch enhanced hls via web token: %w", err)
 			}
 			master = hls
 		} else {
 			if s.wrapper == nil {
-				return QualityResult{}, fmt.Errorf("developer-token signing enabled but wrapper is not configured")
+				return applemusic.Song{}, nil, fmt.Errorf("developer-token signing enabled but wrapper is not configured")
 			}
 			m3u8, err := s.wrapper.M3U8(ctx, song.ID)
 			if err != nil {
-				return QualityResult{}, fmt.Errorf("request device m3u8: %w", err)
+				return applemusic.Song{}, nil, fmt.Errorf("request device m3u8: %w", err)
 			}
 			master = m3u8
 		}
+	} else if refreshManifest && strings.TrimSpace(master) == "" {
+		metadata, err := s.catalog.SongMetadata(ctx, storefront, song.ID)
+		if err != nil {
+			return applemusic.Song{}, nil, err
+		}
+		song = mergeQualitySong(song, metadata)
+		master = metadata.EnhancedHLS
 	}
 	if strings.TrimSpace(master) == "" {
-		return QualityResult{}, fmt.Errorf("song %s has no enhanced hls manifest", song.ID)
+		return applemusic.Song{}, nil, fmt.Errorf("song %s has no enhanced hls manifest", song.ID)
 	}
 	variants, err := FetchMasterVariants(ctx, s.http, master, s.requestGate)
 	if err != nil {
-		return QualityResult{}, err
+		return applemusic.Song{}, nil, err
 	}
-	return QualityResult{
-		Input: req.URL, Storefront: parsed.Storefront, Type: string(parsed.Type), AdamID: song.ID,
-		Song:      QualitySong{ID: song.ID, Name: song.Name, Artist: song.ArtistName, Album: song.AlbumName, HasLyrics: song.HasLyrics},
-		Qualities: SummarizeQualities(variants),
-	}, nil
+	return song, SummarizeQualities(variants), nil
+}
+
+func qualitySong(song applemusic.Song) QualitySong {
+	return QualitySong{ID: song.ID, Name: song.Name, Artist: song.ArtistName, Album: song.AlbumName, HasLyrics: song.HasLyrics}
+}
+
+func mergeQualitySong(preferred, fallback applemusic.Song) applemusic.Song {
+	preferred.ID = firstNonEmpty(preferred.ID, fallback.ID)
+	preferred.Name = firstNonEmpty(preferred.Name, fallback.Name)
+	preferred.ArtistName = firstNonEmpty(preferred.ArtistName, fallback.ArtistName)
+	preferred.AlbumName = firstNonEmpty(preferred.AlbumName, fallback.AlbumName)
+	preferred.HasLyrics = preferred.HasLyrics || fallback.HasLyrics
+	preferred.EnhancedHLS = firstNonEmpty(preferred.EnhancedHLS, fallback.EnhancedHLS)
+	return preferred
 }
 
 type qualitySpec struct {

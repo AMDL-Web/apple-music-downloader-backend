@@ -61,6 +61,26 @@ func (f fakeQualityCatalog) Song(context.Context, string, string) (applemusic.So
 	return f.song, nil
 }
 
+func (f fakeQualityCatalog) SongMetadata(context.Context, string, string) (applemusic.Song, error) {
+	return f.song, nil
+}
+
+func (f fakeQualityCatalog) Album(context.Context, string, string) (applemusic.Collection, error) {
+	return applemusic.Collection{}, nil
+}
+
+func (f fakeQualityCatalog) Playlist(context.Context, string, string, string) (applemusic.Collection, error) {
+	return applemusic.Collection{}, nil
+}
+
+func (f fakeQualityCatalog) StationTracks(context.Context, string, string, string) (applemusic.Collection, error) {
+	return applemusic.Collection{}, nil
+}
+
+func (f fakeQualityCatalog) ArtistAlbums(context.Context, string, string) (applemusic.ArtistAlbums, error) {
+	return applemusic.ArtistAlbums{}, nil
+}
+
 func (f fakeQualityCatalog) EnhancedHLSViaWebToken(context.Context, string, string) (string, error) {
 	if f.webTokenCallCount != nil {
 		*f.webTokenCallCount++

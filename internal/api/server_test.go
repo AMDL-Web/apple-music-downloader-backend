@@ -287,9 +287,10 @@ func TestWrapperLogoutValidatesUsername(t *testing.T) {
 }
 
 func TestQualityEndpointReturnsOptions(t *testing.T) {
+	song := media.QualitySong{ID: "2", Name: "One Last Kiss", Artist: "Hikaru Utada", Album: "One Last Kiss", HasLyrics: true}
 	fake := &fakeQualityService{result: media.QualityResult{
 		Input: "https://music.apple.com/cn/album/example/1?i=2", Storefront: "cn", Type: "song", AdamID: "2",
-		Song:      media.QualitySong{ID: "2", Name: "One Last Kiss", Artist: "Hikaru Utada", Album: "One Last Kiss", HasLyrics: true},
+		Song:      &song,
 		Qualities: []media.QualityOption{{ID: "alac", Label: "Lossless", Available: true, CodecID: "audio-alac-stereo-44100-16", BitDepth: 16, SampleRate: 44100}},
 	}}
 	server := &Server{quality: fake}
@@ -311,6 +312,34 @@ func TestQualityEndpointReturnsOptions(t *testing.T) {
 	// struct round-trip above.
 	if !strings.Contains(recorder.Body.String(), `"has_lyrics":true`) {
 		t.Fatalf("quality body missing \"has_lyrics\":true: %s", recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), `"tracks"`) {
+		t.Fatalf("single-song response unexpectedly contains tracks: %s", recorder.Body.String())
+	}
+}
+
+func TestQualityEndpointReturnsCollectionTracks(t *testing.T) {
+	fake := &fakeQualityService{result: media.QualityResult{
+		Input: "https://music.apple.com/cn/album/example/1", Storefront: "cn", Type: "album", AdamID: "1",
+		Tracks: []media.QualityTrack{{
+			Song:      media.QualitySong{ID: "2", Name: "One Last Kiss", Artist: "Hikaru Utada", Album: "One Last Kiss"},
+			Qualities: []media.QualityOption{{ID: "alac", Label: "Lossless", Available: true}},
+		}},
+	}}
+	server := &Server{quality: fake}
+	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/quality", `{"url":"https://music.apple.com/cn/album/example/1"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var body media.QualityResult
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Type != "album" || body.AdamID != "1" || body.Song != nil || body.Qualities != nil || len(body.Tracks) != 1 || body.Tracks[0].Song.ID != "2" {
+		t.Fatalf("unexpected collection quality response: %#v", body)
+	}
+	if strings.Contains(recorder.Body.String(), `"song":{"id":""`) {
+		t.Fatalf("collection response leaked an empty legacy song: %s", recorder.Body.String())
 	}
 }
 
@@ -425,8 +454,11 @@ func TestOpenAPISpecification(t *testing.T) {
 		t.Fatalf("content type = %q", contentType)
 	}
 	var spec struct {
-		OpenAPI string                    `yaml:"openapi"`
-		Paths   map[string]map[string]any `yaml:"paths"`
+		OpenAPI    string                    `yaml:"openapi"`
+		Paths      map[string]map[string]any `yaml:"paths"`
+		Components struct {
+			Schemas map[string]any `yaml:"schemas"`
+		} `yaml:"components"`
 	}
 	if err := yaml.Unmarshal(recorder.Body.Bytes(), &spec); err != nil {
 		t.Fatalf("invalid OpenAPI YAML: %v", err)
@@ -462,6 +494,12 @@ func TestOpenAPISpecification(t *testing.T) {
 				t.Errorf("OpenAPI operation %s %s is missing", method, path)
 			}
 		}
+	}
+	if _, ok := spec.Components.Schemas["QualityTrack"]; !ok {
+		t.Error("OpenAPI QualityTrack schema is missing")
+	}
+	if !strings.Contains(recorder.Body.String(), "enum: [song, album, playlist, artist, station]") {
+		t.Error("OpenAPI QualityResponse does not document all supported input types")
 	}
 }
 

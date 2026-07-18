@@ -319,8 +319,13 @@ paths:
   /api/v1/quality:
     post:
       tags: [Quality]
-      summary: 查询歌曲可用音质
-      description: 解析 Apple Music 单曲 URL 或带 i 参数的专辑 URL，返回可用 codec、码率、采样率和位深摘要；不会创建下载任务。
+      summary: 查询链接内歌曲的可用音质
+      description: |
+        解析后端支持的 Apple Music 单曲、专辑、歌单、艺人或电台 URL，返回每首歌曲
+        当前可用的 codec、码率、采样率和位深摘要；不会创建下载任务。单曲响应继续
+        使用 song/qualities 字段；集合响应使用保持 Apple Music 原顺序的 tracks 数组。
+        album URL 上的 i 参数继续服从运行时 catalog.album_track_url_mode；电台解析使用
+        运行时 catalog.media_user_token。music-video 不受支持。
       operationId: queryQuality
       requestBody:
         required: true
@@ -1297,7 +1302,7 @@ components:
         url:
           type: string
           format: uri
-          example: https://music.apple.com/cn/album/one-last-kiss/1542953969?i=1542953977
+          example: https://music.apple.com/cn/album/one-last-kiss/1542953969
     QualitySong:
       type: object
       required: [id, name, artist, album, has_lyrics]
@@ -1332,22 +1337,53 @@ components:
           type: integer
           description: bits per second.
         description: {type: string}
-    QualityResponse:
+    QualityTrack:
       type: object
-      required: [input, storefront, type, adam_id, song, qualities]
+      required: [song, qualities]
       properties:
-        input: {type: string}
-        storefront: {type: string}
-        type:
-          type: string
-          const: song
-        adam_id: {type: string}
         song:
           $ref: '#/components/schemas/QualitySong'
         qualities:
           type: array
           items:
             $ref: '#/components/schemas/QualityOption'
+    QualityResponse:
+      type: object
+      required: [input, storefront, type, adam_id]
+      properties:
+        input: {type: string}
+        storefront: {type: string}
+        type:
+          type: string
+          enum: [song, album, playlist, artist, station]
+        adam_id:
+          type: string
+          description: Parsed Adam ID of the input song or collection.
+        song:
+          $ref: '#/components/schemas/QualitySong'
+        qualities:
+          type: array
+          items:
+            $ref: '#/components/schemas/QualityOption'
+        tracks:
+          type: array
+          description: >-
+            Per-track results for album, playlist, artist, and station inputs.
+            Order and duplicate song occurrences are preserved; omitted for a
+            single-song response.
+          items:
+            $ref: '#/components/schemas/QualityTrack'
+      oneOf:
+        - title: Single song
+          required: [song, qualities]
+          properties:
+            type:
+              const: song
+        - title: Song collection
+          required: [tracks]
+          properties:
+            type:
+              enum: [album, playlist, artist, station]
     Job:
       type: object
       required: [id, input, type, force, status, total_items, done_items, failed_items, created_at, updated_at]
