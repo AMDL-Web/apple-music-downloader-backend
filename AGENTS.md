@@ -45,6 +45,10 @@ This backend is the **download core**. It intentionally has NO authentication la
 
 # 4. Commit Requirements
 
+## Conventional Commit Titles
+
+All non-merge commits MUST follow the [Conventional Commits](https://www.conventionalcommits.org/) specification.
+
 ## Developer Certificate of Origin (DCO)
 
 Every commit merged into `main` or `dev` MUST be signed off under the [Developer Certificate of Origin](https://developercertificate.org/):
