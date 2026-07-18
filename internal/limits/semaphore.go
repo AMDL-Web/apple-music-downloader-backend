@@ -10,6 +10,7 @@ import (
 )
 
 type priorityKey struct{}
+type subpriorityKey struct{}
 
 // WithPriority tags ctx so every pool Acquire made through it competes at the
 // given rank: lower values win contended permits first, equal values keep
@@ -23,28 +24,50 @@ func WithPriority(ctx context.Context, priority int64) context.Context {
 	return context.WithValue(ctx, priorityKey{}, priority)
 }
 
+// WithSubpriority adds a tie-breaker beneath the primary priority. Lower
+// values win when two callers have the same primary priority. The media
+// scheduler uses this for track indexes so earlier tracks in the same job get
+// contended pool capacity first without overtaking tracks from an older job.
+func WithSubpriority(ctx context.Context, subpriority int64) context.Context {
+	return context.WithValue(ctx, subpriorityKey{}, subpriority)
+}
+
 // PriorityFromContext reports the rank WithPriority attached, if any.
 func PriorityFromContext(ctx context.Context) (int64, bool) {
 	priority, ok := ctx.Value(priorityKey{}).(int64)
 	return priority, ok
 }
 
+// SubpriorityFromContext reports the tie-breaker WithSubpriority attached, if
+// any. It is kept separate from PriorityFromContext so existing callers that
+// inspect the job-level priority retain the same contract.
+func SubpriorityFromContext(ctx context.Context) (int64, bool) {
+	subpriority, ok := ctx.Value(subpriorityKey{}).(int64)
+	return subpriority, ok
+}
+
+type contextRank struct {
+	priority    int64
+	subpriority int64
+}
+
 // contextPriority resolves the rank an Acquire competes at. Untagged contexts
 // (interactive API calls such as URL validation and quality probes) outrank
 // every job, so sparse foreground requests never queue behind a bulk
 // download's backlog.
-func contextPriority(ctx context.Context) int64 {
-	if priority, ok := PriorityFromContext(ctx); ok {
-		return priority
+func contextPriority(ctx context.Context) contextRank {
+	priority, ok := PriorityFromContext(ctx)
+	if !ok {
+		return contextRank{priority: math.MinInt64, subpriority: math.MinInt64}
 	}
-	return math.MinInt64
+	subpriority, _ := SubpriorityFromContext(ctx)
+	return contextRank{priority: priority, subpriority: subpriority}
 }
 
 // Semaphore is a context-aware concurrency semaphore whose contended permits
-// are granted by priority (see WithPriority), with FIFO order between equal
-// priorities. A zero or negative limit is treated as one so a malformed
-// direct construction can never disable progress or accidentally make a
-// resource unlimited.
+// are granted by primary priority, subpriority, then FIFO arrival order. A zero
+// or negative limit is treated as one so a malformed direct construction can
+// never disable progress or accidentally make a resource unlimited.
 type Semaphore struct {
 	mu      sync.Mutex
 	limit   int
@@ -56,14 +79,16 @@ type Semaphore struct {
 type semaphoreWaiter struct {
 	ready    chan struct{}
 	priority int64
-	arrival  uint64
+	// subpriority orders callers within one primary priority (for example,
+	// tracks within one job) before arrival order is considered.
+	subpriority int64
+	arrival     uint64
 	// index is the waiter's position in the heap, or -1 once it has been
 	// granted (removed from the heap). Guarded by Semaphore.mu.
 	index int
 }
 
-// waiterHeap orders waiters by priority, then arrival, so equal-priority
-// acquires keep today's FIFO fairness.
+// waiterHeap orders waiters by primary priority, subpriority, then arrival.
 type waiterHeap []*semaphoreWaiter
 
 func (h waiterHeap) Len() int { return len(h) }
@@ -71,6 +96,9 @@ func (h waiterHeap) Len() int { return len(h) }
 func (h waiterHeap) Less(i, j int) bool {
 	if h[i].priority != h[j].priority {
 		return h[i].priority < h[j].priority
+	}
+	if h[i].subpriority != h[j].subpriority {
+		return h[i].subpriority < h[j].subpriority
 	}
 	return h[i].arrival < h[j].arrival
 }
@@ -116,7 +144,10 @@ func (s *Semaphore) Acquire(ctx context.Context) (func(), error) {
 		s.mu.Unlock()
 		return s.releaseFunc(), nil
 	}
-	w := &semaphoreWaiter{ready: make(chan struct{}), priority: contextPriority(ctx), arrival: s.arrival}
+	rank := contextPriority(ctx)
+	w := &semaphoreWaiter{
+		ready: make(chan struct{}), priority: rank.priority, subpriority: rank.subpriority, arrival: s.arrival,
+	}
 	s.arrival++
 	heap.Push(&s.waiters, w)
 	s.mu.Unlock()
