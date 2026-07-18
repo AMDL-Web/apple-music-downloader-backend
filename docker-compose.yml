@@ -62,7 +62,7 @@ services:
       # 临时目录 data/tmp 留在容器内,无需挂载。
       # 启用开发者令牌签名时挂载 .p8 私钥(只读),并在 config.yaml 中把
       # catalog.apple_music_private_key_path 指向 /app/keys/<文件名>.p8:
-      - ./keys:/app/keys:ro
+      # - ./keys:/app/keys:ro
 
   # 如果 wrapper-manager 也做了容器化,取消注释并按实际镜像补全,
   # 然后把上面的 AMDL_WRAPPER_ADDRESS 改成 "wrapper-manager:8080"。
