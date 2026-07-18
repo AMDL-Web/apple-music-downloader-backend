@@ -192,11 +192,13 @@ func encodeDecryptedFragment(w io.Writer, fi int, frag *mp4.Fragment, decrypted 
 	if frag.Mdat == nil {
 		return fmt.Errorf("fragment %d has no mdat box", fi)
 	}
-	var mdatData []byte
-	for _, d := range decrypted {
-		mdatData = append(mdatData, d...)
-	}
-	frag.Mdat.Data = mdatData
+	// Keep the wrapper's per-sample reply buffers as separate mdat parts. mp4ff
+	// writes DataParts sequentially, so concatenating them into another
+	// fragment-sized []byte only increases the peak heap without changing the
+	// encoded container. Clear the encrypted payload first: Data and DataParts
+	// are mutually exclusive representations of the same mdat body.
+	frag.Mdat.Data = nil
+	frag.Mdat.DataParts = decrypted
 
 	// Strip per-fragment encryption boxes (senc/saiz/saio) and pssh, then shrink
 	// trun.data_offset by the removed byte count. mp4ff Encode does NOT recompute
@@ -249,13 +251,27 @@ func (p *MP4Processor) streamDecryptToFile(
 	if err != nil {
 		return err
 	}
-	closed := false
-	defer func() {
-		if !closed {
-			out.Close()
-		}
-	}()
-	bw := bufio.NewWriterSize(out, 1<<20)
+	streamErr := p.streamDecryptToWriter(ctx, r, out, keys, decrypt, onProgress)
+	closeErr := out.Close()
+	if streamErr != nil {
+		return streamErr
+	}
+	return closeErr
+}
+
+// streamDecryptToWriter is the common fragment-at-a-time decrypt/remux loop.
+// The low-memory path writes it to a dec-* file; the high-memory path connects
+// it directly to ffmpeg's stdin so the decrypted fragmented MP4 never exists
+// as either a whole-track []byte or an intermediate file.
+func (p *MP4Processor) streamDecryptToWriter(
+	ctx context.Context,
+	r io.Reader,
+	w io.Writer,
+	keys []string,
+	decrypt func(key string, samples [][]byte) ([][]byte, error),
+	onProgress func(consumed uint64),
+) error {
+	bw := bufio.NewWriterSize(w, 1<<20)
 	br := bufio.NewReaderSize(r, 1<<20)
 
 	var offset uint64
@@ -346,8 +362,52 @@ func (p *MP4Processor) streamDecryptToFile(
 	if err := bw.Flush(); err != nil {
 		return err
 	}
-	closed = true
-	return out.Close()
+	return nil
+}
+
+// streamDecryptToFlatFile decrypts and re-encodes one fragment at a time and
+// feeds the resulting fragmented MP4 directly to ffmpeg over stdin. The OS
+// stdin pipe applies backpressure and reports a broken pipe if ffmpeg exits, so
+// the producer cannot remain blocked behind a dead child. The high-memory
+// path needs only the encrypted whole-track cache plus the current encrypted
+// and decrypted fragments in Go's heap. No dec-* or fix-*/in.m4a copy is made.
+func (p *MP4Processor) streamDecryptToFlatFile(
+	ctx context.Context,
+	r io.Reader,
+	outPath string,
+	keys []string,
+	decrypt func(key string, samples [][]byte) ([][]byte, error),
+	onProgress func(consumed uint64),
+) error {
+	cmd := exec.CommandContext(ctx, p.cfg.Tools.FFmpeg,
+		"-y", "-f", "mp4", "-i", "pipe:0",
+		"-fflags", "+bitexact", "-map_metadata", "0",
+		"-c:a", "copy", "-c:v", "copy", "-f", "mp4", "-brand", "M4A ", outPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("open streamed flatten stdin: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		return fmt.Errorf("start streamed flatten: %w", err)
+	}
+
+	streamErr := p.streamDecryptToWriter(ctx, r, stdin, keys, decrypt, onProgress)
+	_ = stdin.Close()
+	waitErr := cmd.Wait()
+
+	if streamErr != nil {
+		if waitErr != nil {
+			return fmt.Errorf("stream media: %v; streamed flatten: %w: %s", streamErr, waitErr, strings.TrimSpace(stderr.String()))
+		}
+		return streamErr
+	}
+	if waitErr != nil {
+		return fmt.Errorf("streamed flatten: %w: %s", waitErr, strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }
 
 // flattenToFile flattens the fragmented MP4 in `song` into a regular progressive

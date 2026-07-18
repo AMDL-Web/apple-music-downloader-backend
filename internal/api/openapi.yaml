@@ -106,11 +106,11 @@ paths:
         max_parallel_downloads、max_parallel_decrypts、max_parallel_wrapper_requests 除外）、logging.level/access_log、simulate 段、
         catalog.album_track_url_mode/media_user_token/signed_mode_hls_source。
         仅启动时生效的字段（server、database、logging 其它字段、wrapper、tools、catalog 其它字段）不返回——
-        它们无法通过本 API 修改，请编辑 configs/config.yaml 并重启。
+        它们无法通过本 API 修改，请编辑启动配置 configs/config.yaml 并重启。
 
-        每次 GET 会先重读 configs/config.yaml 再返回，因此运行期间手工编辑
-        的可修改字段在下一次 GET 后即生效、无需重启；文件中仅启动时生效
-        字段的改动不会被载入内存（进程内组件无法跟随变化），仍需重启。
+        运行时字段单独存放在 configs/runtime.yaml。每次 GET 会先重读该文件
+        再返回，因此运行期间手工编辑的可修改字段在下一次 GET 后即生效、
+        无需重启；启动配置 config.yaml 的改动仍需重启。
         AMDL_<大写段名>_<大写键名> 环境变量覆盖在每次重读时同样生效并
         优先于文件值。文件当前不可读或校验失败时（例如正编辑到一半），
         继续返回上一份有效配置，并附 reload_error 字段说明原因。
@@ -132,7 +132,7 @@ paths:
         仅 GET 返回的字段可以修改：download 段（max_running_jobs、max_parallel_downloads、
         max_parallel_decrypts、max_parallel_wrapper_requests 除外）、
         logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/signed_mode_hls_source。其余字段只在进程启动时
-        被消费，修改请求会被 422 拒绝——请改 configs/config.yaml 并重启。
+        被消费，修改请求会被 422 拒绝——请改启动配置 configs/config.yaml 并重启。
         作为唯一例外，旧客户端提交的 catalog.media_user_token_priority 仍会被
         接受，但该字段已弃用且值会被忽略，不再参与令牌选择。
         被 AMDL_<大写段名>_<大写键名> 环境变量覆盖的字段同样返回 422：
@@ -140,9 +140,10 @@ paths:
         重启。
 
         修改立即对新请求和新开始的任务生效（运行中的任务继续使用其启动时的
-        配置快照），并写回 configs/config.yaml，重启后依然生效。该文件由
+        配置快照），并写回 configs/runtime.yaml，重启后依然生效。该文件由
         后端管理（每次 PUT 整体重写，注释不保留）；带完整注释的字段文档在
-        configs/config.example.yaml，首次启动时会以它为模板生成 config.yaml。
+        configs/runtime.example.yaml，首次启动时会以它为模板生成
+        runtime.yaml。启动配置 config.yaml 归使用者所有，后端不会重写。
 
         前端注意：确认写入前请先 GET 一次并基于其返回值构造请求体。PUT 的
         合并基准是后端内存中的当前配置，而 GET 会先重读配置文件、把运行
@@ -1076,6 +1077,16 @@ components:
             type: string
             enum: [alac, aac, aac-binaural, aac-downmix, ec3, ac3]
         codec_alternative: {type: boolean}
+        memory_mode:
+          type: string
+          enum: [low, high]
+          description: >-
+            任务级 Enhanced HLS 内存模式。正常路径中，low 使用片段级有界内存并以更多
+            临时磁盘换取较低 RAM；high 将一份加密整轨保留在内存，减少临时磁盘和磁盘往返（单轨内存媒体上限
+            512 MiB；受 Go GC 分配余量影响，实际堆峰值可能接近整轨大小的两倍）。省略时
+            沿用运行时配置。AAC-LC 不受此选项影响，在两种模式下均整轨驻留内存；罕见的
+            ALAC 完整性修复也会读取并复制整轨。两种模式写标签时都会在系统临时目录短暂
+            创建一份整轨重写文件。
         max_attempts:
           type: integer
           maximum: 10
@@ -1115,7 +1126,7 @@ components:
       type: object
       description: >-
         可运行时修改的配置子集（字段含义、枚举值和默认行为见
-        configs/config.example.yaml 内注释）。GET 返回此形状；PUT 时可只
+        configs/runtime.example.yaml 内注释）。GET 返回此形状；PUT 时可只
         提交需要修改的字段，省略的字段保持现值。
       properties:
         catalog:
@@ -1162,6 +1173,17 @@ components:
                 type: string
                 enum: [alac, aac, aac-binaural, aac-downmix, ec3, ac3]
             codec_alternative: {type: boolean}
+            memory_mode:
+              type: string
+              enum: [low, high]
+              description: >-
+                控制 Enhanced HLS 路径。正常路径中，low（默认）使用片段级有界内存，临时
+                磁盘峰值通常约为每并行曲目三份文件；
+                high 将一份加密整轨保留在内存并逐片段解密（单轨内存媒体上限 512 MiB；
+                受 Go GC 分配余量影响，实际堆峰值可能接近整轨大小的两倍），配置的临时目录
+                通常仅保留最终展平输出。AAC-LC 在两种模式下均整轨驻留内存；罕见 ALAC
+                完整性修复也会读取并复制整轨。两种模式写标签时还会在系统临时目录短暂创建
+                一份整轨重写文件。
             max_attempts:
               type: integer
               maximum: 10
@@ -1228,7 +1250,7 @@ components:
           type: boolean
           description: >-
             配置存储是否有后备文件。正常部署下恒为 true：PUT 的修改写回
-            configs/config.yaml，重启后依然生效。
+            configs/runtime.yaml，重启后依然生效。
         reload_error:
           type: string
           description: >-

@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -63,14 +64,17 @@ func TestMediaDownloadLimitSharedAcrossJobClones(t *testing.T) {
 	}
 
 	results := make(chan selectedDownloadMedia, 2)
-	for _, d := range []*Downloader{a, b} {
-		go func(d *Downloader) {
-			got, err := d.downloadSelectedEnhancedMedia(context.Background(), selectedDownloadMedia{info: selectedMediaInfo{MediaURI: server.URL}}, "alac", func(domain.ItemStatus, float64, string) {})
+	for i, d := range []*Downloader{a, b} {
+		go func(d *Downloader, i int) {
+			// Distinct output paths: the resume checkpoint is keyed by output
+			// path, and in production the output lock keeps same-output
+			// downloads from running concurrently.
+			got, err := d.downloadSelectedEnhancedMedia(context.Background(), selectedDownloadMedia{info: selectedMediaInfo{MediaURI: server.URL}}, "alac", "job-pool", fmt.Sprintf("out-%d.m4a", i), func(domain.ItemStatus, float64, string) {})
 			if err != nil {
 				t.Errorf("download: %v", err)
 			}
 			results <- got
-		}(d)
+		}(d, i)
 	}
 	select {
 	case <-entered:
@@ -121,23 +125,23 @@ func TestMediaInFlightBackpressureAndDownloadFailureRelease(t *testing.T) {
 		downloadLimit: limits.NewSemaphore(2), decryptLimit: limits.NewSemaphore(1), inFlightLimit: limits.NewSemaphore(3),
 	}
 	input := selectedDownloadMedia{info: selectedMediaInfo{MediaURI: server.URL}}
-	if _, err := d.downloadSelectedEnhancedMedia(context.Background(), input, "alac", func(domain.ItemStatus, float64, string) {}); err == nil {
+	if _, err := d.downloadSelectedEnhancedMedia(context.Background(), input, "alac", "job-backpressure", "out-first.m4a", func(domain.ItemStatus, float64, string) {}); err == nil {
 		t.Fatal("first failed media response unexpectedly succeeded")
 	}
 
 	results := make(chan selectedDownloadMedia, 4)
 	var wg sync.WaitGroup
-	for range 4 {
+	for i := range 4 {
 		wg.Add(1)
-		go func() {
+		go func(i int) {
 			defer wg.Done()
-			got, err := d.downloadSelectedEnhancedMedia(context.Background(), input, "alac", func(domain.ItemStatus, float64, string) {})
+			got, err := d.downloadSelectedEnhancedMedia(context.Background(), input, "alac", "job-backpressure", fmt.Sprintf("out-%d.m4a", i), func(domain.ItemStatus, float64, string) {})
 			if err != nil {
 				t.Errorf("download after failure: %v", err)
 				return
 			}
 			results <- got
-		}()
+		}(i)
 	}
 	held := make([]selectedDownloadMedia, 0, 4)
 	for range 3 {

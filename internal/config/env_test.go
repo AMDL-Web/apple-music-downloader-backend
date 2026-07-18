@@ -19,6 +19,7 @@ func TestEnvOverrides(t *testing.T) {
 		"AMDL_DOWNLOAD_MAX_ATTEMPTS=7",
 		"AMDL_DOWNLOAD_MAX_PARALLEL_DOWNLOADS=8",
 		"AMDL_DOWNLOAD_MAX_PARALLEL_DECRYPTS=3",
+		"AMDL_DOWNLOAD_MEMORY_MODE=high",
 		"AMDL_DOWNLOAD_QUALITY_PRIORITY=aac, alac,",
 		"AMDL_CATALOG_MAX_PARALLEL_REQUESTS=12",
 		"AMDL_CATALOG_REQUESTS_PER_SECOND=9",
@@ -54,6 +55,9 @@ func TestEnvOverrides(t *testing.T) {
 	}
 	if cfg.Catalog.MaxParallelRequests != 12 || cfg.Catalog.RequestsPerSecond != 9 || cfg.Catalog.RequestBurst != 14 {
 		t.Fatalf("catalog controls = %+v", cfg.Catalog)
+	}
+	if cfg.Download.MemoryMode != MemoryModeHigh {
+		t.Fatalf("memory mode = %q, want high", cfg.Download.MemoryMode)
 	}
 	if !reflect.DeepEqual(cfg.Download.QualityPriority, []string{"aac", "alac"}) {
 		t.Fatalf("quality priority = %#v, want trimmed comma-separated items", cfg.Download.QualityPriority)
@@ -127,6 +131,10 @@ func TestEnvOverridesGoThroughValidation(t *testing.T) {
 		!strings.Contains(err.Error(), "cover_format") {
 		t.Fatalf("load error = %v, want cover_format validation error", err)
 	}
+	if _, err := load(path, []string{"AMDL_DOWNLOAD_MEMORY_MODE=auto"}); err == nil ||
+		!strings.Contains(err.Error(), "memory_mode") {
+		t.Fatalf("load error = %v, want memory_mode validation error", err)
+	}
 }
 
 func TestLoadAppliesProcessEnvironment(t *testing.T) {
@@ -195,27 +203,33 @@ func TestEnvLockedChanges(t *testing.T) {
 // keep the value pinned even after the variable is unset.
 func TestBootstrapDoesNotBakeEnvOverrides(t *testing.T) {
 	t.Setenv("AMDL_WRAPPER_ADDRESS", "wrapper-manager:8080")
+	t.Setenv("AMDL_DOWNLOAD_COVER_FORMAT", "png")
 	dir := t.TempDir()
 	example := "wrapper:\n  address: \"127.0.0.1:8080\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "config.example.yaml"), []byte(example), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "config.yaml")
-	if created, err := BootstrapFromExample(path); err != nil || !created {
-		t.Fatalf("bootstrap = (%v, %v), want created", created, err)
+	startup := filepath.Join(dir, "config.yaml")
+	runtime := filepath.Join(dir, "runtime.yaml")
+	if result, err := EnsureFiles(startup, runtime); err != nil || !result.CreatedStartup || !result.CreatedRuntime {
+		t.Fatalf("bootstrap = (%+v, %v), want both created", result, err)
 	}
-	raw, err := os.ReadFile(path)
+	startupRaw, err := os.ReadFile(startup)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "wrapper-manager:8080") {
-		t.Fatalf("env override leaked into the bootstrapped file:\n%s", raw)
-	}
-	cfg, err := Load(path)
+	runtimeRaw, err := os.ReadFile(runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Wrapper.Address != "wrapper-manager:8080" {
-		t.Fatalf("loaded wrapper address = %q, want env overlay on top of the file", cfg.Wrapper.Address)
+	if strings.Contains(string(startupRaw), "wrapper-manager:8080") || strings.Contains(string(runtimeRaw), "cover_format: png") {
+		t.Fatalf("env override leaked into a bootstrapped file:\n%s\n---\n%s", startupRaw, runtimeRaw)
+	}
+	cfg, err := LoadPair(startup, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Wrapper.Address != "wrapper-manager:8080" || cfg.Download.CoverFormat != "png" {
+		t.Fatalf("loaded config = wrapper %q cover %q, want env overlay on top of the files", cfg.Wrapper.Address, cfg.Download.CoverFormat)
 	}
 }

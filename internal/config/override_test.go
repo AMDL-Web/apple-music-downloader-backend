@@ -21,6 +21,7 @@ func TestDownloadOverridesApplyMergesOnlySetFields(t *testing.T) {
 	base := Default()
 	embed := false
 	format := "png"
+	memoryMode := MemoryModeHigh
 	quality := []string{"aac"}
 	mediaUserToken := "job-token"
 	base.Catalog.MediaUserToken = "global-token"
@@ -29,13 +30,14 @@ func TestDownloadOverridesApplyMergesOnlySetFields(t *testing.T) {
 		QualityPriority: &quality,
 		EmbedCover:      &embed,
 		CoverFormat:     &format,
+		MemoryMode:      &memoryMode,
 	}
 	got := overrides.Apply(base)
 
 	if !reflect.DeepEqual(got.Download.QualityPriority, []string{"aac"}) {
 		t.Fatalf("quality_priority = %v, want [aac]", got.Download.QualityPriority)
 	}
-	if got.Download.EmbedCover != false || got.Download.CoverFormat != "png" {
+	if got.Download.EmbedCover != false || got.Download.CoverFormat != "png" || got.Download.MemoryMode != MemoryModeHigh {
 		t.Fatalf("overridden fields not applied: %+v", got.Download)
 	}
 	if got.Catalog.MediaUserToken != "job-token" {
@@ -104,6 +106,10 @@ func TestDownloadOverridesApplyThenValidate(t *testing.T) {
 	overrides = &DownloadOverrides{CoverFormat: &good}
 	if err := overrides.Apply(Default()).Validate(); err != nil {
 		t.Fatalf("valid overrides rejected: %v", err)
+	}
+	badMemoryMode := "auto"
+	if err := (&DownloadOverrides{MemoryMode: &badMemoryMode}).Apply(Default()).Validate(); err == nil || !strings.Contains(err.Error(), "memory_mode") {
+		t.Fatalf("invalid memory_mode override error = %v, want memory_mode validation error", err)
 	}
 }
 
@@ -200,13 +206,16 @@ func TestRuntimeLockedChanges(t *testing.T) {
 	updated.Download.MaxRunningJobs = base.Download.MaxRunningJobs + 1
 	updated.Download.MaxParallelDownloads = base.Download.MaxParallelDownloads + 1
 	updated.Download.MaxParallelDecrypts = base.Download.MaxParallelDecrypts + 1
+	updated.Download.MaxParallelWrapperRequests = base.Download.MaxParallelWrapperRequests + 1
 	updated.Wrapper.Address = "10.0.0.1:8080"
 	updated.Catalog.AllowedOrigins = []string{"https://example.com"}
 	updated.Catalog.MaxParallelRequests = base.Catalog.MaxParallelRequests + 1
 	updated.Catalog.RequestsPerSecond = base.Catalog.RequestsPerSecond + 1
 	updated.Catalog.RequestBurst = base.Catalog.RequestBurst + 1
 	got := RuntimeLockedChanges(base, updated)
-	want := []string{"server.listen", "logging.format", "wrapper.address", "catalog.allowed_origins", "catalog.max_parallel_requests", "catalog.requests_per_second", "catalog.request_burst", "download.max_running_jobs", "download.max_parallel_downloads", "download.max_parallel_decrypts"}
+	// Keys surface in Config struct-field order because the locked set is
+	// derived from envFields.
+	want := []string{"server.listen", "logging.format", "wrapper.address", "catalog.max_parallel_requests", "catalog.requests_per_second", "catalog.request_burst", "catalog.allowed_origins", "download.max_running_jobs", "download.max_parallel_downloads", "download.max_parallel_decrypts", "download.max_parallel_wrapper_requests"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("locked changes = %v, want %v", got, want)
 	}
@@ -228,6 +237,14 @@ func TestMutableViewOmitsStartupBoundFields(t *testing.T) {
 	}
 	if download["cover_format"] != "jpg" {
 		t.Fatalf("download.cover_format = %v, want jpg", download["cover_format"])
+	}
+	if download["memory_mode"] != MemoryModeLow {
+		t.Fatalf("download.memory_mode = %v, want low", download["memory_mode"])
+	}
+	for _, key := range []string{"max_parallel_downloads", "max_parallel_decrypts", "max_parallel_wrapper_requests"} {
+		if _, ok := download[key]; ok {
+			t.Fatalf("download section exposes startup-bound %s: %v", key, download)
+		}
 	}
 	catalog, ok := view["catalog"].(map[string]any)
 	if !ok || len(catalog) != 3 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["signed_mode_hls_source"] != "wrapper" {

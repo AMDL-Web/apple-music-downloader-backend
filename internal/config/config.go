@@ -128,6 +128,7 @@ func (c CatalogConfig) EnhancedHLSFromWebToken() bool {
 type DownloadConfig struct {
 	QualityPriority            []string `yaml:"quality_priority" json:"quality_priority"`
 	CodecAlternative           bool     `yaml:"codec_alternative" json:"codec_alternative"`
+	MemoryMode                 string   `yaml:"memory_mode" json:"memory_mode"`
 	MaxRunningJobs             int      `yaml:"max_running_jobs" json:"max_running_jobs"`
 	MaxParallelDownloads       int      `yaml:"max_parallel_downloads" json:"max_parallel_downloads"`
 	MaxParallelDecrypts        int      `yaml:"max_parallel_decrypts" json:"max_parallel_decrypts"`
@@ -157,6 +158,9 @@ type DownloadConfig struct {
 }
 
 const (
+	MemoryModeLow  = "low"
+	MemoryModeHigh = "high"
+
 	// These limits bound process-wide concurrency, request rate, and retry
 	// fan-out while remaining comfortably above normal deployments.
 	maxRunningJobsLimit = 32
@@ -197,7 +201,7 @@ func Default() Config {
 			DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song", SignedModeHLSSource: "wrapper",
 		},
 		Download: DownloadConfig{
-			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true,
+			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true, MemoryMode: MemoryModeLow,
 			MaxRunningJobs: 2, MaxParallelDownloads: 16, MaxParallelDecrypts: 32, MaxParallelWrapperRequests: 24, MaxAttempts: 4,
 			DownloadsDir:       "data/downloads",
 			SongPathFormat:     "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
@@ -214,16 +218,49 @@ func Default() Config {
 	}
 }
 
-// Load reads the config file at path, overlays any AMDL_* environment
-// variable overrides on top (see env.go), and validates the result. The
-// environment is re-applied on every call, so Store.Reload keeps overridden
-// values pinned across file re-reads.
+// LoadPair reads the split configuration: the startup file (keys consumed
+// once at process start) plus the runtime file (keys the config API may
+// change while running), overlays any AMDL_* environment variable overrides
+// on top (see env.go), and validates the merged result. Each file is checked
+// strictly against its side of the split — a key in the wrong file is a load
+// error, not a silently shadowed value.
+func LoadPair(startupPath, runtimePath string) (Config, error) {
+	return loadPair(startupPath, runtimePath, os.Environ())
+}
+
+// loadPair is LoadPair with an explicit environment so tests can inject one.
+func loadPair(startupPath, runtimePath string, environ []string) (Config, error) {
+	cfg := Default()
+	if err := decodeFileStrict(&cfg, startupPath, roleStartup); err != nil {
+		return cfg, err
+	}
+	if err := decodeFileStrict(&cfg, runtimePath, roleRuntime); err != nil {
+		return cfg, err
+	}
+	if err := applyEnvOverrides(&cfg, environ); err != nil {
+		return cfg, err
+	}
+	if err := cfg.NormalizeDeprecated(); err != nil {
+		return cfg, err
+	}
+	clampDownloadLimits(&cfg.Download)
+	if err := cfg.Validate(); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// Load reads a single pre-split config file holding any mix of startup and
+// runtime keys, overlays AMDL_* environment overrides, and validates the
+// result. Production loading goes through LoadPair; Load remains for the
+// one-time EnsureFiles migration of a legacy config.yaml and for reading
+// example files that still use the combined layout.
 func Load(path string) (Config, error) {
 	return load(path, os.Environ())
 }
 
 // load is Load with an explicit environment, so tests can inject one and
-// BootstrapFromExample can read the example file without any overrides.
+// EnsureFiles can read legacy and example files without baking overrides in.
 func load(path string, environ []string) (Config, error) {
 	cfg := Default()
 	raw, err := os.ReadFile(path)
@@ -393,6 +430,11 @@ func (c Config) Validate() error {
 	}
 	if c.Download.MaxAttempts > maxAttemptsLimit {
 		return fmt.Errorf("download.max_attempts must be at most %d", maxAttemptsLimit)
+	}
+	switch c.Download.MemoryMode {
+	case MemoryModeLow, MemoryModeHigh:
+	default:
+		return fmt.Errorf("download.memory_mode must be low or high")
 	}
 	switch c.Download.CoverFormat {
 	case "jpg", "jpeg", "png":

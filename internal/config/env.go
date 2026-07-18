@@ -24,10 +24,11 @@ import (
 const envPrefix = "AMDL_"
 
 // envIgnored are AMDL_-prefixed variables that are not config-key overrides:
-// the two file-path variables read in main.
+// the file-path variables read in main.
 var envIgnored = map[string]struct{}{
-	"AMDL_CONFIG":       {},
-	"AMDL_HOOKS_CONFIG": {},
+	"AMDL_CONFIG":         {},
+	"AMDL_RUNTIME_CONFIG": {},
+	"AMDL_HOOKS_CONFIG":   {},
 }
 
 // envField ties one leaf field of Config to the environment variable that
