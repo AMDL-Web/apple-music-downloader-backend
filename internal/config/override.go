@@ -13,12 +13,12 @@ import (
 //
 // Every field is optional: nil means "keep the runtime config's value". The
 // Download-related JSON keys mirror the job-scoped subset of
-// configs/config.yaml. Process-wide concurrency fields are deliberately absent:
-// max_running_jobs sizes the worker pool, while max_parallel_metadata_requests,
-// max_parallel_media_downloads, and max_parallel_wrapper_requests coordinate
-// all jobs and therefore cannot be meaningfully overridden by one job.
-// MediaUserToken similarly overlays catalog.media_user_token for a job that
-// needs Apple Music user identity.
+// configs/config.yaml. MediaUserToken overlays catalog.media_user_token for a
+// job that
+// needs Apple Music user identity. max_running_jobs, max_parallel_downloads,
+// max_parallel_decrypts, and max_parallel_wrapper_requests are deliberately
+// absent — they size process-wide pools at startup and cannot apply to a
+// single job.
 // The two slice fields are *[]string rather than []string so an explicit
 // empty list survives the JSON round trip through the jobs table: nil (field
 // absent, keep config) marshals away under omitempty, while a pointer to an
@@ -29,7 +29,6 @@ type DownloadOverrides struct {
 	QualityPriority    *[]string `json:"quality_priority,omitempty"`
 	CodecAlternative   *bool     `json:"codec_alternative,omitempty"`
 	MemoryMode         *string   `json:"memory_mode,omitempty"`
-	MaxParallelTracks  *int      `json:"max_parallel_tracks,omitempty"`
 	MaxAttempts        *int      `json:"max_attempts,omitempty"`
 	DownloadsDir       *string   `json:"downloads_dir,omitempty"`
 	SongPathFormat     *string   `json:"song_path_format,omitempty"`
@@ -87,9 +86,6 @@ func (o *DownloadOverrides) Apply(base Config) Config {
 	}
 	if o.MemoryMode != nil {
 		d.MemoryMode = *o.MemoryMode
-	}
-	if o.MaxParallelTracks != nil {
-		d.MaxParallelTracks = *o.MaxParallelTracks
 	}
 	if o.MaxAttempts != nil {
 		d.MaxAttempts = *o.MaxAttempts

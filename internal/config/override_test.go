@@ -21,25 +21,23 @@ func TestDownloadOverridesApplyMergesOnlySetFields(t *testing.T) {
 	base := Default()
 	embed := false
 	format := "png"
-	parallel := 7
 	memoryMode := MemoryModeHigh
 	quality := []string{"aac"}
 	mediaUserToken := "job-token"
 	base.Catalog.MediaUserToken = "global-token"
 	overrides := &DownloadOverrides{
-		MediaUserToken:    &mediaUserToken,
-		QualityPriority:   &quality,
-		EmbedCover:        &embed,
-		CoverFormat:       &format,
-		MemoryMode:        &memoryMode,
-		MaxParallelTracks: &parallel,
+		MediaUserToken:  &mediaUserToken,
+		QualityPriority: &quality,
+		EmbedCover:      &embed,
+		CoverFormat:     &format,
+		MemoryMode:      &memoryMode,
 	}
 	got := overrides.Apply(base)
 
 	if !reflect.DeepEqual(got.Download.QualityPriority, []string{"aac"}) {
 		t.Fatalf("quality_priority = %v, want [aac]", got.Download.QualityPriority)
 	}
-	if got.Download.EmbedCover != false || got.Download.CoverFormat != "png" || got.Download.MemoryMode != MemoryModeHigh || got.Download.MaxParallelTracks != 7 {
+	if got.Download.EmbedCover != false || got.Download.CoverFormat != "png" || got.Download.MemoryMode != MemoryModeHigh {
 		t.Fatalf("overridden fields not applied: %+v", got.Download)
 	}
 	if got.Catalog.MediaUserToken != "job-token" {
@@ -82,6 +80,19 @@ func TestDownloadOverridesRequestJSONIncludesMediaUserToken(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"embed_cover":false`) {
 		t.Fatalf("public override JSON lost ordinary field: %s", raw)
+	}
+}
+
+func TestDownloadOverridesIgnoresRemovedParallelTracksInPersistedJSON(t *testing.T) {
+	var overrides DownloadOverrides
+	if err := json.Unmarshal([]byte(`{"max_parallel_tracks":64,"embed_cover":false}`), &overrides); err != nil {
+		t.Fatalf("decode historical override: %v", err)
+	}
+	if overrides.EmbedCover == nil || *overrides.EmbedCover {
+		t.Fatalf("supported historical fields were not decoded: %+v", overrides)
+	}
+	if raw, err := json.Marshal(overrides); err != nil || strings.Contains(string(raw), "max_parallel_tracks") {
+		t.Fatalf("removed override field survived normalization: raw=%s err=%v", raw, err)
 	}
 }
 
@@ -179,9 +190,6 @@ func TestRuntimeLockedChanges(t *testing.T) {
 	updated := base
 	updated.Download.QualityPriority = []string{"aac"}
 	updated.Download.EmbedLyrics = false
-	updated.Download.MaxParallelMetadataRequests = 8
-	updated.Download.MaxParallelMediaDownloads = 24
-	updated.Download.MaxParallelWrapperRequests = 12
 	updated.Simulate.Enabled = true
 	updated.Simulate.MinSpeedKBps = 10
 	updated.Catalog.AlbumTrackURLMode = "album"
@@ -196,10 +204,18 @@ func TestRuntimeLockedChanges(t *testing.T) {
 	updated.Server.Listen = "0.0.0.0:9999"
 	updated.Logging.Format = "json"
 	updated.Download.MaxRunningJobs = base.Download.MaxRunningJobs + 1
+	updated.Download.MaxParallelDownloads = base.Download.MaxParallelDownloads + 1
+	updated.Download.MaxParallelDecrypts = base.Download.MaxParallelDecrypts + 1
+	updated.Download.MaxParallelWrapperRequests = base.Download.MaxParallelWrapperRequests + 1
 	updated.Wrapper.Address = "10.0.0.1:8080"
 	updated.Catalog.AllowedOrigins = []string{"https://example.com"}
+	updated.Catalog.MaxParallelRequests = base.Catalog.MaxParallelRequests + 1
+	updated.Catalog.RequestsPerSecond = base.Catalog.RequestsPerSecond + 1
+	updated.Catalog.RequestBurst = base.Catalog.RequestBurst + 1
 	got := RuntimeLockedChanges(base, updated)
-	want := []string{"server.listen", "logging.format", "wrapper.address", "catalog.allowed_origins", "download.max_running_jobs"}
+	// Keys surface in Config struct-field order because the locked set is
+	// derived from envFields.
+	want := []string{"server.listen", "logging.format", "wrapper.address", "catalog.max_parallel_requests", "catalog.requests_per_second", "catalog.request_burst", "catalog.allowed_origins", "download.max_running_jobs", "download.max_parallel_downloads", "download.max_parallel_decrypts", "download.max_parallel_wrapper_requests"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("locked changes = %v, want %v", got, want)
 	}
@@ -214,17 +230,21 @@ func TestMutableViewOmitsStartupBoundFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("download section = %T, want map", view["download"])
 	}
-	if _, exists := download["max_running_jobs"]; exists {
-		t.Fatal("download section must not expose max_running_jobs")
+	for _, key := range []string{"max_running_jobs", "max_parallel_downloads", "max_parallel_decrypts"} {
+		if _, exists := download[key]; exists {
+			t.Fatalf("download section must not expose %s", key)
+		}
 	}
 	if download["cover_format"] != "jpg" {
 		t.Fatalf("download.cover_format = %v, want jpg", download["cover_format"])
 	}
-	if download["max_parallel_metadata_requests"] != 32 || download["max_parallel_media_downloads"] != 32 || download["max_parallel_wrapper_requests"] != 64 {
-		t.Fatalf("download section missing shared limits: %v", download)
-	}
 	if download["memory_mode"] != MemoryModeLow {
 		t.Fatalf("download.memory_mode = %v, want low", download["memory_mode"])
+	}
+	for _, key := range []string{"max_parallel_downloads", "max_parallel_decrypts", "max_parallel_wrapper_requests"} {
+		if _, ok := download[key]; ok {
+			t.Fatalf("download section exposes startup-bound %s: %v", key, download)
+		}
 	}
 	catalog, ok := view["catalog"].(map[string]any)
 	if !ok || len(catalog) != 3 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["signed_mode_hls_source"] != "wrapper" {
@@ -254,14 +274,13 @@ func TestStoreGetSet(t *testing.T) {
 // on every retry and post-restart requeue, so over-limit values must clamp
 // instead of failing the job forever.
 func TestApplyValidatedClampsNumericOverrides(t *testing.T) {
-	tracks, attempts := 200, 50
-	applied, err := (&DownloadOverrides{MaxParallelTracks: &tracks, MaxAttempts: &attempts}).ApplyValidated(Default())
+	attempts := 50
+	applied, err := (&DownloadOverrides{MaxAttempts: &attempts}).ApplyValidated(Default())
 	if err != nil {
 		t.Fatalf("ApplyValidated() with over-limit numeric overrides failed: %v", err)
 	}
-	if applied.Download.MaxParallelTracks != maxParallelTracksLimit || applied.Download.MaxAttempts != maxAttemptsLimit {
-		t.Fatalf("overrides not clamped: tracks=%d attempts=%d",
-			applied.Download.MaxParallelTracks, applied.Download.MaxAttempts)
+	if applied.Download.MaxAttempts != maxAttemptsLimit {
+		t.Fatalf("override not clamped: attempts=%d", applied.Download.MaxAttempts)
 	}
 }
 
@@ -272,9 +291,5 @@ func TestApplyValidatedStrictRejectsOverLimitOverrides(t *testing.T) {
 	attempts := 50
 	if _, err := (&DownloadOverrides{MaxAttempts: &attempts}).ApplyValidatedStrict(Default()); err == nil || !strings.Contains(err.Error(), "max_attempts") {
 		t.Fatalf("ApplyValidatedStrict() error = %v, want max_attempts bounds error", err)
-	}
-	tracks := 200
-	if _, err := (&DownloadOverrides{MaxParallelTracks: &tracks}).ApplyValidatedStrict(Default()); err == nil || !strings.Contains(err.Error(), "max_parallel_tracks") {
-		t.Fatalf("ApplyValidatedStrict() error = %v, want max_parallel_tracks bounds error", err)
 	}
 }

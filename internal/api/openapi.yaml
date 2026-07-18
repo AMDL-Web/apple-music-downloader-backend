@@ -102,8 +102,9 @@ paths:
       tags: [System]
       summary: 读取当前运行时配置（仅可修改字段）
       description: >-
-        返回当前生效配置中可运行时修改的部分：download 段（max_running_jobs
-        除外）、logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/signed_mode_hls_source。
+        返回当前生效配置中可运行时修改的部分：download 段（max_running_jobs、
+        max_parallel_downloads、max_parallel_decrypts、max_parallel_wrapper_requests 除外）、logging.level/access_log、simulate 段、
+        catalog.album_track_url_mode/media_user_token/signed_mode_hls_source。
         仅启动时生效的字段（server、database、logging 其它字段、wrapper、tools、catalog 其它字段）不返回——
         它们无法通过本 API 修改，请编辑启动配置 configs/config.yaml 并重启。
 
@@ -128,7 +129,8 @@ paths:
         请求体按合并语义覆盖当前运行时配置：省略的字段保持现值，出现的字段
         （含整段）被替换。合并结果必须通过与配置文件相同的完整校验。
 
-        仅 GET 返回的字段可以修改：download 段（max_running_jobs 除外）、
+        仅 GET 返回的字段可以修改：download 段（max_running_jobs、max_parallel_downloads、
+        max_parallel_decrypts、max_parallel_wrapper_requests 除外）、
         logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/signed_mode_hls_source。其余字段只在进程启动时
         被消费，修改请求会被 422 拒绝——请改启动配置 configs/config.yaml 并重启。
         作为唯一例外，旧客户端提交的 catalog.media_user_token_priority 仍会被
@@ -1051,9 +1053,8 @@ components:
       type: object
       description: >-
         按任务配置覆盖层：除 media_user_token 外，字段与运行时配置 download 段
-        一一对应，但不包含进程级字段 max_running_jobs、max_parallel_metadata_requests、
-        max_parallel_media_downloads 和 max_parallel_wrapper_requests；这些值跨任务共享，
-        无法由单个任务覆盖。
+        一一对应。max_running_jobs、max_parallel_downloads、max_parallel_decrypts、
+        max_parallel_wrapper_requests 在启动时确定并全局共享，无法按任务覆盖。
         所有字段可选；提交时会以“当前运行时配置 + 覆盖”做完整校验。
         downloads_dir 和 temp_dir 只能选择管理员配置根目录本身或其子目录，
         不能通过绝对路径、.. 或符号链接逃出对应根目录。media_user_token 具有
@@ -1086,10 +1087,6 @@ components:
             沿用运行时配置。AAC-LC 不受此选项影响，在两种模式下均整轨驻留内存；罕见的
             ALAC 完整性修复也会读取并复制整轨。两种模式写标签时都会在系统临时目录短暂
             创建一份整轨重写文件。
-        max_parallel_tracks:
-          type: integer
-          maximum: 64
-          description: 正数允许 1-64；值 <=0 按 1 处理；提交时超过 64 返回 422（早于该上限持久化的任务覆盖在运行时按 64 截断，不会因此失败）。该值限制每任务活跃音轨流水线。
         max_attempts:
           type: integer
           maximum: 10
@@ -1134,6 +1131,9 @@ components:
       properties:
         catalog:
           type: object
+          description: >-
+            max_parallel_requests、requests_per_second、request_burst 仅启动时生效，
+            不在此出现、不可修改。
           properties:
             album_track_url_mode:
               type: string
@@ -1162,7 +1162,9 @@ components:
                 music.apple.com 网页端 JWT，从 amp-api 读取 enhancedHls。
         download:
           type: object
-          description: max_running_jobs 仅启动时生效，不在此出现、不可修改。
+          description: >-
+            max_running_jobs、max_parallel_downloads、max_parallel_decrypts、
+            max_parallel_wrapper_requests 仅启动时生效，不在此出现、不可修改。
           properties:
             quality_priority:
               type: array
@@ -1182,22 +1184,6 @@ components:
                 通常仅保留最终展平输出。AAC-LC 在两种模式下均整轨驻留内存；罕见 ALAC
                 完整性修复也会读取并复制整轨。两种模式写标签时还会在系统临时目录短暂创建
                 一份整轨重写文件。
-            max_parallel_tracks:
-              type: integer
-              maximum: 64
-              description: 正数允许 1-64；值 <=0 按 1 处理。该值限制每任务活跃音轨流水线。
-            max_parallel_metadata_requests:
-              type: integer
-              maximum: 256
-              description: 单个 backend 进程内跨任务共享的 Apple Catalog 逐轨元数据请求并发上限；正数允许 1-256，值 <=0 按 1 处理。默认 32，可运行时修改，不可按任务覆盖。
-            max_parallel_media_downloads:
-              type: integer
-              maximum: 256
-              description: 单个 backend 进程内跨任务共享的加密媒体 CDN 传输并发上限；正数允许 1-256，值 <=0 按 1 处理。默认 32，可运行时修改，不可按任务覆盖。
-            max_parallel_wrapper_requests:
-              type: integer
-              maximum: 256
-              description: 单个 backend 进程内跨任务共享的 wrapper 数据操作并发上限；完整 decrypt session 占一个槽位，Lyrics/M3U8/WebPlayback/License RPC 仅在调用期间占用；登录、登出和状态查询不受限。正数允许 1-256，值 <=0 按 1 处理。默认 64，可运行时修改，不可按任务覆盖。
             max_attempts:
               type: integer
               maximum: 10

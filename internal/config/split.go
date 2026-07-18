@@ -31,8 +31,17 @@ func isRuntimeKey(key string) bool {
 	section, _, _ := strings.Cut(key, ".")
 	switch section {
 	case "download":
-		// max_running_jobs sizes the worker pool built at startup.
-		return key != "download.max_running_jobs"
+		// max_running_jobs sizes the worker pool built at startup, and the
+		// global download/decrypt/wrapper pools are likewise sized once from
+		// the startup snapshot.
+		switch key {
+		case "download.max_running_jobs",
+			"download.max_parallel_downloads",
+			"download.max_parallel_decrypts",
+			"download.max_parallel_wrapper_requests":
+			return false
+		}
+		return true
 	case "simulate":
 		return true
 	}

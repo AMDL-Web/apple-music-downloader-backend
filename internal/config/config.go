@@ -72,6 +72,9 @@ func (c WrapperConfig) Timeout() time.Duration {
 type CatalogConfig struct {
 	DefaultStorefront        string   `yaml:"default_storefront" json:"default_storefront"`
 	Language                 string   `yaml:"language" json:"language"`
+	MaxParallelRequests      int      `yaml:"max_parallel_requests" json:"max_parallel_requests"`
+	RequestsPerSecond        int      `yaml:"requests_per_second" json:"requests_per_second"`
+	RequestBurst             int      `yaml:"request_burst" json:"request_burst"`
 	AppleMusicPrivateKeyPath string   `yaml:"apple_music_private_key_path" json:"apple_music_private_key_path"`
 	AppleMusicKeyID          string   `yaml:"apple_music_key_id" json:"apple_music_key_id"`
 	AppleMusicTeamID         string   `yaml:"apple_music_team_id" json:"apple_music_team_id"`
@@ -123,48 +126,46 @@ func (c CatalogConfig) EnhancedHLSFromWebToken() bool {
 }
 
 type DownloadConfig struct {
-	QualityPriority             []string `yaml:"quality_priority" json:"quality_priority"`
-	CodecAlternative            bool     `yaml:"codec_alternative" json:"codec_alternative"`
-	MemoryMode                  string   `yaml:"memory_mode" json:"memory_mode"`
-	MaxRunningJobs              int      `yaml:"max_running_jobs" json:"max_running_jobs"`
-	MaxParallelTracks           int      `yaml:"max_parallel_tracks" json:"max_parallel_tracks"`
-	MaxParallelMetadataRequests int      `yaml:"max_parallel_metadata_requests" json:"max_parallel_metadata_requests"`
-	MaxParallelMediaDownloads   int      `yaml:"max_parallel_media_downloads" json:"max_parallel_media_downloads"`
-	MaxParallelWrapperRequests  int      `yaml:"max_parallel_wrapper_requests" json:"max_parallel_wrapper_requests"`
-	MaxAttempts                 int      `yaml:"max_attempts" json:"max_attempts"`
-	DownloadsDir                string   `yaml:"downloads_dir" json:"downloads_dir"`
-	SongPathFormat              string   `yaml:"song_path_format" json:"song_path_format"`
-	AlbumPathFormat             string   `yaml:"album_path_format" json:"album_path_format"`
-	ArtistPathFormat            string   `yaml:"artist_path_format" json:"artist_path_format"`
-	PlaylistPathFormat          string   `yaml:"playlist_path_format" json:"playlist_path_format"`
-	StationPathFormat           string   `yaml:"station_path_format" json:"station_path_format"`
-	TempDir                     string   `yaml:"temp_dir" json:"temp_dir"`
-	CoverSize                   string   `yaml:"cover_size" json:"cover_size"`
-	CoverFormat                 string   `yaml:"cover_format" json:"cover_format"`
-	EmbedCover                  bool     `yaml:"embed_cover" json:"embed_cover"`
-	SaveAlbumCover              bool     `yaml:"save_album_cover" json:"save_album_cover"`
-	SaveArtistCover             bool     `yaml:"save_artist_cover" json:"save_artist_cover"`
-	SavePlaylistCover           bool     `yaml:"save_playlist_cover" json:"save_playlist_cover"`
-	EmbedLyrics                 bool     `yaml:"embed_lyrics" json:"embed_lyrics"`
-	SaveLyricsFile              bool     `yaml:"save_lyrics_file" json:"save_lyrics_file"`
-	LyricsFormat                string   `yaml:"lyrics_format" json:"lyrics_format"`
-	LyricsType                  string   `yaml:"lyrics_type" json:"lyrics_type"`
-	LyricsExtras                []string `yaml:"lyrics_extras" json:"lyrics_extras"`
-	ALACMaxSampleRate           int      `yaml:"alac_max_sample_rate" json:"alac_max_sample_rate"`
-	ALACMaxBitDepth             int      `yaml:"alac_max_bit_depth" json:"alac_max_bit_depth"`
-	CheckIntegrity              bool     `yaml:"check_integrity" json:"check_integrity"`
+	QualityPriority            []string `yaml:"quality_priority" json:"quality_priority"`
+	CodecAlternative           bool     `yaml:"codec_alternative" json:"codec_alternative"`
+	MemoryMode                 string   `yaml:"memory_mode" json:"memory_mode"`
+	MaxRunningJobs             int      `yaml:"max_running_jobs" json:"max_running_jobs"`
+	MaxParallelDownloads       int      `yaml:"max_parallel_downloads" json:"max_parallel_downloads"`
+	MaxParallelDecrypts        int      `yaml:"max_parallel_decrypts" json:"max_parallel_decrypts"`
+	MaxParallelWrapperRequests int      `yaml:"max_parallel_wrapper_requests" json:"max_parallel_wrapper_requests"`
+	MaxAttempts                int      `yaml:"max_attempts" json:"max_attempts"`
+	DownloadsDir               string   `yaml:"downloads_dir" json:"downloads_dir"`
+	SongPathFormat             string   `yaml:"song_path_format" json:"song_path_format"`
+	AlbumPathFormat            string   `yaml:"album_path_format" json:"album_path_format"`
+	ArtistPathFormat           string   `yaml:"artist_path_format" json:"artist_path_format"`
+	PlaylistPathFormat         string   `yaml:"playlist_path_format" json:"playlist_path_format"`
+	StationPathFormat          string   `yaml:"station_path_format" json:"station_path_format"`
+	TempDir                    string   `yaml:"temp_dir" json:"temp_dir"`
+	CoverSize                  string   `yaml:"cover_size" json:"cover_size"`
+	CoverFormat                string   `yaml:"cover_format" json:"cover_format"`
+	EmbedCover                 bool     `yaml:"embed_cover" json:"embed_cover"`
+	SaveAlbumCover             bool     `yaml:"save_album_cover" json:"save_album_cover"`
+	SaveArtistCover            bool     `yaml:"save_artist_cover" json:"save_artist_cover"`
+	SavePlaylistCover          bool     `yaml:"save_playlist_cover" json:"save_playlist_cover"`
+	EmbedLyrics                bool     `yaml:"embed_lyrics" json:"embed_lyrics"`
+	SaveLyricsFile             bool     `yaml:"save_lyrics_file" json:"save_lyrics_file"`
+	LyricsFormat               string   `yaml:"lyrics_format" json:"lyrics_format"`
+	LyricsType                 string   `yaml:"lyrics_type" json:"lyrics_type"`
+	LyricsExtras               []string `yaml:"lyrics_extras" json:"lyrics_extras"`
+	ALACMaxSampleRate          int      `yaml:"alac_max_sample_rate" json:"alac_max_sample_rate"`
+	ALACMaxBitDepth            int      `yaml:"alac_max_bit_depth" json:"alac_max_bit_depth"`
+	CheckIntegrity             bool     `yaml:"check_integrity" json:"check_integrity"`
 }
 
 const (
 	MemoryModeLow  = "low"
 	MemoryModeHigh = "high"
 
-	// These limits bound the two multiplicative concurrency controls and the
-	// retry fan-out while remaining comfortably above normal deployments.
-	maxRunningJobsLimit    = 32
-	maxParallelTracksLimit = 64
-	maxSharedRequestsLimit = 256
-	maxAttemptsLimit       = 10
+	// These limits bound process-wide concurrency, request rate, and retry
+	// fan-out while remaining comfortably above normal deployments.
+	maxRunningJobsLimit = 32
+	maxGlobalPoolLimit  = 64
+	maxAttemptsLimit    = 10
 )
 
 type ToolsConfig struct {
@@ -195,13 +196,13 @@ func Default() Config {
 			Address: "127.0.0.1:8080", Insecure: true, TimeoutSeconds: 30, LoginTimeoutSeconds: 120,
 		},
 		Catalog: CatalogConfig{
-			DefaultStorefront: "us", Language: "en-US", DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song", SignedModeHLSSource: "wrapper",
+			DefaultStorefront: "us", Language: "en-US",
+			MaxParallelRequests: 16, RequestsPerSecond: 10, RequestBurst: 16,
+			DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song", SignedModeHLSSource: "wrapper",
 		},
 		Download: DownloadConfig{
 			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true, MemoryMode: MemoryModeLow,
-			MaxRunningJobs: 2, MaxParallelTracks: 3,
-			MaxParallelMetadataRequests: 32, MaxParallelMediaDownloads: 32, MaxParallelWrapperRequests: 64,
-			MaxAttempts:        4,
+			MaxRunningJobs: 2, MaxParallelDownloads: 16, MaxParallelDecrypts: 32, MaxParallelWrapperRequests: 24, MaxAttempts: 4,
 			DownloadsDir:       "data/downloads",
 			SongPathFormat:     "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
 			AlbumPathFormat:    "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
@@ -280,6 +281,7 @@ func load(path string, environ []string) (Config, error) {
 	// Config files written before the limits existed may hold larger values;
 	// clamp them instead of refusing to boot. New values submitted through the
 	// runtime config API still fail Validate with an explicit error.
+	clampCatalogLimits(&cfg.Catalog)
 	clampDownloadLimits(&cfg.Download)
 	if err := cfg.Validate(); err != nil {
 		return cfg, err
@@ -287,25 +289,35 @@ func load(path string, environ []string) (Config, error) {
 	return cfg, nil
 }
 
+// clampCatalogLimits lowers startup-bound Apple request controls loaded from
+// disk or the environment to their hard process-wide limits.
+func clampCatalogLimits(c *CatalogConfig) {
+	if c.MaxParallelRequests > maxGlobalPoolLimit {
+		c.MaxParallelRequests = maxGlobalPoolLimit
+	}
+	if c.RequestsPerSecond > maxGlobalPoolLimit {
+		c.RequestsPerSecond = maxGlobalPoolLimit
+	}
+	if c.RequestBurst > maxGlobalPoolLimit {
+		c.RequestBurst = maxGlobalPoolLimit
+	}
+}
+
 // clampDownloadLimits lowers the bounded download settings to their hard
-// limits in place. It backstops the two compatibility paths that may carry
-// pre-limit values — config files on disk and job overrides persisted in the
-// database — where rejecting would brick a previously working deployment.
+// limits in place. It accepts old managed files with oversized values and
+// legacy persisted job overrides whose mutable retry count predates its cap.
 func clampDownloadLimits(d *DownloadConfig) {
 	if d.MaxRunningJobs > maxRunningJobsLimit {
 		d.MaxRunningJobs = maxRunningJobsLimit
 	}
-	if d.MaxParallelTracks > maxParallelTracksLimit {
-		d.MaxParallelTracks = maxParallelTracksLimit
+	if d.MaxParallelDownloads > maxGlobalPoolLimit {
+		d.MaxParallelDownloads = maxGlobalPoolLimit
 	}
-	if d.MaxParallelMetadataRequests > maxSharedRequestsLimit {
-		d.MaxParallelMetadataRequests = maxSharedRequestsLimit
+	if d.MaxParallelDecrypts > maxGlobalPoolLimit {
+		d.MaxParallelDecrypts = maxGlobalPoolLimit
 	}
-	if d.MaxParallelMediaDownloads > maxSharedRequestsLimit {
-		d.MaxParallelMediaDownloads = maxSharedRequestsLimit
-	}
-	if d.MaxParallelWrapperRequests > maxSharedRequestsLimit {
-		d.MaxParallelWrapperRequests = maxSharedRequestsLimit
+	if d.MaxParallelWrapperRequests > maxGlobalPoolLimit {
+		d.MaxParallelWrapperRequests = maxGlobalPoolLimit
 	}
 	if d.MaxAttempts > maxAttemptsLimit {
 		d.MaxAttempts = maxAttemptsLimit
@@ -384,6 +396,15 @@ func (c Config) Validate() error {
 			return fmt.Errorf("catalog.allowed_origins must not contain empty entries")
 		}
 	}
+	for key, value := range map[string]int{
+		"catalog.max_parallel_requests": c.Catalog.MaxParallelRequests,
+		"catalog.requests_per_second":   c.Catalog.RequestsPerSecond,
+		"catalog.request_burst":         c.Catalog.RequestBurst,
+	} {
+		if value > maxGlobalPoolLimit {
+			return fmt.Errorf("%s must be at most %d", key, maxGlobalPoolLimit)
+		}
+	}
 	for name, value := range map[string]string{
 		"download.song_path_format":     c.Download.SongPathFormat,
 		"download.album_path_format":    c.Download.AlbumPathFormat,
@@ -398,17 +419,14 @@ func (c Config) Validate() error {
 	if c.Download.MaxRunningJobs > maxRunningJobsLimit {
 		return fmt.Errorf("download.max_running_jobs must be at most %d", maxRunningJobsLimit)
 	}
-	if c.Download.MaxParallelTracks > maxParallelTracksLimit {
-		return fmt.Errorf("download.max_parallel_tracks must be at most %d", maxParallelTracksLimit)
+	if c.Download.MaxParallelDownloads > maxGlobalPoolLimit {
+		return fmt.Errorf("download.max_parallel_downloads must be at most %d", maxGlobalPoolLimit)
 	}
-	if c.Download.MaxParallelMetadataRequests > maxSharedRequestsLimit {
-		return fmt.Errorf("download.max_parallel_metadata_requests must be at most %d", maxSharedRequestsLimit)
+	if c.Download.MaxParallelDecrypts > maxGlobalPoolLimit {
+		return fmt.Errorf("download.max_parallel_decrypts must be at most %d", maxGlobalPoolLimit)
 	}
-	if c.Download.MaxParallelMediaDownloads > maxSharedRequestsLimit {
-		return fmt.Errorf("download.max_parallel_media_downloads must be at most %d", maxSharedRequestsLimit)
-	}
-	if c.Download.MaxParallelWrapperRequests > maxSharedRequestsLimit {
-		return fmt.Errorf("download.max_parallel_wrapper_requests must be at most %d", maxSharedRequestsLimit)
+	if c.Download.MaxParallelWrapperRequests > maxGlobalPoolLimit {
+		return fmt.Errorf("download.max_parallel_wrapper_requests must be at most %d", maxGlobalPoolLimit)
 	}
 	if c.Download.MaxAttempts > maxAttemptsLimit {
 		return fmt.Errorf("download.max_attempts must be at most %d", maxAttemptsLimit)

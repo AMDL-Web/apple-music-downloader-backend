@@ -10,6 +10,7 @@ import (
 
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
+	"amdl/internal/limits"
 )
 
 type QualityRequest struct {
@@ -49,11 +50,12 @@ type QualityResult struct {
 type QualityService struct {
 	// store is the live runtime config; cfg is the fixed fallback used by
 	// test constructors that don't wire a store.
-	store   *config.Store
-	cfg     config.Config
-	catalog qualityCatalog
-	wrapper qualityWrapper
-	http    *http.Client
+	store       *config.Store
+	cfg         config.Config
+	catalog     qualityCatalog
+	wrapper     qualityWrapper
+	http        *http.Client
+	requestGate *limits.RequestGate
 }
 
 type qualityCatalog interface {
@@ -66,7 +68,7 @@ type qualityWrapper interface {
 }
 
 func NewQualityService(store *config.Store, catalog *applemusic.CatalogClient, wrapperClient qualityWrapper) *QualityService {
-	return &QualityService{store: store, catalog: catalog, wrapper: wrapperClient, http: newHTTPClient()}
+	return &QualityService{store: store, catalog: catalog, wrapper: wrapperClient, http: newHTTPClient(), requestGate: catalog.RequestGate()}
 }
 
 func NewQualityServiceWithCatalog(cfg config.Config, catalog qualityCatalog) *QualityService {
@@ -118,7 +120,7 @@ func (s *QualityService) QueryQuality(ctx context.Context, req QualityRequest) (
 	if strings.TrimSpace(master) == "" {
 		return QualityResult{}, fmt.Errorf("song %s has no enhanced hls manifest", song.ID)
 	}
-	variants, err := FetchMasterVariants(ctx, s.http, master)
+	variants, err := FetchMasterVariants(ctx, s.http, master, s.requestGate)
 	if err != nil {
 		return QualityResult{}, err
 	}

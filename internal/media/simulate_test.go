@@ -2,17 +2,52 @@ package media
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
 	"amdl/internal/domain"
 )
+
+func TestSimulateUsesSharedPipelinedMediaPools(t *testing.T) {
+	cfg := config.Default()
+	cfg.Simulate = config.SimulateConfig{Enabled: true, MinSpeedKBps: 1_000_000, MaxSpeedKBps: 1_000_000}
+	cfg.Download.DownloadsDir = t.TempDir()
+	cfg.Download.QualityPriority = []string{"aac-lc"}
+	cfg.Download.CodecAlternative = false
+	cfg.Download.MaxParallelDownloads = 1
+	cfg.Download.MaxParallelDecrypts = 1
+	base := (&Downloader{cfg: cfg}).withConfig(cfg)
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := range 2 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			reporter := &recordingReporter{}
+			item := domain.JobItem{ID: fmt.Sprintf("item-%d", i), JobID: fmt.Sprintf("job-%d", i)}
+			err := base.withConfig(cfg).simulateTrack(context.Background(), domain.Job{ID: item.JobID, Force: true}, &item,
+				applemusic.Song{ID: item.ID, Name: "Track", DurationInMillis: 1000}, applemusic.TypeAlbum,
+				"Album", "album", 1, "Artist", reporter, func(domain.ItemStatus, float64, string) {})
+			if err != nil {
+				t.Errorf("simulateTrack: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if elapsed := time.Since(start); elapsed >= 1700*time.Millisecond {
+		t.Fatalf("simulated tracks did not pipeline download/decrypt/postprocess: %v", elapsed)
+	}
+}
 
 func TestSimulateTrackSelectsRealMediaButNeverDownloadsOrWrites(t *testing.T) {
 	var encryptedMediaHits atomic.Int32

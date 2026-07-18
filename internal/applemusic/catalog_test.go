@@ -14,12 +14,137 @@ import (
 	"amdl/internal/config"
 )
 
+// Most catalog tests predate the startup request-pool settings and construct
+// only the fields relevant to the behavior under test. Give those fixtures a
+// fast gate explicitly; production still treats configured values <=0 as 1.
+func newTestCatalogClient(cfg config.CatalogConfig, logger *slog.Logger) *CatalogClient {
+	if cfg.MaxParallelRequests <= 0 {
+		cfg.MaxParallelRequests = 64
+	}
+	if cfg.RequestsPerSecond <= 0 {
+		cfg.RequestsPerSecond = 64
+	}
+	if cfg.RequestBurst <= 0 {
+		cfg.RequestBurst = 64
+	}
+	return NewCatalogClient(cfg, logger)
+}
+
 func TestFormatArtworkURL(t *testing.T) {
 	raw := "https://is1-ssl.mzstatic.com/image/thumb/foo/{w}x{h}bb.jpg"
 	got := formatArtworkURL(raw, "jpg", "1400x1400")
 	want := "https://is1-ssl.mzstatic.com/image/thumb/foo/1400x1400bb.jpg"
 	if got != want {
 		t.Fatalf("formatArtworkURL() = %q, want %q", got, want)
+	}
+}
+
+type closeTrackingBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *closeTrackingBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+func TestAppleRequestRetries429OnceAndClosesFirstBody(t *testing.T) {
+	client := newTestCatalogClient(config.CatalogConfig{
+		MaxParallelRequests: 2, RequestsPerSecond: 1000, RequestBurst: 1000,
+	}, slog.Default())
+	firstBody := &closeTrackingBody{Reader: strings.NewReader("limited")}
+	calls := 0
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return &http.Response{StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests", Header: make(http.Header), Body: firstBody}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	})}
+	client.retryDelay = func(http.Header) time.Duration { return 30 * time.Millisecond }
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.music.apple.com/test", nil)
+	started := time.Now()
+	resp, err := client.doAppleRequest(context.Background(), req, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if calls != 2 {
+		t.Fatalf("calls = %d, want exactly one retry", calls)
+	}
+	if !firstBody.closed {
+		t.Fatal("first 429 body was not closed before retry")
+	}
+	if elapsed := time.Since(started); elapsed < 20*time.Millisecond {
+		t.Fatalf("retry began after %v, want shared cooldown delay", elapsed)
+	}
+}
+
+func TestAppleRequestReturnsSecond429(t *testing.T) {
+	client := newTestCatalogClient(config.CatalogConfig{
+		MaxParallelRequests: 2, RequestsPerSecond: 1000, RequestBurst: 1000,
+	}, slog.Default())
+	calls := 0
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests", Header: make(http.Header), Body: io.NopCloser(strings.NewReader("limited"))}, nil
+	})}
+	client.retryDelay = func(http.Header) time.Duration { return 0 }
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.music.apple.com/test", nil)
+	resp, err := client.doAppleRequest(context.Background(), req, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests || calls != 2 {
+		t.Fatalf("status=%d calls=%d, want second 429 returned after 2 calls", resp.StatusCode, calls)
+	}
+}
+
+func TestAppleRequestRateAppliesOnlyToAuthenticatedAPI(t *testing.T) {
+	client := newTestCatalogClient(config.CatalogConfig{
+		MaxParallelRequests: 2, RequestsPerSecond: 1, RequestBurst: 1,
+	}, slog.Default())
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	})}
+	req, _ := http.NewRequest(http.MethodGet, "https://api.music.apple.com/first", nil)
+	resp, err := client.doAppleRequest(context.Background(), req, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, "https://is1-ssl.mzstatic.com/cover", nil)
+	resp, err = client.doAppleRequest(ctx, req, false)
+	if err != nil {
+		t.Fatalf("non-authenticated Apple request was incorrectly rate limited: %v", err)
+	}
+	resp.Body.Close()
+
+	ctx, cancel = context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, "https://api.music.apple.com/second", nil)
+	if _, err := client.doAppleRequest(ctx, req, true); err == nil {
+		t.Fatal("second authenticated request bypassed the exhausted rate bucket")
+	}
+}
+
+func TestRetryAfterParsing(t *testing.T) {
+	if got := defaultRetryDelay(http.Header{"Retry-After": []string{"3"}}); got != 3*time.Second {
+		t.Fatalf("delta Retry-After = %v, want 3s", got)
+	}
+	future := time.Now().Add(2 * time.Second).UTC().Format(http.TimeFormat)
+	got := defaultRetryDelay(http.Header{"Retry-After": []string{future}})
+	if got < 500*time.Millisecond || got > 2*time.Second {
+		t.Fatalf("date Retry-After = %v, want remaining duration", got)
+	}
+	got = defaultRetryDelay(make(http.Header))
+	if got < time.Second || got >= 1250*time.Millisecond {
+		t.Fatalf("missing Retry-After fallback = %v, want [1s, 1.25s)", got)
 	}
 }
 
@@ -46,7 +171,7 @@ func TestCoverSizeFallbacks(t *testing.T) {
 }
 
 func TestFetchCoverFallsBackToSmallerSize(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{}, slog.Default())
 	raw := "https://is1-ssl.mzstatic.com/image/thumb/foo/{w}x{h}bb.jpg"
 	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if strings.Contains(req.URL.String(), "5000x5000") {
@@ -72,7 +197,7 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestSongRequestsAndMapsExtendedAssetURLs(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -109,7 +234,7 @@ func TestCatalogRequestErrorClassificationAndRetryAfter(t *testing.T) {
 }
 
 func TestSongMetadataDoesNotFollowAlbumRelationship(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 	var paths []string
@@ -132,7 +257,7 @@ func TestSongMetadataDoesNotFollowAlbumRelationship(t *testing.T) {
 }
 
 func TestSongStillFollowsAlbumRelationshipForFullMetadata(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 	var paths []string
@@ -163,7 +288,7 @@ func TestSongStillFollowsAlbumRelationshipForFullMetadata(t *testing.T) {
 }
 
 func TestAlbumFetchesAllTrackPages(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 	var paths []string
@@ -196,7 +321,7 @@ func TestAlbumFetchesAllTrackPages(t *testing.T) {
 }
 
 func TestPlaylistFetchesAllTrackPages(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 	var paths []string
@@ -226,7 +351,7 @@ func TestPlaylistFetchesAllTrackPages(t *testing.T) {
 }
 
 func TestPlaylistPrivateCoverFallsBackToLibraryArtwork(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 	type seen struct{ mediaToken, include string }
@@ -256,7 +381,7 @@ func TestPlaylistPrivateCoverFallsBackToLibraryArtwork(t *testing.T) {
 }
 
 func TestPlaylistCatalogArtworkSkipsLibraryLookup(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 	var calls int
@@ -279,7 +404,7 @@ func TestPlaylistCatalogArtworkSkipsLibraryLookup(t *testing.T) {
 }
 
 func TestPlaylistPublicIDWithTokenSkipsEnrichment(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 	var calls int
@@ -302,7 +427,7 @@ func TestPlaylistPublicIDWithTokenSkipsEnrichment(t *testing.T) {
 }
 
 func TestPlaylistLibraryLookupFailureIsNonFatal(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 	var calls int
@@ -332,7 +457,7 @@ func TestPlaylistLibraryLookupFailureIsNonFatal(t *testing.T) {
 }
 
 func TestPlaylistWithoutTokenSkipsLibraryInclude(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 	var sawMediaToken bool
@@ -353,7 +478,7 @@ func TestPlaylistWithoutTokenSkipsLibraryInclude(t *testing.T) {
 }
 
 func TestStationTracksResolvesTracksFormat(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 	var gotMediaToken string
@@ -391,7 +516,7 @@ func TestStationTracksResolvesTracksFormat(t *testing.T) {
 }
 
 func TestStationTracksRejectsLiveStream(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -409,7 +534,7 @@ func TestStationTracksRejectsLiveStream(t *testing.T) {
 }
 
 func TestStationTracksRequiresMediaUserToken(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -427,7 +552,7 @@ func TestStationTracksRequiresMediaUserToken(t *testing.T) {
 }
 
 func TestArtistAlbumsFetchesIncludedAlbumsAndNextPages(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 	var paths []string
@@ -509,7 +634,7 @@ func TestInitDeveloperTokenCachesForHalfTheSignedLifetime(t *testing.T) {
 		AppleMusicKeyID:          "KID1234567",
 		AppleMusicTeamID:         "TEAM123456",
 	}
-	client := NewCatalogClient(cfg, slog.Default())
+	client := newTestCatalogClient(cfg, slog.Default())
 
 	before := time.Now()
 	if err := client.InitDeveloperToken(); err != nil {
@@ -532,7 +657,7 @@ func TestTokenRefreshUsesHalfLifeForBothModes(t *testing.T) {
 			AppleMusicKeyID:          "KID1234567",
 			AppleMusicTeamID:         "TEAM123456",
 		}
-		client := NewCatalogClient(cfg, slog.Default())
+		client := newTestCatalogClient(cfg, slog.Default())
 		client.signer, _ = newDeveloperTokenSigner(path, "KID1234567", "TEAM123456")
 		// Force a refresh by expiring the cached token.
 		client.token = "stale"
@@ -552,7 +677,7 @@ func TestTokenRefreshUsesHalfLifeForBothModes(t *testing.T) {
 	})
 
 	t.Run("legacy", func(t *testing.T) {
-		client := NewCatalogClient(config.CatalogConfig{TokenCacheTTLHours: 12}, slog.Default())
+		client := newTestCatalogClient(config.CatalogConfig{TokenCacheTTLHours: 12}, slog.Default())
 		client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if req.URL.String() == "https://music.apple.com" {
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`<script src="/assets/index~abc123.js"></script>`)), Header: make(http.Header)}, nil
@@ -576,7 +701,7 @@ func TestTokenRefreshUsesHalfLifeForBothModes(t *testing.T) {
 }
 
 func TestConcurrentTokenCacheMissScrapesOnce(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{TokenCacheTTLHours: 12}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{TokenCacheTTLHours: 12}, slog.Default())
 	var mu sync.Mutex
 	homeCalls, jsCalls := 0, 0
 	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -623,7 +748,7 @@ func TestConcurrentTokenCacheMissScrapesOnce(t *testing.T) {
 }
 
 func TestEnhancedHLSViaWebTokenRetriesOnce401ThenSucceeds(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "en-US", TokenCacheTTLHours: 12}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US", TokenCacheTTLHours: 12}, slog.Default())
 	client.webToken = "stale-web-token"
 	client.webTokenUntil = time.Now().Add(time.Hour)
 
@@ -662,7 +787,7 @@ func TestEnhancedHLSViaWebTokenRetriesOnce401ThenSucceeds(t *testing.T) {
 }
 
 func TestGetWithUserTokenRetriesOnce401ThenSucceeds(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 	client.token = "stale-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 
@@ -703,7 +828,7 @@ func TestGetWithUserTokenRetriesOnce401ThenSucceeds(t *testing.T) {
 }
 
 func TestGetWithUserTokenReturnsErrorAfterSingleRetryOn401Twice(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 	client.token = "stale-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 
@@ -732,7 +857,7 @@ func TestGetWithUserTokenReturnsErrorAfterSingleRetryOn401Twice(t *testing.T) {
 }
 
 func TestStationNextTracksRetriesOnce401ThenSucceeds(t *testing.T) {
-	client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 	client.token = "stale-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 
@@ -806,7 +931,7 @@ func TestSongMapsHasLyrics(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+			client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 			client.token = "test-token"
 			client.tokenUntil = time.Now().Add(time.Hour)
 

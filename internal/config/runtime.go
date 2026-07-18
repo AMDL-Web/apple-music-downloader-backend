@@ -25,11 +25,12 @@ func MutableView(cfg Config) map[string]any {
 // RuntimeLockedChanges returns the dotted keys of fields that differ between
 // old and updated but are consumed only at process startup (listen address,
 // database path, logging outputs, wrapper connection, catalog client/token
-// signing, worker pool size, tool paths). Changing them through the runtime
-// config API would silently do nothing, so PUT /api/v1/config rejects an
-// update whenever this returns a non-empty list. The startup-bound set is
-// everything isRuntimeKey does not claim; runtime-managed fields take effect
-// immediately for new requests and newly started jobs.
+// signing and Apple request limits, worker/resource pool sizes, tool paths).
+// Changing them through the runtime config API would silently do nothing, so
+// PUT /api/v1/config rejects an update whenever this returns a non-empty
+// list. The startup-bound set is everything isRuntimeKey does not claim;
+// runtime-managed fields take effect immediately for new requests and newly
+// started jobs.
 func RuntimeLockedChanges(old, updated Config) []string {
 	var changed []string
 	oldValue, updatedValue := reflect.ValueOf(old), reflect.ValueOf(updated)

@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"amdl/internal/concurrency"
 	"amdl/internal/config"
+	"amdl/internal/limits"
 	pb "github.com/AMDL-Web/wrapper-manager/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -26,7 +26,7 @@ type Client struct {
 	api          pb.WrapperManagerServiceClient
 	cfg          config.WrapperConfig
 	loginTimeout time.Duration
-	dataLimiter  *concurrency.Limiter
+	dataLimit    *limits.Semaphore
 	sessionsMu   sync.Mutex
 	sessions     map[string]*loginSession
 }
@@ -90,12 +90,15 @@ type LyricsRequestOptions struct {
 
 type ClientOption func(*Client)
 
-// WithDataConcurrencyLimit applies a process-wide, cross-job limit to wrapper
-// data operations. Login/logout RPCs are deliberately excluded so operator
-// access cannot be starved by a busy download queue.
-func WithDataConcurrencyLimit(limit func() int) ClientOption {
+// WithDataConcurrencyLimit applies a process-wide, cross-job bound to wrapper
+// data RPCs (M3U8, Lyrics, WebPlayback, License). Tracks no longer queue on a
+// per-job limit before reaching the wrapper, so these unary RPCs need their
+// own pool. Login/logout are deliberately excluded so operator access cannot
+// be starved by a busy download queue, and Decrypt streams are excluded
+// because the downloader's decrypt pool already bounds them.
+func WithDataConcurrencyLimit(limit int) ClientOption {
 	return func(client *Client) {
-		client.dataLimiter = concurrency.NewLimiter(limit)
+		client.dataLimit = limits.NewSemaphore(limit)
 	}
 }
 
@@ -112,18 +115,18 @@ func NewClient(cfg config.WrapperConfig, options ...ClientOption) (*Client, erro
 	return client, nil
 }
 
+func (c *Client) acquireDataSlot(ctx context.Context) (func(), error) {
+	if c.dataLimit == nil {
+		return func() {}, nil
+	}
+	return c.dataLimit.Acquire(ctx)
+}
+
 func wrapperTransportCredentials(cfg config.WrapperConfig) credentials.TransportCredentials {
 	if cfg.Insecure {
 		return insecure.NewCredentials()
 	}
 	return credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
-}
-
-func (c *Client) acquireDataSlot(ctx context.Context) (func(), error) {
-	if c.dataLimiter == nil {
-		return func() {}, nil
-	}
-	return c.dataLimiter.Acquire(ctx)
 }
 
 func (c *Client) Close() error {
@@ -407,32 +410,13 @@ func (c *Client) License(ctx context.Context, adamID, challenge, uri string) (st
 // unary RPC, so the configured timeout bounds each fragment operation rather
 // than the lifetime of the whole stream.
 func (c *Client) NewDecryptSession(ctx context.Context, adamID string) (DecryptSession, error) {
-	release, err := c.acquireDataSlot(ctx)
-	if err != nil {
-		return nil, err
-	}
 	streamCtx, cancel := context.WithCancel(ctx)
 	stream, err := c.api.Decrypt(streamCtx)
 	if err != nil {
 		cancel()
-		release()
 		return nil, err
 	}
-	return &limitedDecryptSession{
-		DecryptSession: &grpcDecryptSession{stream: stream, cancel: cancel, adamID: adamID, fragmentTimeout: c.cfg.Timeout()},
-		release:        release,
-	}, nil
-}
-
-type limitedDecryptSession struct {
-	DecryptSession
-	release func()
-	once    sync.Once
-}
-
-func (s *limitedDecryptSession) Close() error {
-	defer s.once.Do(s.release)
-	return s.DecryptSession.Close()
+	return &grpcDecryptSession{stream: stream, cancel: cancel, adamID: adamID, fragmentTimeout: c.cfg.Timeout()}, nil
 }
 
 type grpcDecryptSession struct {

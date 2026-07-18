@@ -40,7 +40,9 @@ catalog:
   signed_mode_hls_source: "wrapper"
 
 download:
-  # download.max_running_jobs sizes the startup worker pool and lives in config.yaml.
+  # download.max_running_jobs and the process-wide pools (max_parallel_downloads,
+  # max_parallel_decrypts, max_parallel_wrapper_requests) are sized at startup and
+  # live in config.yaml.
   # list enum: alac, aac, aac-binaural, aac-downmix, ec3, ac3.
   # - alac: Apple Lossless Audio Codec
   # - aac: standard Enhanced HLS AAC
@@ -67,27 +69,10 @@ download:
   # one full flattened track in either mode; the fragment-sized low-mode estimate applies to the normal path.
   # Metadata tagging currently creates one additional track-sized rewrite file under the operating system temp
   # directory in either mode; that file is outside temp_dir and is not included in the one/three-track estimates.
-  # Total RAM and temporary disk usage scale with max_running_jobs * max_parallel_tracks. A per-task
-  # overrides.memory_mode may select a different mode without changing the runtime default.
+  # Total RAM and temporary disk usage scale with the startup pools in config.yaml (max_parallel_downloads /
+  # max_parallel_decrypts). A per-task overrides.memory_mode may select a different mode without changing the
+  # runtime default.
   memory_mode: "low"
-  # integer: maximum tracks downloaded in parallel per collection. Positive values allow 1-64; values <=0 behave as 1;
-  # values above 64 in this file are clamped to 64 (the config API and new job submissions reject them;
-  # job overrides persisted before the limit existed are clamped when the job runs). This bounds active track pipelines.
-  # Default: 5.
-  max_parallel_tracks: 5
-  # integer: process-wide maximum concurrent per-track Apple Catalog metadata requests, shared across all running jobs.
-  # Positive values allow 1-256; values <=0 behave as 1; values above 256 in this file are clamped to 256
-  # (the config API rejects them). Lower values reduce Catalog 429 responses. Default: 32.
-  max_parallel_metadata_requests: 32
-  # integer: process-wide maximum concurrent encrypted-media CDN transfers, shared across all running jobs.
-  # Positive values allow 1-256; values <=0 behave as 1; values above 256 in this file are clamped to 256
-  # (the config API rejects them). Lower values reduce HTTP/2 stream resets. Default: 32.
-  max_parallel_media_downloads: 32
-  # integer: process-wide maximum concurrent wrapper data operations, shared across all running jobs and quality probes.
-  # One slot covers an entire decrypt-session lifetime; Lyrics, M3U8, WebPlayback, and License RPCs hold a slot only for
-  # that call. Login/logout and wrapper status calls are not limited. Positive values allow 1-256; values <=0 behave as 1;
-  # values above 256 in this file are clamped to 256 (the config API rejects them). Default: 64.
-  max_parallel_wrapper_requests: 64
   # integer: maximum total attempts (including the first) for metadata, cover, lyrics,
   # and each codec's download/decrypt phase. Positive values allow 1-10; values <=0 behave as 1;
   # values above 10 in this file are clamped to 10 (the config API and new job submissions reject them;
@@ -127,9 +112,10 @@ download:
   # move is a cheap rename; if not, the finished file is copied across once. Put
   # temp_dir on fast local storage (e.g. SSD) to keep the flatten/verify/tag work
   # off a slower downloads volume. For Enhanced HLS, peak usage in this directory depends
-  # on memory_mode: roughly three times one track's size per parallel track in low mode,
-  # or one track's size per parallel track in high mode. AAC-LC uses roughly one track here
-  # in either mode. The metadata rewrite also briefly uses one track-sized file in the
+  # on memory_mode: roughly three times one track's size per in-flight track in low mode,
+  # or one track's size per in-flight track in high mode (in-flight tracks are bounded by
+  # the startup pools in config.yaml). AAC-LC uses roughly one track here in either mode.
+  # The metadata rewrite also briefly uses one track-sized file in the
   # operating system temp directory. Assumed single-writer: stale non-resumable scratch
   # in temp_dir is swept on startup. Encrypted HLS checkpoints (low mode) are grouped by
   # task: failed/recoverable tasks retain them for retry, while completed, cancelled,
