@@ -424,7 +424,7 @@ go test ./... -count=1
 .github/release-notes/<版本号>.md
 ```
 
-例如发布 `v1.4.0` 时使用 `.github/release-notes/v1.4.0.md`。该文件不存在或为空时，workflow 才会回退到现有的提交记录自动生成逻辑。自动生成逻辑位于：
+例如发布 `v1.4.0` 时使用 `.github/release-notes/v1.4.0.md`。该文件不存在或为空时，workflow 才会回退到现有的提交记录自动生成逻辑。自动生成的每条说明会包含提交作者，以及 commit message 中通过 `Co-authored-by` trailer 声明的协作者，并自动去重。自动生成逻辑位于：
 
 ```text
 tools/generate-changelog.js

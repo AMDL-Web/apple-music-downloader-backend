@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -88,20 +88,25 @@ function callCommand(command) {
   }
 }
 
-function getLatestTag() {
+function callGit(args, trim = true) {
   try {
-    return callCommand('git describe --tags --match "v*" --abbrev=0');
+    const output = execFileSync('git', args, {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return trim ? output.trim() : output;
   } catch {
-    return null;
+    return '';
   }
 }
 
+function getLatestTag() {
+  return callGit(['describe', '--tags', '--match', 'v*', '--abbrev=0']) || null;
+}
+
 function getCurrentTag() {
-  try {
-    return callCommand('git describe --tags --match "v*"');
-  } catch {
-    return null;
-  }
+  return callGit(['describe', '--tags', '--match', 'v*']) || null;
 }
 
 function parseCategory(message) {
@@ -127,31 +132,55 @@ function parseCategory(message) {
   return '其他 | Other';
 }
 
-function getCommits(latest = null) {
-  let gitCommand;
-  if (latest) {
-    gitCommand = `git log ${latest}..HEAD --pretty=format:"%H%n%aN%n%aE%n%s"`;
-  } else {
-    gitCommand = 'git log --pretty=format:"%H%n%aN%n%aE%n%s" -n 50';
+function parseCoAuthors(trailers = '') {
+  const coAuthors = [];
+  const trailerPattern = /^Co-authored-by:\s*(.+?)\s*<([^<>]+)>\s*$/gim;
+
+  for (const match of trailers.matchAll(trailerPattern)) {
+    coAuthors.push({
+      author: match[1].trim(),
+      email: match[2].trim(),
+    });
   }
 
-  const output = callCommand(gitCommand);
+  return coAuthors;
+}
+
+function parseGitLog(output) {
   if (!output) return [];
 
   const commits = [];
-  const lines = output.split('\n');
+  const fields = output.split('\0');
+  if (fields.at(-1) === '') fields.pop();
 
-  for (let i = 0; i < lines.length; i += 4) {
-    if (i + 3 >= lines.length) break;
+  for (let i = 0; i + 4 < fields.length; i += 5) {
     commits.push({
-      hash: lines[i],
-      author: lines[i + 1],
-      email: lines[i + 2],
-      message: lines[i + 3],
+      hash: fields[i],
+      author: fields[i + 1],
+      email: fields[i + 2],
+      message: fields[i + 3],
+      coAuthors: parseCoAuthors(fields[i + 4]),
     });
   }
 
   return commits;
+}
+
+function getCommits(latest = null) {
+  const args = [
+    'log',
+    '--no-show-signature',
+    '-z',
+    '--format=%H%x00%aN%x00%aE%x00%s%x00%(trailers:key=Co-authored-by)',
+  ];
+
+  if (latest) {
+    args.push(`${latest}..HEAD`);
+  } else {
+    args.push('-n', '50', 'HEAD');
+  }
+
+  return parseGitLog(callGit(args, false));
 }
 
 // 把 git 作者转成 changelog 里的署名。只有能可靠对应到 GitHub 账号时才加
@@ -172,6 +201,24 @@ function formatAuthor(author, email) {
     return `@${author}`;
   }
   return author;
+}
+
+function formatAuthors(authors = []) {
+  const formattedAuthors = [];
+  const seen = new Set();
+
+  for (const identity of authors) {
+    if (!identity?.author || identity.author === 'web-flow') continue;
+
+    const formatted = formatAuthor(identity.author, identity.email);
+    const key = formatted.toLowerCase();
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    formattedAuthors.push(formatted);
+  }
+
+  return formattedAuthors.join(', ');
 }
 
 function classifyCommits(commits, withCommitizen = false) {
@@ -202,15 +249,21 @@ function classifyCommits(commits, withCommitizen = false) {
       message = message.replace(/^(?<prefix>\w+)(?:\([\w\-]+\))?:\s*/, '');
     }
 
+    const authors = [
+      { author: commit.author, email: commit.email },
+      ...(commit.coAuthors || []),
+    ];
+
     // 添加贡献者
-    if (commit.author && commit.author !== 'web-flow') {
-      contributors.add(commit.author);
+    for (const author of authors) {
+      if (author.author && author.author !== 'web-flow') {
+        contributors.add(formatAuthor(author.author, author.email));
+      }
     }
 
     result[category].push({
       message,
-      author: commit.author,
-      email: commit.email,
+      authors,
       hash: commit.hash.slice(0, 8),
     });
   }
@@ -271,9 +324,10 @@ function generateMd(classifiedData, tagName, latest, withHash = false) {
       } else if (withHash) {
         line += ` (${item.hash})`;
       }*/
-      // 添加提交者信息
-      if (item.author && item.author !== 'web-flow') {
-        line += ` ${formatAuthor(item.author, item.email)}`;
+      // 添加提交者及 Co-authored-by 协作者信息
+      const authors = formatAuthors(item.authors);
+      if (authors) {
+        line += ` ${authors}`;
       }
       lines.push(line);
     }
@@ -330,4 +384,14 @@ function main() {
   }
 }
 
-main();
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) main();
+
+export {
+  classifyCommits,
+  formatAuthor,
+  formatAuthors,
+  generateMd,
+  parseCoAuthors,
+  parseGitLog,
+};
