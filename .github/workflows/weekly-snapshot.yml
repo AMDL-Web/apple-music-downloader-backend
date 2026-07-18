@@ -20,14 +20,14 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Generate snapshot version
         id: version
@@ -97,7 +97,7 @@ jobs:
 
       - name: Create Pre-release
         if: steps.version.outputs.skip_release == 'false'
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: Snapshot ${{ steps.version.outputs.version }}
