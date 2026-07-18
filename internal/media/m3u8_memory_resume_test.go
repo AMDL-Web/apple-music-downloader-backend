@@ -393,6 +393,52 @@ func TestDownloadBytesAcceptsValidatedCompleteBufferOn416(t *testing.T) {
 	}
 }
 
+func TestDownloadBytesAcceptsValidatedUnknownTotalBufferOn416(t *testing.T) {
+	payload := []byte("chunked body completed before the transport reported a reset")
+	var requests atomic.Int32
+	var firstClosed, secondClosed atomic.Bool
+	client := &http.Client{Transport: memoryResumeRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requestNumber := requests.Add(1)
+		if requestNumber == 1 {
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				Status:        "200 OK",
+				ContentLength: -1,
+				Header: http.Header{
+					"Etag": {`"unknown-total"`},
+				},
+				Body: &finalErrorReadCloser{raw: append([]byte(nil), payload...), err: errors.New("connection reset after body"), closed: &firstClosed},
+			}, nil
+		}
+		if got := req.Header.Get("Range"); got != fmt.Sprintf("bytes=%d-", len(payload)) {
+			t.Errorf("Range = %q, want completed offset", got)
+		}
+		if got := req.Header.Get("If-Range"); got != `"unknown-total"` {
+			t.Errorf("If-Range = %q, want unknown-total ETag", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusRequestedRangeNotSatisfiable,
+			Status:     "416 Requested Range Not Satisfiable",
+			Header: http.Header{
+				"Content-Range": {fmt.Sprintf("bytes */%d", len(payload))},
+				"Etag":          {`"unknown-total"`},
+			},
+			Body: &finalErrorReadCloser{err: io.EOF, closed: &secondClosed},
+		}, nil
+	})}
+
+	raw, err := downloadBytesWithRangeResume(context.Background(), client, "https://cdn.example.test/unknown-total", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw, payload) {
+		t.Fatalf("downloaded %q, want %q", raw, payload)
+	}
+	if requests.Load() != 2 || !firstClosed.Load() || !secondClosed.Load() {
+		t.Fatalf("requests/closed = %d/%t/%t, want 2/true/true", requests.Load(), firstClosed.Load(), secondClosed.Load())
+	}
+}
+
 func TestDownloadBytesDoesNotResumeAfterContextCancellation(t *testing.T) {
 	payload := []byte("partial bytes before cancellation")
 	ctx, cancel := context.WithCancel(context.Background())

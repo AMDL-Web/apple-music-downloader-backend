@@ -311,7 +311,7 @@ func downloadBytesInternal(ctx context.Context, client *http.Client, uri string,
 		case offset > 0 && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable:
 			parsedTotal, ok := parseUnsatisfiedContentRange(resp.Header.Get("Content-Range"))
 			_ = resp.Body.Close()
-			if ok && parsedTotal == offset && metadata.Total > 0 && metadata.Total == parsedTotal &&
+			if ok && parsedTotal == offset && (metadata.Total <= 0 || metadata.Total == parsedTotal) &&
 				!resumeObjectChanged(metadata, resp.Header) {
 				if onProgress != nil {
 					onProgress(1)
