@@ -181,6 +181,35 @@ func TestSemaphoreKeepsFIFOWithinEqualPriority(t *testing.T) {
 	}
 }
 
+func TestSemaphoreUsesSubpriorityWithinPrimaryPriority(t *testing.T) {
+	t.Parallel()
+	sem := NewSemaphore(1)
+	release, err := sem.Acquire(WithPriority(context.Background(), 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	jobCtx := WithPriority(context.Background(), 7)
+	laterTrack := acquireInBackground(t, sem, WithSubpriority(jobCtx, 9), 1)
+	earlierTrack := acquireInBackground(t, sem, WithSubpriority(jobCtx, 2), 2)
+
+	release()
+	select {
+	case release = <-earlierTrack:
+	case <-laterTrack:
+		t.Fatal("later track overtook an earlier track in the same job")
+	case <-time.After(time.Second):
+		t.Fatal("earlier track was not granted")
+	}
+	release()
+	select {
+	case release = <-laterTrack:
+		release()
+	case <-time.After(time.Second):
+		t.Fatal("later track was not granted after earlier track released")
+	}
+}
+
 func TestSemaphorePriorityCancellationDoesNotLeakPermit(t *testing.T) {
 	t.Parallel()
 	sem := NewSemaphore(1)
@@ -228,5 +257,11 @@ func TestPriorityFromContext(t *testing.T) {
 	}
 	if got, ok := PriorityFromContext(WithPriority(context.Background(), 42)); !ok || got != 42 {
 		t.Fatalf("PriorityFromContext = (%d, %v), want (42, true)", got, ok)
+	}
+	if _, ok := SubpriorityFromContext(context.Background()); ok {
+		t.Fatal("untagged context unexpectedly reports a subpriority")
+	}
+	if got, ok := SubpriorityFromContext(WithSubpriority(context.Background(), 3)); !ok || got != 3 {
+		t.Fatalf("SubpriorityFromContext = (%d, %v), want (3, true)", got, ok)
 	}
 }

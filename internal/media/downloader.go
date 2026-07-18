@@ -322,10 +322,10 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 	}
 	metadata := newTrackMetadataResolver(d, parsed.Storefront)
 
-	return runTrackTasks(ctx, len(tracks), finished, func(i int) error {
-		err := d.processTrackWithMetadata(ctx, job, items[i], tracks[i], parsed.Storefront, parsed.Type, collectionName, collectionID, i+1, folderArtist, metadata, reporter)
+	return runTrackTasks(ctx, len(tracks), finished, func(trackCtx context.Context, i int) error {
+		err := d.processTrackWithMetadata(trackCtx, job, items[i], tracks[i], parsed.Storefront, parsed.Type, collectionName, collectionID, i+1, folderArtist, metadata, reporter)
 		if err != nil {
-			logging.FromContext(ctx, d.logger).Error("track failed", "item_id", items[i].ID, "adam_id", tracks[i].ID, "error", err)
+			logging.FromContext(trackCtx, d.logger).Error("track failed", "item_id", items[i].ID, "adam_id", tracks[i].ID, "error", err)
 		}
 		return err
 	})
@@ -333,9 +333,11 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 
 // runTrackTasks starts every unfinished track without a per-job concurrency
 // cap. Global resource pools inside the track pipeline provide the actual
-// bounds. It never returns before tasks already started have exited, and it
-// stops launching new work once cancellation is observed.
-func runTrackTasks(ctx context.Context, total int, finished []bool, task func(int) error) error {
+// bounds. Each task gets its zero-based track index as a subpriority beneath
+// the job priority already on ctx, so contended capacity favors earlier tracks
+// within the same job. It never returns before tasks already started have
+// exited, and it stops launching new work once cancellation is observed.
+func runTrackTasks(ctx context.Context, total int, finished []bool, task func(context.Context, int) error) error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var firstErr error
@@ -350,9 +352,10 @@ func runTrackTasks(ctx context.Context, total int, finished []bool, task func(in
 		}
 		wg.Add(1)
 		i := i
+		trackCtx := limits.WithSubpriority(ctx, int64(i))
 		go func() {
 			defer wg.Done()
-			if err := task(i); err != nil {
+			if err := task(trackCtx, i); err != nil {
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err

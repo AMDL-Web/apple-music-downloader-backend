@@ -17,6 +17,7 @@ import (
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
 	"amdl/internal/domain"
+	"amdl/internal/limits"
 	"amdl/internal/wrapper"
 )
 
@@ -28,7 +29,10 @@ func TestRunTrackTasksJoinsStartedTasksAndHonorsCancellation(t *testing.T) {
 	done := make(chan error, 1)
 
 	go func() {
-		done <- runTrackTasks(ctx, 3, []bool{false, true, false}, func(int) error {
+		done <- runTrackTasks(ctx, 3, []bool{false, true, false}, func(trackCtx context.Context, index int) error {
+			if priority, ok := limits.SubpriorityFromContext(trackCtx); !ok || priority != int64(index) {
+				return errors.New("track context does not carry its index as subpriority")
+			}
 			calls.Add(1)
 			started <- struct{}{}
 			// Deliberately ignore ctx to prove the scheduler joins work that it
@@ -72,7 +76,7 @@ func TestRunTrackTasksJoinsStartedTasksAndHonorsCancellation(t *testing.T) {
 
 	preCanceled, preCancel := context.WithCancel(context.Background())
 	preCancel()
-	if err := runTrackTasks(preCanceled, 1, []bool{false}, func(int) error {
+	if err := runTrackTasks(preCanceled, 1, []bool{false}, func(context.Context, int) error {
 		t.Fatal("task started after cancellation")
 		return nil
 	}); !errors.Is(err, context.Canceled) {
