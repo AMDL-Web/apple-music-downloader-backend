@@ -17,6 +17,7 @@ import (
 	"amdl/internal/domain"
 	"amdl/internal/events"
 	"amdl/internal/hooks"
+	"amdl/internal/limits"
 	"amdl/internal/logging"
 	"amdl/internal/storage"
 )
@@ -638,6 +639,11 @@ func (m *Manager) run(parent context.Context, jobID string) {
 	started := time.Now()
 	jobLogger := m.logger.With("job_id", job.ID, "job_type", job.Type, "storefront", job.Storefront)
 	ctx = logging.NewContext(ctx, jobLogger)
+	// Rank every pool acquire this job makes by its submission time, so when
+	// the process-wide pools are contended the oldest unfinished job drains
+	// first instead of interleaving with later ones. Recovered jobs keep their
+	// original CreatedAt and therefore their place in line across restarts.
+	ctx = limits.WithPriority(ctx, job.CreatedAt.UnixNano())
 	jobLogger.Info("job started")
 
 	defer func() {

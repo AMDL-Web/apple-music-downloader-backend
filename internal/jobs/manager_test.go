@@ -21,6 +21,7 @@ import (
 	"amdl/internal/domain"
 	"amdl/internal/events"
 	"amdl/internal/hooks"
+	"amdl/internal/limits"
 )
 
 type recoveryProcessor struct{}
@@ -1573,5 +1574,54 @@ func TestRetryRefusesWhilePreviousRunIsFinalizing(t *testing.T) {
 	}
 	if len(manager.queue) != 1 || <-manager.queue != job.ID {
 		t.Fatal("retry after finalize did not enqueue the job")
+	}
+}
+
+// priorityCaptureProcessor reports the limits priority the manager stamped on
+// each job's processing context.
+type priorityCaptureProcessor struct {
+	keyedProcessor
+	priorities chan int64
+}
+
+func (p *priorityCaptureProcessor) ProcessJob(ctx context.Context, _ domain.Job, _ Reporter) error {
+	priority, ok := limits.PriorityFromContext(ctx)
+	if !ok {
+		priority = -1
+	}
+	p.priorities <- priority
+	return nil
+}
+
+func TestRunStampsPoolPriorityFromJobCreationTime(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	processor := &priorityCaptureProcessor{priorities: make(chan int64, 1)}
+	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
+	manager.Start(context.Background())
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = manager.Shutdown(shutdownCtx)
+	}()
+
+	resp := manager.SubmitBatch(context.Background(), []string{"song|cn|priority"}, false, nil)
+	if resp.Accepted != 1 {
+		t.Fatalf("submit = %+v", resp)
+	}
+	job, err := store.GetJob(context.Background(), resp.Results[0].Job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-processor.priorities:
+		if want := job.CreatedAt.UnixNano(); got != want {
+			t.Fatalf("pool priority = %d, want job CreatedAt %d", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("job was not processed")
 	}
 }
