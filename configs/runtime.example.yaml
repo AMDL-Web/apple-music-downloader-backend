@@ -55,8 +55,9 @@ download:
   # bool: true tries the next codec in quality_priority after failure; false only tries the first codec.
   codec_alternative: true
   # enum: low, high. Controls the per-track RAM/disk trade-off for Enhanced HLS processing; default: low.
-  # - low: streams encrypted and decrypted Enhanced HLS media through temp_dir. The normal path uses bounded
-  #     fragment-sized RAM, but up to roughly three track-sized files can coexist there per parallel track.
+  # - low: streams encrypted Enhanced HLS media into a resumable checkpoint, then reads it fragment by fragment
+  #     and decrypts directly into ffmpeg. The normal path uses bounded fragment-sized RAM; the encrypted
+  #     checkpoint and flattened output can coexist in temp_dir, for roughly two track-sized files per parallel track.
   # - high: keeps one encrypted track in RAM and decrypts it fragment by fragment directly into ffmpeg. The live
   #     media payload per parallel track is roughly one encrypted track plus the current encrypted and plaintext
   #     fragments; pathological single-fragment media can approach three track sizes. The observed Go heap may
@@ -67,11 +68,14 @@ download:
   #     CDN response has a usable ETag or Last-Modified validator and is interrupted after making progress, high
   #     mode retries one Range request from its in-memory prefix. It does not persist that prefix, so process or
   #     container restarts still begin at byte zero.
-  # AAC-LC WebPlayback is unchanged by this option: both modes keep its encrypted and decrypted track bytes in
-  # memory and use the same 512 MiB download limit. The rare ALAC integrity-repair fallback also reads and copies
-  # one full flattened track in either mode; the fragment-sized low-mode estimate applies to the normal path.
-  # Metadata tagging currently creates one additional track-sized rewrite file under the operating system temp
-  # directory in either mode; that file is outside temp_dir and is not included in the one/three-track estimates.
+  # AAC-LC WebPlayback is unchanged by this option: both modes keep its encrypted retry buffer in memory (subject
+  # to the same 512 MiB download limit) and stream gowidevine's decrypted output directly into ffmpeg instead of
+  # retaining another plaintext []byte or input file. The Widevine parser may still hold decoded track structures
+  # until that stream completes. The rare ALAC integrity-repair fallback also reads and copies one full flattened
+  # track in either mode; the fragment-sized low-mode estimate applies to the normal path.
+  # For the normal ffmpeg layout (media before a final moov), metadata tagging rewrites only a moov-plus-artwork
+  # sized shell in temp_dir and another shell of similar size in the operating system temp directory. Unusual
+  # compatible layouts fall back to go-mp4tag's legacy whole-track rewrite in the operating system temp directory.
   # Total RAM and temporary disk usage scale with the startup pools in config.yaml (max_parallel_downloads /
   # max_parallel_decrypts). A per-task overrides.memory_mode may select a different mode without changing the
   # runtime default.
@@ -115,11 +119,12 @@ download:
   # move is a cheap rename; if not, the finished file is copied across once. Put
   # temp_dir on fast local storage (e.g. SSD) to keep the flatten/verify/tag work
   # off a slower downloads volume. For Enhanced HLS, peak usage in this directory depends
-  # on memory_mode: roughly three times one track's size per in-flight track in low mode,
+  # on memory_mode: roughly two times one track's size per in-flight track in low mode,
   # or one track's size per in-flight track in high mode (in-flight tracks are bounded by
   # the startup pools in config.yaml). AAC-LC uses roughly one track here in either mode.
-  # The metadata rewrite also briefly uses one track-sized file in the
-  # operating system temp directory. Assumed single-writer: stale non-resumable scratch
+  # The common metadata rewrite briefly uses only moov-plus-artwork sized shells in temp_dir and the operating
+  # system temp directory; a compatible non-tail-moov layout can still use one track-sized legacy rewrite file.
+  # Assumed single-writer: stale non-resumable scratch
   # in temp_dir is swept on startup. Encrypted HLS checkpoints (low mode) are grouped by
   # task: failed/recoverable tasks retain them for retry, while completed, cancelled,
   # and deleted tasks remove them.

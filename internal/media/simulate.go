@@ -209,7 +209,11 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 func (d *Downloader) simulateDecryptPhase(ctx context.Context, song applemusic.Song, codec string, sampleRate int, totalBytes int64, set func(domain.ItemStatus, float64, string)) error {
 	if codec == "aac-lc" {
 		set(domain.ItemDecrypting, 0.55, "acquiring Widevine license")
-		return simulatePause(ctx, 400*time.Millisecond)
+		if err := simulatePause(ctx, 200*time.Millisecond); err != nil {
+			return err
+		}
+		set(domain.ItemDecrypting, 0.57, "decrypting AAC-LC")
+		return simulatePause(ctx, 200*time.Millisecond)
 	}
 	set(domain.ItemDecrypting, 0.55, "extracting samples")
 	totalSamples := simulatedSampleCount(song, codec, sampleRate)
@@ -238,6 +242,12 @@ func (d *Downloader) simulatePostprocess(ctx context.Context, codec string, set 
 	}{}
 	if codec == "aac-lc" {
 		steps = append(steps,
+			struct {
+				status  domain.ItemStatus
+				prog    float64
+				message string
+				pause   time.Duration
+			}{domain.ItemRemuxing, 0.90, "remuxing AAC-LC", 300 * time.Millisecond},
 			struct {
 				status  domain.ItemStatus
 				prog    float64
