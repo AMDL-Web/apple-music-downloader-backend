@@ -17,7 +17,7 @@ AMDL Backend 是 Apple Music 下载系统的核心后端服务。它负责解析
 - 提供结构化日志、敏感字段脱敏、请求/任务关联、可选压缩轮转文件，以及带过滤和断线续接的日志查询/SSE API。
 - 支持本地模拟（simulate）模式：不实际下载/解密，用于联调和压测下载流水线（配置文件顶层 `simulate` 段）。
 - 提供 Swagger UI 与 OpenAPI 3.1 规范。
-- 使用 GitHub Actions 在发版时自动生成 Release changelog。
+- 使用 GitHub Actions 发版，支持仓库内版本说明并在缺失时自动生成 Release changelog。
 
 ## 依赖
 
@@ -418,10 +418,16 @@ go test ./... -count=1
 
 手动运行 `Release` workflow（`workflow_dispatch`，指定版本号）时，GitHub Actions 会先执行完整 Go 测试，再创建 GitHub Release；本仓库不通过推送 tag 触发发版。
 
-Release changelog 由 GitHub generated release notes 自动生成，分类规则位于：
+发版时会优先读取仓库内与版本号对应的版本说明：
 
 ```text
-.github/release.yml
+.github/release-notes/<版本号>.md
+```
+
+例如发布 `v1.4.0` 时使用 `.github/release-notes/v1.4.0.md`。该文件不存在或为空时，workflow 才会回退到现有的提交记录自动生成逻辑。自动生成逻辑位于：
+
+```text
+tools/generate-changelog.js
 ```
 
 发版成功后 `Release` workflow 会调用 `Docker Publish` workflow，构建多架构镜像（linux/amd64 + linux/arm64）并推送到 `ghcr.io/amdl-web/apple-music-downloader-backend`，镜像 tag 为 `{version}`、`{major}.{minor}` 与 `latest`。`Docker Publish` 也可对已存在的版本标签手动触发（补发或重发镜像），在 GitHub 页面手工发布 Release 时同样会自动运行。手动触发默认不移动 `latest`（避免重发旧版本时把 `latest` 拉回去），仅在勾选 `latest` 选项时才更新；页面手工发布的预发布（prerelease）Release 也不会移动 `latest`。首次推送会在 GHCR 创建私有 package，如需公开拉取，请到仓库 Packages 设置里将其改为 public。
