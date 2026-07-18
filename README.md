@@ -322,7 +322,7 @@ curl -X DELETE http://localhost:18080/api/v1/downloads/{job_id}
 - `download.max_attempts`：元数据、封面、歌词以及每个编码的下载/解密阶段的最大总尝试次数（含首次）；正数允许 `1-10`。例如 `4` 表示每个操作最多尝试 4 次；值 `<= 0` 仍按 1 处理（仅尝试一次，不重试）。
 - 可重试错误使用带随机抖动的指数退避；Apple Catalog 返回 `Retry-After` 时，等待时间不会短于该提示，避免同一批请求同步重放。
 - `download.quality_priority`：按顺序尝试的 Enhanced HLS 编码回退链，支持 `alac`、`aac`、`aac-binaural`、`aac-downmix`、`ec3` 和 `ac3`。
-- `download.memory_mode`：控制 Enhanced HLS 路径的内存/磁盘取舍。`low`（默认）用逐片段内存和更多临时磁盘；`high` 将一份加密整轨保留在内存并把逐片段解密结果直接送入 ffmpeg，以减少临时文件和磁盘往返。高模式的单轨内存媒体上限为 512 MiB；由于 Go GC 会保留分配余量，实际堆峰值可能接近整轨大小的两倍，进程内存和临时盘占用也会随任务及曲目并发数放大。AAC-LC 回退不受此选项影响，在两种模式下均采用整轨内存处理。
+- `download.memory_mode`：控制 Enhanced HLS 路径的内存/磁盘取舍。`low`（默认）用逐片段内存和更多临时磁盘；`high` 将一份加密整轨保留在内存并把逐片段解密结果直接送入 ffmpeg，以减少临时文件和磁盘往返。high 在已取得可用于 `If-Range` 的 ETag 或 Last-Modified 时可对一次 CDN 中途断流执行纯内存 `Range` 重连，但不持久化断点，进程或容器重启后仍从零开始。高模式的单轨内存媒体上限为 512 MiB；由于 Go GC 会保留分配余量，实际堆峰值可能接近整轨大小的两倍，进程内存和临时盘占用也会随任务及曲目并发数放大。AAC-LC 回退不受此选项影响，在两种模式下均采用整轨内存处理。
 - `download.codec_alternative`：是否在前一个编码重试耗尽后继续尝试回退链；关闭时只尝试第一个编码。
 - `aac-lc` 无需写入 `quality_priority`；开启编码回退时会自动追加为最后的 WebPlayback 保底格式。
 - 回退链中的每个编码（含隐式 AAC-LC 保底）均使用 `download.max_attempts`；每个编码的下载阶段和解密阶段分别独立计数重试。

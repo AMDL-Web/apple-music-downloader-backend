@@ -1230,10 +1230,12 @@ func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected
 		// High-memory mode keeps exactly one whole-track encrypted copy. The
 		// fragment decrypt/remux stage remains streaming, so parsed, plaintext,
 		// and remuxed whole-track copies never accumulate beside it. The
-		// in-flight permit stays held until decrypt has consumed the bytes.
+		// in-flight permit stays held until decrypt has consumed the bytes. A
+		// validated Range reconnect may repair one interrupted response without
+		// creating a persistent checkpoint.
 		raw, err := func() ([]byte, error) {
 			defer releaseDownload()
-			return downloadBytes(ctx, d.http, selected.info.MediaURI, onProgress)
+			return downloadBytesWithRangeResume(ctx, d.http, selected.info.MediaURI, onProgress)
 		}()
 		if err != nil {
 			releaseInFlight()
