@@ -50,9 +50,9 @@ type Downloader struct {
 	requestGate   *limits.RequestGate
 
 	// Per-job suppression for standalone cover paths that were already handled
-	// (written, unavailable, or exhausted). Access is serialized by
-	// standaloneCoverMu.
-	standaloneCoverHandled map[string]struct{}
+	// (written, unavailable, or exhausted). The state has its own mutex because
+	// different cover paths are allowed to proceed concurrently.
+	standaloneCoverState *standaloneCoverState
 }
 
 type downloaderCatalog interface {
@@ -123,6 +123,7 @@ func (d *Downloader) withConfig(cfg config.Config) *Downloader {
 	clone.cfg = cfg
 	clone.mp4 = newMP4Processor(cfg)
 	clone.covers = nil
+	clone.standaloneCoverState = nil
 	// Direct Downloader literals are common in unit tests. Production always
 	// arrives with the process-wide instances from NewDownloader; initialize a
 	// private fallback only when such a test literal has no limiter at all.
@@ -221,7 +222,7 @@ func (d *Downloader) ProcessJob(ctx context.Context, job domain.Job, reporter jo
 	}
 	jobDownloader := d.withConfig(cfg)
 	jobDownloader.covers = newCoverCache(jobDownloader.catalog)
-	jobDownloader.standaloneCoverHandled = make(map[string]struct{})
+	jobDownloader.standaloneCoverState = newStandaloneCoverState()
 	err = jobDownloader.processJob(ctx, job, reporter)
 	// Failed jobs retain their checkpoints for Retry. Completed and cancelled
 	// jobs cannot be retried, so remove every codec/track checkpoint owned by
