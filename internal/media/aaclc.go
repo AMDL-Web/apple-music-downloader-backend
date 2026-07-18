@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -111,7 +112,7 @@ func decodeWidevineLicense(value string) ([]byte, error) {
 	return license, nil
 }
 
-func decryptWidevineMP4(raw []byte, licenseValue string, parseLicense func([]byte) ([]*widevine.Key, error)) ([]byte, error) {
+func parseWidevineLicenseKeys(licenseValue string, parseLicense func([]byte) ([]*widevine.Key, error)) ([]*widevine.Key, error) {
 	license, err := decodeWidevineLicense(licenseValue)
 	if err != nil {
 		return nil, err
@@ -120,9 +121,29 @@ func decryptWidevineMP4(raw []byte, licenseValue string, parseLicense func([]byt
 	if err != nil {
 		return nil, fmt.Errorf("parse Widevine license: %w", err)
 	}
-	var decrypted bytes.Buffer
-	if err := widevine.DecryptMP4Auto(bytes.NewReader(raw), keys, &decrypted); err != nil {
-		return nil, fmt.Errorf("decrypt AAC-LC MP4: %w", err)
+	return keys, nil
+}
+
+// decryptWidevineMP4ToWriter writes gowidevine's decrypted fragmented MP4
+// directly to its consumer. In production that consumer is ffmpeg's stdin, so
+// AAC-LC no longer materializes the additional whole-track output []byte or a
+// fix-*/in.m4a file beside the still-encrypted retry buffer. Gowidevine v0.1.3
+// still decodes the input into an in-memory MP4 box tree before it writes it.
+func decryptWidevineMP4ToWriter(raw io.Reader, keys []*widevine.Key, dst io.Writer) error {
+	if err := widevine.DecryptMP4Auto(raw, keys, dst); err != nil {
+		return fmt.Errorf("decrypt AAC-LC MP4: %w", err)
 	}
-	return decrypted.Bytes(), nil
+	return nil
+}
+
+func (p *MP4Processor) decryptWidevineToFlatFile(
+	ctx context.Context,
+	raw io.Reader,
+	keys []*widevine.Key,
+	outPath string,
+	afterInput func(),
+) error {
+	return p.produceToFlatFile(ctx, outPath, func(dst io.Writer) error {
+		return decryptWidevineMP4ToWriter(raw, keys, dst)
+	}, afterInput)
 }

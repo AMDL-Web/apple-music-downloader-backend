@@ -1286,9 +1286,11 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 		}
 	}
 
-	// Both modes stage the flattened, verified and tagged output here before the
-	// atomic final move. Low mode first writes a dec-* fragmented intermediate;
-	// high mode pipes that same fragment stream straight into ffmpeg.
+	// Both modes decrypt one fragment at a time and pipe the resulting plaintext
+	// fragmented MP4 straight into ffmpeg. Only their encrypted input backing
+	// differs: low mode reads the resumable raw checkpoint while high mode reads
+	// its in-memory copy. The flattened, verified and tagged output is staged
+	// here before the atomic final move.
 	flatFile, err := os.CreateTemp(d.cfg.Download.TempDir, "flat-*.m4a")
 	if err != nil {
 		return fmt.Errorf("create flatten output: %w", err)
@@ -1301,10 +1303,6 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	if err != nil {
 		return err
 	}
-	highMemory := d.cfg.Download.MemoryMode == config.MemoryModeHigh
-	// decPath is created only in low-memory mode; high mode pipes the fragment
-	// stream straight into ffmpeg behind flatPath.
-	var decPath string
 	streamErr, closeErr := func() (error, error) {
 		defer releaseDecrypt()
 		session, openErr := d.wrapper.NewDecryptSession(ctx, song.ID)
@@ -1323,29 +1321,18 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 				set(domain.ItemDecrypting, 0.55+p*0.35, fmt.Sprintf("decrypting %.0f%%", p*100))
 			}
 		}
-		if highMemory {
-			// The encrypted track is the only whole-track allocation. mp4ff parses one
-			// fragment, the wrapper returns one plaintext fragment, and DataParts writes
-			// those samples directly into ffmpeg's stdin without another concatenation.
-			return d.mp4.streamDecryptToFlatFile(ctx, rawReader, flatPath, info.Keys, decryptFragment, onProgress), session.Close()
-		}
-		decFile, createErr := os.CreateTemp(d.cfg.Download.TempDir, "dec-*.mp4")
-		if createErr != nil {
-			_ = session.Close()
-			return fmt.Errorf("create decrypt output: %w", createErr), nil
-		}
-		decPath = decFile.Name()
-		decFile.Close()
-		return d.mp4.streamDecryptToFile(ctx, rawReader, decPath, info.Keys, decryptFragment, onProgress), session.Close()
+		// mp4ff parses one fragment, the wrapper returns one plaintext fragment,
+		// and DataParts writes those samples directly into ffmpeg's stdin without
+		// another concatenation or a whole-track dec-* intermediate.
+		return d.mp4.streamDecryptToFlatFile(ctx, rawReader, flatPath, info.Keys, decryptFragment, onProgress, func() {
+			// The decrypted input has reached EOF and ffmpeg is now flushing the
+			// progressive MP4 trailer. Publish remuxing inside that real window,
+			// before produceToFlatFile waits for ffmpeg to exit.
+			set(domain.ItemRemuxing, 0.90, "remuxing")
+		}), session.Close()
 	}()
-	if decPath != "" {
-		defer os.Remove(decPath)
-	}
 	if streamErr != nil {
-		if highMemory {
-			return fmt.Errorf("decrypt and flatten media: %w", streamErr)
-		}
-		return fmt.Errorf("decrypt media: %w", streamErr)
+		return fmt.Errorf("decrypt and flatten media: %w", streamErr)
 	}
 	if closeErr != nil {
 		return fmt.Errorf("close decrypt session: %w", closeErr)
@@ -1354,14 +1341,6 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 		selected.releaseInFlight()
 	}
 
-	// In high mode flattening already ran behind the decrypt stream; preserve
-	// the public lifecycle transition before verification/saving either way.
-	set(domain.ItemRemuxing, 0.90, "remuxing")
-	if !highMemory {
-		if err := d.mp4.flattenFileToFile(ctx, decPath, flatPath); err != nil {
-			return fmt.Errorf("fix encapsulation: %w", err)
-		}
-	}
 	// Flatten the decrypted fragmented MP4 into a regular progressive MP4 (also
 	// normalises the ftyp brand) on temp storage, then verify and tag it there,
 	// and only move the finished file to its final path. Keeping the flatten
@@ -1481,41 +1460,14 @@ func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *
 
 // decryptAACLC takes the already-downloaded encrypted bytes from
 // fetchAACLCMedia and acquires the license, decrypts, and writes the final
-// file. On retry this re-runs without downloading media again.
+// file. On retry this re-runs without downloading media again. Gowidevine's
+// decoded box tree is written straight to ffmpeg, avoiding the previous extra
+// whole-track output buffer and fix-*/in.m4a intermediate. Gowidevine itself
+// still retains the decoded media boxes until it has emitted the track.
 func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, song applemusic.Song, media aacLCMedia, raw []byte, lyrics string, cover []byte, outPath string, releaseInFlight func(), set func(domain.ItemStatus, float64, string)) error {
 	d.ensureMediaLimits()
-	set(domain.ItemDecrypting, 0.55, "acquiring Widevine license")
-	releaseDecrypt, err := d.decryptLimit.Acquire(ctx)
-	if err != nil {
-		return err
-	}
-	decrypted, err := func() ([]byte, error) {
-		defer releaseDecrypt()
-		challenge, parseLicense, err := newWidevineSession(media.KID)
-		if err != nil {
-			return nil, err
-		}
-		license, err := d.wrapper.License(ctx, song.ID, base64.StdEncoding.EncodeToString(challenge), media.KeyURI)
-		if err != nil {
-			return nil, fmt.Errorf("request AAC-LC license: %w", err)
-		}
-		return decryptWidevineMP4(raw, license, parseLicense)
-	}()
-	if err != nil {
-		return err
-	}
-	if releaseInFlight != nil {
-		releaseInFlight()
-	}
-
-	set(domain.ItemSaving, 0.94, "saving AAC-LC")
 	// Flatten, verify, and tag on temp storage, then move the finished file to
 	// its final path, same as downloadEnhancedCodec (see finalizeToOutput).
-	//
-	// Normalise the container (flatten + M4A brand + create the
-	// moov.udta.meta.ilst structure that go-mp4tag writes into). The decrypted
-	// WebPlayback asset has no udta box, so tagging would otherwise fail. The
-	// flattened bytes are not read back into memory.
 	flatFile, err := os.CreateTemp(d.cfg.Download.TempDir, "flat-*.m4a")
 	if err != nil {
 		return fmt.Errorf("create flatten output: %w", err)
@@ -1523,10 +1475,49 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 	flatPath := flatFile.Name()
 	flatFile.Close()
 	defer os.Remove(flatPath)
-	if err := d.mp4.flattenToFile(ctx, decrypted, flatPath); err != nil {
+
+	set(domain.ItemDecrypting, 0.55, "acquiring Widevine license")
+	releaseDecrypt, err := d.decryptLimit.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	// afterInput is the successful producer boundary, while this defer covers
+	// license, producer, stdin, ffmpeg-start, and cancellation failures. Keep a
+	// local once even though Semaphore's release is itself idempotent: ownership
+	// is explicit here and future limiter implementations cannot over-release.
+	var releaseDecryptOnce sync.Once
+	releaseDecryptPermit := func() { releaseDecryptOnce.Do(releaseDecrypt) }
+	defer releaseDecryptPermit()
+	challenge, parseLicense, err := newWidevineSession(media.KID)
+	if err != nil {
+		return err
+	}
+	license, err := d.wrapper.License(ctx, song.ID, base64.StdEncoding.EncodeToString(challenge), media.KeyURI)
+	if err != nil {
+		return fmt.Errorf("request AAC-LC license: %w", err)
+	}
+	keys, err := parseWidevineLicenseKeys(license, parseLicense)
+	if err != nil {
+		return err
+	}
+	set(domain.ItemDecrypting, 0.57, "decrypting AAC-LC")
+	if err := d.mp4.decryptWidevineToFlatFile(ctx, bytes.NewReader(raw), keys, flatPath, func() {
+		// Decryption has consumed the immutable retry buffer. Match the old
+		// phase boundary: release both permits before the container's final
+		// flush and publish remuxing until cmd.Wait completes.
+		releaseDecryptPermit()
+		if releaseInFlight != nil {
+			releaseInFlight()
+		}
+		set(domain.ItemRemuxing, 0.90, "remuxing AAC-LC")
+	}); err != nil {
 		return fmt.Errorf("normalize AAC-LC container: %w", err)
 	}
-	decrypted = nil
+
+	set(domain.ItemSaving, 0.94, "saving AAC-LC")
+	// The ffmpeg copy pass also normalises the M4A brand and creates the
+	// moov.udta.meta.ilst structure that go-mp4tag writes into. The decrypted
+	// WebPlayback asset has no udta box, so tagging would otherwise fail.
 	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrityFile(ctx, flatPath) {
 		return fmt.Errorf("AAC-LC integrity check failed")
 	}
