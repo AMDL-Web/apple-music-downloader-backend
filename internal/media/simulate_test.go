@@ -165,12 +165,17 @@ func TestSimulateTrackFallsBackToAACLCWithoutManifest(t *testing.T) {
 		t.Fatalf("simulated processTrack failed: %v", err)
 	}
 	var fallbacks, completed int
+	remuxing := false
 	for _, ev := range reporter.events {
 		switch ev.Type {
 		case "codec_fallback":
 			fallbacks++
 		case "item_completed":
 			completed++
+		case "item_progress":
+			if ev.Phase == string(domain.ItemRemuxing) {
+				remuxing = true
+			}
 		}
 	}
 	if fallbacks == 0 {
@@ -178,6 +183,9 @@ func TestSimulateTrackFallsBackToAACLCWithoutManifest(t *testing.T) {
 	}
 	if completed != 1 {
 		t.Fatalf("item_completed events = %d, want 1", completed)
+	}
+	if !remuxing {
+		t.Error("AAC-LC fallback did not publish the production remuxing phase")
 	}
 	final := reporter.items[len(reporter.items)-1]
 	if final.Codec != "aac-lc" || final.Status != domain.ItemCompleted {
