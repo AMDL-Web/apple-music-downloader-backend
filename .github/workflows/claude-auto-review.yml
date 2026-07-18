@@ -57,5 +57,8 @@ jobs:
           # 不授权 gh pr comment：结论由 track_progress 的追踪评论承载，
           # 额外的 gh pr comment 会产生重复评论。
           # 额外放行 go 系列命令，便于审查时实际编译/跑测试验证改动。
+          # Task/TodoWrite 允许审查 agent 并行派发子任务并跟踪进度
+          # （缺 Task 时大型 PR 的审查会在派发子任务处被反复拒绝而烂尾）；
+          # git log/show/diff 只读，便于查看提交历史与具体改动。
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(go build:*),Bash(go test:*),Bash(go vet:*),Bash(go run:*),Bash(go mod:*),Bash(go fmt:*),Bash(gofmt:*)"
+            --allowedTools "Task,TodoWrite,mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(go build:*),Bash(go test:*),Bash(go vet:*),Bash(go run:*),Bash(go mod:*),Bash(go fmt:*),Bash(gofmt:*)"
