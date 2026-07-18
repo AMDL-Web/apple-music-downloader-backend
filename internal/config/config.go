@@ -243,6 +243,10 @@ func loadPair(startupPath, runtimePath string, environ []string) (Config, error)
 	if err := cfg.NormalizeDeprecated(); err != nil {
 		return cfg, err
 	}
+	// Same tolerance as the single-file path: files or AMDL_* overrides
+	// written before the limits existed may hold larger values, so clamp
+	// them instead of refusing to boot.
+	clampCatalogLimits(&cfg.Catalog)
 	clampDownloadLimits(&cfg.Download)
 	if err := cfg.Validate(); err != nil {
 		return cfg, err

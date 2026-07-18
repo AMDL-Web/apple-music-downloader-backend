@@ -185,6 +185,28 @@ func TestEnsureFilesCreatesRuntimeForStartupOnlyConfig(t *testing.T) {
 	}
 }
 
+func TestLoadPairClampsCatalogLimits(t *testing.T) {
+	// The split loader tolerates oversized startup-bound catalog values the
+	// same way the legacy single-file loader does, instead of failing boot.
+	dir := t.TempDir()
+	startup, runtime := splitPaths(t, dir)
+	body := "catalog:\n  max_parallel_requests: 999\n  requests_per_second: 999\n  request_burst: 999\n"
+	if err := os.WriteFile(startup, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runtime, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadPair(startup, runtime, nil)
+	if err != nil {
+		t.Fatalf("loadPair() oversized catalog limits: %v", err)
+	}
+	c := cfg.Catalog
+	if c.MaxParallelRequests != maxGlobalPoolLimit || c.RequestsPerSecond != maxGlobalPoolLimit || c.RequestBurst != maxGlobalPoolLimit {
+		t.Fatalf("loadPair() did not clamp catalog values: %+v", c)
+	}
+}
+
 func TestLoadPairRejectsMisplacedKeys(t *testing.T) {
 	dir := t.TempDir()
 	startup, runtime := splitPaths(t, dir)
