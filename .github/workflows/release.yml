@@ -6,8 +6,8 @@ name: Release
 #   - pull_request closed:dev -> main 的 PR 被合并时自动发版,版本号从
 #     PR 标题解析(需要形如 "Release v1.2.0: ..." 的 vX.Y.Z 版本号)。
 #     标题里没有版本号时该运行会失败并提示改用手动触发,不会静默跳过。
-# 两条路径都会:跑测试 -> 生成 changelog -> 创建 tag + GitHub Release ->
-# 显式级联 docker-publish 构建并推送镜像(latest 一并更新)。
+# 两条路径都会:跑测试 -> 读取仓库版本说明或生成 changelog -> 创建 tag +
+# GitHub Release -> 显式级联 docker-publish 构建并推送镜像(latest 一并更新)。
 on:
   workflow_dispatch:
     inputs:
@@ -128,26 +128,42 @@ jobs:
             echo "skip_release=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Generate changelog
+      - name: Resolve release notes
         id: changelog
         if: steps.get-base-tag.outputs.skip_release == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BASE_TAG: ${{ steps.get-base-tag.outputs.base_tag }}
         run: |
-          # 构建参数
-          ARGS="--tag ${{ steps.version.outputs.version }} --with-hash"
-          if [ -n "${{ steps.get-base-tag.outputs.base_tag }}" ]; then
-            ARGS="$ARGS --base ${{ steps.get-base-tag.outputs.base_tag }}"
+          RELEASE_NOTES_FILE=".github/release-notes/${VERSION}.md"
+
+          if [ -s "$RELEASE_NOTES_FILE" ]; then
+            echo "使用仓库版本说明: $RELEASE_NOTES_FILE"
+            CHANGELOG_CONTENT=$(cat "$RELEASE_NOTES_FILE")
+          else
+            echo "未找到非空的仓库版本说明 $RELEASE_NOTES_FILE，自动生成 changelog"
+
+            ARGS=(--tag "$VERSION" --with-hash)
+            if [ -n "$BASE_TAG" ]; then
+              ARGS+=(--base "$BASE_TAG")
+            fi
+
+            CHANGELOG_CONTENT=$(node tools/generate-changelog.js "${ARGS[@]}" --output-only)
           fi
 
-          # 运行 changelog 生成器
-          CHANGELOG_CONTENT=$(node tools/generate-changelog.js $ARGS --output-only)
-
-          # 保存到环境变量，使用 GITHUB_OUTPUT 方式
-          echo "changelog_content<<EOF" >> $GITHUB_OUTPUT
-          echo "$CHANGELOG_CONTENT" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # 使用随机分隔符，避免版本说明中恰好出现 EOF 时截断输出。
+          DELIMITER="release_notes_${RANDOM}_${RANDOM}_$$"
+          while grep -Fxq "$DELIMITER" <<< "$CHANGELOG_CONTENT"; do
+            DELIMITER="release_notes_${RANDOM}_${RANDOM}_$$"
+          done
+          {
+            echo "changelog_content<<$DELIMITER"
+            printf '%s\n' "$CHANGELOG_CONTENT"
+            echo "$DELIMITER"
+          } >> "$GITHUB_OUTPUT"
 
           # 显示输出用于调试
-          echo "$CHANGELOG_CONTENT"
+          printf '%s\n' "$CHANGELOG_CONTENT"
 
       - name: Cancel release if no commits
         if: steps.get-base-tag.outputs.skip_release == 'true'
