@@ -81,9 +81,9 @@ jobs:
           cache: true
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Run tests
         run: go test ./...
@@ -148,7 +148,7 @@ jobs:
               ARGS+=(--base "$BASE_TAG")
             fi
 
-            CHANGELOG_CONTENT=$(node tools/generate-changelog.js "${ARGS[@]}" --output-only)
+            CHANGELOG_CONTENT=$(node .github/scripts/generate-changelog.js "${ARGS[@]}" --output-only)
           fi
 
           # 使用随机分隔符，避免版本说明中恰好出现 EOF 时截断输出。
@@ -173,7 +173,7 @@ jobs:
 
       - name: Create Release
         if: steps.get-base-tag.outputs.skip_release == 'false'
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: Release ${{ steps.version.outputs.version }}

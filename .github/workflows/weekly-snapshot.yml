@@ -20,23 +20,23 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Generate snapshot version
         id: version
         run: |
           # 生成下一个周快照版本号
-          VERSION=$(node tools/weekly-snapshot.js)
+          VERSION=$(node .github/scripts/weekly-snapshot.js)
           
           # 获取基础标签
-          BASE_TAG=$(node tools/weekly-snapshot.js --get-base-tag)
+          BASE_TAG=$(node .github/scripts/weekly-snapshot.js --get-base-tag)
           
           # 如果手动指定了基础标签，使用手动指定的
           if [ -n "${{ github.event.inputs.base_tag }}" ]; then
@@ -80,7 +80,7 @@ jobs:
           fi
           
           # 生成 changelog
-          CHANGELOG_CONTENT=$(node tools/generate-changelog.js $ARGS --output-only)
+          CHANGELOG_CONTENT=$(node .github/scripts/generate-changelog.js $ARGS --output-only)
           
           # 保存到输出
           echo "changelog_content<<EOF" >> $GITHUB_OUTPUT
@@ -97,7 +97,7 @@ jobs:
 
       - name: Create Pre-release
         if: steps.version.outputs.skip_release == 'false'
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: Snapshot ${{ steps.version.outputs.version }}

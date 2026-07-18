@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const changelogPath = path.join(__dirname, '..', 'CHANGELOG.md');
+const changelogPath = path.join(__dirname, '..', '..', 'CHANGELOG.md');
 
 // 分类映射
 const typeMap = {
@@ -188,6 +188,12 @@ function getCommits(latest = null) {
 // "@Yangjunwei Liang" 这类带空格的名字解析成对无关账号 @Yangjunwei 的
 // 提及(v1.0.0 首次发布时实际发生过)。
 function formatAuthor(author, email) {
+  // Codex 的提交 trailer 使用 noreply@openai.com，而不是 GitHub noreply
+  // 邮箱；名称和邮箱同时匹配时可可靠映射到 OpenAI 官方 @codex 账号。
+  if (author.toLowerCase() === 'codex' && (email || '').toLowerCase() === 'noreply@openai.com') {
+    return '@codex';
+  }
+
   // GitHub noreply 邮箱可确定性还原登录名:
   // "153256373+LYJW131@users.noreply.github.com"(网页操作产生的提交)
   // 或旧格式 "LYJW131@users.noreply.github.com"。

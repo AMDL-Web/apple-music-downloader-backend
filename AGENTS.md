@@ -39,11 +39,15 @@ This backend is the **download core**. It intentionally has NO authentication la
 - When a breaking change is genuinely necessary, call it out explicitly, document what breaks and how to migrate, and update all affected modules consistently in the same change.
 - When adding or modifying any configuration item, keep the sample config comments in `configs/config.example.yaml` (startup keys) and `configs/runtime.example.yaml` (runtime-mutable keys) complete: document all allowed enum values, valid boolean values, numeric units/default behavior, list item options, and supported template variables next to the relevant key.
 - Release notes may be provided at `.github/release-notes/<version>.md` (for example, `v1.4.0.md`); the release workflow uses that file when non-empty and falls back to the existing automatic changelog generator otherwise.
-- When an agent creates or updates a manual release-notes file, it MUST extract the primary authors and all `Co-authored-by` contributors from the relevant commits, deduplicate them, and include them in the release notes. Use `@username` only when a GitHub account can be identified reliably; otherwise use the contributor's plain name.
+- When an agent creates or updates a manual release-notes file with per-commit change entries, it MUST append that commit's primary author and all `Co-authored-by` contributors to the corresponding entry, deduplicate them, and use `@username` whenever a GitHub account can be identified reliably; otherwise use the contributor's plain name. Map `Codex <noreply@openai.com>` to the official GitHub account `@codex`.
 
 ---
 
 # 4. Commit Requirements
+
+## Conventional Commit Titles
+
+All non-merge commits MUST follow the [Conventional Commits](https://www.conventionalcommits.org/) specification.
 
 ## Developer Certificate of Origin (DCO)
 
