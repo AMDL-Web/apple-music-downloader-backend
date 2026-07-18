@@ -328,6 +328,39 @@ curl -X DELETE http://localhost:18080/api/v1/downloads/{job_id}
 - 回退链中的每个编码（含隐式 AAC-LC 保底）均使用 `download.max_attempts`；每个编码的下载阶段和解密阶段分别独立计数重试。
 - 重试、耗尽、恢复和编码回退会通过任务 SSE 事件返回；任务详情中的每个项目也会返回 `retry_kind`、`attempt`、`max_attempts` 和 `status_message`，其中 `attempt` 为当前阶段（`retry_kind`）的尝试序号（从 1 开始）。
 
+### 内存模式实测（v1.3.0）
+
+为排除 Apple CDN 速度波动，测试先缓存两张真实专辑的原始加密 ALAC 媒体，再以只读、禁止回源的本地 HTTP 响应重放；API、元数据解析、`wrapper-manager` 解密、ffmpeg 重封装、完整性解码、标签写入和最终文件保存仍走完整生产链路。每个测试单元使用全新的后端容器、数据库和临时目录，并在 `wrapper-manager` 恢复两个 Ready 实例后开始计时。
+
+- [月姫 -A piece of blue glass moon- THEME SONG E.P](https://music.apple.com/cn/album/1580904295)：8 首，原始媒体约 841 MiB。
+- [Fate/stay night [Realta Nua] Soundtrack Reproduction](https://music.apple.com/cn/album/1576634760)：62 首，原始媒体约 1.14 GiB。
+- 每个“专辑 × 模式 × 并发”组合交错运行 3 轮；下表为三轮平均值。
+- 表中“曲目并发”表示单个专辑任务同时处理的 Enhanced HLS 轨道数；v1.3.0 实际由进程级共享池统一调度，跨任务总量受 `download.max_parallel_downloads`、`download.max_parallel_decrypts` 和内部 in-flight 背压共同约束。
+- 内存是整个后端容器的 cgroup 峰值（包含进程内存和计入 cgroup 的文件页缓存）；临时空间是 `download.temp_dir` 与操作系统临时目录的同时峰值，不包含最终下载目录。
+- 全部 48 个测试单元成功完成，强制命中 ALAC，缓存回源次数为 0；两种模式、所有并发下的逐轨音频 packet SHA-256 完全一致。
+
+月姫（长曲目、Hi-Res，较容易放大单轨内存和中间文件成本）：
+
+| 曲目并发 | Low 用时 | High 用时 | High 提速 | Low 内存 | High 内存 | Low 临时空间 | High 临时空间 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 122.4 s | 96.9 s | 20.8% | 80 MiB | 409 MiB | 471 MiB | 237 MiB |
+| 2 | 67.7 s | 52.7 s | 22.2% | 110 MiB | 706 MiB | 851 MiB | 391 MiB |
+| 4 | 42.7 s | 33.5 s | 21.6% | 147 MiB | 1,180 MiB | 1,591 MiB | 761 MiB |
+| 8 | 33.8 s | 27.0 s | 20.3% | 269 MiB | 2,054 MiB | 3,055 MiB | 1,328 MiB |
+
+Fate（大量短曲目，固定的 session、ffmpeg 启动、校验和标签开销占比更高）：
+
+| 曲目并发 | Low 用时 | High 用时 | High 提速 | Low 内存 | High 内存 | Low 临时空间 | High 临时空间 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 300.5 s | 267.4 s | 11.0% | 211 MiB | 365 MiB | 258 MiB | 122 MiB |
+| 2 | 172.6 s | 143.4 s | 16.9% | 210 MiB | 363 MiB | 282 MiB | 128 MiB |
+| 4 | 102.8 s | 87.0 s | 15.4% | 210 MiB | 479 MiB | 343 MiB | 143 MiB |
+| 8 | 76.9 s | 68.8 s | 10.5% | 216 MiB | 604 MiB | 398 MiB | 152 MiB |
+
+High 并不是使用了更快的解密算法。Low 每轨需要写入并重读加密 `raw-*`，再写入并由 ffmpeg 重读解密后的 `dec-*`，合计约产生 `4 × 轨道大小` 的额外临时文件流量；High 将一份加密整轨保留在内存，并通过 pipe 让逐片段解密与 ffmpeg 重封装并行进行，因此同时减少磁盘往返、内核/用户态复制和串行等待。本次实测 High 还减少了约 6%-12% 的容器 CPU 时间。
+
+选择建议：内存紧张或曲目大小不可预估时保留默认的 `low`；一般机器使用 `high` 时，应结合 `download.max_parallel_downloads` 与 `download.max_parallel_decrypts` 控制总 in-flight 轨道，以约 4 条同时活跃的高内存轨道作为保守起点，再根据多个任务的实测内存峰值上调。并发 8 在本次测试中仍有吞吐收益，但已进入收益递减区，而且 High 的内存峰值由“同时活跃的最大几首曲目”决定，不能只按专辑平均曲目大小估算。上述本地重放结果表示排除公网下载后的后端处理能力上限，不代表普通 CDN 环境中的绝对下载时间。
+
 ### 歌词
 
 - `download.embed_lyrics` 控制是否写入 MP4 歌词标签。
