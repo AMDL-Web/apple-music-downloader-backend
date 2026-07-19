@@ -7,9 +7,9 @@
 #
 # 首次启动会在 ./configs 里生成 config.yaml(后端从 config.example.yaml
 # 引导,带注释的字段文档见同目录示例文件),之后修改配置:
-#   - 运行期字段:PUT /api/v1/config,立即生效;
+#   - 运行期字段:PUT /api/v1/config,立即生效并整体重写 config.yaml;
 #   - 任意字段:用 AMDL_<大写段名>_<大写键名> 环境变量覆盖(优先于
-#     config.yaml,每次启动生效,不写回文件),改完 docker compose up -d;
+#     config.yaml,加载时不写回文件),改完 docker compose up -d;
 #   - 或直接编辑 ./configs/config.yaml 后 docker compose restart
 #     (启动期字段需重启,且被环境变量覆盖的字段以环境变量为准)。
 services:
@@ -50,7 +50,8 @@ services:
       # 让 Linux 上的容器也能通过 host.docker.internal 访问宿主机。
       - "host.docker.internal:host-gateway"
     volumes:
-      # 配置目录:config.yaml(后端机器管理)、config.example.yaml、hooks.yaml。
+      # 配置目录:config.yaml(后端管理、PUT 时整体重写)、
+      # config.example.yaml(完整字段文档)、hooks.yaml。
       - ./configs:/app/configs
       # SQLite 数据库目录(database.path 默认 data/db/amdl.db)。
       - ./data/db:/app/data/db

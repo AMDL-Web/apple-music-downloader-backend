@@ -2,15 +2,12 @@ package media
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net/http"
-	"regexp"
-	"sort"
 	"strings"
 
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
-	"amdl/internal/limits"
 )
 
 type QualityRequest struct {
@@ -39,96 +36,127 @@ type QualityOption struct {
 }
 
 type QualityResult struct {
-	Input      string          `json:"input"`
-	Storefront string          `json:"storefront"`
-	Type       string          `json:"type"`
-	AdamID     string          `json:"adam_id"`
-	Song       QualitySong     `json:"song"`
-	Qualities  []QualityOption `json:"qualities"`
+	Input      string         `json:"input"`
+	Storefront string         `json:"storefront"`
+	Type       string         `json:"type"`
+	AdamID     string         `json:"adam_id"`
+	Tracks     []QualityTrack `json:"tracks"`
+}
+
+type QualityTrack struct {
+	Song      QualitySong     `json:"song"`
+	Qualities []QualityOption `json:"qualities"`
 }
 
 type QualityService struct {
-	// store is the live runtime config; cfg is the fixed fallback used by
-	// test constructors that don't wire a store.
-	store       *config.Store
-	cfg         config.Config
-	catalog     qualityCatalog
-	wrapper     qualityWrapper
-	http        *http.Client
-	requestGate *limits.RequestGate
+	downloader *Downloader
 }
 
-type qualityCatalog interface {
-	Song(context.Context, string, string) (applemusic.Song, error)
-	EnhancedHLSViaWebToken(context.Context, string, string) (string, error)
+func NewQualityService(downloader *Downloader) *QualityService {
+	return &QualityService{downloader: downloader}
 }
 
-type qualityWrapper interface {
-	M3U8(context.Context, string) (string, error)
-}
-
-func NewQualityService(store *config.Store, catalog *applemusic.CatalogClient, wrapperClient qualityWrapper) *QualityService {
-	return &QualityService{store: store, catalog: catalog, wrapper: wrapperClient, http: newHTTPClient(), requestGate: catalog.RequestGate()}
-}
-
-func NewQualityServiceWithCatalog(cfg config.Config, catalog qualityCatalog) *QualityService {
-	return &QualityService{cfg: cfg, catalog: catalog, http: newHTTPClient()}
-}
-
-func (s *QualityService) baseConfig() config.Config {
-	if s.store != nil {
-		return s.store.Get()
-	}
-	return s.cfg
+func NewQualityServiceWithCatalog(cfg config.Config, catalog downloaderCatalog, wrapperClient downloaderWrapper) *QualityService {
+	return NewQualityService(&Downloader{cfg: cfg, catalog: catalog, wrapper: wrapperClient, http: newHTTPClient()})
 }
 
 func (s *QualityService) QueryQuality(ctx context.Context, req QualityRequest) (QualityResult, error) {
-	cfg := s.baseConfig()
-	parsed, err := applemusic.ParseWithAlbumTrackMode(strings.TrimSpace(req.URL), cfg.Catalog.AlbumTrackURLMode)
+	if s.downloader == nil {
+		return QualityResult{}, fmt.Errorf("quality downloader is not configured")
+	}
+	downloader := s.downloader.withConfig(s.downloader.baseConfig())
+	validated, err := downloader.validateRequest(ctx, strings.TrimSpace(req.URL))
 	if err != nil {
 		return QualityResult{}, err
 	}
-	if parsed.Type != applemusic.TypeSong {
-		return QualityResult{}, fmt.Errorf("quality query only supports song URLs")
+	parsed := applemusic.ParsedURL{
+		Raw: req.URL, Storefront: validated.Storefront, Type: applemusic.URLType(validated.Type), ID: validated.ID,
 	}
-	song, err := s.catalog.Song(ctx, parsed.Storefront, parsed.ID)
+	resolved, _, err := retryValue(ctx, downloader.cfg.Download.MaxAttempts, retryBackoff, func(int) (resolvedCollection, error) {
+		return downloader.resolveCollection(ctx, parsed)
+	}, nil)
 	if err != nil {
 		return QualityResult{}, err
 	}
-	master := song.EnhancedHLS
-	if cfg.Catalog.DeveloperTokenSigningEnabled() {
-		// A self-signed developer token cannot read enhancedHls, so quality is
-		// analyzed from either the authorized device manifest or a scraped
-		// web-player token, per catalog.signed_mode_hls_source.
-		if cfg.Catalog.EnhancedHLSFromWebToken() {
-			hls, err := s.catalog.EnhancedHLSViaWebToken(ctx, parsed.Storefront, song.ID)
-			if err != nil {
-				return QualityResult{}, fmt.Errorf("fetch enhanced hls via web token: %w", err)
-			}
-			master = hls
-		} else {
-			if s.wrapper == nil {
-				return QualityResult{}, fmt.Errorf("developer-token signing enabled but wrapper is not configured")
-			}
-			m3u8, err := s.wrapper.M3U8(ctx, song.ID)
-			if err != nil {
-				return QualityResult{}, fmt.Errorf("request device m3u8: %w", err)
-			}
-			master = m3u8
-		}
+	if len(resolved.Tracks) == 0 {
+		return QualityResult{}, fmt.Errorf("no downloadable songs found")
 	}
-	if strings.TrimSpace(master) == "" {
-		return QualityResult{}, fmt.Errorf("song %s has no enhanced hls manifest", song.ID)
-	}
-	variants, err := FetchMasterVariants(ctx, s.http, master, s.requestGate)
+
+	tracks, err := downloader.queryTrackQualities(ctx, parsed, resolved.Tracks)
 	if err != nil {
 		return QualityResult{}, err
 	}
 	return QualityResult{
-		Input: req.URL, Storefront: parsed.Storefront, Type: string(parsed.Type), AdamID: song.ID,
-		Song:      QualitySong{ID: song.ID, Name: song.Name, Artist: song.ArtistName, Album: song.AlbumName, HasLyrics: song.HasLyrics},
-		Qualities: SummarizeQualities(variants),
+		Input: req.URL, Storefront: parsed.Storefront, Type: string(parsed.Type), AdamID: parsed.ID, Tracks: tracks,
 	}, nil
+}
+
+func (d *Downloader) queryTrackQualities(ctx context.Context, parsed applemusic.ParsedURL, songs []applemusic.Song) ([]QualityTrack, error) {
+	tracks := make([]QualityTrack, len(songs))
+	metadata := newTrackMetadataResolver(d, parsed.Storefront)
+	finished := make([]bool, len(songs))
+	err := runTrackTasks(ctx, len(songs), finished, func(trackCtx context.Context, i int) error {
+		song, _, err := retryValue(trackCtx, d.cfg.Download.MaxAttempts, retryBackoff, func(int) (applemusic.Song, error) {
+			return metadata.song(trackCtx, songs[i], parsed.Type)
+		}, nil)
+		if err != nil {
+			return fmt.Errorf("resolve metadata for song %s: %w", songs[i].ID, err)
+		}
+		qualities, err := d.querySongQualities(trackCtx, parsed.Storefront, song)
+		if err != nil {
+			return fmt.Errorf("query quality for song %s: %w", song.ID, err)
+		}
+		tracks[i] = QualityTrack{Song: qualitySong(song), Qualities: qualities}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tracks, nil
+}
+
+func (d *Downloader) querySongQualities(ctx context.Context, storefront string, song applemusic.Song) ([]QualityOption, error) {
+	variants, _, err := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(int) ([]variant, error) {
+		master, err := d.resolveEnhancedHLS(ctx, storefront, song)
+		if err != nil {
+			return nil, err
+		}
+		return fetchMasterVariants(ctx, d.http, master, d.requestGate)
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	qualities := make([]QualityOption, 0, len(qualitySpecs))
+	// The endpoint reports every supported enhanced codec, not only the
+	// configured download fallback subset. It inventories the one fetched
+	// master playlist with the same selector downloads use, but intentionally
+	// stops before fetching any concrete media playlist.
+	for _, spec := range qualitySpecs {
+		option := QualityOption{ID: spec.id, Label: spec.label, Codec: spec.codec}
+		selected, err := selectVariant(variants, spec.id, d.cfg.Download.ALACMaxSampleRate, d.cfg.Download.ALACMaxBitDepth)
+		if err != nil {
+			var notFound codecNotFoundError
+			if errors.As(err, &notFound) {
+				qualities = append(qualities, option)
+				continue
+			}
+			return nil, err
+		}
+		option.Available = true
+		option.CodecID = selected.Audio
+		option.Channels = spec.channels
+		option.BitDepth = selected.BitDepth
+		option.SampleRate = selected.SampleRate
+		option.Bitrate = selected.Bandwidth
+		option.Description = qualityDescription(option)
+		qualities = append(qualities, option)
+	}
+	return qualities, nil
+}
+
+func qualitySong(song applemusic.Song) QualitySong {
+	return QualitySong{ID: song.ID, Name: song.Name, Artist: song.ArtistName, Album: song.AlbumName, HasLyrics: song.HasLyrics}
 }
 
 type qualitySpec struct {
@@ -136,56 +164,15 @@ type qualitySpec struct {
 	label    string
 	codec    string
 	channels int
-	pattern  *regexp.Regexp
 }
 
 var qualitySpecs = []qualitySpec{
-	{id: "aac", label: "AAC", codec: "AAC", channels: 2, pattern: codecPatterns["aac"]},
-	{id: "aac-binaural", label: "AAC Binaural", codec: "AAC", channels: 2, pattern: codecPatterns["aac-binaural"]},
-	{id: "aac-downmix", label: "AAC Downmix", codec: "AAC", channels: 2, pattern: codecPatterns["aac-downmix"]},
-	{id: "alac", label: "Lossless", codec: "ALAC", channels: 2, pattern: codecPatterns["alac"]},
-	{id: "ec3", label: "Dolby Atmos", codec: "E-AC-3", channels: 16, pattern: codecPatterns["ec3"]},
-	{id: "ac3", label: "Dolby Audio", codec: "AC-3", channels: 6, pattern: codecPatterns["ac3"]},
-}
-
-func SummarizeQualities(variants []PlaylistVariant) []QualityOption {
-	out := make([]QualityOption, 0, len(qualitySpecs))
-	for _, spec := range qualitySpecs {
-		option := QualityOption{ID: spec.id, Label: spec.label, Codec: spec.codec}
-		if selected, ok := bestVariant(variants, spec.pattern); ok {
-			option.Available = true
-			option.CodecID = selected.Audio
-			option.Channels = spec.channels
-			option.BitDepth = selected.BitDepth
-			option.SampleRate = selected.SampleRate
-			option.Bitrate = selected.Bandwidth
-			option.Description = qualityDescription(option)
-		}
-		out = append(out, option)
-	}
-	return out
-}
-
-func bestVariant(variants []PlaylistVariant, pattern *regexp.Regexp) (PlaylistVariant, bool) {
-	var filtered []PlaylistVariant
-	for _, v := range variants {
-		if pattern != nil && pattern.MatchString(v.Audio) {
-			filtered = append(filtered, v)
-		}
-	}
-	if len(filtered) == 0 {
-		return PlaylistVariant{}, false
-	}
-	sort.Slice(filtered, func(i, j int) bool {
-		if filtered[i].SampleRate != filtered[j].SampleRate {
-			return filtered[i].SampleRate > filtered[j].SampleRate
-		}
-		if filtered[i].BitDepth != filtered[j].BitDepth {
-			return filtered[i].BitDepth > filtered[j].BitDepth
-		}
-		return filtered[i].Bandwidth > filtered[j].Bandwidth
-	})
-	return filtered[0], true
+	{id: "aac", label: "AAC", codec: "AAC", channels: 2},
+	{id: "aac-binaural", label: "AAC Binaural", codec: "AAC", channels: 2},
+	{id: "aac-downmix", label: "AAC Downmix", codec: "AAC", channels: 2},
+	{id: "alac", label: "Lossless", codec: "ALAC", channels: 2},
+	{id: "ec3", label: "Dolby Atmos", codec: "E-AC-3", channels: 16},
+	{id: "ac3", label: "Dolby Audio", codec: "AC-3", channels: 6},
 }
 
 func qualityDescription(option QualityOption) string {

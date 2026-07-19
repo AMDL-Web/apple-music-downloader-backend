@@ -25,10 +25,12 @@ keys/
 coverage.txt
 
 *.local.yaml
-# Live config files: bootstrapped from the example files on first start.
-# config.yaml is the owner-edited startup config; runtime.yaml is rewritten
-# by PUT /api/v1/config. Neither is tracked, nor is the one-time backup left
-# by the legacy single-file migration.
+# Live config file: bootstrapped from the example file on first start and
+# rewritten by PUT /api/v1/config. It is not tracked.
 configs/config.yaml
+# Legacy split runtime file and the one-time archive created after merging it.
 configs/runtime.yaml
+configs/runtime.yaml.pre-merge.bak*
+# Backup created by the previous single-to-split migration may still contain
+# runtime secrets in upgraded workspaces.
 configs/config.yaml.pre-split.bak

@@ -188,6 +188,9 @@ func TestSimulateTrackFallsBackToAACLCWithoutManifest(t *testing.T) {
 		t.Error("AAC-LC fallback did not publish the production remuxing phase")
 	}
 	final := reporter.items[len(reporter.items)-1]
+	if final.OutputPath == "" {
+		t.Fatal("final item OutputPath is empty, want non-empty simulated output path")
+	}
 	if final.Codec != "aac-lc" || final.Status != domain.ItemCompleted {
 		t.Fatalf("final item codec/status = %q/%s, want aac-lc/completed", final.Codec, final.Status)
 	}

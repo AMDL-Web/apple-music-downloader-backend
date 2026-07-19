@@ -234,53 +234,24 @@ func (d *Downloader) simulateDecryptPhase(ctx context.Context, song applemusic.S
 // simulatePostprocess mirrors local remux/save/tag work after both the decrypt
 // and in-flight permits have been released.
 func (d *Downloader) simulatePostprocess(ctx context.Context, codec string, set func(domain.ItemStatus, float64, string)) error {
-	steps := []struct {
+	type postprocessStep struct {
 		status  domain.ItemStatus
 		prog    float64
 		message string
 		pause   time.Duration
-	}{}
+	}
+	var steps []postprocessStep
 	if codec == "aac-lc" {
 		steps = append(steps,
-			struct {
-				status  domain.ItemStatus
-				prog    float64
-				message string
-				pause   time.Duration
-			}{domain.ItemRemuxing, 0.90, "remuxing AAC-LC", 300 * time.Millisecond},
-			struct {
-				status  domain.ItemStatus
-				prog    float64
-				message string
-				pause   time.Duration
-			}{domain.ItemSaving, 0.94, "saving AAC-LC", 150 * time.Millisecond},
-			struct {
-				status  domain.ItemStatus
-				prog    float64
-				message string
-				pause   time.Duration
-			}{domain.ItemTagging, 0.97, "writing AAC-LC metadata", 200 * time.Millisecond},
+			postprocessStep{domain.ItemRemuxing, 0.90, "remuxing AAC-LC", 300 * time.Millisecond},
+			postprocessStep{domain.ItemSaving, 0.94, "saving AAC-LC", 150 * time.Millisecond},
+			postprocessStep{domain.ItemTagging, 0.97, "writing AAC-LC metadata", 200 * time.Millisecond},
 		)
 	} else {
 		steps = append(steps,
-			struct {
-				status  domain.ItemStatus
-				prog    float64
-				message string
-				pause   time.Duration
-			}{domain.ItemRemuxing, 0.90, "remuxing", 300 * time.Millisecond},
-			struct {
-				status  domain.ItemStatus
-				prog    float64
-				message string
-				pause   time.Duration
-			}{domain.ItemSaving, 0.94, "saving", 150 * time.Millisecond},
-			struct {
-				status  domain.ItemStatus
-				prog    float64
-				message string
-				pause   time.Duration
-			}{domain.ItemTagging, 0.97, "writing metadata", 200 * time.Millisecond},
+			postprocessStep{domain.ItemRemuxing, 0.90, "remuxing", 300 * time.Millisecond},
+			postprocessStep{domain.ItemSaving, 0.94, "saving", 150 * time.Millisecond},
+			postprocessStep{domain.ItemTagging, 0.97, "writing metadata", 200 * time.Millisecond},
 		)
 	}
 	for _, step := range steps {

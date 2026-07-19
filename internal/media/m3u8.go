@@ -39,19 +39,9 @@ type m3u8Info = selectedMediaInfo
 type variant struct {
 	URI        string
 	Audio      string
-	Codecs     string
 	Bandwidth  int
 	BitDepth   int
 	SampleRate int
-}
-
-type PlaylistVariant struct {
-	URI        string `json:"-"`
-	Audio      string `json:"codec_id"`
-	Codecs     string `json:"codecs,omitempty"`
-	Bandwidth  int    `json:"bandwidth,omitempty"`
-	BitDepth   int    `json:"bit_depth,omitempty"`
-	SampleRate int    `json:"sample_rate,omitempty"`
 }
 
 type codecNotFoundError struct {
@@ -76,11 +66,34 @@ var codecPatterns = map[string]*regexp.Regexp{
 }
 
 func extractMedia(ctx context.Context, httpClient *http.Client, masterURL, codec string, maxSampleRate, maxBitDepth int, gates ...*limits.RequestGate) (m3u8Info, error) {
-	master, err := downloadText(ctx, httpClient, masterURL, gates...)
+	variants, err := fetchMasterVariants(ctx, httpClient, masterURL, gates...)
 	if err != nil {
 		return m3u8Info{}, err
 	}
-	variants := parseMaster(master, masterURL)
+	selected, err := selectVariant(variants, codec, maxSampleRate, maxBitDepth)
+	if err != nil {
+		return m3u8Info{}, err
+	}
+	media, err := downloadText(ctx, httpClient, selected.URI, gates...)
+	if err != nil {
+		return m3u8Info{}, err
+	}
+	mediaURI, keys, err := parseMedia(media, selected.URI, codec)
+	if err != nil {
+		return m3u8Info{}, err
+	}
+	return m3u8Info{MediaURI: mediaURI, Keys: keys, CodecID: selected.Audio, BitDepth: selected.BitDepth, SampleRate: selected.SampleRate, Bandwidth: selected.Bandwidth}, nil
+}
+
+func fetchMasterVariants(ctx context.Context, httpClient *http.Client, masterURL string, gates ...*limits.RequestGate) ([]variant, error) {
+	master, err := downloadText(ctx, httpClient, masterURL, gates...)
+	if err != nil {
+		return nil, err
+	}
+	return parseMaster(master, masterURL), nil
+}
+
+func selectVariant(variants []variant, codec string, maxSampleRate, maxBitDepth int) (variant, error) {
 	var filtered []variant
 	pat := codecPatterns[codec]
 	for _, v := range variants {
@@ -98,19 +111,10 @@ func extractMedia(ctx context.Context, httpClient *http.Client, masterURL, codec
 		filtered = append(filtered, v)
 	}
 	if len(filtered) == 0 {
-		return m3u8Info{}, codecNotFoundError{Codec: codec}
+		return variant{}, codecNotFoundError{Codec: codec}
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].Bandwidth > filtered[j].Bandwidth })
-	selected := filtered[0]
-	media, err := downloadText(ctx, httpClient, selected.URI, gates...)
-	if err != nil {
-		return m3u8Info{}, err
-	}
-	mediaURI, keys, err := parseMedia(media, selected.URI, codec)
-	if err != nil {
-		return m3u8Info{}, err
-	}
-	return m3u8Info{MediaURI: mediaURI, Keys: keys, CodecID: selected.Audio, BitDepth: selected.BitDepth, SampleRate: selected.SampleRate, Bandwidth: selected.Bandwidth}, nil
+	return filtered[0], nil
 }
 
 func parseMaster(body, base string) []variant {
@@ -136,7 +140,6 @@ func parseMaster(body, base string) []variant {
 			extras := mediaExtras[audio]
 			out = append(out, variant{
 				URI: absURL(base, line), Audio: audio, Bandwidth: atoi(firstNonEmpty(pending["AVERAGE-BANDWIDTH"], pending["BANDWIDTH"])),
-				Codecs:     pending["CODECS"],
 				BitDepth:   atoi(firstNonEmpty(extras["BIT-DEPTH"], extras["bit_depth"])),
 				SampleRate: atoi(firstNonEmpty(extras["SAMPLE-RATE"], extras["sample_rate"])),
 			})
@@ -144,25 +147,6 @@ func parseMaster(body, base string) []variant {
 		}
 	}
 	return out
-}
-
-func ParseMasterPlaylist(body, base string) []PlaylistVariant {
-	private := parseMaster(body, base)
-	out := make([]PlaylistVariant, 0, len(private))
-	for _, v := range private {
-		out = append(out, PlaylistVariant{
-			URI: v.URI, Audio: v.Audio, Codecs: v.Codecs, Bandwidth: v.Bandwidth, BitDepth: v.BitDepth, SampleRate: v.SampleRate,
-		})
-	}
-	return out
-}
-
-func FetchMasterVariants(ctx context.Context, client *http.Client, masterURL string, gates ...*limits.RequestGate) ([]PlaylistVariant, error) {
-	body, err := downloadText(ctx, client, masterURL, gates...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseMasterPlaylist(body, masterURL), nil
 }
 
 func parseMedia(body, base, codec string) (string, []string, error) {

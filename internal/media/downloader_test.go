@@ -851,15 +851,19 @@ func TestProcessTrackRecordsLyricsStatus(t *testing.T) {
 }
 
 func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
+	var masterHits atomic.Int32
+	var mediaPlaylistHits atomic.Int32
 	var encryptedMediaHits atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/master.m3u8":
+			masterHits.Add(1)
 			_, _ = w.Write([]byte("#EXTM3U\n" +
 				"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio-alac-stereo-96000-24\",NAME=\"Lossless\",BIT-DEPTH=24,SAMPLE-RATE=96000\n" +
 				"#EXT-X-STREAM-INF:BANDWIDTH=3000000,AVERAGE-BANDWIDTH=2500000,AUDIO=\"audio-alac-stereo-96000-24\",CODECS=\"alac\"\n" +
 				"media.m3u8\n"))
 		case "/media.m3u8":
+			mediaPlaylistHits.Add(1)
 			_, _ = w.Write([]byte("#EXTM3U\n" +
 				"#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://itunes.apple.com/P000000000/s1/e1/c23\"\n" +
 				"#EXT-X-MAP:URI=\"encrypted.mp4\"\n"))
@@ -891,6 +895,9 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if masterHits.Load() != 1 || mediaPlaylistHits.Load() != 1 {
+		t.Fatalf("selection playlist requests = master:%d media:%d, want master:1 media:1", masterHits.Load(), mediaPlaylistHits.Load())
 	}
 	if encryptedMediaHits.Load() != 0 {
 		t.Fatalf("selectEnhancedMedia downloaded encrypted media %d time(s), want 0", encryptedMediaHits.Load())

@@ -255,11 +255,10 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 // Startup-bound fields are omitted: clients cannot change them through this
 // API, so they have no reason to see them here.
 //
-// The backing runtime config file is re-read first, so manual edits made
-// while the backend is running take effect on the next GET instead of
-// requiring a restart. If the file is currently unreadable or invalid (e.g.
-// an edit in progress), the last good snapshot is served and reload_error
-// reports why.
+// The combined config file is re-read first. Runtime-field edits take effect
+// on the next GET; startup-field edits remain pending until restart. If the
+// file is currently unreadable or invalid (e.g. an edit in progress), the
+// last good snapshot is served and reload_error reports why.
 func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{"persisted": false}
 	if s.cfg != nil {
@@ -281,7 +280,7 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 // download worker/media pools) are rejected — changing them at runtime would
 // silently do nothing. Accepted
 // changes apply to new requests and newly started jobs immediately and are
-// written back to the live runtime config file, so they survive restarts.
+// written back to the combined config file, so they survive restarts.
 func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	if s.cfg == nil {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("runtime config store is not configured"))

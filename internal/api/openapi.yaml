@@ -108,9 +108,9 @@ paths:
         仅启动时生效的字段（server、database、logging 其它字段、wrapper、tools、catalog 其它字段）不返回——
         它们无法通过本 API 修改，请编辑启动配置 configs/config.yaml 并重启。
 
-        运行时字段单独存放在 configs/runtime.yaml。每次 GET 会先重读该文件
-        再返回，因此运行期间手工编辑的可修改字段在下一次 GET 后即生效、
-        无需重启；启动配置 config.yaml 的改动仍需重启。
+        所有字段统一存放在 configs/config.yaml。每次 GET 会先重读该文件的
+        运行时字段再返回，因此运行期间手工编辑的可修改字段在下一次 GET 后
+        即生效、无需重启；仅启动时生效的字段仍需重启。
         AMDL_<大写段名>_<大写键名> 环境变量覆盖在每次重读时同样生效并
         优先于文件值。文件当前不可读或校验失败时（例如正编辑到一半），
         继续返回上一份有效配置，并附 reload_error 字段说明原因。
@@ -140,10 +140,10 @@ paths:
         重启。
 
         修改立即对新请求和新开始的任务生效（运行中的任务继续使用其启动时的
-        配置快照），并写回 configs/runtime.yaml，重启后依然生效。该文件由
-        后端管理（每次 PUT 整体重写，注释不保留）；带完整注释的字段文档在
-        configs/runtime.example.yaml，首次启动时会以它为模板生成
-        runtime.yaml。启动配置 config.yaml 归使用者所有，后端不会重写。
+        配置快照），并将包含启动字段在内的完整配置写回
+        configs/config.yaml，重启后依然生效。该文件由后端管理（每次 PUT
+        整体重写，注释不保留）；带完整注释的字段文档在
+        configs/config.example.yaml，首次启动时会以它为模板生成 config.yaml。
 
         前端注意：确认写入前请先 GET 一次并基于其返回值构造请求体。PUT 的
         合并基准是后端内存中的当前配置，而 GET 会先重读配置文件、把运行
@@ -319,8 +319,19 @@ paths:
   /api/v1/quality:
     post:
       tags: [Quality]
-      summary: 查询歌曲可用音质
-      description: 解析 Apple Music 单曲 URL 或带 i 参数的专辑 URL，返回可用 codec、码率、采样率和位深摘要；不会创建下载任务。
+      summary: 查询链接内歌曲的可用音质
+      description: |
+        解析后端支持的 Apple Music 单曲、专辑、歌单、艺人或电台 URL，返回每首歌曲
+        master playlist 当前声明的 codec、码率、采样率和位深摘要；不会创建下载任务。
+        所有链接类型统一返回 tracks 数组：单曲包含一个元素，集合保持 Apple Music 原顺序
+        和重复曲目出现项。
+        album URL 上的 i 参数继续服从运行时 catalog.album_track_url_mode；电台解析使用
+        运行时 catalog.media_user_token。内部复用下载任务的区域校验、集合解析、曲目
+        元数据刷新、重试、并发调度、HLS 来源选择及 codec/ALAC 筛选规则。正常成功路径为
+        每个曲目出现项读取一次 master playlist 并从中汇总全部音质；失败时按
+        download.max_attempts 重新取得来源并读取 master。查询不读取具体 media playlist、
+        不验证媒体分片，也不进入加密媒体传输。区域校验要求 wrapper/decryptor 已就绪，且
+        URL storefront 位于其上报的 regions 中。music-video 不受支持。
       operationId: queryQuality
       requestBody:
         required: true
@@ -1126,7 +1137,7 @@ components:
       type: object
       description: >-
         可运行时修改的配置子集（字段含义、枚举值和默认行为见
-        configs/runtime.example.yaml 内注释）。GET 返回此形状；PUT 时可只
+        configs/config.example.yaml 内注释）。GET 返回此形状；PUT 时可只
         提交需要修改的字段，省略的字段保持现值。
       properties:
         catalog:
@@ -1249,8 +1260,8 @@ components:
         persisted:
           type: boolean
           description: >-
-            配置存储是否有后备文件。正常部署下恒为 true：PUT 的修改写回
-            configs/runtime.yaml，重启后依然生效。
+            配置存储是否有持久化文件。正常部署下恒为 true：PUT 的修改写回
+            configs/config.yaml，重启后依然生效。
         reload_error:
           type: string
           description: >-
@@ -1297,7 +1308,7 @@ components:
         url:
           type: string
           format: uri
-          example: https://music.apple.com/cn/album/one-last-kiss/1542953969?i=1542953977
+          example: https://music.apple.com/cn/album/one-last-kiss/1542953969
     QualitySong:
       type: object
       required: [id, name, artist, album, has_lyrics]
@@ -1320,7 +1331,9 @@ components:
           type: string
           enum: [aac, aac-binaural, aac-downmix, alac, ec3, ac3]
         label: {type: string}
-        available: {type: boolean}
+        available:
+          type: boolean
+          description: master playlist 是否声明符合当前 codec 与 ALAC 上限的 variant；不代表具体 media playlist 或媒体分片已验证。
         codec: {type: string}
         codec_id: {type: string}
         channels: {type: integer}
@@ -1332,22 +1345,41 @@ components:
           type: integer
           description: bits per second.
         description: {type: string}
+    QualityTrack:
+      type: object
+      required: [song, qualities]
+      properties:
+        song:
+          $ref: '#/components/schemas/QualitySong'
+        qualities:
+          type: array
+          description: 按后端支持的 codec 固定顺序返回全部音质槽位，包括 available=false 的项。
+          minItems: 6
+          maxItems: 6
+          items:
+            $ref: '#/components/schemas/QualityOption'
     QualityResponse:
       type: object
-      required: [input, storefront, type, adam_id, song, qualities]
+      description: 所有受支持 Apple Music URL 类型共用的逐曲音质响应结构。
+      required: [input, storefront, type, adam_id, tracks]
       properties:
         input: {type: string}
         storefront: {type: string}
         type:
           type: string
-          const: song
-        adam_id: {type: string}
-        song:
-          $ref: '#/components/schemas/QualitySong'
-        qualities:
+          enum: [song, album, playlist, artist, station]
+        adam_id:
+          type: string
+          description: Parsed Adam ID of the input song or collection.
+        tracks:
           type: array
+          description: >-
+            Per-track results for every supported input type. Song inputs have
+            exactly one item; collection order and duplicate song occurrences
+            are preserved.
+          minItems: 1
           items:
-            $ref: '#/components/schemas/QualityOption'
+            $ref: '#/components/schemas/QualityTrack'
     Job:
       type: object
       required: [id, input, type, force, status, total_items, done_items, failed_items, created_at, updated_at]

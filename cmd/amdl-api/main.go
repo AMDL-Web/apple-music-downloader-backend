@@ -32,33 +32,26 @@ func main() {
 	if cfgPath == "" {
 		cfgPath = "configs/config.yaml"
 	}
-	// The runtime config file defaults to a sibling of the startup config, so
-	// a custom AMDL_CONFIG location carries both files along.
-	runtimeCfgPath := os.Getenv("AMDL_RUNTIME_CONFIG")
-	if runtimeCfgPath == "" {
-		runtimeCfgPath = filepath.Join(filepath.Dir(cfgPath), "runtime.yaml")
+	// AMDL_RUNTIME_CONFIG is retained only as an upgrade aid: deployments from
+	// the former split-file format may have placed runtime.yaml elsewhere. Once
+	// merged, config.yaml is the only live configuration file.
+	legacyRuntimePath := os.Getenv("AMDL_RUNTIME_CONFIG")
+	if legacyRuntimePath == "" {
+		legacyRuntimePath = filepath.Join(filepath.Dir(cfgPath), "runtime.yaml")
 	}
-	// First start: create the startup config from the committed, commented
-	// config.example.yaml next to it (the startup file is owner-edited from
-	// then on) and the machine-managed runtime file from runtime.example.yaml.
-	// A pre-split config.yaml still carrying runtime keys is migrated once:
-	// split in place with a backup of the combined file left behind.
-	bootstrap, err := config.EnsureFiles(cfgPath, runtimeCfgPath)
+	bootstrap, err := config.EnsureFile(cfgPath, legacyRuntimePath)
 	if err != nil {
 		bootstrapLogger.Error("bootstrap config", "error", err)
 		os.Exit(1)
 	}
-	if bootstrap.CreatedStartup {
-		bootstrapLogger.Info("created startup config from example", "path", cfgPath)
+	if bootstrap.CreatedConfig {
+		bootstrapLogger.Info("created config from example", "path", cfgPath)
 	}
-	if bootstrap.CreatedRuntime {
-		bootstrapLogger.Info("created runtime config", "path", runtimeCfgPath)
+	if bootstrap.MergedRuntime {
+		bootstrapLogger.Info("merged legacy runtime config into config",
+			"config", cfgPath, "backup", bootstrap.RuntimeBackupPath)
 	}
-	if bootstrap.MigratedLegacy {
-		bootstrapLogger.Info("split legacy config into startup and runtime files",
-			"startup", cfgPath, "runtime", runtimeCfgPath, "backup", bootstrap.LegacyBackupPath)
-	}
-	cfg, err := config.LoadPair(cfgPath, runtimeCfgPath)
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		bootstrapLogger.Error("load config", "error", err)
 		os.Exit(1)
@@ -110,7 +103,7 @@ func main() {
 	// cfgStore is the live runtime config shared by the API layer and download
 	// pipeline. Process-wide concurrency pools are sized once from this startup
 	// snapshot; runtime-mutable fields are read when each job starts.
-	cfgStore := config.NewFileStore(cfg, runtimeCfgPath)
+	cfgStore := config.NewFileStore(cfg, cfgPath)
 	wrapperClient, err := wrapper.NewClient(cfg.Wrapper, wrapper.WithDataConcurrencyLimit(cfg.Download.MaxParallelWrapperRequests))
 	if err != nil {
 		logger.Error("connect wrapper-manager", "error", err)
@@ -125,7 +118,7 @@ func main() {
 	}
 	toolChecker := media.NewToolChecker(cfg.Tools)
 	downloader := media.NewDownloader(cfgStore, catalog, wrapperClient, toolChecker, logSystem.Logger.With("component", "media"))
-	qualityService := media.NewQualityService(cfgStore, catalog, wrapperClient)
+	qualityService := media.NewQualityService(downloader)
 	manager := jobs.NewManager(store, hub, downloader, cfg.Download.MaxRunningJobs, logSystem.Logger.With("component", "jobs"))
 	hookDispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, logSystem.Logger.With("component", "hooks"))
 	manager.SetHooks(hookDispatcher)

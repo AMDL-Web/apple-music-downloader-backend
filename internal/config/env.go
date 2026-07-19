@@ -14,11 +14,10 @@ import (
 // for example AMDL_SERVER_LISTEN, AMDL_WRAPPER_ADDRESS, or
 // AMDL_DOWNLOAD_QUALITY_PRIORITY. Overrides sit on top of the config file:
 // they are applied on every Load (startup and Store.Reload alike) and never
-// written back by the loader, so unsetting a variable restores the file
-// value on the next start (a PUT /api/v1/config rewrite of the file does
-// persist the effective values). Value syntax: strings verbatim, booleans per
-// strconv.ParseBool, integers as digits, string lists as comma-separated
-// items (an empty value is an empty list).
+// written back by the loader. A PUT /api/v1/config rewrite persists effective
+// runtime values but retains startup values from disk. Value syntax: strings
+// verbatim, booleans per strconv.ParseBool, integers as digits, string lists
+// as comma-separated items (an empty value is an empty list).
 
 // envPrefix is the shared prefix of every backend environment variable.
 const envPrefix = "AMDL_"
@@ -26,7 +25,9 @@ const envPrefix = "AMDL_"
 // envIgnored are AMDL_-prefixed variables that are not config-key overrides:
 // the file-path variables read in main.
 var envIgnored = map[string]struct{}{
-	"AMDL_CONFIG":         {},
+	"AMDL_CONFIG": {},
+	// Accepted by main only to locate and consume a legacy split runtime
+	// file during upgrade. It no longer selects a live configuration file.
 	"AMDL_RUNTIME_CONFIG": {},
 	"AMDL_HOOKS_CONFIG":   {},
 }
