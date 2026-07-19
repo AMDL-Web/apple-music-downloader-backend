@@ -36,13 +36,11 @@ type QualityOption struct {
 }
 
 type QualityResult struct {
-	Input      string          `json:"input"`
-	Storefront string          `json:"storefront"`
-	Type       string          `json:"type"`
-	AdamID     string          `json:"adam_id"`
-	Song       *QualitySong    `json:"song,omitempty"`
-	Qualities  []QualityOption `json:"qualities,omitempty"`
-	Tracks     []QualityTrack  `json:"tracks,omitempty"`
+	Input      string         `json:"input"`
+	Storefront string         `json:"storefront"`
+	Type       string         `json:"type"`
+	AdamID     string         `json:"adam_id"`
+	Tracks     []QualityTrack `json:"tracks"`
 }
 
 type QualityTrack struct {
@@ -88,16 +86,9 @@ func (s *QualityService) QueryQuality(ctx context.Context, req QualityRequest) (
 	if err != nil {
 		return QualityResult{}, err
 	}
-	result := QualityResult{
-		Input: req.URL, Storefront: parsed.Storefront, Type: string(parsed.Type), AdamID: parsed.ID,
-	}
-	if parsed.Type == applemusic.TypeSong {
-		result.Song = &tracks[0].Song
-		result.Qualities = tracks[0].Qualities
-	} else {
-		result.Tracks = tracks
-	}
-	return result, nil
+	return QualityResult{
+		Input: req.URL, Storefront: parsed.Storefront, Type: string(parsed.Type), AdamID: parsed.ID, Tracks: tracks,
+	}, nil
 }
 
 func (d *Downloader) queryTrackQualities(ctx context.Context, parsed applemusic.ParsedURL, songs []applemusic.Song) ([]QualityTrack, error) {

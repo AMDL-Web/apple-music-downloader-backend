@@ -63,6 +63,10 @@ atmos/media.m3u8
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(result.Tracks) != 1 || result.Tracks[0].Song.ID != "song-1" {
+		t.Fatalf("song result tracks = %#v, want one song-1 track", result.Tracks)
+	}
+	track := result.Tracks[0]
 
 	want := map[string]QualityOption{
 		"aac":  {Available: true, CodecID: "audio-stereo-256", Bitrate: 256000},
@@ -71,7 +75,7 @@ atmos/media.m3u8
 	}
 	got := map[string]QualityOption{}
 	wantOrder := []string{"aac", "aac-binaural", "aac-downmix", "alac", "ec3", "ac3"}
-	for i, quality := range result.Qualities {
+	for i, quality := range track.Qualities {
 		if quality.ID != wantOrder[i] {
 			t.Fatalf("quality order[%d] = %q, want %q", i, quality.ID, wantOrder[i])
 		}
@@ -80,7 +84,7 @@ atmos/media.m3u8
 	for id, expected := range want {
 		actual, ok := got[id]
 		if !ok {
-			t.Fatalf("quality %q missing from %#v", id, result.Qualities)
+			t.Fatalf("quality %q missing from %#v", id, track.Qualities)
 		}
 		if !actual.Available || actual.CodecID != expected.CodecID || actual.Bitrate != expected.Bitrate || actual.BitDepth != expected.BitDepth || actual.SampleRate != expected.SampleRate {
 			t.Fatalf("quality %q = %#v, want fields %#v", id, actual, expected)
@@ -239,11 +243,11 @@ audio.m3u8
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Qualities) == 0 || !result.Qualities[0].Available {
-		t.Fatalf("expected catalog manifest qualities, got %#v", result.Qualities)
+	if len(result.Tracks) != 1 || len(result.Tracks[0].Qualities) == 0 || !result.Tracks[0].Qualities[0].Available {
+		t.Fatalf("expected catalog manifest qualities, got %#v", result.Tracks)
 	}
-	if !result.Song.HasLyrics {
-		t.Fatalf("song = %+v, want has_lyrics propagated from catalog", result.Song)
+	if !result.Tracks[0].Song.HasLyrics {
+		t.Fatalf("song = %+v, want has_lyrics propagated from catalog", result.Tracks[0].Song)
 	}
 }
 
@@ -282,8 +286,8 @@ audio.m3u8
 	if wrapperCalls != 0 {
 		t.Fatalf("wrapper.M3U8 calls = %d, want 0", wrapperCalls)
 	}
-	if len(result.Qualities) == 0 || !result.Qualities[0].Available {
-		t.Fatalf("expected web-token manifest qualities, got %#v", result.Qualities)
+	if len(result.Tracks) != 1 || len(result.Tracks[0].Qualities) == 0 || !result.Tracks[0].Qualities[0].Available {
+		t.Fatalf("expected web-token manifest qualities, got %#v", result.Tracks)
 	}
 }
 
@@ -321,8 +325,8 @@ audio.m3u8
 	if webCalls != 0 {
 		t.Fatalf("EnhancedHLSViaWebToken calls = %d, want 0", webCalls)
 	}
-	if len(result.Qualities) == 0 || !result.Qualities[0].Available {
-		t.Fatalf("expected wrapper manifest qualities, got %#v", result.Qualities)
+	if len(result.Tracks) != 1 || len(result.Tracks[0].Qualities) == 0 || !result.Tracks[0].Qualities[0].Available {
+		t.Fatalf("expected wrapper manifest qualities, got %#v", result.Tracks)
 	}
 }
 
@@ -358,7 +362,7 @@ audio.m3u8
 	if wrapperCalls != 2 || masterHits.Load() != 2 {
 		t.Fatalf("retry calls = wrapper:%d master:%d, want wrapper:2 master:2", wrapperCalls, masterHits.Load())
 	}
-	if len(result.Qualities) == 0 || !result.Qualities[0].Available {
-		t.Fatalf("qualities after retry = %#v", result.Qualities)
+	if len(result.Tracks) != 1 || len(result.Tracks[0].Qualities) == 0 || !result.Tracks[0].Qualities[0].Available {
+		t.Fatalf("qualities after retry = %#v", result.Tracks)
 	}
 }

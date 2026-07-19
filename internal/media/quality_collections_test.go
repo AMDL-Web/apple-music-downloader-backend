@@ -211,7 +211,7 @@ func TestQualityQuerySupportsCollectionURLTypes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.Type != string(tt.wantType) || result.AdamID != tt.wantID || result.Song != nil || result.Qualities != nil {
+			if result.Type != string(tt.wantType) || result.AdamID != tt.wantID {
 				t.Fatalf("result header = %#v", result)
 			}
 			gotSongs := make([]string, len(result.Tracks))
@@ -247,7 +247,7 @@ func TestQualityQuerySupportsCollectionURLTypes(t *testing.T) {
 	}
 }
 
-func TestQualityQueryAlbumTrackModePreservesSongResponse(t *testing.T) {
+func TestQualityQueryAlbumTrackModeUsesUnifiedTracks(t *testing.T) {
 	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeQualityTestPlaylist(w, r, qualityTestMaster)
 	}))
@@ -261,15 +261,15 @@ func TestQualityQueryAlbumTrackModePreservesSongResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Type != "song" || result.AdamID != "s1" || result.Song == nil || result.Song.ID != "s1" || result.Tracks != nil {
+	if result.Type != "song" || result.AdamID != "s1" || len(result.Tracks) != 1 || result.Tracks[0].Song.ID != "s1" {
 		t.Fatalf("song-mode result = %#v", result)
 	}
 	body, err := json.Marshal(result)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(body), `"tracks"`) || !strings.Contains(string(body), `"song"`) || !strings.Contains(string(body), `"qualities"`) {
-		t.Fatalf("single-song wire shape changed: %s", body)
+	if !strings.Contains(string(body), `"tracks"`) || !strings.Contains(string(body), `"song"`) || !strings.Contains(string(body), `"qualities"`) {
+		t.Fatalf("unified song wire shape = %s", body)
 	}
 
 	cfg.Catalog.AlbumTrackURLMode = "album"
@@ -278,7 +278,7 @@ func TestQualityQueryAlbumTrackModePreservesSongResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Type != "album" || len(result.Tracks) != 2 || result.Song != nil {
+	if result.Type != "album" || len(result.Tracks) != 2 {
 		t.Fatalf("album-mode result = %#v", result)
 	}
 }

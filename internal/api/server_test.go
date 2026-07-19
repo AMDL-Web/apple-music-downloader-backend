@@ -286,12 +286,14 @@ func TestWrapperLogoutValidatesUsername(t *testing.T) {
 	}
 }
 
-func TestQualityEndpointReturnsOptions(t *testing.T) {
+func TestQualityEndpointReturnsTracksForSong(t *testing.T) {
 	song := media.QualitySong{ID: "2", Name: "One Last Kiss", Artist: "Hikaru Utada", Album: "One Last Kiss", HasLyrics: true}
 	fake := &fakeQualityService{result: media.QualityResult{
 		Input: "https://music.apple.com/cn/album/example/1?i=2", Storefront: "cn", Type: "song", AdamID: "2",
-		Song:      &song,
-		Qualities: []media.QualityOption{{ID: "alac", Label: "Lossless", Available: true, CodecID: "audio-alac-stereo-44100-16", BitDepth: 16, SampleRate: 44100}},
+		Tracks: []media.QualityTrack{{
+			Song:      song,
+			Qualities: []media.QualityOption{{ID: "alac", Label: "Lossless", Available: true, CodecID: "audio-alac-stereo-44100-16", BitDepth: 16, SampleRate: 44100}},
+		}},
 	}}
 	server := &Server{quality: fake}
 	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/quality", `{"url":" https://music.apple.com/cn/album/example/1?i=2 "}`)
@@ -305,7 +307,7 @@ func TestQualityEndpointReturnsOptions(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.AdamID != "2" || len(body.Qualities) != 1 || body.Qualities[0].ID != "alac" {
+	if body.AdamID != "2" || len(body.Tracks) != 1 || len(body.Tracks[0].Qualities) != 1 || body.Tracks[0].Qualities[0].ID != "alac" {
 		t.Fatalf("unexpected quality response: %#v", body)
 	}
 	// Raw-body check so a renamed/mistyped json tag can't slip through the
@@ -313,8 +315,21 @@ func TestQualityEndpointReturnsOptions(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), `"has_lyrics":true`) {
 		t.Fatalf("quality body missing \"has_lyrics\":true: %s", recorder.Body.String())
 	}
-	if strings.Contains(recorder.Body.String(), `"tracks"`) {
-		t.Fatalf("single-song response unexpectedly contains tracks: %s", recorder.Body.String())
+	var topLevel map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &topLevel); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := topLevel["tracks"]; !ok {
+		t.Fatalf("song response missing tracks: %s", recorder.Body.String())
+	}
+	if _, ok := topLevel["song"]; ok {
+		t.Fatalf("song response contains legacy top-level song: %s", recorder.Body.String())
+	}
+	if _, ok := topLevel["qualities"]; ok {
+		t.Fatalf("song response contains legacy top-level qualities: %s", recorder.Body.String())
+	}
+	if len(topLevel) != 5 {
+		t.Fatalf("song response top-level keys = %#v, want input/storefront/type/adam_id/tracks", topLevel)
 	}
 }
 
@@ -335,11 +350,21 @@ func TestQualityEndpointReturnsCollectionTracks(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Type != "album" || body.AdamID != "1" || body.Song != nil || body.Qualities != nil || len(body.Tracks) != 1 || body.Tracks[0].Song.ID != "2" {
+	if body.Type != "album" || body.AdamID != "1" || len(body.Tracks) != 1 || body.Tracks[0].Song.ID != "2" {
 		t.Fatalf("unexpected collection quality response: %#v", body)
 	}
-	if strings.Contains(recorder.Body.String(), `"song":{"id":""`) {
-		t.Fatalf("collection response leaked an empty legacy song: %s", recorder.Body.String())
+	var topLevel map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &topLevel); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := topLevel["song"]; ok {
+		t.Fatalf("collection response contains a legacy top-level song: %s", recorder.Body.String())
+	}
+	if _, ok := topLevel["qualities"]; ok {
+		t.Fatalf("collection response contains legacy top-level qualities: %s", recorder.Body.String())
+	}
+	if len(topLevel) != 5 {
+		t.Fatalf("collection response top-level keys = %#v, want input/storefront/type/adam_id/tracks", topLevel)
 	}
 }
 
@@ -497,6 +522,39 @@ func TestOpenAPISpecification(t *testing.T) {
 	}
 	if _, ok := spec.Components.Schemas["QualityTrack"]; !ok {
 		t.Error("OpenAPI QualityTrack schema is missing")
+	}
+	qualitySchema, ok := spec.Components.Schemas["QualityResponse"].(map[string]any)
+	if !ok {
+		t.Fatalf("OpenAPI QualityResponse schema = %#v", spec.Components.Schemas["QualityResponse"])
+	}
+	properties, ok := qualitySchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("OpenAPI QualityResponse properties = %#v", qualitySchema["properties"])
+	}
+	if _, ok := properties["tracks"]; !ok {
+		t.Error("OpenAPI QualityResponse tracks property is missing")
+	}
+	for _, legacy := range []string{"song", "qualities"} {
+		if _, ok := properties[legacy]; ok {
+			t.Errorf("OpenAPI QualityResponse still exposes legacy top-level %s", legacy)
+		}
+	}
+	if _, ok := qualitySchema["oneOf"]; ok {
+		t.Error("OpenAPI QualityResponse still has legacy shape branches")
+	}
+	required, ok := qualitySchema["required"].([]any)
+	if !ok {
+		t.Fatalf("OpenAPI QualityResponse required = %#v", qualitySchema["required"])
+	}
+	tracksRequired := false
+	for _, field := range required {
+		if field == "tracks" {
+			tracksRequired = true
+			break
+		}
+	}
+	if !tracksRequired {
+		t.Errorf("OpenAPI QualityResponse required = %#v, want tracks", required)
 	}
 	if !strings.Contains(recorder.Body.String(), "enum: [song, album, playlist, artist, station]") {
 		t.Error("OpenAPI QualityResponse does not document all supported input types")
