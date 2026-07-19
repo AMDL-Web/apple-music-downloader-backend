@@ -34,6 +34,31 @@ func TestJobJSONRedactsMediaUserTokenOverride(t *testing.T) {
 	}
 }
 
+func TestMarshalEventPayloadKeepsSnapshotFieldsAndRedaction(t *testing.T) {
+	token := "secret-token"
+	embed := false
+	payload := MarshalEventPayload(Job{
+		ID: "job-1", Status: JobCompleted,
+		Overrides: &config.DownloadOverrides{MediaUserToken: &token, EmbedCover: &embed},
+	}, map[string]any{"message": "completed", "attempts": 2})
+	if payload == "" {
+		t.Fatal("MarshalEventPayload returned an empty payload")
+	}
+	if strings.Contains(payload, token) || strings.Contains(payload, "media_user_token") {
+		t.Fatalf("event payload leaked media-user-token: %s", payload)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["id"] != "job-1" || got["status"] != string(JobCompleted) || got["message"] != "completed" || got["attempts"] != float64(2) {
+		t.Fatalf("event payload = %#v, want snapshot plus event fields", got)
+	}
+	if _, ok := got["overrides"]; !ok {
+		t.Fatalf("event payload lost non-credential override: %#v", got)
+	}
+}
+
 func TestSummarizeHooksKeepsLatestStatePerHook(t *testing.T) {
 	events := []Event{
 		{ID: 1, Type: "hook_started", Phase: "emby-refresh"},

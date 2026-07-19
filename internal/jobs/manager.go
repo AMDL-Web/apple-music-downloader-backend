@@ -69,9 +69,9 @@ var ErrJobNotRetryable = errors.New("only failed jobs can be retried")
 var ErrJobFinalizing = errors.New("job is still finalizing its previous run; retry again shortly")
 
 type Reporter interface {
-	SetJob(ctx context.Context, job domain.Job) error
-	AddItem(ctx context.Context, item domain.JobItem) error
-	UpdateItem(ctx context.Context, item domain.JobItem) error
+	SetJob(ctx context.Context, job *domain.Job) error
+	AddItem(ctx context.Context, item *domain.JobItem) error
+	UpdateItem(ctx context.Context, item *domain.JobItem) error
 	RemoveItem(ctx context.Context, itemID string) error
 	ListItems(ctx context.Context, jobID string) ([]domain.JobItem, error)
 	Event(ctx context.Context, ev domain.Event) error
@@ -239,7 +239,8 @@ func (m *Manager) RecoverUnfinished(ctx context.Context) (int, error) {
 				return 0, err
 			}
 		}
-		if err := m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_recovered", Message: "job recovered after backend restart"}); err != nil {
+		message := "job recovered after backend restart"
+		if err := m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_recovered", Message: message, Payload: domain.MarshalEventPayload(job, map[string]any{"message": message})}); err != nil {
 			// The row has already been restored to a claimable queued state.
 			// Enqueue it before returning so a partial recovery never strands
 			// the jobs successfully processed earlier in this pass.
@@ -343,7 +344,8 @@ func (m *Manager) SubmitBatch(ctx context.Context, urls []string, force bool, ov
 			results[c.index] = domain.SubmitResult{URL: c.url, Status: domain.SubmitInvalid, Error: err.Error()}
 			continue
 		}
-		_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_queued", Message: "job queued"})
+		message := "job queued"
+		_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_queued", Message: message, Payload: domain.MarshalEventPayload(job, map[string]any{"message": message})})
 		// Fire creation hooks before enqueuing, so the job_queued hook is
 		// dispatched before a worker can claim the job and reach a terminal
 		// hook. The hook event name matches the job_queued domain event emitted
@@ -440,7 +442,8 @@ func (m *Manager) Retry(ctx context.Context, jobID string) error {
 	// queued with no worker ever picking it up (and further retries refused),
 	// until a restart's RecoverUnfinished. Mirrors SubmitBatch, which also
 	// treats the job_queued event as best-effort once the row is committed.
-	if err := m.Event(ctx, domain.Event{JobID: jobID, Type: "job_retried", Message: "job re-queued to retry failed tracks"}); err != nil {
+	message := "job re-queued to retry failed tracks"
+	if err := m.Event(ctx, domain.Event{JobID: jobID, Type: "job_retried", Message: message, Payload: domain.MarshalEventPayload(job, map[string]any{"message": message})}); err != nil {
 		m.logger.Error("record job_retried event", "job_id", jobID, "error", err)
 	}
 	m.queue <- jobID
@@ -669,7 +672,8 @@ func (m *Manager) run(parent context.Context, jobID string) {
 		}
 	}()
 
-	_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_started", Message: "job started"})
+	message := "job started"
+	_ = m.Event(ctx, domain.Event{JobID: job.ID, Type: "job_started", Message: message, Payload: domain.MarshalEventPayload(job, map[string]any{"message": message})})
 
 	err = m.processor.ProcessJob(ctx, job, m)
 	if latest, loadErr := m.store.GetJob(context.Background(), job.ID); loadErr == nil {
@@ -742,11 +746,7 @@ func (m *Manager) finalizeJob(ctx context.Context, job domain.Job, eventType, me
 // terminal status with the terminal event still missing and wrongly conclude
 // no more events are pending.
 func (m *Manager) persistTerminal(ctx context.Context, job domain.Job, eventType, message string) error {
-	ev := domain.Event{JobID: job.ID, Type: eventType, Message: message}
-	if ev.Payload == "" && ev.Message != "" {
-		raw, _ := json.Marshal(map[string]string{"message": ev.Message})
-		ev.Payload = string(raw)
-	}
+	ev := domain.Event{JobID: job.ID, Type: eventType, Message: message, Payload: domain.MarshalEventPayload(job, map[string]any{"message": message})}
 	stored, err := m.store.FinalizeJob(ctx, job, ev)
 	if err != nil {
 		return err
@@ -812,24 +812,24 @@ func (m *Manager) refreshCounts(job *domain.Job) {
 	job.DoneItems, job.FailedItems = domain.CountItemProgress(items)
 }
 
-func (m *Manager) SetJob(ctx context.Context, job domain.Job) error {
+func (m *Manager) SetJob(ctx context.Context, job *domain.Job) error {
 	job.UpdatedAt = time.Now().UTC()
-	return m.store.UpdateJob(ctx, job)
+	return m.store.UpdateJob(ctx, *job)
 }
 
-func (m *Manager) AddItem(ctx context.Context, item domain.JobItem) error {
+func (m *Manager) AddItem(ctx context.Context, item *domain.JobItem) error {
 	now := time.Now().UTC()
 	item.CreatedAt = now
 	item.UpdatedAt = now
 	if item.ID == "" {
 		item.ID = storage.NewID("item")
 	}
-	return m.store.CreateItem(ctx, item)
+	return m.store.CreateItem(ctx, *item)
 }
 
-func (m *Manager) UpdateItem(ctx context.Context, item domain.JobItem) error {
+func (m *Manager) UpdateItem(ctx context.Context, item *domain.JobItem) error {
 	item.UpdatedAt = time.Now().UTC()
-	return m.store.UpdateItem(ctx, item)
+	return m.store.UpdateItem(ctx, *item)
 }
 
 func (m *Manager) RemoveItem(ctx context.Context, itemID string) error {

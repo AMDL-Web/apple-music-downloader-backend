@@ -139,13 +139,14 @@ func (p *cancelAfterTotalProcessor) ValidateRequest(context.Context, string) (Va
 
 func (p *cancelAfterTotalProcessor) ProcessJob(ctx context.Context, job domain.Job, reporter Reporter) error {
 	job.TotalItems = 2
-	if err := reporter.SetJob(ctx, job); err != nil {
+	if err := reporter.SetJob(ctx, &job); err != nil {
 		return err
 	}
 	for i := 1; i <= 2; i++ {
-		if err := reporter.AddItem(ctx, domain.JobItem{
+		item := domain.JobItem{
 			JobID: job.ID, AdamID: "song", Kind: "song", Index: i, Title: "Song", Status: domain.ItemQueued,
-		}); err != nil {
+		}
+		if err := reporter.AddItem(ctx, &item); err != nil {
 			return err
 		}
 	}
@@ -1303,6 +1304,48 @@ func TestFinalizeJobSkipsHookWhenPersistenceFails(t *testing.T) {
 	dispatcher.Shutdown(context.Background())
 	if got := atomic.LoadInt32(&calls); got != 0 {
 		t.Fatalf("webhook calls = %d, want 0 when persistence failed", got)
+	}
+}
+
+func TestTerminalJobEventPayloadCarriesRESTJobSnapshot(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	embed := false
+	now := time.Now().UTC().Add(-time.Minute)
+	job := domain.Job{
+		ID: "job-terminal-payload", Input: "song|us|1", Type: "song", Storefront: "us",
+		CanonicalKey: "song:us:1", Status: domain.JobRunning, TotalItems: 1,
+		Overrides: &config.DownloadOverrides{EmbedCover: &embed}, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(store, events.NewHub(), keyedProcessor{}, 1, slog.Default())
+	job.Status = domain.JobCompleted
+	job.DoneItems = 1
+	if err := manager.persistTerminal(context.Background(), job, "job_finished", "completed"); err != nil {
+		t.Fatal(err)
+	}
+
+	recorded, err := store.ListEventsAfter(context.Background(), job.ID, 0)
+	if err != nil || len(recorded) != 1 {
+		t.Fatalf("terminal events = %+v, err=%v, want one", recorded, err)
+	}
+	var snapshot domain.Job
+	if err := json.Unmarshal([]byte(recorded[0].Payload), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(recorded[0].Payload), &fields); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ID != job.ID || snapshot.Status != domain.JobCompleted || snapshot.DoneItems != 1 || snapshot.UpdatedAt.IsZero() || fields["message"] != "completed" {
+		t.Fatalf("terminal payload = %s, want complete REST job snapshot plus message", recorded[0].Payload)
 	}
 }
 

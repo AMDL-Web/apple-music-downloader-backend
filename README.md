@@ -304,6 +304,8 @@ curl -X DELETE http://localhost:18080/api/v1/downloads/{job_id}
 
 任务事件也可通过 WebSocket 订阅（`GET /api/v1/downloads/{job_id}/events/ws`），与上面的 SSE 端点等价，供偏好 WS 的客户端使用。
 
+具体任务的 SSE/WS 事件中，`payload` 是需要二次解析的 JSON 字符串。任务生命周期事件携带与 REST `Job` 一致的公开快照字段；曲目状态、重试、编码选择和曲目终态事件携带与 REST `JobItem` 一致的公开快照字段，同时保留 `download_attempts`、`will_retry` 等事件专属字段。客户端先取得一次初始详情后，可以直接合并后续事件；收到 `item_completed`、`item_failed`、`item_skipped` 或任务终态事件时不需要为了补字段再次 GET。任务 override 中的 `media_user_token` 仍会按所有其它任务响应相同的规则隐藏。
+
 其它端点（详细请求/响应结构见 Swagger UI）：
 
 - `GET /api/v1/downloads/events`（及 `/events/ws`）：跨任务的总览 feed，推送任务列表增删改，无需分别订阅每个任务。
