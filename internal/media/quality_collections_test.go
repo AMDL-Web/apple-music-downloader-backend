@@ -15,6 +15,7 @@ import (
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
 	"amdl/internal/limits"
+	"amdl/internal/wrapper"
 )
 
 const qualityTestMaster = `#EXTM3U
@@ -109,6 +110,14 @@ func (f *collectionQualityCatalog) ArtistAlbums(_ context.Context, storefront, i
 	return f.artist, nil
 }
 
+func (f *collectionQualityCatalog) Artist(context.Context, string, string) (applemusic.Artist, error) {
+	return applemusic.Artist{}, nil
+}
+
+func (f *collectionQualityCatalog) FetchCover(context.Context, []string, string, string) ([]byte, error) {
+	return nil, nil
+}
+
 func (f *collectionQualityCatalog) EnhancedHLSViaWebToken(_ context.Context, storefront, id string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -146,10 +155,14 @@ func TestQualityQuerySupportsCollectionURLTypes(t *testing.T) {
 	var manifestMu sync.Mutex
 	manifestHits := map[string]int{}
 	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/audio.m3u8" {
+			writeQualityTestPlaylist(w, r, qualityTestMaster)
+			return
+		}
 		manifestMu.Lock()
 		manifestHits[r.URL.Path]++
 		manifestMu.Unlock()
-		_, _ = w.Write([]byte(qualityTestMaster))
+		writeQualityTestPlaylist(w, r, qualityTestMaster)
 	}))
 	defer manifest.Close()
 
@@ -188,7 +201,7 @@ func TestQualityQuerySupportsCollectionURLTypes(t *testing.T) {
 			catalog := newCollectionQualityCatalog(manifest.URL)
 			cfg := config.Default()
 			cfg.Catalog.MediaUserToken = "  user-token  "
-			service := NewQualityServiceWithCatalog(cfg, catalog)
+			service := NewQualityServiceWithCatalog(cfg, catalog, &collectionQualityWrapper{})
 
 			result, err := service.QueryQuality(context.Background(), QualityRequest{URL: tt.url})
 			if err != nil {
@@ -211,9 +224,9 @@ func TestQualityQuerySupportsCollectionURLTypes(t *testing.T) {
 				t.Fatalf("duplicate song lost occurrence album: %#v", result.Tracks[2].Song)
 			}
 			catalog.mu.Lock()
-			if got, want := len(catalog.metadataCalls), len(uniqueStrings(tt.wantSongs)); got != want {
+			if got, want := len(catalog.metadataCalls), len(tt.wantSongs); got != want {
 				catalog.mu.Unlock()
-				t.Fatalf("SongMetadata calls = %d, want %d unique tracks", got, want)
+				t.Fatalf("SongMetadata calls = %d, want %d track occurrences", got, want)
 			}
 			tt.check(t, catalog)
 			catalog.mu.Unlock()
@@ -222,21 +235,21 @@ func TestQualityQuerySupportsCollectionURLTypes(t *testing.T) {
 
 	manifestMu.Lock()
 	defer manifestMu.Unlock()
-	if manifestHits["/s2.m3u8"] != 3 {
-		t.Fatalf("s2 manifest hits = %d, want one per collection query despite artist duplicate", manifestHits["/s2.m3u8"])
+	if manifestHits["/s2.m3u8"] != 4*len(qualitySpecs) {
+		t.Fatalf("s2 manifest hits = %d, want the download selection path for every occurrence and codec", manifestHits["/s2.m3u8"])
 	}
 }
 
 func TestQualityQueryAlbumTrackModePreservesSongResponse(t *testing.T) {
-	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(qualityTestMaster))
+	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeQualityTestPlaylist(w, r, qualityTestMaster)
 	}))
 	defer manifest.Close()
 
 	catalog := newCollectionQualityCatalog(manifest.URL)
 	cfg := config.Default()
 	cfg.Catalog.AlbumTrackURLMode = "song"
-	service := NewQualityServiceWithCatalog(cfg, catalog)
+	service := NewQualityServiceWithCatalog(cfg, catalog, &collectionQualityWrapper{})
 	result, err := service.QueryQuality(context.Background(), QualityRequest{URL: "https://music.apple.com/cn/album/example/a1?i=s1"})
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +266,7 @@ func TestQualityQueryAlbumTrackModePreservesSongResponse(t *testing.T) {
 	}
 
 	cfg.Catalog.AlbumTrackURLMode = "album"
-	service = NewQualityServiceWithCatalog(cfg, catalog)
+	service = NewQualityServiceWithCatalog(cfg, catalog, &collectionQualityWrapper{})
 	result, err = service.QueryQuality(context.Background(), QualityRequest{URL: "https://music.apple.com/cn/album/example/a1?i=s1"})
 	if err != nil {
 		t.Fatal(err)
@@ -264,8 +277,8 @@ func TestQualityQueryAlbumTrackModePreservesSongResponse(t *testing.T) {
 }
 
 func TestQualityQueryReadsLiveMediaUserToken(t *testing.T) {
-	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(qualityTestMaster))
+	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeQualityTestPlaylist(w, r, qualityTestMaster)
 	}))
 	defer manifest.Close()
 	catalog := newCollectionQualityCatalog(manifest.URL)
@@ -274,7 +287,7 @@ func TestQualityQueryReadsLiveMediaUserToken(t *testing.T) {
 	cfg := config.Default()
 	cfg.Catalog.MediaUserToken = "first"
 	store := config.NewStore(cfg)
-	service := &QualityService{store: store, catalog: catalog, http: newHTTPClient()}
+	service := NewQualityService(&Downloader{store: store, cfg: cfg, catalog: catalog, wrapper: &collectionQualityWrapper{}, http: newHTTPClient()})
 	url := "https://music.apple.com/cn/station/example/ra.1"
 	if _, err := service.QueryQuality(context.Background(), QualityRequest{URL: url}); err != nil {
 		t.Fatal(err)
@@ -297,6 +310,10 @@ type collectionQualityWrapper struct {
 	calls []string
 }
 
+func (w *collectionQualityWrapper) Status(context.Context) (wrapper.Status, error) {
+	return wrapper.Status{Ready: true, Status: true, Regions: []string{"cn"}}, nil
+}
+
 func (w *collectionQualityWrapper) M3U8(_ context.Context, id string) (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -304,9 +321,25 @@ func (w *collectionQualityWrapper) M3U8(_ context.Context, id string) (string, e
 	return w.hls[id], nil
 }
 
+func (w *collectionQualityWrapper) Lyrics(context.Context, string, wrapper.LyricsRequestOptions) (string, error) {
+	return "", nil
+}
+
+func (w *collectionQualityWrapper) WebPlayback(context.Context, string) (string, error) {
+	return "", nil
+}
+
+func (w *collectionQualityWrapper) NewDecryptSession(context.Context, string) (wrapper.DecryptSession, error) {
+	return identityDecryptSession{}, nil
+}
+
+func (w *collectionQualityWrapper) License(context.Context, string, string, string) (string, error) {
+	return "", nil
+}
+
 func TestQualityQueryCollectionSignedManifestSources(t *testing.T) {
-	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(qualityTestMaster))
+	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeQualityTestPlaylist(w, r, qualityTestMaster)
 	}))
 	defer manifest.Close()
 
@@ -318,9 +351,8 @@ func TestQualityQueryCollectionSignedManifestSources(t *testing.T) {
 			cfg.Catalog.AppleMusicKeyID = "KEY"
 			cfg.Catalog.AppleMusicTeamID = "TEAM"
 			cfg.Catalog.SignedModeHLSSource = source
-			service := NewQualityServiceWithCatalog(cfg, catalog)
 			wrapper := &collectionQualityWrapper{hls: catalog.webHLS}
-			service.wrapper = wrapper
+			service := NewQualityServiceWithCatalog(cfg, catalog, wrapper)
 			result, err := service.QueryQuality(context.Background(), QualityRequest{URL: "https://music.apple.com/cn/album/example/a1"})
 			if err != nil {
 				t.Fatal(err)
@@ -335,14 +367,14 @@ func TestQualityQueryCollectionSignedManifestSources(t *testing.T) {
 			wrapper.mu.Lock()
 			wrapperCalls := append([]string(nil), wrapper.calls...)
 			wrapper.mu.Unlock()
-			if len(metadataCalls) != 0 {
-				t.Fatalf("signed mode SongMetadata calls = %#v", metadataCalls)
+			if len(metadataCalls) != 2 {
+				t.Fatalf("signed mode SongMetadata calls = %#v, want the download metadata step for both tracks", metadataCalls)
 			}
 			if source == "wrapper" {
-				if len(wrapperCalls) != 2 || len(webCalls) != 0 {
+				if len(wrapperCalls) != 2*len(qualitySpecs) || len(webCalls) != 0 {
 					t.Fatalf("wrapper/web calls = %#v/%#v", wrapperCalls, webCalls)
 				}
-			} else if len(webCalls) != 2 || len(wrapperCalls) != 0 {
+			} else if len(webCalls) != 2*len(qualitySpecs) || len(wrapperCalls) != 0 {
 				t.Fatalf("web/wrapper calls = %#v/%#v", webCalls, wrapperCalls)
 			}
 		})
@@ -351,12 +383,14 @@ func TestQualityQueryCollectionSignedManifestSources(t *testing.T) {
 
 func TestQualityQueryRejectsUnsupportedAndEmptyCollections(t *testing.T) {
 	catalog := newCollectionQualityCatalog("https://example.invalid")
-	service := NewQualityServiceWithCatalog(config.Default(), catalog)
-	if _, err := service.QueryQuality(context.Background(), QualityRequest{URL: "https://music.apple.com/cn/music-video/example/mv.1"}); err == nil || !strings.Contains(err.Error(), "does not support") {
+	cfg := config.Default()
+	cfg.Download.MaxAttempts = 1
+	service := NewQualityServiceWithCatalog(cfg, catalog, &collectionQualityWrapper{})
+	if _, err := service.QueryQuality(context.Background(), QualityRequest{URL: "https://music.apple.com/cn/music-video/example/mv.1"}); err == nil || !strings.Contains(err.Error(), "not implemented") {
 		t.Fatalf("music-video error = %v", err)
 	}
 	catalog.albums["empty"] = applemusic.Collection{ID: "empty"}
-	if _, err := service.QueryQuality(context.Background(), QualityRequest{URL: "https://music.apple.com/cn/album/example/empty"}); err == nil || !strings.Contains(err.Error(), "has no songs") {
+	if _, err := service.QueryQuality(context.Background(), QualityRequest{URL: "https://music.apple.com/cn/album/example/empty"}); err == nil || !strings.Contains(err.Error(), "no downloadable songs") {
 		t.Fatalf("empty album error = %v", err)
 	}
 	catalog.metadataErr["s1"] = errors.New("metadata failed")
@@ -372,14 +406,26 @@ func TestQualityQueryUsesSharedRequestGateAndPreservesOrder(t *testing.T) {
 	var releaseOnce sync.Once
 	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
 	defer releaseAll()
+	var startedMu sync.Mutex
+	startedPaths := map[string]bool{}
 	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		started <- strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/"), ".m3u8")
-		select {
-		case <-release:
-		case <-r.Context().Done():
+		if r.URL.Path == "/audio.m3u8" {
+			writeQualityTestPlaylist(w, r, qualityTestMaster)
 			return
 		}
-		_, _ = w.Write([]byte(qualityTestMaster))
+		startedMu.Lock()
+		first := !startedPaths[r.URL.Path]
+		startedPaths[r.URL.Path] = true
+		startedMu.Unlock()
+		if first {
+			started <- strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/"), ".m3u8")
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		writeQualityTestPlaylist(w, r, qualityTestMaster)
 	}))
 	defer manifest.Close()
 
@@ -391,8 +437,10 @@ func TestQualityQueryUsesSharedRequestGateAndPreservesOrder(t *testing.T) {
 		catalog.songs[id] = applemusic.Song{ID: id, Name: id, EnhancedHLS: manifest.URL + "/" + id + ".m3u8"}
 	}
 	catalog.albums["many"] = applemusic.Collection{ID: "many", Tracks: tracks}
-	service := NewQualityServiceWithCatalog(config.Default(), catalog)
-	service.requestGate = limits.NewRequestGate(maxParallelRequests, 1000, len(tracks))
+	cfg := config.Default()
+	cfg.Download.MaxAttempts = 1
+	service := NewQualityServiceWithCatalog(cfg, catalog, &collectionQualityWrapper{})
+	service.downloader.requestGate = limits.NewRequestGate(maxParallelRequests, 1000, len(tracks))
 	type queryResult struct {
 		result QualityResult
 		err    error
@@ -426,9 +474,9 @@ func TestQualityQueryUsesSharedRequestGateAndPreservesOrder(t *testing.T) {
 	}
 }
 
-func TestQualityQueryCancelsSiblingProbesAfterFailure(t *testing.T) {
+func TestQualityQueryJoinsSiblingProbesAfterFailureLikeDownloads(t *testing.T) {
 	blockedStarted := make(chan struct{})
-	blockedCanceled := make(chan struct{})
+	releaseBlocked := make(chan struct{})
 	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/failed.m3u8":
@@ -439,38 +487,47 @@ func TestQualityQueryCancelsSiblingProbesAfterFailure(t *testing.T) {
 			}
 			http.Error(w, "upstream failed", http.StatusBadGateway)
 		case "/blocked.m3u8":
-			close(blockedStarted)
-			<-r.Context().Done()
-			close(blockedCanceled)
+			select {
+			case <-blockedStarted:
+			default:
+				close(blockedStarted)
+			}
+			<-releaseBlocked
+			writeQualityTestPlaylist(w, r, qualityTestMaster)
+		default:
+			writeQualityTestPlaylist(w, r, qualityTestMaster)
 		}
 	}))
 	defer manifest.Close()
+	defer func() {
+		select {
+		case <-releaseBlocked:
+		default:
+			close(releaseBlocked)
+		}
+	}()
 
 	catalog := newCollectionQualityCatalog(manifest.URL)
 	catalog.albums["cancel"] = applemusic.Collection{ID: "cancel", Tracks: []applemusic.Song{{ID: "failed"}, {ID: "blocked"}}}
 	catalog.songs["failed"] = applemusic.Song{ID: "failed", EnhancedHLS: manifest.URL + "/failed.m3u8"}
 	catalog.songs["blocked"] = applemusic.Song{ID: "blocked", EnhancedHLS: manifest.URL + "/blocked.m3u8"}
-	service := NewQualityServiceWithCatalog(config.Default(), catalog)
-	_, err := service.QueryQuality(context.Background(), QualityRequest{URL: "https://music.apple.com/cn/album/example/cancel"})
+	cfg := config.Default()
+	cfg.Download.MaxAttempts = 1
+	service := NewQualityServiceWithCatalog(cfg, catalog, &collectionQualityWrapper{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.QueryQuality(context.Background(), QualityRequest{URL: "https://music.apple.com/cn/album/example/cancel"})
+		done <- err
+	}()
+	<-blockedStarted
+	select {
+	case err := <-done:
+		t.Fatalf("quality query returned before its started sibling exited: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseBlocked)
+	err := <-done
 	if err == nil || !strings.Contains(err.Error(), "502 Bad Gateway") {
 		t.Fatalf("query error = %v", err)
 	}
-	select {
-	case <-blockedCanceled:
-	case <-time.After(2 * time.Second):
-		t.Fatal("sibling manifest request was not canceled")
-	}
-}
-
-func uniqueStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	unique := make([]string, 0, len(values))
-	for _, value := range values {
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		unique = append(unique, value)
-	}
-	return unique
 }
