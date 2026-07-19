@@ -218,53 +218,14 @@ func Default() Config {
 	}
 }
 
-// LoadPair reads the split configuration: the startup file (keys consumed
-// once at process start) plus the runtime file (keys the config API may
-// change while running), overlays any AMDL_* environment variable overrides
-// on top (see env.go), and validates the merged result. Each file is checked
-// strictly against its side of the split — a key in the wrong file is a load
-// error, not a silently shadowed value.
-func LoadPair(startupPath, runtimePath string) (Config, error) {
-	return loadPair(startupPath, runtimePath, os.Environ())
-}
-
-// loadPair is LoadPair with an explicit environment so tests can inject one.
-func loadPair(startupPath, runtimePath string, environ []string) (Config, error) {
-	cfg := Default()
-	if err := decodeFileStrict(&cfg, startupPath, roleStartup); err != nil {
-		return cfg, err
-	}
-	if err := decodeFileStrict(&cfg, runtimePath, roleRuntime); err != nil {
-		return cfg, err
-	}
-	if err := applyEnvOverrides(&cfg, environ); err != nil {
-		return cfg, err
-	}
-	if err := cfg.NormalizeDeprecated(); err != nil {
-		return cfg, err
-	}
-	// Same tolerance as the single-file path: files or AMDL_* overrides
-	// written before the limits existed may hold larger values, so clamp
-	// them instead of refusing to boot.
-	clampCatalogLimits(&cfg.Catalog)
-	clampDownloadLimits(&cfg.Download)
-	if err := cfg.Validate(); err != nil {
-		return cfg, err
-	}
-	return cfg, nil
-}
-
-// Load reads a single pre-split config file holding any mix of startup and
-// runtime keys, overlays AMDL_* environment overrides, and validates the
-// result. Production loading goes through LoadPair; Load remains for the
-// one-time EnsureFiles migration of a legacy config.yaml and for reading
-// example files that still use the combined layout.
+// Load reads the combined config file, overlays AMDL_* environment variable
+// overrides, normalizes legacy fields, and validates the result.
 func Load(path string) (Config, error) {
 	return load(path, os.Environ())
 }
 
-// load is Load with an explicit environment, so tests can inject one and
-// EnsureFiles can read legacy and example files without baking overrides in.
+// load is Load with an explicit environment, so tests and bootstrapping can
+// read files without baking process overrides into them.
 func load(path string, environ []string) (Config, error) {
 	cfg := Default()
 	raw, err := os.ReadFile(path)

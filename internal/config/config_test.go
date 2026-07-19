@@ -3,9 +3,12 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestWrapperLoginTimeout(t *testing.T) {
@@ -240,8 +243,8 @@ func TestLoadMigratesLegacyMediaUserTokenPriority(t *testing.T) {
 	if cfg.Catalog.LegacyMediaUserTokenPriority != "" {
 		t.Fatalf("legacy priority survived normalization: %q", cfg.Catalog.LegacyMediaUserTokenPriority)
 	}
-	if err := SaveRuntime(path, cfg); err != nil {
-		t.Fatalf("SaveRuntime() normalized config: %v", err)
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save() normalized config: %v", err)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -378,5 +381,45 @@ func TestLoadClampsResourceLimitsFromFile(t *testing.T) {
 	}
 	if cfg.Download.MaxRunningJobs != maxRunningJobsLimit || cfg.Download.MaxParallelDownloads != maxGlobalPoolLimit || cfg.Download.MaxParallelDecrypts != maxGlobalPoolLimit || cfg.Download.MaxAttempts != maxAttemptsLimit {
 		t.Fatalf("Load() did not clamp download values: %+v", cfg.Download)
+	}
+}
+
+func TestCommittedExampleDocumentsEveryConfigKey(t *testing.T) {
+	raw, err := os.ReadFile("../../configs/config.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]map[string]any
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	want := knownKeys()
+	// Accepted only to read old v1.2 files; it is normalized away and should
+	// not be advertised as a current setting.
+	delete(want, "catalog.media_user_token_priority")
+	got := map[string]bool{}
+	for section, fields := range doc {
+		for field := range fields {
+			got[section+"."+field] = true
+		}
+	}
+	var missing, extra []string
+	for key := range want {
+		if !got[key] {
+			missing = append(missing, key)
+		}
+	}
+	for key := range got {
+		if !want[key] {
+			extra = append(extra, key)
+		}
+	}
+	slices.Sort(missing)
+	slices.Sort(extra)
+	if len(missing) > 0 || len(extra) > 0 {
+		t.Fatalf("config.example.yaml keys: missing=%v extra=%v", missing, extra)
+	}
+	if _, err := load("../../configs/config.example.yaml", nil); err != nil {
+		t.Fatalf("config.example.yaml does not load: %v", err)
 	}
 }

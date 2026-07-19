@@ -108,9 +108,9 @@ paths:
         仅启动时生效的字段（server、database、logging 其它字段、wrapper、tools、catalog 其它字段）不返回——
         它们无法通过本 API 修改，请编辑启动配置 configs/config.yaml 并重启。
 
-        运行时字段单独存放在 configs/runtime.yaml。每次 GET 会先重读该文件
-        再返回，因此运行期间手工编辑的可修改字段在下一次 GET 后即生效、
-        无需重启；启动配置 config.yaml 的改动仍需重启。
+        所有字段统一存放在 configs/config.yaml。每次 GET 会先重读该文件的
+        运行时字段再返回，因此运行期间手工编辑的可修改字段在下一次 GET 后
+        即生效、无需重启；仅启动时生效的字段仍需重启。
         AMDL_<大写段名>_<大写键名> 环境变量覆盖在每次重读时同样生效并
         优先于文件值。文件当前不可读或校验失败时（例如正编辑到一半），
         继续返回上一份有效配置，并附 reload_error 字段说明原因。
@@ -140,10 +140,10 @@ paths:
         重启。
 
         修改立即对新请求和新开始的任务生效（运行中的任务继续使用其启动时的
-        配置快照），并写回 configs/runtime.yaml，重启后依然生效。该文件由
-        后端管理（每次 PUT 整体重写，注释不保留）；带完整注释的字段文档在
-        configs/runtime.example.yaml，首次启动时会以它为模板生成
-        runtime.yaml。启动配置 config.yaml 归使用者所有，后端不会重写。
+        配置快照），并将包含启动字段在内的完整配置写回
+        configs/config.yaml，重启后依然生效。该文件由后端管理（每次 PUT
+        整体重写，注释不保留）；带完整注释的字段文档在
+        configs/config.example.yaml，首次启动时会以它为模板生成 config.yaml。
 
         前端注意：确认写入前请先 GET 一次并基于其返回值构造请求体。PUT 的
         合并基准是后端内存中的当前配置，而 GET 会先重读配置文件、把运行
@@ -1126,7 +1126,7 @@ components:
       type: object
       description: >-
         可运行时修改的配置子集（字段含义、枚举值和默认行为见
-        configs/runtime.example.yaml 内注释）。GET 返回此形状；PUT 时可只
+        configs/config.example.yaml 内注释）。GET 返回此形状；PUT 时可只
         提交需要修改的字段，省略的字段保持现值。
       properties:
         catalog:
@@ -1249,8 +1249,8 @@ components:
         persisted:
           type: boolean
           description: >-
-            配置存储是否有后备文件。正常部署下恒为 true：PUT 的修改写回
-            configs/runtime.yaml，重启后依然生效。
+            配置存储是否有持久化文件。正常部署下恒为 true：PUT 的修改写回
+            configs/config.yaml，重启后依然生效。
         reload_error:
           type: string
           description: >-

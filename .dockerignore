@@ -26,7 +26,9 @@ coverage.txt
 # 本地/运行时配置;镜像里只保留 config.example.yaml 和 hooks.yaml。
 *.local.yaml
 configs/config.yaml
+# 旧版双文件运行时配置及其合并后留下的一次性备份。
 configs/runtime.yaml
+configs/runtime.yaml.pre-merge.bak*
 configs/config.yaml.pre-split.bak
 
 # 发版脚本等与镜像无关的工具。
