@@ -169,8 +169,6 @@ func (s *QualityService) resolveQualityTracks(ctx context.Context, cfg config.Co
 	}
 }
 
-const maxQualityProbeWorkers = 4
-
 type qualityProbeResult struct {
 	song      applemusic.Song
 	qualities []QualityOption
@@ -190,35 +188,31 @@ func (s *QualityService) queryTrackQualities(ctx context.Context, cfg config.Con
 	probeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	results := make([]qualityProbeResult, len(unique))
-	jobs := make(chan int, len(unique))
-	for i := range unique {
-		jobs <- i
-	}
-	close(jobs)
 
-	workers := min(maxQualityProbeWorkers, len(unique))
 	var wg sync.WaitGroup
 	var errOnce sync.Once
 	var firstErr error
-	for range workers {
+	// Match download scheduling: fan out the tracks here and let the shared
+	// catalog request gate and wrapper data-request pool enforce the configured
+	// process-wide concurrency limits. A separate per-query cap would make this
+	// endpoint behave differently from downloads and leave shared capacity idle.
+	for i := range unique {
+		if probeCtx.Err() != nil {
+			break
+		}
 		wg.Add(1)
-		go func() {
+		go func(i int) {
 			defer wg.Done()
-			for i := range jobs {
-				if probeCtx.Err() != nil {
-					return
-				}
-				song, qualities, err := s.querySongQuality(probeCtx, cfg, storefront, unique[i], refreshManifest)
-				if err != nil {
-					errOnce.Do(func() {
-						firstErr = fmt.Errorf("query quality for song %s: %w", unique[i].ID, err)
-						cancel()
-					})
-					return
-				}
-				results[i] = qualityProbeResult{song: song, qualities: qualities}
+			song, qualities, err := s.querySongQuality(probeCtx, cfg, storefront, unique[i], refreshManifest)
+			if err != nil {
+				errOnce.Do(func() {
+					firstErr = fmt.Errorf("query quality for song %s: %w", unique[i].ID, err)
+					cancel()
+				})
+				return
 			}
-		}()
+			results[i] = qualityProbeResult{song: song, qualities: qualities}
+		}(i)
 	}
 	wg.Wait()
 	if firstErr != nil {

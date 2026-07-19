@@ -14,6 +14,7 @@ import (
 
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
+	"amdl/internal/limits"
 )
 
 const qualityTestMaster = `#EXTM3U
@@ -364,7 +365,8 @@ func TestQualityQueryRejectsUnsupportedAndEmptyCollections(t *testing.T) {
 	}
 }
 
-func TestQualityQueryBoundsProbesAndPreservesOrder(t *testing.T) {
+func TestQualityQueryUsesSharedRequestGateAndPreservesOrder(t *testing.T) {
+	const maxParallelRequests = 3
 	started := make(chan string, 8)
 	release := make(chan struct{})
 	var releaseOnce sync.Once
@@ -390,6 +392,7 @@ func TestQualityQueryBoundsProbesAndPreservesOrder(t *testing.T) {
 	}
 	catalog.albums["many"] = applemusic.Collection{ID: "many", Tracks: tracks}
 	service := NewQualityServiceWithCatalog(config.Default(), catalog)
+	service.requestGate = limits.NewRequestGate(maxParallelRequests, 1000, len(tracks))
 	type queryResult struct {
 		result QualityResult
 		err    error
@@ -399,16 +402,16 @@ func TestQualityQueryBoundsProbesAndPreservesOrder(t *testing.T) {
 		result, err := service.QueryQuality(context.Background(), QualityRequest{URL: "https://music.apple.com/cn/album/example/many"})
 		done <- queryResult{result: result, err: err}
 	}()
-	for range maxQualityProbeWorkers {
+	for range maxParallelRequests {
 		select {
 		case <-started:
 		case <-time.After(2 * time.Second):
-			t.Fatal("timed out waiting for bounded workers")
+			t.Fatal("timed out waiting for shared request-gate slots")
 		}
 	}
 	select {
 	case id := <-started:
-		t.Fatalf("more than %d probes started before release: %s", maxQualityProbeWorkers, id)
+		t.Fatalf("more than %d manifest requests started before release: %s", maxParallelRequests, id)
 	case <-time.After(100 * time.Millisecond):
 	}
 	releaseAll()
