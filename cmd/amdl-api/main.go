@@ -118,7 +118,7 @@ func main() {
 	}
 	toolChecker := media.NewToolChecker(cfg.Tools)
 	downloader := media.NewDownloader(cfgStore, catalog, wrapperClient, toolChecker, logSystem.Logger.With("component", "media"))
-	qualityService := media.NewQualityService(cfgStore, catalog, wrapperClient)
+	qualityService := media.NewQualityService(downloader)
 	manager := jobs.NewManager(store, hub, downloader, cfg.Download.MaxRunningJobs, logSystem.Logger.With("component", "jobs"))
 	hookDispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, logSystem.Logger.With("component", "hooks"))
 	manager.SetHooks(hookDispatcher)

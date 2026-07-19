@@ -307,7 +307,7 @@ curl -X DELETE http://localhost:18080/api/v1/downloads/{job_id}
 其它端点（详细请求/响应结构见 Swagger UI）：
 
 - `GET /api/v1/downloads/events`（及 `/events/ws`）：跨任务的总览 feed，推送任务列表增删改，无需分别订阅每个任务。
-- `POST /api/v1/quality`：不创建任务，仅探测某个 URL 当前可用的编码与画质信息。
+- `POST /api/v1/quality`：不创建任务，探测单曲、专辑、歌单、艺人或电台 URL 的 master playlist 当前声明的编码与音质信息；它复用下载任务的区域校验、集合解析、元数据刷新、重试、并发调度、HLS 来源选择及 codec/ALAC 筛选规则。正常成功路径为每个曲目出现项读取一次 master playlist 并从中汇总全部音质；失败时按 `download.max_attempts` 重新取得来源并读取 master。查询不读取具体 media playlist，也不验证媒体分片或进入加密媒体传输。区域校验要求 wrapper/decryptor 已就绪，且 URL storefront 位于其上报的 `regions` 中。所有链接类型统一返回逐曲 `tracks`；单曲包含一个元素，集合保持 Apple Music 原顺序和重复曲目出现项。电台使用运行时 `catalog.media_user_token`。
 - `GET /api/v1/developer-token`：签发可共享的 Apple Music developer token；仅在启用本地签名模式（`catalog.apple_music_*` 三个 key 配置齐全）时可用，否则返回 409。
 
 ## 下载行为
