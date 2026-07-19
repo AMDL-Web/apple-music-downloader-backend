@@ -146,9 +146,9 @@ func TestUpdateConfigAppliesLoggingLevel(t *testing.T) {
 }
 
 func TestGetConfigReloadsManualFileEdits(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "runtime.yaml")
+	path := filepath.Join(t.TempDir(), "config.yaml")
 	base := config.Default()
-	if err := config.SaveRuntime(path, base); err != nil {
+	if err := config.Save(path, base); err != nil {
 		t.Fatal(err)
 	}
 	server := &Server{cfg: config.NewFileStore(base, path)}
@@ -157,7 +157,7 @@ func TestGetConfigReloadsManualFileEdits(t *testing.T) {
 	edited := base
 	edited.Download.CoverFormat = "png"
 	edited.Catalog.SignedModeHLSSource = "web_token"
-	if err := config.SaveRuntime(path, edited); err != nil {
+	if err := config.Save(path, edited); err != nil {
 		t.Fatal(err)
 	}
 	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/config", "")
@@ -195,7 +195,7 @@ func TestGetConfigReloadsManualFileEdits(t *testing.T) {
 }
 
 func TestUpdateConfigPersistsToBackingFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "runtime.yaml")
+	path := filepath.Join(t.TempDir(), "config.yaml")
 	server := &Server{cfg: config.NewFileStore(config.Default(), path)}
 
 	recorder := requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config", `{"download":{"cover_format":"png"}}`)

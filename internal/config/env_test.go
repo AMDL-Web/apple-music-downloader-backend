@@ -205,27 +205,33 @@ func TestBootstrapDoesNotBakeEnvOverrides(t *testing.T) {
 	t.Setenv("AMDL_WRAPPER_ADDRESS", "wrapper-manager:8080")
 	t.Setenv("AMDL_DOWNLOAD_COVER_FORMAT", "png")
 	dir := t.TempDir()
-	example := "wrapper:\n  address: \"127.0.0.1:8080\"\n"
+	example := "wrapper:\n  address: \"127.0.0.1:8080\"\ndownload:\n  cover_format: \"jpg\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "config.example.yaml"), []byte(example), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	startup := filepath.Join(dir, "config.yaml")
+	configPath := filepath.Join(dir, "config.yaml")
 	runtime := filepath.Join(dir, "runtime.yaml")
-	if result, err := EnsureFiles(startup, runtime); err != nil || !result.CreatedStartup || !result.CreatedRuntime {
-		t.Fatalf("bootstrap = (%+v, %v), want both created", result, err)
+	if err := os.WriteFile(runtime, []byte("download:\n  embed_cover: false\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	startupRaw, err := os.ReadFile(startup)
+	if result, err := EnsureFile(configPath, runtime); err != nil || !result.CreatedConfig || !result.MergedRuntime {
+		t.Fatalf("bootstrap = (%+v, %v), want config created and legacy runtime merged", result, err)
+	}
+	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeRaw, err := os.ReadFile(runtime)
+	if strings.Contains(string(raw), "wrapper-manager:8080") || strings.Contains(string(raw), "cover_format: png") {
+		t.Fatalf("env override leaked into bootstrapped config:\n%s", raw)
+	}
+	disk, err := load(configPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(startupRaw), "wrapper-manager:8080") || strings.Contains(string(runtimeRaw), "cover_format: png") {
-		t.Fatalf("env override leaked into a bootstrapped file:\n%s\n---\n%s", startupRaw, runtimeRaw)
+	if disk.Wrapper.Address != "127.0.0.1:8080" || disk.Download.CoverFormat != "jpg" || disk.Download.EmbedCover {
+		t.Fatalf("disk config = wrapper %q cover %q embed_cover %v", disk.Wrapper.Address, disk.Download.CoverFormat, disk.Download.EmbedCover)
 	}
-	cfg, err := LoadPair(startup, runtime)
+	cfg, err := Load(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
