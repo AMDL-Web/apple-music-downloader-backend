@@ -1184,12 +1184,27 @@ func (d *Downloader) selectEnhancedMedia(ctx context.Context, job domain.Job, it
 	return selectedDownloadMedia{info: info}, nil
 }
 
-// selectEnhancedStream is the shared boundary between media discovery and
-// transfer. Both downloads and quality probes resolve the same manifest source,
-// apply the same codec/ALAC constraints, and validate the selected media
-// playlist here. Downloads continue into encrypted transfer afterwards; quality
-// probes stop with the selected stream metadata.
+// selectEnhancedStream is the download boundary between media discovery and
+// transfer. Quality inventory shares its source resolver and variant selector,
+// but stops at the master playlist instead of validating a concrete media
+// playlist here.
 func (d *Downloader) selectEnhancedStream(ctx context.Context, storefront string, song applemusic.Song, codec string) (selectedMediaInfo, error) {
+	master, err := d.resolveEnhancedHLS(ctx, storefront, song)
+	if err != nil {
+		return selectedMediaInfo{}, err
+	}
+	info, err := extractMedia(ctx, d.http, master, codec, d.cfg.Download.ALACMaxSampleRate, d.cfg.Download.ALACMaxBitDepth, d.requestGate)
+	if err != nil {
+		return selectedMediaInfo{}, fmt.Errorf("select %s media: %w", codec, err)
+	}
+	return info, nil
+}
+
+// resolveEnhancedHLS chooses the master-playlist source shared by downloads
+// and quality inventory. The caller decides whether to continue through a
+// concrete media playlist (download) or only inspect the master variants
+// (quality query).
+func (d *Downloader) resolveEnhancedHLS(ctx context.Context, storefront string, song applemusic.Song) (string, error) {
 	master := song.EnhancedHLS
 	if d.cfg.Catalog.DeveloperTokenSigningEnabled() {
 		// A self-signed developer token cannot read enhancedHls, so the master
@@ -1198,25 +1213,21 @@ func (d *Downloader) selectEnhancedStream(ctx context.Context, storefront string
 		if d.cfg.Catalog.EnhancedHLSFromWebToken() {
 			hls, err := d.catalog.EnhancedHLSViaWebToken(ctx, storefront, song.ID)
 			if err != nil {
-				return selectedMediaInfo{}, fmt.Errorf("fetch enhanced hls via web token: %w", err)
+				return "", fmt.Errorf("fetch enhanced hls via web token: %w", err)
 			}
 			master = hls
 		} else {
 			m3u8, err := d.wrapper.M3U8(ctx, song.ID)
 			if err != nil {
-				return selectedMediaInfo{}, fmt.Errorf("request device m3u8: %w", err)
+				return "", fmt.Errorf("request device m3u8: %w", err)
 			}
 			master = m3u8
 		}
 	}
 	if master == "" {
-		return selectedMediaInfo{}, fmt.Errorf("no enhanced hls manifest")
+		return "", fmt.Errorf("no enhanced hls manifest")
 	}
-	info, err := extractMedia(ctx, d.http, master, codec, d.cfg.Download.ALACMaxSampleRate, d.cfg.Download.ALACMaxBitDepth, d.requestGate)
-	if err != nil {
-		return selectedMediaInfo{}, fmt.Errorf("select %s media: %w", codec, err)
-	}
-	return info, nil
+	return master, nil
 }
 
 func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected selectedDownloadMedia, codec, jobID, outPath string, set func(domain.ItemStatus, float64, string)) (selectedDownloadMedia, error) {

@@ -322,11 +322,15 @@ paths:
       summary: 查询链接内歌曲的可用音质
       description: |
         解析后端支持的 Apple Music 单曲、专辑、歌单、艺人或电台 URL，返回每首歌曲
-        当前可用的 codec、码率、采样率和位深摘要；不会创建下载任务。单曲响应继续
+        master playlist 当前声明的 codec、码率、采样率和位深摘要；不会创建下载任务。单曲响应继续
         使用 song/qualities 字段；集合响应使用保持 Apple Music 原顺序的 tracks 数组。
         album URL 上的 i 参数继续服从运行时 catalog.album_track_url_mode；电台解析使用
         运行时 catalog.media_user_token。内部复用下载任务的区域校验、集合解析、曲目
-        元数据刷新、重试、并发调度和选流逻辑，并在加密媒体传输前停止。music-video 不受支持。
+        元数据刷新、重试、并发调度、HLS 来源选择及 codec/ALAC 筛选规则。正常成功路径为
+        每个曲目出现项读取一次 master playlist 并从中汇总全部音质；失败时按
+        download.max_attempts 重新取得来源并读取 master。查询不读取具体 media playlist、
+        不验证媒体分片，也不进入加密媒体传输。区域校验要求 wrapper/decryptor 已就绪，且
+        URL storefront 位于其上报的 regions 中。music-video 不受支持。
       operationId: queryQuality
       requestBody:
         required: true
@@ -1326,7 +1330,9 @@ components:
           type: string
           enum: [aac, aac-binaural, aac-downmix, alac, ec3, ac3]
         label: {type: string}
-        available: {type: boolean}
+        available:
+          type: boolean
+          description: master playlist 是否声明符合当前 codec 与 ALAC 上限的 variant；不代表具体 media playlist 或媒体分片已验证。
         codec: {type: string}
         codec_id: {type: string}
         channels: {type: integer}

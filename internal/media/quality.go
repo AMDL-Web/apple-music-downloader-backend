@@ -125,15 +125,25 @@ func (d *Downloader) queryTrackQualities(ctx context.Context, parsed applemusic.
 }
 
 func (d *Downloader) querySongQualities(ctx context.Context, storefront string, song applemusic.Song) ([]QualityOption, error) {
+	variants, _, err := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(int) ([]variant, error) {
+		master, err := d.resolveEnhancedHLS(ctx, storefront, song)
+		if err != nil {
+			return nil, err
+		}
+		return fetchMasterVariants(ctx, d.http, master, d.requestGate)
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+
 	qualities := make([]QualityOption, 0, len(qualitySpecs))
 	// The endpoint reports every supported enhanced codec, not only the
-	// configured download fallback subset. Each candidate still goes through
-	// the exact selector used by that codec in the download loop.
+	// configured download fallback subset. It inventories the one fetched
+	// master playlist with the same selector downloads use, but intentionally
+	// stops before fetching any concrete media playlist.
 	for _, spec := range qualitySpecs {
 		option := QualityOption{ID: spec.id, Label: spec.label, Codec: spec.codec}
-		info, _, err := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(int) (selectedMediaInfo, error) {
-			return d.selectEnhancedStream(ctx, storefront, song, spec.id)
-		}, nil)
+		selected, err := selectVariant(variants, spec.id, d.cfg.Download.ALACMaxSampleRate, d.cfg.Download.ALACMaxBitDepth)
 		if err != nil {
 			var notFound codecNotFoundError
 			if errors.As(err, &notFound) {
@@ -143,11 +153,11 @@ func (d *Downloader) querySongQualities(ctx context.Context, storefront string, 
 			return nil, err
 		}
 		option.Available = true
-		option.CodecID = info.CodecID
+		option.CodecID = selected.Audio
 		option.Channels = spec.channels
-		option.BitDepth = info.BitDepth
-		option.SampleRate = info.SampleRate
-		option.Bitrate = info.Bandwidth
+		option.BitDepth = selected.BitDepth
+		option.SampleRate = selected.SampleRate
+		option.Bitrate = selected.Bandwidth
 		option.Description = qualityDescription(option)
 		qualities = append(qualities, option)
 	}

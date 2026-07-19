@@ -154,8 +154,12 @@ func newCollectionQualityCatalog(manifestBase string) *collectionQualityCatalog 
 func TestQualityQuerySupportsCollectionURLTypes(t *testing.T) {
 	var manifestMu sync.Mutex
 	manifestHits := map[string]int{}
+	mediaHits := 0
 	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/audio.m3u8" {
+			manifestMu.Lock()
+			mediaHits++
+			manifestMu.Unlock()
 			writeQualityTestPlaylist(w, r, qualityTestMaster)
 			return
 		}
@@ -235,8 +239,11 @@ func TestQualityQuerySupportsCollectionURLTypes(t *testing.T) {
 
 	manifestMu.Lock()
 	defer manifestMu.Unlock()
-	if manifestHits["/s2.m3u8"] != 4*len(qualitySpecs) {
-		t.Fatalf("s2 manifest hits = %d, want the download selection path for every occurrence and codec", manifestHits["/s2.m3u8"])
+	if manifestHits["/s2.m3u8"] != 4 {
+		t.Fatalf("s2 manifest hits = %d, want one inventory for each track occurrence", manifestHits["/s2.m3u8"])
+	}
+	if mediaHits != 0 {
+		t.Fatalf("media playlist hits = %d, want quality inventory to stop at the master playlist", mediaHits)
 	}
 }
 
@@ -371,10 +378,10 @@ func TestQualityQueryCollectionSignedManifestSources(t *testing.T) {
 				t.Fatalf("signed mode SongMetadata calls = %#v, want the download metadata step for both tracks", metadataCalls)
 			}
 			if source == "wrapper" {
-				if len(wrapperCalls) != 2*len(qualitySpecs) || len(webCalls) != 0 {
+				if len(wrapperCalls) != 2 || len(webCalls) != 0 {
 					t.Fatalf("wrapper/web calls = %#v/%#v", wrapperCalls, webCalls)
 				}
-			} else if len(webCalls) != 2*len(qualitySpecs) || len(wrapperCalls) != 0 {
+			} else if len(webCalls) != 2 || len(wrapperCalls) != 0 {
 				t.Fatalf("web/wrapper calls = %#v/%#v", webCalls, wrapperCalls)
 			}
 		})
@@ -408,8 +415,12 @@ func TestQualityQueryUsesSharedRequestGateAndPreservesOrder(t *testing.T) {
 	defer releaseAll()
 	var startedMu sync.Mutex
 	startedPaths := map[string]bool{}
+	mediaHits := 0
 	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/audio.m3u8" {
+			startedMu.Lock()
+			mediaHits++
+			startedMu.Unlock()
 			writeQualityTestPlaylist(w, r, qualityTestMaster)
 			return
 		}
@@ -471,6 +482,14 @@ func TestQualityQueryUsesSharedRequestGateAndPreservesOrder(t *testing.T) {
 		if track.Song.ID != tracks[i].ID {
 			t.Fatalf("track %d = %s, want %s", i, track.Song.ID, tracks[i].ID)
 		}
+	}
+	startedMu.Lock()
+	defer startedMu.Unlock()
+	if len(startedPaths) != len(tracks) {
+		t.Fatalf("master playlist paths = %#v, want one per track", startedPaths)
+	}
+	if mediaHits != 0 {
+		t.Fatalf("media playlist hits = %d, want 0", mediaHits)
 	}
 }
 
