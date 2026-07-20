@@ -3,6 +3,7 @@ package media
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -326,11 +327,17 @@ func (c *metadataCountingCatalog) counts() (map[string]int, map[string]int, map[
 	return songs, metadata, albums
 }
 
-func (*recordingReporter) SetJob(context.Context, domain.Job) error { return nil }
-func (r *recordingReporter) AddItem(_ context.Context, item domain.JobItem) error {
+func (*recordingReporter) SetJob(_ context.Context, job *domain.Job) error {
+	job.UpdatedAt = time.Now().UTC()
+	return nil
+}
+func (r *recordingReporter) AddItem(_ context.Context, item *domain.JobItem) error {
+	now := time.Now().UTC()
+	item.CreatedAt = now
+	item.UpdatedAt = now
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.added = append(r.added, item)
+	r.added = append(r.added, *item)
 	return nil
 }
 func (r *recordingReporter) RemoveItem(_ context.Context, itemID string) error {
@@ -344,10 +351,11 @@ func (r *recordingReporter) ListItems(context.Context, string) ([]domain.JobItem
 	defer r.mu.Unlock()
 	return append([]domain.JobItem(nil), r.existing...), nil
 }
-func (r *recordingReporter) UpdateItem(_ context.Context, item domain.JobItem) error {
+func (r *recordingReporter) UpdateItem(_ context.Context, item *domain.JobItem) error {
+	item.UpdatedAt = time.Now().UTC()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.items = append(r.items, item)
+	r.items = append(r.items, *item)
 	return nil
 }
 func (r *recordingReporter) Event(_ context.Context, ev domain.Event) error {
@@ -792,7 +800,7 @@ func TestProcessJobDoesNotRefetchResolvedAlbumPerTrack(t *testing.T) {
 	}
 }
 
-func TestProcessTrackItemProgressEventOmitsArtworkURL(t *testing.T) {
+func TestProcessTrackEventsCarryRESTItemSnapshot(t *testing.T) {
 	cfg := config.Default()
 	cfg.Download.MaxAttempts = 1 // avoid retry backoff delays; the fetch failure is the point of this test
 	downloader := &Downloader{
@@ -800,25 +808,44 @@ func TestProcessTrackItemProgressEventOmitsArtworkURL(t *testing.T) {
 		catalog: fakeDownloaderCatalog{songErr: errors.New("boom")},
 	}
 	reporter := &recordingReporter{}
-	item := domain.JobItem{ID: "item-1", ArtworkURL: "https://example.com/track/{w}x{h}bb.jpg"}
+	createdAt := time.Now().UTC().Add(-time.Minute)
+	item := domain.JobItem{
+		ID: "item-1", JobID: "job-1", AdamID: "song-1", Kind: "song", Index: 1,
+		ArtworkURL: "https://example.com/track/{w}x{h}bb.jpg", CreatedAt: createdAt, UpdatedAt: createdAt,
+	}
 	job := domain.Job{ID: "job-1"}
 
 	if err := downloader.processTrack(context.Background(), job, item, applemusic.Song{ID: "song-1"}, "cn", applemusic.TypeAlbum, "Album", "album-1", 1, "", reporter); err == nil {
 		t.Fatal("expected error from failing metadata fetch")
 	}
 
-	var progressEvents int
+	var progressEvents, failedEvents int
 	for _, ev := range reporter.events {
-		if ev.Type != "item_progress" {
+		if ev.Type != "item_progress" && ev.Type != "item_failed" {
 			continue
 		}
-		progressEvents++
-		if strings.Contains(ev.Payload, "artwork_url") {
-			t.Fatalf("item_progress payload leaked artwork_url: %s", ev.Payload)
+		var snapshot domain.JobItem
+		if err := json.Unmarshal([]byte(ev.Payload), &snapshot); err != nil {
+			t.Fatalf("decode %s payload: %v", ev.Type, err)
+		}
+		if snapshot.ID != item.ID || snapshot.ArtworkURL != item.ArtworkURL || !snapshot.CreatedAt.Equal(createdAt) || snapshot.UpdatedAt.IsZero() {
+			t.Fatalf("%s snapshot = %+v, want REST item identity/artwork/timestamps", ev.Type, snapshot)
+		}
+		switch ev.Type {
+		case "item_progress":
+			progressEvents++
+		case "item_failed":
+			failedEvents++
+			if snapshot.Status != domain.ItemFailed || snapshot.Error != "boom" || snapshot.StatusMessage == "" {
+				t.Fatalf("item_failed snapshot = %+v, want authoritative failed state", snapshot)
+			}
 		}
 	}
 	if progressEvents == 0 {
 		t.Fatal("expected at least one item_progress event before the fetch failed")
+	}
+	if failedEvents != 1 {
+		t.Fatalf("item_failed events = %d, want 1", failedEvents)
 	}
 }
 
@@ -1001,6 +1028,90 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 	}
 	if len(selected.raw) != 0 {
 		t.Fatalf("low-memory download retained %d bytes in memory, want 0", len(selected.raw))
+	}
+}
+
+// fakeAACLCWrapper overrides WebPlayback to point at a test playlist server,
+// keeping every other method delegated to fakeDownloaderWrapper's no-ops.
+type fakeAACLCWrapper struct {
+	fakeDownloaderWrapper
+	webPlaybackURL string
+}
+
+func (f fakeAACLCWrapper) WebPlayback(context.Context, string) (string, error) {
+	return f.webPlaybackURL, nil
+}
+
+// TestFetchAACLCMediaCodecSelectedCarriesRESTItemSnapshot guards against the
+// real (non-simulate) AAC-LC codec_selected event regressing back to the
+// bare codec/attempt payload used before MarshalEventPayload was introduced;
+// simulate.go's aac-lc branch and selectEnhancedMedia already cover the
+// REST-snapshot fields, this covers the real download path.
+func TestFetchAACLCMediaCodecSelectedCarriesRESTItemSnapshot(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/track.m3u8":
+			_, _ = w.Write([]byte("#EXTM3U\n" +
+				"#EXT-X-KEY:METHOD=SAMPLE-AES-CTR,URI=\"data:;base64,MDEyMzQ1Njc4OWFiY2RlZg==\"\n" +
+				"#EXT-X-MAP:URI=\"audio.m4a\"\n"))
+		case "/audio.m4a":
+			_, _ = w.Write([]byte("encrypted aac-lc bytes"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Download.TempDir = t.TempDir()
+	downloader := &Downloader{
+		cfg:     cfg,
+		http:    server.Client(),
+		wrapper: fakeAACLCWrapper{webPlaybackURL: server.URL + "/track.m3u8"},
+	}
+	createdAt := time.Now().UTC().Add(-time.Minute)
+	item := &domain.JobItem{
+		ID: "item-1", ArtworkURL: "https://example.com/track/{w}x{h}bb.jpg",
+		CreatedAt: createdAt, UpdatedAt: createdAt, Attempt: 2, MaxAttempts: 5,
+	}
+	reporter := &recordingReporter{}
+
+	if _, _, release, err := downloader.fetchAACLCMedia(
+		context.Background(),
+		domain.Job{ID: "job-1"},
+		item,
+		applemusic.Song{ID: "song-1"},
+		reporter,
+		func(domain.ItemStatus, float64, string) {},
+	); err != nil {
+		t.Fatal(err)
+	} else if release != nil {
+		defer release()
+	}
+
+	var found bool
+	for _, ev := range reporter.events {
+		if ev.Type != "codec_selected" || ev.Phase != "aac-lc" {
+			continue
+		}
+		found = true
+		var snapshot domain.JobItem
+		if err := json.Unmarshal([]byte(ev.Payload), &snapshot); err != nil {
+			t.Fatalf("decode codec_selected payload: %v", err)
+		}
+		if snapshot.ID != item.ID || snapshot.ArtworkURL != item.ArtworkURL || !snapshot.CreatedAt.Equal(createdAt) {
+			t.Fatalf("codec_selected snapshot = %+v, want REST item identity/artwork/timestamps", snapshot)
+		}
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(ev.Payload), &raw); err != nil {
+			t.Fatalf("decode codec_selected payload as map: %v", err)
+		}
+		if raw["codec_id"] != "aac-lc" || raw["attempt"] != float64(2) || raw["max_attempts"] != float64(5) {
+			t.Fatalf("codec_selected payload = %+v, want codec_id/attempt/max_attempts merged in", raw)
+		}
+	}
+	if !found {
+		t.Fatal("missing codec_selected event for real AAC-LC download path")
 	}
 }
 

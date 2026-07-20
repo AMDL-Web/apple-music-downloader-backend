@@ -277,14 +277,14 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 	}
 	job.Type = string(parsed.Type)
 	job.Storefront = parsed.Storefront
-	if err := reporter.SetJob(ctx, job); err != nil {
+	if err := reporter.SetJob(ctx, &job); err != nil {
 		return err
 	}
 
 	resolved, _, err := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(int) (resolvedCollection, error) {
 		return d.resolveCollection(ctx, parsed)
 	}, func(failure retryFailure) {
-		d.emitRetryEvent(ctx, reporter, job.ID, "", "resolve_tracks", "", failure)
+		d.emitRetryEvent(ctx, reporter, job.ID, nil, "resolve_tracks", "", failure)
 	})
 	if err != nil {
 		return err
@@ -303,12 +303,13 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 	job.TotalItems = len(tracks)
 	job.Title = resolved.Name
 	job.ArtworkURL = resolved.ArtworkURL
-	if err := reporter.SetJob(ctx, job); err != nil {
+	if err := reporter.SetJob(ctx, &job); err != nil {
 		return err
 	}
 	// Emit after title/total_items/artwork are persisted so the overview feed
 	// can push a download_upserted with the real name (not just the URL).
-	if err := reporter.Event(ctx, domain.Event{JobID: job.ID, Type: "resolved_input", Message: string(parsed.Type)}); err != nil {
+	message := string(parsed.Type)
+	if err := reporter.Event(ctx, domain.Event{JobID: job.ID, Type: "resolved_input", Message: message, Payload: domain.MarshalEventPayload(job, map[string]any{"message": message})}); err != nil {
 		return err
 	}
 	if len(tracks) == 0 {
@@ -415,7 +416,7 @@ func syncJobItems(ctx context.Context, job domain.Job, tracks []applemusic.Song,
 			}
 			items[i] = prev
 			if !finished[i] || indexChanged || lyricsChanged {
-				if err := reporter.UpdateItem(ctx, prev); err != nil {
+				if err := reporter.UpdateItem(ctx, &prev); err != nil {
 					return nil, nil, err
 				}
 			}
@@ -427,7 +428,7 @@ func syncJobItems(ctx context.Context, job domain.Job, tracks []applemusic.Song,
 			ArtworkURL: firstNonEmpty(track.ArtworkURL, track.AlbumArtworkURL), HasLyrics: track.HasLyrics,
 			Status: domain.ItemQueued,
 		}
-		if err := reporter.AddItem(ctx, items[i]); err != nil {
+		if err := reporter.AddItem(ctx, &items[i]); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -762,10 +763,10 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 
 	// set updates item state and emits an item_progress SSE event.
 	// The full JobItem is embedded in the event Payload so the frontend can
-	// update the UI directly from SSE without any additional HTTP round-trips,
-	// except artwork_url: cover art doesn't change during a download, so it's
-	// stripped from the event to keep progress/status pushes lightweight — the
-	// frontend already has it from the initial REST response.
+	// update the UI directly from SSE without any additional HTTP round-trips.
+	// Terminal item events use the same public JobItem representation, so a
+	// stream-only client does not need a final REST refresh to fill missing
+	// fields.
 	// To avoid flooding the stream — and hammering SQLite with one UPDATE per
 	// 32KB download chunk — both the DB write and the event are gated on the
 	// same threshold: status changed or progress moved by at least 1
@@ -783,16 +784,14 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 		if status != lastEmittedStatus || progPct != lastPct {
 			lastEmittedStatus = status
 			lastEmittedProgress = progress
-			_ = reporter.UpdateItem(ctx, item)
-			eventItem := item
-			eventItem.ArtworkURL = ""
+			_ = reporter.UpdateItem(ctx, &item)
 			_ = reporter.Event(ctx, domain.Event{
 				JobID:   job.ID,
 				ItemID:  item.ID,
 				Type:    "item_progress",
 				Phase:   string(status),
 				Message: message,
-				Payload: marshalPayload(eventItem), // full item state for frontend, minus cover art
+				Payload: marshalPayload(item),
 			})
 		}
 	}
@@ -804,20 +803,20 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 		return metadata.song(ctx, initial, collectionType)
 	}, func(failure retryFailure) {
 		d.setRetryFailure(ctx, reporter, &item, "metadata", "metadata", failure)
-		d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "metadata", "", failure)
+		d.emitRetryEvent(ctx, reporter, job.ID, &item, "metadata", "", failure)
 	})
 	if err != nil {
 		return d.failItem(ctx, reporter, job, item, err)
 	}
 	if metadataAttempts > 1 {
-		d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "metadata", "", metadataAttempts)
+		d.emitRecoveredEvent(ctx, reporter, job.ID, &item, "metadata", "", metadataAttempts)
 	}
 	item.Title = song.Name
 	item.Artist = song.ArtistName
 	item.Album = song.AlbumName
 	item.ArtworkURL = firstNonEmpty(song.ArtworkURL, song.AlbumArtworkURL, item.ArtworkURL)
 	item.HasLyrics = song.HasLyrics
-	_ = reporter.UpdateItem(ctx, item)
+	_ = reporter.UpdateItem(ctx, &item)
 
 	if d.cfg.Simulate.Enabled {
 		// Test mode: real catalog metadata was resolved above, but everything
@@ -830,8 +829,8 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 	if d.cfg.Download.SaveAlbumCover || d.cfg.Download.SaveArtistCover {
 		if coverErr := d.saveStandaloneCovers(ctx, song, collectionType, storefront, albumCoverDir, artistCoverDir); coverErr != nil {
 			item.StatusMessage = "Standalone cover save failed; continuing download: " + coverErr.Error()
-			_ = reporter.UpdateItem(ctx, item)
-			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "standalone_cover_failed", Message: coverErr.Error()})
+			_ = reporter.UpdateItem(ctx, &item)
+			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "standalone_cover_failed", Message: coverErr.Error(), Payload: domain.MarshalEventPayload(item, map[string]any{"message": coverErr.Error()})})
 		}
 	}
 	var cover []byte
@@ -843,16 +842,16 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			return d.fetchCover(ctx, coverURLs, d.cfg.Download.CoverFormat, d.cfg.Download.CoverSize)
 		}, func(failure retryFailure) {
 			d.setRetryFailure(ctx, reporter, &item, "cover", "cover", failure)
-			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "cover", "", failure)
+			d.emitRetryEvent(ctx, reporter, job.ID, &item, "cover", "", failure)
 		})
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			item.StatusMessage = "Cover fetch retries exhausted; continuing without embedded cover: " + err.Error()
-			_ = reporter.UpdateItem(ctx, item)
+			_ = reporter.UpdateItem(ctx, &item)
 		} else if coverAttempts > 1 {
-			d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "cover", "", coverAttempts)
+			d.emitRecoveredEvent(ctx, reporter, job.ID, &item, "cover", "", coverAttempts)
 		}
 	}
 	lyrics := ""
@@ -867,7 +866,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			})
 		}, func(failure retryFailure) {
 			d.setRetryFailure(ctx, reporter, &item, "lyrics", "lyrics", failure)
-			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "lyrics", "", failure)
+			d.emitRetryEvent(ctx, reporter, job.ID, &item, "lyrics", "", failure)
 		})
 		if lyricsErr == nil {
 			converted, convertErr := convertLyrics(raw, d.cfg.Download.LyricsFormat, d.cfg.Download.LyricsExtras)
@@ -875,19 +874,19 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			case convertErr != nil:
 				item.LyricsStatus = domain.LyricsFailed
 				item.StatusMessage = "Lyrics conversion failed; continuing without embedded lyrics: " + convertErr.Error()
-				_ = reporter.UpdateItem(ctx, item)
+				_ = reporter.UpdateItem(ctx, &item)
 			case converted == "":
 				// The wrapper answered with an empty document (possible in ttml
 				// mode, where convertLyrics passes it through without error).
 				item.LyricsStatus = domain.LyricsFailed
 				item.StatusMessage = "Lyrics fetch returned an empty document; continuing without embedded lyrics"
-				_ = reporter.UpdateItem(ctx, item)
+				_ = reporter.UpdateItem(ctx, &item)
 			default:
 				lyrics = converted
 				item.LyricsStatus = domain.LyricsFetched
-				_ = reporter.UpdateItem(ctx, item)
+				_ = reporter.UpdateItem(ctx, &item)
 				if lyricsAttempts > 1 {
-					d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "lyrics", "", lyricsAttempts)
+					d.emitRecoveredEvent(ctx, reporter, job.ID, &item, "lyrics", "", lyricsAttempts)
 				}
 			}
 		} else {
@@ -896,7 +895,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			}
 			item.LyricsStatus = domain.LyricsFailed
 			item.StatusMessage = "Lyrics fetch retries exhausted; continuing without embedded lyrics: " + lyricsErr.Error()
-			_ = reporter.UpdateItem(ctx, item)
+			_ = reporter.UpdateItem(ctx, &item)
 		}
 	} else {
 		if song.HasLyrics {
@@ -904,7 +903,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 		} else {
 			item.LyricsStatus = domain.LyricsNone
 		}
-		_ = reporter.UpdateItem(ctx, item)
+		_ = reporter.UpdateItem(ctx, &item)
 	}
 
 	if err := d.tools.Require(ctx); err != nil {
@@ -925,8 +924,8 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 		codecMaxAttempts := attemptsForCodec(d.cfg.Download.MaxAttempts, codecIndex)
 		if codecIndex > 0 {
 			item.StatusMessage = fmt.Sprintf("Codec %s failed; falling back to %s", strings.ToUpper(codecs[codecIndex-1]), strings.ToUpper(codec))
-			_ = reporter.UpdateItem(ctx, item)
-			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_fallback", Phase: codec, Message: item.StatusMessage, Payload: marshalPayload(map[string]any{
+			_ = reporter.UpdateItem(ctx, &item)
+			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_fallback", Phase: codec, Message: item.StatusMessage, Payload: domain.MarshalEventPayload(item, map[string]any{
 				"from_codec": codecs[codecIndex-1], "to_codec": codec, "reason": codecFailureReason(lastErr),
 			})})
 		}
@@ -995,7 +994,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 				operation = "select " + operation
 			}
 			d.setRetryFailure(ctx, reporter, &item, "download", operation, failure)
-			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "download", codec, failure)
+			d.emitRetryEvent(ctx, reporter, job.ID, &item, "download", codec, failure)
 		})
 		if skipped && fetchErr == nil {
 			releaseOutput()
@@ -1008,7 +1007,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			continue
 		}
 		if fetchAttempts > 1 {
-			d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "download", codec, fetchAttempts)
+			d.emitRecoveredEvent(ctx, reporter, job.ID, &item, "download", codec, fetchAttempts)
 		}
 
 		// Decrypt phase: extract/decrypt/remux/tag the already-downloaded bytes.
@@ -1026,7 +1025,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 				cleanupFailedOutput(attemptOutPath)
 			}
 			d.setRetryFailure(ctx, reporter, &item, "decrypt", strings.ToUpper(codec), failure)
-			d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "decrypt", codec, failure)
+			d.emitRetryEvent(ctx, reporter, job.ID, &item, "decrypt", codec, failure)
 		})
 		// Once the decrypt phase has returned, low-memory mode's encrypted
 		// checkpoint is no longer useful to this run (a decrypt error may
@@ -1047,7 +1046,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			continue
 		}
 		if decryptAttempts > 1 {
-			d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "decrypt", codec, decryptAttempts)
+			d.emitRecoveredEvent(ctx, reporter, job.ID, &item, "decrypt", codec, decryptAttempts)
 		}
 
 		codecName := strings.ToUpper(codec)
@@ -1063,8 +1062,8 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 		default:
 			item.StatusMessage = fmt.Sprintf("%s download completed", codecName)
 		}
-		_ = reporter.UpdateItem(ctx, item)
-		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_completed", Message: item.StatusMessage, Payload: marshalPayload(map[string]any{
+		_ = reporter.UpdateItem(ctx, &item)
+		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_completed", Message: item.StatusMessage, Payload: domain.MarshalEventPayload(item, map[string]any{
 			"codec": codec, "download_attempts": fetchAttempts, "decrypt_attempts": decryptAttempts,
 			"max_attempts": clampAttempts(codecMaxAttempts), "fallback_from": fallbackCodec(codecs, codecIndex),
 		})})
@@ -1084,7 +1083,7 @@ func (d *Downloader) reportCodecFailed(ctx context.Context, reporter jobs.Report
 	if isNonRetryableError(err) {
 		attemptMaximum = attempts
 	}
-	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_failed", Phase: codec, Message: err.Error(), Payload: marshalPayload(map[string]any{
+	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_failed", Phase: codec, Message: err.Error(), Payload: domain.MarshalEventPayload(item, map[string]any{
 		"codec": codec, "phase": phase, "attempts": attempts, "max_attempts": attemptMaximum, "error": err.Error(),
 	})})
 }
@@ -1165,8 +1164,8 @@ func (d *Downloader) handleExistingOutput(ctx context.Context, reporter jobs.Rep
 		item.Attempt = 0
 		item.MaxAttempts = 0
 		item.StatusMessage = "File already exists; skipped"
-		_ = reporter.UpdateItem(ctx, *item)
-		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_skipped", Message: "already exists"})
+		_ = reporter.UpdateItem(ctx, item)
+		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_skipped", Message: "already exists", Payload: domain.MarshalEventPayload(*item, map[string]any{"message": "already exists"})})
 		return true, nil
 	}
 	if force {
@@ -1183,8 +1182,10 @@ func (d *Downloader) selectEnhancedMedia(ctx context.Context, job domain.Job, it
 		return selectedDownloadMedia{}, err
 	}
 	d.setItemQuality(ctx, reporter, item, info.BitDepth, info.SampleRate, info.Bandwidth)
-	payload, _ := json.Marshal(map[string]any{"codec_id": info.CodecID, "bit_depth": info.BitDepth, "sample_rate": info.SampleRate, "attempt": item.Attempt, "max_attempts": item.MaxAttempts})
-	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_selected", Phase: codec, Payload: string(payload)})
+	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_selected", Phase: codec, Payload: domain.MarshalEventPayload(*item, map[string]any{
+		"codec_id": info.CodecID, "bit_depth": info.BitDepth, "sample_rate": info.SampleRate, "bitrate": info.Bandwidth,
+		"attempt": item.Attempt, "max_attempts": item.MaxAttempts,
+	})})
 
 	return selectedDownloadMedia{info: info}, nil
 }
@@ -1457,7 +1458,7 @@ func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *
 	if err != nil {
 		return aacLCMedia{}, nil, nil, fmt.Errorf("parse AAC-LC media playlist: %w", err)
 	}
-	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_selected", Phase: "aac-lc", Payload: marshalPayload(map[string]any{
+	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_selected", Phase: "aac-lc", Payload: domain.MarshalEventPayload(*item, map[string]any{
 		"codec_id": "aac-lc", "attempt": item.Attempt, "max_attempts": item.MaxAttempts,
 	})})
 
@@ -1581,7 +1582,7 @@ func (d *Downloader) setItemAttempt(ctx context.Context, reporter jobs.Reporter,
 	item.Attempt = attempt
 	item.MaxAttempts = maximum
 	item.StatusMessage = message
-	_ = reporter.UpdateItem(ctx, *item)
+	_ = reporter.UpdateItem(ctx, item)
 }
 
 // setItemQuality persists the concrete audio quality of the codec currently
@@ -1592,7 +1593,7 @@ func (d *Downloader) setItemQuality(ctx context.Context, reporter jobs.Reporter,
 	item.BitDepth = bitDepth
 	item.SampleRate = sampleRate
 	item.Bitrate = bitrate
-	_ = reporter.UpdateItem(ctx, *item)
+	_ = reporter.UpdateItem(ctx, item)
 }
 
 func (d *Downloader) setRetryFailure(ctx context.Context, reporter jobs.Reporter, item *domain.JobItem, kind, operation string, failure retryFailure) {
@@ -1604,10 +1605,10 @@ func (d *Downloader) setRetryFailure(ctx context.Context, reporter jobs.Reporter
 	} else {
 		item.StatusMessage = fmt.Sprintf("%s failed after %d attempt(s): %v", operation, failure.Attempt, failure.Err)
 	}
-	_ = reporter.UpdateItem(ctx, *item)
+	_ = reporter.UpdateItem(ctx, item)
 }
 
-func (d *Downloader) emitRetryEvent(ctx context.Context, reporter jobs.Reporter, jobID, itemID, operation, codec string, failure retryFailure) {
+func (d *Downloader) emitRetryEvent(ctx context.Context, reporter jobs.Reporter, jobID string, item *domain.JobItem, operation, codec string, failure retryFailure) {
 	eventType := "operation_exhausted"
 	if operation == "codec" {
 		eventType = "codec_exhausted"
@@ -1619,20 +1620,32 @@ func (d *Downloader) emitRetryEvent(ctx context.Context, reporter jobs.Reporter,
 		}
 	}
 	message := fmt.Sprintf("%s attempt %d/%d failed: %v", operation, failure.Attempt, failure.MaxAttempts, failure.Err)
-	_ = reporter.Event(ctx, domain.Event{JobID: jobID, ItemID: itemID, Type: eventType, Phase: firstNonEmpty(codec, operation), Message: message, Payload: marshalPayload(map[string]any{
+	fields := map[string]any{
 		"operation": operation, "codec": codec, "attempt": failure.Attempt, "max_attempts": failure.MaxAttempts,
 		"will_retry": failure.WillRetry, "delay_ms": failure.Delay.Milliseconds(), "error": failure.Err.Error(),
-	})})
+	}
+	payload := marshalPayload(fields)
+	itemID := ""
+	if item != nil {
+		itemID = item.ID
+		payload = domain.MarshalEventPayload(*item, fields)
+	}
+	_ = reporter.Event(ctx, domain.Event{JobID: jobID, ItemID: itemID, Type: eventType, Phase: firstNonEmpty(codec, operation), Message: message, Payload: payload})
 }
 
-func (d *Downloader) emitRecoveredEvent(ctx context.Context, reporter jobs.Reporter, jobID, itemID, operation, codec string, attempt int) {
+func (d *Downloader) emitRecoveredEvent(ctx context.Context, reporter jobs.Reporter, jobID string, item *domain.JobItem, operation, codec string, attempt int) {
 	eventType := "operation_recovered"
 	if operation == "codec" {
 		eventType = "codec_recovered"
 	}
-	_ = reporter.Event(ctx, domain.Event{JobID: jobID, ItemID: itemID, Type: eventType, Phase: firstNonEmpty(codec, operation), Message: fmt.Sprintf("%s succeeded on attempt %d", operation, attempt), Payload: marshalPayload(map[string]any{
-		"operation": operation, "codec": codec, "attempt": attempt,
-	})})
+	fields := map[string]any{"operation": operation, "codec": codec, "attempt": attempt}
+	payload := marshalPayload(fields)
+	itemID := ""
+	if item != nil {
+		itemID = item.ID
+		payload = domain.MarshalEventPayload(*item, fields)
+	}
+	_ = reporter.Event(ctx, domain.Event{JobID: jobID, ItemID: itemID, Type: eventType, Phase: firstNonEmpty(codec, operation), Message: fmt.Sprintf("%s succeeded on attempt %d", operation, attempt), Payload: payload})
 }
 
 func marshalPayload(value any) string {
@@ -1719,7 +1732,7 @@ func (d *Downloader) failItem(ctx context.Context, reporter jobs.Reporter, job d
 	if item.StatusMessage == "" || item.Attempt == 0 {
 		item.StatusMessage = "Download failed: " + err.Error()
 	}
-	_ = reporter.UpdateItem(ctx, item)
-	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_failed", Message: err.Error()})
+	_ = reporter.UpdateItem(ctx, &item)
+	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_failed", Message: err.Error(), Payload: domain.MarshalEventPayload(item, map[string]any{"message": err.Error()})})
 	return err
 }

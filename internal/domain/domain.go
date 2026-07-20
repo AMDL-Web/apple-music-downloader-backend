@@ -194,6 +194,35 @@ type Event struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// MarshalEventPayload serializes a public API snapshot and overlays
+// event-specific fields on the resulting JSON object. Event payloads use this
+// helper so a Job/JobItem snapshot stays aligned with the REST representation
+// as fields are added, while existing event-specific keys remain available to
+// clients. Custom MarshalJSON implementations (notably Job's credential
+// redaction) are honored before the overlay is applied.
+func MarshalEventPayload(snapshot any, fields map[string]any) string {
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		return ""
+	}
+	payload := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	for key, value := range fields {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return ""
+		}
+		payload[key] = encoded
+	}
+	raw, err = json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
 // HookState is the snapshot-shaped view of one post-download hook's latest
 // known status, derived from the hook_started/hook_succeeded/hook_failed
 // events the dispatcher records. It exists so GET /downloads/{id} conveys
