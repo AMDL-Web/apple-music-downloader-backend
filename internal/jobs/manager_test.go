@@ -379,7 +379,7 @@ func TestCancelledJobPreservesProcessorUpdatedTotalItems(t *testing.T) {
 	processor := &cancelAfterTotalProcessor{started: make(chan struct{})}
 	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
 	manager.Start(ctx)
-	resp := manager.SubmitBatch(ctx, []string{"https://music.apple.com/cn/artist/example/1495777901"}, false, nil)
+	resp := manager.SubmitBatch(ctx, []string{"https://music.apple.com/cn/artist/example/1495777901"}, nil)
 	if resp.Accepted != 1 || len(resp.Results) != 1 || resp.Results[0].Status != domain.SubmitAccepted || resp.Results[0].Job == nil {
 		t.Fatalf("unexpected submit result: %+v", resp)
 	}
@@ -457,7 +457,7 @@ func TestManagerShutdownCancelsAndWaitsForRunningWorker(t *testing.T) {
 	processor := &shutdownProcessor{started: make(chan struct{}), exited: make(chan struct{})}
 	manager := NewManager(store, events.NewHub(), processor, 1, slog.Default())
 	manager.Start(context.Background())
-	resp := manager.SubmitBatch(context.Background(), []string{"song|cn|shutdown"}, false, nil)
+	resp := manager.SubmitBatch(context.Background(), []string{"song|cn|shutdown"}, nil)
 	if resp.Accepted != 1 {
 		t.Fatalf("submit = %+v", resp)
 	}
@@ -510,7 +510,7 @@ func TestSubmitBatchStoresTokenOnlyForJobsThatNeedIt(t *testing.T) {
 		"playlist|us|pl.u-private",
 		"playlist|us|pl.editorial",
 		"song|us|1",
-	}, false, overrides)
+	}, overrides)
 	if resp.Accepted != 4 {
 		t.Fatalf("accepted = %d, want 4: %+v", resp.Accepted, resp.Results)
 	}
@@ -582,7 +582,7 @@ func TestTerminalJobDropsPersistedTokenUnlessRetryable(t *testing.T) {
 		ctx, stop := context.WithCancel(context.Background())
 		defer stop()
 		manager.Start(ctx)
-		resp := manager.SubmitBatch(ctx, []string{"station|us|ra.1"}, false, newOverrides())
+		resp := manager.SubmitBatch(ctx, []string{"station|us|ra.1"}, newOverrides())
 		if resp.Accepted != 1 {
 			t.Fatalf("submit: %+v", resp.Results)
 		}
@@ -591,7 +591,7 @@ func TestTerminalJobDropsPersistedTokenUnlessRetryable(t *testing.T) {
 
 	t.Run("cancelled drops the token", func(t *testing.T) {
 		manager := newTestManager(t)
-		resp := manager.SubmitBatch(context.Background(), []string{"station|us|ra.1"}, false, newOverrides())
+		resp := manager.SubmitBatch(context.Background(), []string{"station|us|ra.1"}, newOverrides())
 		if resp.Accepted != 1 {
 			t.Fatalf("submit: %+v", resp.Results)
 		}
@@ -612,7 +612,7 @@ func TestTerminalJobDropsPersistedTokenUnlessRetryable(t *testing.T) {
 		ctx, stop := context.WithCancel(context.Background())
 		defer stop()
 		manager.Start(ctx)
-		resp := manager.SubmitBatch(ctx, []string{"station|us|ra.1"}, false, newOverrides())
+		resp := manager.SubmitBatch(ctx, []string{"station|us|ra.1"}, newOverrides())
 		if resp.Accepted != 1 {
 			t.Fatalf("submit: %+v", resp.Results)
 		}
@@ -627,7 +627,7 @@ func TestSubmitBatchDedupesWithinRequest(t *testing.T) {
 		"album|us|111",
 		"song|us|222",
 		"album|us|111", // same canonical key as the first entry
-	}, false, nil)
+	}, nil)
 	if len(resp.Results) != 3 {
 		t.Fatalf("results = %+v, want 3", resp.Results)
 	}
@@ -646,13 +646,13 @@ func TestSubmitBatchRejectsActiveDuplicateButAllowsAfterCompletion(t *testing.T)
 	manager := newTestManager(t)
 	ctx := context.Background()
 
-	first := manager.SubmitBatch(ctx, []string{"song|us|222"}, false, nil)
+	first := manager.SubmitBatch(ctx, []string{"song|us|222"}, nil)
 	if first.Accepted != 1 {
 		t.Fatalf("first submit = %+v, want 1 accepted", first)
 	}
 	jobID := first.Results[0].Job.ID
 
-	second := manager.SubmitBatch(ctx, []string{"song|us|222"}, false, nil)
+	second := manager.SubmitBatch(ctx, []string{"song|us|222"}, nil)
 	if second.Results[0].Status != domain.SubmitDuplicateActive || second.Results[0].ExistingJobID != jobID {
 		t.Fatalf("second submit = %+v, want duplicate_active for %s", second.Results[0], jobID)
 	}
@@ -661,7 +661,7 @@ func TestSubmitBatchRejectsActiveDuplicateButAllowsAfterCompletion(t *testing.T)
 		t.Fatal(err)
 	}
 
-	third := manager.SubmitBatch(ctx, []string{"song|us|222"}, false, nil)
+	third := manager.SubmitBatch(ctx, []string{"song|us|222"}, nil)
 	if third.Results[0].Status != domain.SubmitAccepted {
 		t.Fatalf("third submit = %+v, want accepted after completion", third.Results[0])
 	}
@@ -672,7 +672,7 @@ func TestSubmitBatchQueueFullMarksRemainingWithoutRollback(t *testing.T) {
 	manager.queue = make(chan string, 1)
 	ctx := context.Background()
 
-	resp := manager.SubmitBatch(ctx, []string{"song|us|1", "song|us|2", "song|us|3"}, false, nil)
+	resp := manager.SubmitBatch(ctx, []string{"song|us|1", "song|us|2", "song|us|3"}, nil)
 	if resp.Results[0].Status != domain.SubmitAccepted {
 		t.Fatalf("first = %+v, want accepted", resp.Results[0])
 	}
@@ -686,7 +686,7 @@ func TestSubmitBatchQueueFullMarksRemainingWithoutRollback(t *testing.T) {
 
 func TestSubmitBatchInvalidURLReportsError(t *testing.T) {
 	manager := newTestManager(t)
-	resp := manager.SubmitBatch(context.Background(), []string{"bad:not-a-url"}, false, nil)
+	resp := manager.SubmitBatch(context.Background(), []string{"bad:not-a-url"}, nil)
 	if resp.Results[0].Status != domain.SubmitInvalid || resp.Results[0].Error == "" {
 		t.Fatalf("result = %+v, want invalid with error message", resp.Results[0])
 	}
@@ -717,7 +717,7 @@ func TestJobCompletionDispatchesHook(t *testing.T) {
 	defer stop()
 	manager.Start(ctx)
 
-	resp := manager.SubmitBatch(ctx, []string{"song|us|1"}, false, nil)
+	resp := manager.SubmitBatch(ctx, []string{"song|us|1"}, nil)
 	if resp.Accepted != 1 {
 		t.Fatalf("submit = %+v, want 1 accepted", resp)
 	}
@@ -775,7 +775,7 @@ func TestJobQueuedDispatchesHook(t *testing.T) {
 
 	// Deliberately do NOT start workers: the creation hook fires from
 	// SubmitBatch itself, so the job stays queued and only job_queued can fire.
-	resp := manager.SubmitBatch(context.Background(), []string{"song|us|1"}, false, nil)
+	resp := manager.SubmitBatch(context.Background(), []string{"song|us|1"}, nil)
 	if resp.Accepted != 1 {
 		t.Fatalf("submit = %+v, want 1 accepted", resp)
 	}
@@ -884,7 +884,7 @@ func TestCancelQueuedJobDispatchesCancelledHookAndNeverRuns(t *testing.T) {
 	// the in-memory queue channel, never dequeued, so Cancel() must take the
 	// "not yet running" path.
 	ctx := context.Background()
-	resp := manager.SubmitBatch(ctx, []string{"song|us|1"}, false, nil)
+	resp := manager.SubmitBatch(ctx, []string{"song|us|1"}, nil)
 	if resp.Accepted != 1 {
 		t.Fatalf("submit = %+v, want 1 accepted", resp)
 	}
@@ -941,7 +941,7 @@ func TestDeleteRefusesActiveAndFinalizingJobs(t *testing.T) {
 	defer stop()
 	manager.Start(ctx)
 
-	resp := manager.SubmitBatch(ctx, []string{"artist|cn|1495777901"}, false, nil)
+	resp := manager.SubmitBatch(ctx, []string{"artist|cn|1495777901"}, nil)
 	if resp.Accepted != 1 {
 		t.Fatalf("submit = %+v, want 1 accepted", resp)
 	}
@@ -1047,7 +1047,7 @@ func TestCancelRunningJobDispatchesCancelledHookExactlyOnce(t *testing.T) {
 	defer stop()
 	manager.Start(ctx)
 
-	resp := manager.SubmitBatch(ctx, []string{"song|us|1"}, false, nil)
+	resp := manager.SubmitBatch(ctx, []string{"song|us|1"}, nil)
 	if resp.Accepted != 1 {
 		t.Fatalf("submit = %+v, want 1 accepted", resp)
 	}
@@ -1101,7 +1101,7 @@ func (p *neverRunProcessor) ProcessJob(context.Context, domain.Job, Reporter) er
 func TestNilHooksDispatcherIsNoop(t *testing.T) {
 	manager := newTestManager(t)
 	manager.Start(context.Background())
-	resp := manager.SubmitBatch(context.Background(), []string{"song|us|1"}, false, nil)
+	resp := manager.SubmitBatch(context.Background(), []string{"song|us|1"}, nil)
 	if resp.Accepted != 1 {
 		t.Fatalf("submit = %+v, want 1 accepted", resp)
 	}
@@ -1226,7 +1226,7 @@ func TestCancelRunningJobWinsOverNilProcessorReturn(t *testing.T) {
 	defer stop()
 	manager.Start(ctx)
 
-	resp := manager.SubmitBatch(ctx, []string{"song|us|1"}, false, nil)
+	resp := manager.SubmitBatch(ctx, []string{"song|us|1"}, nil)
 	if resp.Accepted != 1 {
 		t.Fatalf("submit = %+v, want 1 accepted", resp)
 	}
@@ -1374,7 +1374,7 @@ func TestCancelRacingStartupDispatchesExactlyOneConsistentHook(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < jobs; i++ {
 		url := "song|us|" + strconv.Itoa(i)
-		resp := manager.SubmitBatch(ctx, []string{url}, false, nil)
+		resp := manager.SubmitBatch(ctx, []string{url}, nil)
 		if resp.Accepted != 1 || resp.Results[0].Job == nil {
 			t.Fatalf("submit %d = %+v, want 1 accepted", i, resp)
 		}
@@ -1608,7 +1608,7 @@ func TestRunStampsPoolPriorityFromJobCreationTime(t *testing.T) {
 		_ = manager.Shutdown(shutdownCtx)
 	}()
 
-	resp := manager.SubmitBatch(context.Background(), []string{"song|cn|priority"}, false, nil)
+	resp := manager.SubmitBatch(context.Background(), []string{"song|cn|priority"}, nil)
 	if resp.Accepted != 1 {
 		t.Fatalf("submit = %+v", resp)
 	}

@@ -247,10 +247,10 @@ curl -X POST http://localhost:18080/api/v1/wrapper/logout \
 ```bash
 curl -X POST http://localhost:18080/api/v1/downloads \
   -H 'Content-Type: application/json' \
-  -d '{"url":"https://music.apple.com/us/album/example/123456789?i=987654321","force":true}'
+  -d '{"url":"https://music.apple.com/us/album/example/123456789?i=987654321","overrides":{"force_overwrite":true}}'
 ```
 
-`force: true` 会覆盖已存在的音频及其歌词边车文件；默认为 `false`，已存在的文件会被跳过。
+是否覆盖已存在的文件由配置项 `download.force_overwrite` 控制：`true` 会覆盖已存在的音频及其歌词边车文件，`false`（默认）会跳过已存在的文件。提交任务时可通过 `overrides.force_overwrite` 按批次覆盖该全局配置（省略时沿用全局值）。旧的请求顶层 `force` 字段不再接受，会作为未知字段返回 `400`。
 
 下载电台（station，链接形如 `https://music.apple.com/us/station/.../ra.xxxx`）：仅支持能解析为曲目列表的个性化/精选电台，需提供 Apple Music 订阅令牌（media-user-token）。按任务入口是 `overrides.media_user_token`；未提供该覆盖时，后端使用运行时配置中的 `catalog.media_user_token` 作为 fallback。覆盖字段具有三态语义：省略表示沿用全局 fallback，非空字符串表示本批任务使用该值，显式空字符串 `""` 表示为本批任务清空全局 fallback。旧的请求顶层 `media_user_token` 不再接受，会作为未知字段返回 `400`。`catalog.media_user_token_priority` 只为兼容旧配置保留，现已弃用且不再参与选择。
 

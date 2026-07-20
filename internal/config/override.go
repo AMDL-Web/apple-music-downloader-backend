@@ -51,6 +51,7 @@ type DownloadOverrides struct {
 	ALACMaxSampleRate  *int      `json:"alac_max_sample_rate,omitempty"`
 	ALACMaxBitDepth    *int      `json:"alac_max_bit_depth,omitempty"`
 	CheckIntegrity     *bool     `json:"check_integrity,omitempty"`
+	ForceOverwrite     *bool     `json:"force_overwrite,omitempty"`
 }
 
 // WithoutMediaUserToken returns a shallow copy without the credential. It is
@@ -152,6 +153,9 @@ func (o *DownloadOverrides) Apply(base Config) Config {
 	}
 	if o.CheckIntegrity != nil {
 		d.CheckIntegrity = *o.CheckIntegrity
+	}
+	if o.ForceOverwrite != nil {
+		d.ForceOverwrite = *o.ForceOverwrite
 	}
 	return base
 }

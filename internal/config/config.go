@@ -155,6 +155,7 @@ type DownloadConfig struct {
 	ALACMaxSampleRate          int      `yaml:"alac_max_sample_rate" json:"alac_max_sample_rate"`
 	ALACMaxBitDepth            int      `yaml:"alac_max_bit_depth" json:"alac_max_bit_depth"`
 	CheckIntegrity             bool     `yaml:"check_integrity" json:"check_integrity"`
+	ForceOverwrite             bool     `yaml:"force_overwrite" json:"force_overwrite"`
 }
 
 const (
