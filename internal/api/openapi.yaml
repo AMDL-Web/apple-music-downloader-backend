@@ -1049,10 +1049,6 @@ components:
           example:
             - https://music.apple.com/cn/album/example/123456789?i=987654321
             - https://music.apple.com/cn/album/example/123456789
-        force:
-          type: boolean
-          default: false
-          description: 是否强制重新下载已存在的文件。
         overrides:
           $ref: '#/components/schemas/DownloadOverrides'
           description: >-
@@ -1133,6 +1129,11 @@ components:
         alac_max_sample_rate: {type: integer}
         alac_max_bit_depth: {type: integer}
         check_integrity: {type: boolean}
+        force_overwrite:
+          type: boolean
+          description: >-
+            是否强制重新下载并覆盖已存在的输出文件及其歌词边车文件。省略时沿用
+            运行时配置 download.force_overwrite（默认 false）。
     RuntimeConfig:
       type: object
       description: >-
@@ -1237,6 +1238,11 @@ components:
               type: integer
               description: 常见取值 16、24。
             check_integrity: {type: boolean}
+            force_overwrite:
+              type: boolean
+              description: >-
+                是否强制重新下载并覆盖已存在的输出文件及其歌词边车文件；默认
+                false。可通过请求的 overrides.force_overwrite 按批次覆盖。
         logging:
           type: object
           description: 只有日志级别和 HTTP 访问日志开关可运行时修改；输出与轮转配置需重启。
