@@ -82,7 +82,12 @@ type Job struct {
 	Title        string `json:"title,omitempty"`
 	ArtworkURL   string `json:"artwork_url,omitempty"`
 	CanonicalKey string `json:"-"`
-	Force        bool   `json:"force"`
+	// Force is legacy: it was the submission-time overwrite flag before
+	// download.force_overwrite existed as a global config key with a
+	// per-request override (Overrides.ForceOverwrite). New jobs never set it;
+	// it is kept so jobs persisted before the migration still force-overwrite
+	// on retry and post-restart requeue.
+	Force bool `json:"force"`
 	// Overrides is the per-request job config overlay attached at submission;
 	// nil for jobs submitted without one. It is persisted with the job and
 	// applied on top of the live runtime config each time the job runs
@@ -305,11 +310,13 @@ type DownloadFeedMessage struct {
 }
 
 type DownloadRequest struct {
-	URLs  []string `json:"urls"`
-	Force bool     `json:"force"`
+	URLs []string `json:"urls"`
 	// Overrides optionally overlays the job-mutable runtime config for every
 	// job created from this request. Omitted fields keep the runtime values;
-	// media_user_token overlays catalog.media_user_token for jobs that need it.
+	// media_user_token overlays catalog.media_user_token for jobs that need
+	// it, and force_overwrite overlays download.force_overwrite. The former
+	// request-level `force` field moved into overrides.force_overwrite and is
+	// now rejected as an unknown field.
 	Overrides *config.DownloadOverrides `json:"overrides,omitempty"`
 }
 

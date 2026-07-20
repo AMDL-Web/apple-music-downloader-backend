@@ -56,6 +56,24 @@ func TestDownloadOverridesApplyMergesOnlySetFields(t *testing.T) {
 	}
 }
 
+func TestDownloadOverridesApplyForceOverwrite(t *testing.T) {
+	forceOn := true
+	forceOff := false
+
+	base := Default()
+	if got := (&DownloadOverrides{ForceOverwrite: &forceOn}).Apply(base); !got.Download.ForceOverwrite {
+		t.Fatal("force_overwrite override true was not applied over the false default")
+	}
+
+	base.Download.ForceOverwrite = true
+	if got := (&DownloadOverrides{ForceOverwrite: &forceOff}).Apply(base); got.Download.ForceOverwrite {
+		t.Fatal("force_overwrite override false did not win over the global true")
+	}
+	if got := (&DownloadOverrides{}).Apply(base); !got.Download.ForceOverwrite {
+		t.Fatal("unset force_overwrite override changed the global value")
+	}
+}
+
 func TestDownloadOverridesMediaUserTokenThreeState(t *testing.T) {
 	base := Default()
 	base.Catalog.MediaUserToken = "global-token"

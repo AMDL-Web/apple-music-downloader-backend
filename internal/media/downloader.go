@@ -1152,7 +1152,12 @@ func attemptsForCodec(configuredMaxAttempts, _ int) int {
 
 func (d *Downloader) handleExistingOutput(ctx context.Context, reporter jobs.Reporter, job domain.Job, item *domain.JobItem, outPath string) (bool, error) {
 	item.OutputPath = outPath
-	if _, err := os.Stat(outPath); err == nil && !job.Force {
+	// d.cfg is the job's effective config (runtime snapshot plus overrides),
+	// so overrides.force_overwrite already won over the global key here.
+	// job.Force keeps forcing for jobs persisted before the flag moved into
+	// the config/overrides.
+	force := d.cfg.Download.ForceOverwrite || job.Force
+	if _, err := os.Stat(outPath); err == nil && !force {
 		cleanupResumeForKey(d.cfg.Download.TempDir, job.ID, outPath)
 		item.Status = domain.ItemSkipped
 		item.Progress = 1
@@ -1164,7 +1169,7 @@ func (d *Downloader) handleExistingOutput(ctx context.Context, reporter jobs.Rep
 		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_skipped", Message: "already exists"})
 		return true, nil
 	}
-	if job.Force {
+	if force {
 		cleanupFailedOutput(outPath)
 		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_overwrite", Message: "force overwrite enabled"})
 	}
