@@ -922,6 +922,11 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 	}()
 	for codecIndex, codec := range codecs {
 		codecMaxAttempts := attemptsForCodec(d.cfg.Download.MaxAttempts, codecIndex)
+		item.Codec = codec
+		// Cleared so a client reading the snapshot mid-fallback never sees the
+		// previous codec's quality paired with the new codec's name; setItemQuality
+		// repopulates them once the new attempt's actual quality is known.
+		item.BitDepth, item.SampleRate, item.Bitrate = 0, 0, 0
 		if codecIndex > 0 {
 			item.StatusMessage = fmt.Sprintf("Codec %s failed; falling back to %s", strings.ToUpper(codecs[codecIndex-1]), strings.ToUpper(codec))
 			_ = reporter.UpdateItem(ctx, &item)
@@ -929,11 +934,6 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 				"from_codec": codecs[codecIndex-1], "to_codec": codec, "reason": codecFailureReason(lastErr),
 			})})
 		}
-		item.Codec = codec
-		// Cleared so a client reading the snapshot mid-fallback never sees the
-		// previous codec's quality paired with the new codec's name; setItemQuality
-		// repopulates them once the new attempt's actual quality is known.
-		item.BitDepth, item.SampleRate, item.Bitrate = 0, 0, 0
 		attemptOutPath := ""
 		skipped := false
 
@@ -1170,7 +1170,7 @@ func (d *Downloader) handleExistingOutput(ctx context.Context, reporter jobs.Rep
 	}
 	if force {
 		cleanupFailedOutput(outPath)
-		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_overwrite", Message: "force overwrite enabled"})
+		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_overwrite", Message: "force overwrite enabled", Payload: domain.MarshalEventPayload(*item, map[string]any{"message": "force overwrite enabled"})})
 	}
 	return false, nil
 }

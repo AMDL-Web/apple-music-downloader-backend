@@ -185,6 +185,17 @@ func TestSimulateTrackFallsBackToAACLCWithoutManifest(t *testing.T) {
 		switch ev.Type {
 		case "codec_fallback":
 			fallbacks++
+			var raw map[string]any
+			if err := json.Unmarshal([]byte(ev.Payload), &raw); err != nil {
+				t.Fatalf("decode codec_fallback payload: %v", err)
+			}
+			var snapshot domain.JobItem
+			if err := json.Unmarshal([]byte(ev.Payload), &snapshot); err != nil {
+				t.Fatalf("decode codec_fallback snapshot: %v", err)
+			}
+			if snapshot.Codec != raw["to_codec"] {
+				t.Fatalf("codec_fallback snapshot.Codec = %q, want it to already match to_codec %v", snapshot.Codec, raw["to_codec"])
+			}
 		case "item_completed":
 			completed++
 		case "item_progress":

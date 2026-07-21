@@ -232,6 +232,23 @@ func TestHandleExistingOutputHonorsForceOverwriteConfig(t *testing.T) {
 		if _, statErr := os.Stat(outPath); !os.IsNotExist(statErr) {
 			t.Fatalf("stale output was not removed: %v", statErr)
 		}
+		var found bool
+		for _, ev := range reporter.events {
+			if ev.Type != "item_overwrite" {
+				continue
+			}
+			found = true
+			var snapshot domain.JobItem
+			if err := json.Unmarshal([]byte(ev.Payload), &snapshot); err != nil {
+				t.Fatalf("decode item_overwrite payload: %v", err)
+			}
+			if snapshot.ID != item.ID {
+				t.Fatalf("item_overwrite snapshot = %+v, want REST item identity", snapshot)
+			}
+		}
+		if !found {
+			t.Fatal("expected an item_overwrite event")
+		}
 	})
 
 	t.Run("legacy job force still overwrites", func(t *testing.T) {

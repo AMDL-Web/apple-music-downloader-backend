@@ -66,13 +66,15 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 		if force {
 			// The real path deletes stale outputs here; simulate mode only
 			// emits the same event and never touches the disk.
-			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_overwrite", Message: "force overwrite enabled"})
+			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_overwrite", Message: "force overwrite enabled", Payload: domain.MarshalEventPayload(*item, map[string]any{"message": "force overwrite enabled"})})
 		}
 		return false
 	}
 	var lastErr error
 	for codecIndex, codec := range codecs {
 		codecName := strings.ToUpper(codec)
+		item.Codec = codec
+		item.BitDepth, item.SampleRate, item.Bitrate = 0, 0, 0
 		if codecIndex > 0 {
 			item.StatusMessage = fmt.Sprintf("Codec %s failed; falling back to %s", strings.ToUpper(codecs[codecIndex-1]), codecName)
 			_ = reporter.UpdateItem(ctx, item)
@@ -80,8 +82,6 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 				"from_codec": codecs[codecIndex-1], "to_codec": codec, "reason": codecFailureReason(lastErr),
 			})})
 		}
-		item.Codec = codec
-		item.BitDepth, item.SampleRate, item.Bitrate = 0, 0, 0
 
 		var info selectedMediaInfo
 		var outPath string
