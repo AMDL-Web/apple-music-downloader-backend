@@ -125,6 +125,11 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Keep the scraped music.apple.com web tokens (legacy mode and
+	// signed_mode_hls_source=web_token) warm: re-scrape a cached token just
+	// before its half-life expiry so requests never pay the inline scrape. The
+	// loop stops when ctx is cancelled on shutdown.
+	catalog.StartTokenRefresher(ctx)
 	if recovered, err := manager.RecoverUnfinished(ctx); err != nil {
 		logger.Error("recover unfinished jobs", "error", err)
 		os.Exit(1)
