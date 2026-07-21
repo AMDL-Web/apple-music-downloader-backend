@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -696,6 +697,85 @@ func TestTokenRefreshUsesHalfLifeForBothModes(t *testing.T) {
 		maxUntil := after.Add(wantTTL / 2)
 		if client.tokenUntil.Before(minUntil) || client.tokenUntil.After(maxUntil) {
 			t.Fatalf("tokenUntil = %v, want within [%v, %v] (half of %v)", client.tokenUntil, minUntil, maxUntil, wantTTL)
+		}
+	})
+}
+
+func TestProactiveTokenRefresh(t *testing.T) {
+	newScrapingClient := func(calls *int32) *CatalogClient {
+		client := newTestCatalogClient(config.CatalogConfig{TokenCacheTTLHours: 12}, slog.Default())
+		client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.String() {
+			case "https://music.apple.com":
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`<script src="/assets/index~abc123.js"></script>`)), Header: make(http.Header)}, nil
+			case "https://music.apple.com/assets/index~abc123.js":
+				atomic.AddInt32(calls, 1)
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`token:"eyJhbGciOiJFUzI1NiJ9.eyJmb28iOiJiYXIifQ.fresh-signature"`)), Header: make(http.Header)}, nil
+			default:
+				return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("unexpected")), Header: make(http.Header)}, nil
+			}
+		})}
+		return client
+	}
+
+	t.Run("renews a legacy token near expiry", func(t *testing.T) {
+		var calls int32
+		client := newScrapingClient(&calls)
+		client.token = "stale"
+		client.tokenUntil = time.Now().Add(tokenRefreshLead / 2) // inside the lead window
+
+		client.refreshExpiringWebTokens(context.Background())
+
+		if got := atomic.LoadInt32(&calls); got != 1 {
+			t.Fatalf("scrape calls = %d, want 1", got)
+		}
+		if client.token == "stale" || client.token == "" {
+			t.Fatalf("token = %q, want a freshly scraped value", client.token)
+		}
+		if !client.tokenUntil.After(time.Now().Add(tokenRefreshLead)) {
+			t.Fatalf("tokenUntil = %v, want pushed well past the lead window", client.tokenUntil)
+		}
+	})
+
+	t.Run("renews a web token near expiry", func(t *testing.T) {
+		var calls int32
+		client := newScrapingClient(&calls)
+		client.webToken = "stale"
+		client.webTokenUntil = time.Now().Add(tokenRefreshLead / 2)
+
+		client.refreshExpiringWebTokens(context.Background())
+
+		if got := atomic.LoadInt32(&calls); got != 1 {
+			t.Fatalf("scrape calls = %d, want 1", got)
+		}
+		if client.webToken == "stale" || client.webToken == "" {
+			t.Fatalf("webToken = %q, want a freshly scraped value", client.webToken)
+		}
+	})
+
+	t.Run("leaves a token that is not near expiry", func(t *testing.T) {
+		var calls int32
+		client := newScrapingClient(&calls)
+		client.token, client.tokenUntil = "still-good", time.Now().Add(time.Hour)
+		client.webToken, client.webTokenUntil = "still-good", time.Now().Add(time.Hour)
+
+		client.refreshExpiringWebTokens(context.Background())
+
+		if got := atomic.LoadInt32(&calls); got != 0 {
+			t.Fatalf("scrape calls = %d, want 0 (nothing near expiry)", got)
+		}
+	})
+
+	t.Run("never scrapes an empty cache", func(t *testing.T) {
+		var calls int32
+		client := newScrapingClient(&calls)
+		// token and webToken left empty: nothing has been fetched yet, so the
+		// proactive loop must not scrape Apple on its own.
+
+		client.refreshExpiringWebTokens(context.Background())
+
+		if got := atomic.LoadInt32(&calls); got != 0 {
+			t.Fatalf("scrape calls = %d, want 0 (empty cache must not trigger a scrape)", got)
 		}
 	})
 }
