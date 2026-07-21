@@ -1403,12 +1403,24 @@ func TestEventsWebSocketStreamsBacklogLiveAndResume(t *testing.T) {
 	}
 
 	// Live: a hub publish must wake the drain without waiting for the ticker.
-	if err := manager.Event(ctx, domain.Event{JobID: job.ID, Type: "item_progress", Message: "halfway"}); err != nil {
+	item := domain.JobItem{
+		ID: "item-1", JobID: job.ID, AdamID: "song-1", Kind: "song", Index: 1,
+		ArtworkURL: "https://example.test/{w}x{h}.jpg", Status: domain.ItemDownloading, Progress: 0.5,
+		BitDepth: 24, SampleRate: 96000, Bitrate: 2500000, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := manager.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_progress", Message: "halfway", Payload: domain.MarshalEventPayload(item, nil)}); err != nil {
 		t.Fatal(err)
 	}
 	second := readEvent(conn)
 	if second.Type != "item_progress" || second.ID <= first.ID {
 		t.Fatalf("second event = %+v, want item_progress with id > %d", second, first.ID)
+	}
+	var streamed domain.JobItem
+	if err := json.Unmarshal([]byte(second.Payload), &streamed); err != nil {
+		t.Fatalf("decode streamed item snapshot: %v", err)
+	}
+	if streamed.ID != item.ID || streamed.ArtworkURL != item.ArtworkURL || streamed.Bitrate != item.Bitrate || !streamed.UpdatedAt.Equal(item.UpdatedAt) {
+		t.Fatalf("streamed item = %+v, want REST-equivalent snapshot %+v", streamed, item)
 	}
 	_ = conn.Close(websocket.StatusNormalClosure, "")
 

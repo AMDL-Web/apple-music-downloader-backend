@@ -820,6 +820,113 @@ func (c *CatalogClient) invalidateWebToken(rejected string) {
 	c.mu.Unlock()
 }
 
+// tokenRefreshCheckInterval bounds how often the background refresher started
+// by StartTokenRefresher wakes to re-check the scraped-token caches. Each wake
+// only compares timestamps under a lock; it scrapes Apple solely when a cached
+// token is within tokenRefreshLead of its cached expiry.
+const tokenRefreshCheckInterval = time.Minute
+
+// tokenRefreshLead is how far before a scraped token's cached expiry the
+// background refresher renews it, so a request never has to scrape inline and
+// the token never lapses in the gap between two refresh checks. It stays
+// comfortably below the smallest realistic effective TTL (half of the one-hour
+// minimum token_cache_ttl) and above tokenRefreshCheckInterval.
+const tokenRefreshLead = 5 * time.Minute
+
+// StartTokenRefresher runs a background loop that proactively re-scrapes the
+// music.apple.com web tokens shortly before their cached validity lapses, so
+// catalog and enhanced-HLS requests in legacy or signed_mode_hls_source=
+// web_token mode never pay the inline scrape latency and never hit a lapsed
+// token. It only renews a token that has already been fetched at least once (a
+// non-empty cache); it never scrapes a token nothing has used yet, preserving
+// the lazy-first behavior for deployments that never touch the scraped path.
+// The loop stops when ctx is done; call it once at startup.
+func (c *CatalogClient) StartTokenRefresher(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(tokenRefreshCheckInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				c.refreshExpiringWebTokens(ctx)
+			}
+		}
+	}()
+}
+
+// refreshExpiringWebTokens renews any scraped token within tokenRefreshLead of
+// its cached expiry. The self-signed developer token is skipped: when a signer
+// is configured Token mints it locally with no scrape, so there is nothing to
+// keep warm.
+func (c *CatalogClient) refreshExpiringWebTokens(ctx context.Context) {
+	if c.signer == nil {
+		c.refreshLegacyTokenIfExpiring(ctx)
+	}
+	c.refreshWebTokenIfExpiring(ctx)
+}
+
+func (c *CatalogClient) refreshLegacyTokenIfExpiring(ctx context.Context) {
+	c.mu.Lock()
+	cached, until := c.token, c.tokenUntil
+	c.mu.Unlock()
+	if cached == "" || time.Now().Before(until.Add(-tokenRefreshLead)) {
+		return
+	}
+
+	c.tokenRefreshMu.Lock()
+	defer c.tokenRefreshMu.Unlock()
+	// An inline caller may have refreshed while this loop waited; re-read under
+	// the same lock Token uses so the two never scrape at once.
+	c.mu.Lock()
+	cached, until = c.token, c.tokenUntil
+	c.mu.Unlock()
+	if cached == "" || time.Now().Before(until.Add(-tokenRefreshLead)) {
+		return
+	}
+
+	token, err := c.fetchToken(ctx)
+	if err != nil {
+		c.logger.Warn("proactive legacy token refresh failed; keeping cached token until it expires", "error", err)
+		return
+	}
+	c.mu.Lock()
+	c.token = token
+	c.tokenUntil = cacheUntil(time.Now(), c.cfg.TokenTTL())
+	c.mu.Unlock()
+}
+
+func (c *CatalogClient) refreshWebTokenIfExpiring(ctx context.Context) {
+	c.mu.Lock()
+	cached, until := c.webToken, c.webTokenUntil
+	c.mu.Unlock()
+	if cached == "" || time.Now().Before(until.Add(-tokenRefreshLead)) {
+		return
+	}
+
+	c.webRefreshMu.Lock()
+	defer c.webRefreshMu.Unlock()
+	// Re-read under the same lock webJWTToken uses so a concurrent inline miss
+	// and this proactive refresh never scrape at once.
+	c.mu.Lock()
+	cached, until = c.webToken, c.webTokenUntil
+	c.mu.Unlock()
+	if cached == "" || time.Now().Before(until.Add(-tokenRefreshLead)) {
+		return
+	}
+
+	token, err := c.fetchToken(ctx)
+	if err != nil {
+		c.logger.Warn("proactive web token refresh failed; keeping cached token until it expires", "error", err)
+		return
+	}
+	c.mu.Lock()
+	c.webToken = token
+	c.webTokenUntil = cacheUntil(time.Now(), c.cfg.TokenTTL())
+	c.mu.Unlock()
+}
+
 // doWithWebAuth mirrors doWithCatalogAuth for the independent web-player JWT
 // cache used by signed_mode_hls_source=web_token.
 func (c *CatalogClient) doWithWebAuth(ctx context.Context, buildReq func(token string) (*http.Request, error)) (*http.Response, error) {

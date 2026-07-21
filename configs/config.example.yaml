@@ -280,6 +280,11 @@ download:
   alac_max_bit_depth: 24
   # bool: true verifies output MP4 integrity and repairs known ALAC terminator issues; false skips the integrity gate.
   check_integrity: true
+  # bool: true overwrites an existing output file (and its lyrics sidecar) when
+  # a job downloads the same track again; false (default) skips tracks whose
+  # output file already exists. Can be overridden per submission via the
+  # overrides.force_overwrite field of POST /api/v1/downloads.
+  force_overwrite: false
 
 tools:
   # string path or command name: ffmpeg executable. Used to flatten the

@@ -82,7 +82,12 @@ type Job struct {
 	Title        string `json:"title,omitempty"`
 	ArtworkURL   string `json:"artwork_url,omitempty"`
 	CanonicalKey string `json:"-"`
-	Force        bool   `json:"force"`
+	// Force is legacy: it was the submission-time overwrite flag before
+	// download.force_overwrite existed as a global config key with a
+	// per-request override (Overrides.ForceOverwrite). New jobs never set it;
+	// it is kept so jobs persisted before the migration still force-overwrite
+	// on retry and post-restart requeue.
+	Force bool `json:"force"`
 	// Overrides is the per-request job config overlay attached at submission;
 	// nil for jobs submitted without one. It is persisted with the job and
 	// applied on top of the live runtime config each time the job runs
@@ -187,6 +192,35 @@ type Event struct {
 	Message   string    `json:"message,omitempty"`
 	Payload   string    `json:"payload,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// MarshalEventPayload serializes a public API snapshot and overlays
+// event-specific fields on the resulting JSON object. Event payloads use this
+// helper so a Job/JobItem snapshot stays aligned with the REST representation
+// as fields are added, while existing event-specific keys remain available to
+// clients. Custom MarshalJSON implementations (notably Job's credential
+// redaction) are honored before the overlay is applied.
+func MarshalEventPayload(snapshot any, fields map[string]any) string {
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		return ""
+	}
+	payload := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	for key, value := range fields {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return ""
+		}
+		payload[key] = encoded
+	}
+	raw, err = json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 // HookState is the snapshot-shaped view of one post-download hook's latest
@@ -305,11 +339,13 @@ type DownloadFeedMessage struct {
 }
 
 type DownloadRequest struct {
-	URLs  []string `json:"urls"`
-	Force bool     `json:"force"`
+	URLs []string `json:"urls"`
 	// Overrides optionally overlays the job-mutable runtime config for every
 	// job created from this request. Omitted fields keep the runtime values;
-	// media_user_token overlays catalog.media_user_token for jobs that need it.
+	// media_user_token overlays catalog.media_user_token for jobs that need
+	// it, and force_overwrite overlays download.force_overwrite. The former
+	// request-level `force` field moved into overrides.force_overwrite and is
+	// now rejected as an unknown field.
 	Overrides *config.DownloadOverrides `json:"overrides,omitempty"`
 }
 

@@ -38,7 +38,7 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 	} else {
 		item.LyricsStatus = domain.LyricsNone
 	}
-	_ = reporter.UpdateItem(ctx, *item)
+	_ = reporter.UpdateItem(ctx, item)
 
 	codecs, err := configuredCodecs(d.cfg.Download)
 	if err != nil {
@@ -48,36 +48,40 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 	// mode must not delete a previously real-downloaded file even under force.
 	existingSkip := func(outPath string) bool {
 		item.OutputPath = outPath
-		if _, statErr := os.Stat(outPath); statErr == nil && !job.Force {
+		// Same effective-force rule as handleExistingOutput: the job-scoped
+		// config already carries overrides.force_overwrite, and job.Force
+		// covers jobs persisted before the flag moved into the config.
+		force := d.cfg.Download.ForceOverwrite || job.Force
+		if _, statErr := os.Stat(outPath); statErr == nil && !force {
 			item.Status = domain.ItemSkipped
 			item.Progress = 1
 			item.RetryKind = ""
 			item.Attempt = 0
 			item.MaxAttempts = 0
 			item.StatusMessage = "File already exists; skipped"
-			_ = reporter.UpdateItem(ctx, *item)
-			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_skipped", Message: "already exists"})
+			_ = reporter.UpdateItem(ctx, item)
+			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_skipped", Message: "already exists", Payload: domain.MarshalEventPayload(*item, map[string]any{"message": "already exists"})})
 			return true
 		}
-		if job.Force {
+		if force {
 			// The real path deletes stale outputs here; simulate mode only
 			// emits the same event and never touches the disk.
-			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_overwrite", Message: "force overwrite enabled"})
+			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_overwrite", Message: "force overwrite enabled", Payload: domain.MarshalEventPayload(*item, map[string]any{"message": "force overwrite enabled"})})
 		}
 		return false
 	}
 	var lastErr error
 	for codecIndex, codec := range codecs {
 		codecName := strings.ToUpper(codec)
+		item.Codec = codec
+		item.BitDepth, item.SampleRate, item.Bitrate = 0, 0, 0
 		if codecIndex > 0 {
 			item.StatusMessage = fmt.Sprintf("Codec %s failed; falling back to %s", strings.ToUpper(codecs[codecIndex-1]), codecName)
-			_ = reporter.UpdateItem(ctx, *item)
-			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_fallback", Phase: codec, Message: item.StatusMessage, Payload: marshalPayload(map[string]any{
+			_ = reporter.UpdateItem(ctx, item)
+			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_fallback", Phase: codec, Message: item.StatusMessage, Payload: domain.MarshalEventPayload(*item, map[string]any{
 				"from_codec": codecs[codecIndex-1], "to_codec": codec, "reason": codecFailureReason(lastErr),
 			})})
 		}
-		item.Codec = codec
-		item.BitDepth, item.SampleRate, item.Bitrate = 0, 0, 0
 
 		var info selectedMediaInfo
 		var outPath string
@@ -93,8 +97,9 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 				return nil
 			}
 			set(domain.ItemDownloading, 0.03, "requesting AAC-LC WebPlayback asset")
-			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_selected", Phase: "aac-lc", Payload: marshalPayload(map[string]any{
-				"codec_id": "aac-lc", "attempt": item.Attempt, "max_attempts": item.MaxAttempts,
+			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_selected", Phase: "aac-lc", Payload: domain.MarshalEventPayload(*item, map[string]any{
+				"codec_id": "aac-lc", "bit_depth": item.BitDepth, "sample_rate": item.SampleRate, "bitrate": item.Bitrate,
+				"attempt": item.Attempt, "max_attempts": item.MaxAttempts,
 			})})
 			info = selectedMediaInfo{CodecID: "aac-lc", Bandwidth: 256000}
 		} else {
@@ -117,7 +122,7 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 					operation = "select " + operation
 				}
 				d.setRetryFailure(ctx, reporter, item, "download", operation, failure)
-				d.emitRetryEvent(ctx, reporter, job.ID, item.ID, "download", codec, failure)
+				d.emitRetryEvent(ctx, reporter, job.ID, item, "download", codec, failure)
 			})
 			fetchAttempts = attempts
 			if selectErr != nil {
@@ -126,7 +131,7 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 				continue
 			}
 			if attempts > 1 {
-				d.emitRecoveredEvent(ctx, reporter, job.ID, item.ID, "download", codec, attempts)
+				d.emitRecoveredEvent(ctx, reporter, job.ID, item, "download", codec, attempts)
 			}
 			info = selected.info
 			outPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, qualityLabel(info))
@@ -191,8 +196,8 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 		default:
 			item.StatusMessage = fmt.Sprintf("%s download completed", codecName)
 		}
-		_ = reporter.UpdateItem(ctx, *item)
-		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_completed", Message: item.StatusMessage, Payload: marshalPayload(map[string]any{
+		_ = reporter.UpdateItem(ctx, item)
+		_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_completed", Message: item.StatusMessage, Payload: domain.MarshalEventPayload(*item, map[string]any{
 			"codec": codec, "download_attempts": fetchAttempts, "decrypt_attempts": 1,
 			"max_attempts": maxAttempts, "fallback_from": fallbackCodec(codecs, codecIndex),
 		})})

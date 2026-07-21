@@ -415,7 +415,7 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	resp := s.manager.SubmitBatch(r.Context(), urls, req.Force, req.Overrides)
+	resp := s.manager.SubmitBatch(r.Context(), urls, req.Overrides)
 	status := http.StatusUnprocessableEntity
 	if resp.Accepted > 0 {
 		status = http.StatusAccepted

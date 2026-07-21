@@ -694,6 +694,13 @@ paths:
       summary: 订阅下载任务事件
       description: |
         Server-Sent Events 流，支持 Last-Event-ID 断点续接。
+        每条 SSE 的 data 是 Event JSON；其中 payload 本身是 JSON 字符串，需要
+        二次解析。任务生命周期事件（job_queued/job_recovered/job_retried/
+        job_started/resolved_input/job_finished/job_failed/job_cancelled）的 payload
+        包含与 REST `Job` 相同的公开字段；曲目状态事件的 payload 包含与 REST
+        `JobItem` 相同的公开字段，并保留该事件原有的专属字段（例如
+        download_attempts、will_retry）。因此客户端可直接合并事件，不必在终态
+        事件后额外 GET 才能取得完整最终状态。
         任务已处于终态（completed/failed/cancelled）时：若还有未推送给该客户端
         的历史事件（含终态事件本身，以及仍在执行中的下载后 hook 产生的
         hook_started/hook_succeeded/hook_failed 事件——hook 是异步触发的，
@@ -732,6 +739,7 @@ paths:
         SSE 端点的 WebSocket 版本，面向移动端（如 iOS URLSessionWebSocketTask）。
         握手成功后，服务端将每条事件作为一条 JSON 文本消息推送，内容与 SSE 端点
         data 字段完全一致（Event 对象；payload 字段本身是 JSON 字符串，需二次解析）。
+        Job/JobItem 快照字段及事件专属字段的 payload 约定也与 SSE 完全一致。
         断线重连时通过 last_event_id 查询参数续接，只接收更新的事件。
         服务端每 10 秒发送一次 WebSocket ping 探测半开连接；连接为服务端单向推送，
         客户端发送的数据帧会导致连接被关闭。
@@ -1049,10 +1057,6 @@ components:
           example:
             - https://music.apple.com/cn/album/example/123456789?i=987654321
             - https://music.apple.com/cn/album/example/123456789
-        force:
-          type: boolean
-          default: false
-          description: 是否强制重新下载已存在的文件。
         overrides:
           $ref: '#/components/schemas/DownloadOverrides'
           description: >-
@@ -1133,6 +1137,11 @@ components:
         alac_max_sample_rate: {type: integer}
         alac_max_bit_depth: {type: integer}
         check_integrity: {type: boolean}
+        force_overwrite:
+          type: boolean
+          description: >-
+            是否强制重新下载并覆盖已存在的输出文件及其歌词边车文件。省略时沿用
+            运行时配置 download.force_overwrite（默认 false）。
     RuntimeConfig:
       type: object
       description: >-
@@ -1237,6 +1246,11 @@ components:
               type: integer
               description: 常见取值 16、24。
             check_integrity: {type: boolean}
+            force_overwrite:
+              type: boolean
+              description: >-
+                是否强制重新下载并覆盖已存在的输出文件及其歌词边车文件；默认
+                false。可通过请求的 overrides.force_overwrite 按批次覆盖。
         logging:
           type: object
           description: 只有日志级别和 HTTP 访问日志开关可运行时修改；输出与轮转配置需重启。

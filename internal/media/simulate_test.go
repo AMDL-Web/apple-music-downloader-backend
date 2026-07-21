@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -105,8 +106,22 @@ func TestSimulateTrackSelectsRealMediaButNeverDownloadsOrWrites(t *testing.T) {
 			if ev.Phase != "alac" {
 				t.Fatalf("codec_selected phase = %q, want alac (first quality_priority codec)", ev.Phase)
 			}
+			var snapshot domain.JobItem
+			if err := json.Unmarshal([]byte(ev.Payload), &snapshot); err != nil {
+				t.Fatalf("decode codec_selected payload: %v", err)
+			}
+			if snapshot.BitDepth != 24 || snapshot.SampleRate != 96000 || snapshot.Bitrate != 2500000 {
+				t.Fatalf("codec_selected snapshot quality = %d/%d/%d, want 24/96000/2500000", snapshot.BitDepth, snapshot.SampleRate, snapshot.Bitrate)
+			}
 		case "item_completed":
 			itemCompleted = true
+			var snapshot domain.JobItem
+			if err := json.Unmarshal([]byte(ev.Payload), &snapshot); err != nil {
+				t.Fatalf("decode item_completed payload: %v", err)
+			}
+			if snapshot.Status != domain.ItemCompleted || snapshot.Progress != 1 || snapshot.Bitrate != 2500000 || snapshot.UpdatedAt.IsZero() {
+				t.Fatalf("item_completed snapshot = %+v, want complete REST item state", snapshot)
+			}
 		case "item_failed", "item_skipped", "codec_failed", "codec_fallback":
 			t.Fatalf("unexpected %s event in simulated happy path: %+v", ev.Type, ev)
 		}
@@ -170,6 +185,17 @@ func TestSimulateTrackFallsBackToAACLCWithoutManifest(t *testing.T) {
 		switch ev.Type {
 		case "codec_fallback":
 			fallbacks++
+			var raw map[string]any
+			if err := json.Unmarshal([]byte(ev.Payload), &raw); err != nil {
+				t.Fatalf("decode codec_fallback payload: %v", err)
+			}
+			var snapshot domain.JobItem
+			if err := json.Unmarshal([]byte(ev.Payload), &snapshot); err != nil {
+				t.Fatalf("decode codec_fallback snapshot: %v", err)
+			}
+			if snapshot.Codec != raw["to_codec"] {
+				t.Fatalf("codec_fallback snapshot.Codec = %q, want it to already match to_codec %v", snapshot.Codec, raw["to_codec"])
+			}
 		case "item_completed":
 			completed++
 		case "item_progress":
