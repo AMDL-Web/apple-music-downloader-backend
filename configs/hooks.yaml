@@ -25,6 +25,13 @@ max_concurrent: 2
 # all match runs concurrently (bounded by max_concurrent above). Add a list item to
 # create a new hook, delete one to remove it, or flip `enabled` to pause it
 # without losing its configuration.
+# A download submission may set overrides.hooks to a list of these unique names
+# to allow only that subset for every event of its jobs. Omitting the field keeps
+# the default behavior (all enabled matching entries); [] disables hooks for the
+# submitted jobs. Selection never bypasses enabled/events/job_types filtering.
+# Duplicate names are accepted and behave like one selection; unknown configured
+# names are rejected at submission with HTTP 422. When no entries are configured,
+# any submitted list is accepted but cannot run anything.
 #
 # To enable a hook, uncomment one of the example list items below (remove the
 # leading "# " from each of its lines) and edit the values. With every item

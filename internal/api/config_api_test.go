@@ -13,6 +13,7 @@ import (
 	"amdl/internal/db"
 	"amdl/internal/domain"
 	"amdl/internal/events"
+	"amdl/internal/hooks"
 	"amdl/internal/jobs"
 	"amdl/internal/logging"
 )
@@ -417,5 +418,34 @@ func TestCreateDownloadRejectsInvalidOverrides(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "invalid overrides") {
 		t.Fatalf("error body %q does not mention invalid overrides", recorder.Body.String())
+	}
+}
+
+func TestCreateDownloadValidatesHookOverrideNames(t *testing.T) {
+	store, err := db.Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	manager := jobs.NewManager(store, events.NewHub(), stubProcessor{}, 1, slog.Default())
+	manager.SetHooks(hooks.NewDispatcher(hooks.Config{
+		Enabled: false,
+		Entries: []hooks.Entry{{Name: "notify"}},
+	}, nil, slog.Default()))
+	server := &Server{cfg: config.NewStore(config.Default()), store: store, manager: manager}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads",
+		`{"urls":["song|us|1"],"overrides":{"hooks":["missing"]}}`)
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown hook status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `unknown hook \"missing\"`) {
+		t.Fatalf("unknown hook error does not name missing entry: %s", recorder.Body.String())
+	}
+
+	recorder = requestJSON(t, server.Routes(), http.MethodPost, "/api/v1/downloads",
+		`{"urls":["song|us|2"],"overrides":{"hooks":["notify","notify"]}}`)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("known hooks under global disable status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }

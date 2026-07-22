@@ -104,6 +104,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/logs/stream", s.streamLogs)
 	mux.HandleFunc("GET /api/v1/config", s.getConfig)
 	mux.HandleFunc("PUT /api/v1/config", s.updateConfig)
+	mux.HandleFunc("GET /api/v1/hooks", s.listHooks)
 	mux.HandleFunc("GET /api/v1/developer-token", s.developerToken)
 	mux.HandleFunc("GET /api/v1/wrapper/status", s.wrapperStatus)
 	mux.HandleFunc("POST /api/v1/wrapper/login", s.wrapperLogin)
@@ -272,6 +273,10 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (s *Server) listHooks(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.manager.ListHooks())
+}
+
 // updateConfig merges the request body onto the current runtime config:
 // omitted fields keep their current values, present fields (including whole
 // sections) are replaced. The merged result must pass full config validation,
@@ -411,6 +416,10 @@ func (s *Server) createDownload(w http.ResponseWriter, r *http.Request) {
 		// Strict: fresh input is rejected, not clamped — only overrides already
 		// persisted before the limits existed are clamped when jobs run.
 		if _, err := req.Overrides.ApplyValidatedStrict(s.currentConfig()); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("invalid overrides: %w", err))
+			return
+		}
+		if err := s.manager.ValidateHookSelection(req.Overrides.Hooks); err != nil {
 			writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("invalid overrides: %w", err))
 			return
 		}

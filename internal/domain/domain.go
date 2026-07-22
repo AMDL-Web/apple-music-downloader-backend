@@ -343,9 +343,10 @@ type DownloadRequest struct {
 	// Overrides optionally overlays the job-mutable runtime config for every
 	// job created from this request. Omitted fields keep the runtime values;
 	// media_user_token overlays catalog.media_user_token for jobs that need
-	// it, and force_overwrite overlays download.force_overwrite. The former
-	// request-level `force` field moved into overrides.force_overwrite and is
-	// now rejected as an unknown field.
+	// it, force_overwrite overlays download.force_overwrite, and hooks limits
+	// hook dispatch to named configured entries. The former request-level
+	// `force` field moved into overrides.force_overwrite and is now rejected as
+	// an unknown field.
 	Overrides *config.DownloadOverrides `json:"overrides,omitempty"`
 }
 
