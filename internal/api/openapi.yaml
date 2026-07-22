@@ -1150,7 +1150,9 @@ components:
           uniqueItems: false
           description: >-
             configs/hooks.yaml entry 名称的任务级允许列表，适用于 job_queued 和
-            所有终态事件，并随任务持久化以覆盖 retry 与重启恢复。省略字段时
+            所有终态事件。job_queued hook 仅在首次提交时派发一次，retry 与重启
+            恢复不会重发；允许列表随任务持久化，因此 retry 或重启恢复后到达的
+            终态事件仍受同一列表约束。省略字段时
             所有已启用且匹配 events/job_types 的 entries 均可运行；显式 [] 时
             本批任务不运行任何 hook；非空列表只允许同名 entries 继续参与正常
             enabled/events/job_types 筛选，不能启用已禁用或不匹配的 entry。重复
