@@ -198,6 +198,54 @@ func TestOverridesEmptyListSurvivesJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHooksOverrideNilAndEmptySurviveJSONRoundTrip(t *testing.T) {
+	empty := []string{}
+	raw, err := json.Marshal(&DownloadOverrides{Hooks: &empty})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"hooks":[]}` {
+		t.Fatalf("explicit-empty hooks JSON = %s, want hooks:[]", raw)
+	}
+	var decoded DownloadOverrides
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Hooks == nil || len(*decoded.Hooks) != 0 {
+		t.Fatalf("explicit-empty hooks lost in round trip: %s -> %+v", raw, decoded.Hooks)
+	}
+
+	raw, err = json.Marshal(&DownloadOverrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{}` {
+		t.Fatalf("absent hooks JSON = %s, want {}", raw)
+	}
+	decoded = DownloadOverrides{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Hooks != nil {
+		t.Fatalf("absent hooks decoded as %+v, want nil", decoded.Hooks)
+	}
+}
+
+func TestHooksOverrideIsDispatchOnlyAndSurvivesTokenRemoval(t *testing.T) {
+	base := Default()
+	hookNames := []string{"notify"}
+	if got := (&DownloadOverrides{Hooks: &hookNames}).Apply(base); !reflect.DeepEqual(got, base) {
+		t.Fatalf("hooks override changed config: %+v", got)
+	}
+
+	token := "secret"
+	overrides := &DownloadOverrides{MediaUserToken: &token, Hooks: &hookNames}
+	clean := overrides.WithoutMediaUserToken()
+	if clean == nil || clean.MediaUserToken != nil || clean.Hooks == nil || !reflect.DeepEqual(*clean.Hooks, hookNames) {
+		t.Fatalf("WithoutMediaUserToken lost hooks override: %+v", clean)
+	}
+}
+
 func TestRuntimeLockedChanges(t *testing.T) {
 	base := Default()
 

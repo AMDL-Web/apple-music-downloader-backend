@@ -179,6 +179,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/hooks:
+    get:
+      tags: [System]
+      summary: 查询可用的任务 hooks
+      description: >-
+        返回进程启动时从 hooks.yaml 加载的全局开关和 entry 元数据，顺序与文件
+        一致，供客户端构造 overrides.hooks 允许列表。entry 的 enabled 是应用
+        默认值后的结果；job_types 为空数组表示匹配所有任务类型。响应不会包含
+        URL、headers、command、workdir 或其它可能携带秘密的配置字段。
+      operationId: listHooks
+      responses:
+        '200':
+          description: 已脱敏的 hooks 配置；未配置时 enabled 为 false 且 entries 为空数组。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HooksResponse'
   /api/v1/developer-token:
     get:
       tags: [System]
@@ -485,7 +502,8 @@ paths:
         results 中单独标记，不影响其他 URL 入队。可选的 overrides 字段
         对本次请求创建的任务生效，覆盖运行时配置的 download 段；其中
         overrides.media_user_token 覆盖 catalog.media_user_token fallback，
-        并采用单独的按需持久化、终态清理和响应脱敏规则。
+        并采用单独的按需持久化、终态清理和响应脱敏规则；overrides.hooks
+        筛选本批任务允许运行的 hooks.yaml entries。
       operationId: createDownload
       requestBody:
         required: true
@@ -513,7 +531,8 @@ paths:
         '422':
           description: >-
             所有 URL 均被拒绝（响应体为 BatchSubmitResponse，逐条原因见
-            results），或 overrides 未通过配置校验（响应体为 ErrorResponse）。
+            results），或 overrides 未通过配置校验（包括 hooks 中存在未知
+            entry 名称；响应体为 ErrorResponse）。
           content:
             application/json:
               schema:
@@ -945,6 +964,43 @@ components:
           enum: [ok, degraded]
         database_error:
           type: string
+    HooksResponse:
+      type: object
+      additionalProperties: false
+      required: [enabled, entries]
+      properties:
+        enabled:
+          type: boolean
+          description: hooks.yaml 的全局 enabled 开关。
+        entries:
+          type: array
+          description: hooks.yaml 中的 entries，保持文件中的配置顺序。
+          items:
+            $ref: '#/components/schemas/HookEntry'
+    HookEntry:
+      type: object
+      additionalProperties: false
+      required: [name, enabled, type, events, job_types]
+      properties:
+        name:
+          type: string
+        enabled:
+          type: boolean
+          description: 应用“省略 enabled 时默认为 true”规则后的启用状态。
+        type:
+          type: string
+          enum: [webhook, exec]
+        events:
+          type: array
+          items:
+            type: string
+            enum: [job_queued, job_finished, job_failed, job_cancelled]
+        job_types:
+          type: array
+          description: 空数组表示该 entry 匹配所有任务类型。
+          items:
+            type: string
+            enum: [song, album, playlist, artist, station]
     LogEntry:
       type: object
       required: [sequence, time, level, message]
@@ -1063,12 +1119,13 @@ components:
             可选：仅对本次请求创建的任务生效的配置覆盖。省略的字段沿用
             当前运行时配置。下载配置覆盖随每个任务持久化，重试和重启恢复后
             依然生效；media_user_token 采用 DownloadOverrides 中说明的更严格
-            生命周期与脱敏规则。所有覆盖均不影响其它任务。
+            生命周期与脱敏规则；hooks 用于筛选任务事件 hook。所有覆盖均不
+            影响其它任务。
     DownloadOverrides:
       type: object
       description: >-
-        按任务配置覆盖层：除 media_user_token 外，字段与运行时配置 download 段
-        一一对应。max_running_jobs、max_parallel_downloads、max_parallel_decrypts、
+        按任务配置覆盖层：除 media_user_token 和 hooks 外，字段与运行时配置
+        download 段一一对应。max_running_jobs、max_parallel_downloads、max_parallel_decrypts、
         max_parallel_wrapper_requests 在启动时确定并全局共享，无法按任务覆盖。
         所有字段可选；提交时会以“当前运行时配置 + 覆盖”做完整校验。
         downloads_dir 和 temp_dir 只能选择管理员配置根目录本身或其子目录，
@@ -1086,6 +1143,19 @@ components:
             Apple Music 订阅令牌（media-user-token），用于电台解析和私人歌单封面
             获取。省略、非空和显式空字符串的三态语义，以及持久化、清理和响应
             脱敏规则见 DownloadOverrides 描述。
+        hooks:
+          type: array
+          items:
+            type: string
+          uniqueItems: false
+          description: >-
+            configs/hooks.yaml entry 名称的任务级允许列表，适用于 job_queued 和
+            所有终态事件，并随任务持久化以覆盖 retry 与重启恢复。省略字段时
+            所有已启用且匹配 events/job_types 的 entries 均可运行；显式 [] 时
+            本批任务不运行任何 hook；非空列表只允许同名 entries 继续参与正常
+            enabled/events/job_types 筛选，不能启用已禁用或不匹配的 entry。重复
+            名称允许并等同于一次；配置存在时未知名称返回 422。没有任何已配置
+            entry 时任意列表均接受但无效果。
         quality_priority:
           type: array
           items:

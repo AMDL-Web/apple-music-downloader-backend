@@ -136,6 +136,25 @@ func (m *Manager) SetHooks(d *hooks.Dispatcher) {
 	m.hooks = d
 }
 
+// ListHooks returns the sanitized hook configuration snapshot used by
+// Dispatch. Nil-safe for tests and deployments with no dispatcher configured.
+func (m *Manager) ListHooks() hooks.Listing {
+	if m == nil {
+		return (*hooks.Dispatcher)(nil).List()
+	}
+	return m.hooks.List()
+}
+
+// ValidateHookSelection checks a per-submission hook allowlist against the
+// hook configuration snapshot used by Dispatch. Nil-safe for tests and
+// deployments with no dispatcher configured.
+func (m *Manager) ValidateHookSelection(names *[]string) error {
+	if m == nil {
+		return nil
+	}
+	return m.hooks.ValidateSelection(names)
+}
+
 // HooksPending reports whether jobID has a post-download hook still running.
 // A job's own terminal event is not the last event it will ever emit: hook
 // dispatch is fire-and-forget and can keep recording hook_started/
@@ -268,12 +287,13 @@ func (m *Manager) enqueueRecovered(jobID string) {
 // batch), active-job lookup, and the DB's partial unique index as a backstop
 // against races. See docs/multi-link-submit-design.md.
 //
-// overrides, when non-nil, is attached to every job created from this batch
-// and overlays the runtime config while those jobs run. Callers must validate
-// it (apply to the current config and Validate) before submitting. A
-// media-user-token override is retained only by stations and private playlists,
-// the two job kinds that consume it; all other jobs keep the remaining
-// overrides without retaining the credential.
+// overrides, when non-nil, is attached to every job created from this batch,
+// overlays the runtime config while those jobs run, and carries their hook
+// selection. Callers must validate it (apply to the current config and
+// Validate, plus validate hook names) before submitting. A media-user-token
+// override is retained only by stations and private playlists, the two job
+// kinds that consume it; all other jobs keep the remaining overrides without
+// retaining the credential.
 func (m *Manager) SubmitBatch(ctx context.Context, urls []string, overrides *config.DownloadOverrides) domain.BatchSubmitResponse {
 	results := make([]domain.SubmitResult, len(urls))
 

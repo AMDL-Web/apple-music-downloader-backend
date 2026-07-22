@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -130,6 +131,58 @@ func TestHealthEndpointDatabaseUnavailable(t *testing.T) {
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d, body = %s", recorder.Code, http.StatusServiceUnavailable, recorder.Body.String())
 	}
+}
+
+func TestHooksEndpoint(t *testing.T) {
+	t.Run("configured entries", func(t *testing.T) {
+		disabled := false
+		manager := jobs.NewManager(nil, nil, nil, 1, slog.Default())
+		manager.SetHooks(hooks.NewDispatcher(hooks.Config{Enabled: true, Entries: []hooks.Entry{
+			{
+				Name: "notify", Type: "webhook", Events: []string{"job_finished"},
+				URL: "https://secret.example/token", Headers: map[string]string{"Authorization": "Bearer secret"},
+			},
+			{
+				Name: "cleanup", Enabled: &disabled, Type: "exec", Events: []string{"job_failed"}, JobTypes: []string{"album"},
+				Command: "secret-command --token abc", Workdir: "/secret/workdir",
+			},
+		}}, nil, slog.Default()))
+
+		recorder := requestJSON(t, (&Server{manager: manager}).Routes(), http.MethodGet, "/api/v1/hooks", "")
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+		}
+		var got hooks.Listing
+		if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		want := hooks.Listing{Enabled: true, Entries: []hooks.ListedEntry{
+			{Name: "notify", Enabled: true, Type: "webhook", Events: []string{"job_finished"}, JobTypes: []string{}},
+			{Name: "cleanup", Enabled: false, Type: "exec", Events: []string{"job_failed"}, JobTypes: []string{"album"}},
+		}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("response = %+v, want %+v", got, want)
+		}
+		body := recorder.Body.String()
+		for _, forbidden := range []string{
+			`"url"`, `"headers"`, `"command"`, `"workdir"`,
+			"https://secret.example/token", "Bearer secret", "secret-command --token abc", "/secret/workdir",
+		} {
+			if strings.Contains(body, forbidden) {
+				t.Errorf("response exposes forbidden hook configuration %q: %s", forbidden, body)
+			}
+		}
+	})
+
+	t.Run("missing configuration", func(t *testing.T) {
+		recorder := requestJSON(t, (&Server{}).Routes(), http.MethodGet, "/api/v1/hooks", "")
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+		}
+		if got := strings.TrimSpace(recorder.Body.String()); got != `{"enabled":false,"entries":[]}` {
+			t.Fatalf("body = %s, want disabled hooks with an empty array", got)
+		}
+	})
 }
 
 func TestWrapperStatusEndpoint(t *testing.T) {
@@ -494,6 +547,7 @@ func TestOpenAPISpecification(t *testing.T) {
 	wantOperations := map[string][]string{
 		"/api/v1/health":                       {"get"},
 		"/api/v1/config":                       {"get", "put"},
+		"/api/v1/hooks":                        {"get"},
 		"/api/v1/wrapper/status":               {"get"},
 		"/api/v1/wrapper/login":                {"post"},
 		"/api/v1/wrapper/login/{login_id}/2fa": {"post"},

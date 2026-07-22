@@ -9,12 +9,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"amdl/internal/config"
 	"amdl/internal/domain"
 )
 
@@ -27,6 +30,30 @@ type eventCollector struct {
 	evs  []domain.Event
 	done chan struct{}
 	want int
+}
+
+type recordingRunner struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (r *recordingRunner) Run(_ context.Context, entry Entry, _ Payload) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, entry.Name)
+	return nil
+}
+
+func (r *recordingRunner) reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = nil
+}
+
+func (r *recordingRunner) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.calls...)
 }
 
 func newEventCollector(want int) *eventCollector {
@@ -103,6 +130,99 @@ func TestDispatchSkipsDisabledEntryAndNonMatchingEventOrJobType(t *testing.T) {
 		t.Fatalf("calls = %d, want 0 (all entries should be filtered out)", got)
 	}
 }
+
+func TestList(t *testing.T) {
+	var nilDispatcher *Dispatcher
+	if got := nilDispatcher.List(); got.Enabled || got.Entries == nil || len(got.Entries) != 0 {
+		t.Fatalf("nil dispatcher listing = %+v, want disabled with empty non-nil entries", got)
+	}
+
+	d := NewDispatcher(Config{Enabled: false, Entries: []Entry{
+		{Name: "default-enabled", Type: "webhook", Events: []string{"job_finished"}},
+		{Name: "explicit-enabled", Enabled: boolPtr(true), Type: "exec", Events: []string{"job_failed"}, JobTypes: []string{"album"}},
+		{Name: "disabled", Enabled: boolPtr(false), Type: "webhook", Events: []string{"job_queued"}, JobTypes: []string{}},
+	}}, nil, discardLogger())
+	want := Listing{Enabled: false, Entries: []ListedEntry{
+		{Name: "default-enabled", Enabled: true, Type: "webhook", Events: []string{"job_finished"}, JobTypes: []string{}},
+		{Name: "explicit-enabled", Enabled: true, Type: "exec", Events: []string{"job_failed"}, JobTypes: []string{"album"}},
+		{Name: "disabled", Enabled: false, Type: "webhook", Events: []string{"job_queued"}, JobTypes: []string{}},
+	}}
+	if got := d.List(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("listing = %+v, want %+v", got, want)
+	}
+}
+
+func TestDispatchHonorsPerJobHookSelection(t *testing.T) {
+	runner := &recordingRunner{}
+	const runnerType = "selection-test"
+	previous, hadPrevious := runners[runnerType]
+	runners[runnerType] = runner
+	defer func() {
+		if hadPrevious {
+			runners[runnerType] = previous
+		} else {
+			delete(runners, runnerType)
+		}
+	}()
+
+	cfg := Config{Enabled: true, Entries: []Entry{
+		{Name: "first", Type: runnerType, Events: []string{"job_finished"}},
+		{Name: "second", Type: runnerType, Events: []string{"job_finished"}},
+		{Name: "queued", Type: runnerType, Events: []string{"job_queued"}},
+		{Name: "disabled", Enabled: boolPtr(false), Type: runnerType, Events: []string{"job_finished"}},
+		{Name: "wrong-event", Type: runnerType, Events: []string{"job_failed"}},
+		{Name: "wrong-job-type", Type: runnerType, Events: []string{"job_finished"}, JobTypes: []string{"album"}},
+	}}
+	tests := []struct {
+		name  string
+		event string
+		hooks *[]string
+		want  []string
+	}{
+		{name: "nil list runs all enabled matches", event: "job_finished", want: []string{"first", "second"}},
+		{name: "empty list runs none", event: "job_finished", hooks: stringSlicePtr([]string{}), want: nil},
+		{name: "named subset runs once despite duplicate names", event: "job_finished", hooks: stringSlicePtr([]string{"second", "second"}), want: []string{"second"}},
+		{name: "selection cannot bypass entry filters", event: "job_finished", hooks: stringSlicePtr([]string{"disabled", "wrong-event", "wrong-job-type"}), want: nil},
+		{name: "selection filters job queued", event: "job_queued", hooks: stringSlicePtr([]string{"queued"}), want: []string{"queued"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner.reset()
+			job := domain.Job{ID: "job-1", Type: "song"}
+			if tt.hooks != nil {
+				job.Overrides = &config.DownloadOverrides{Hooks: tt.hooks}
+			}
+			d := NewDispatcher(cfg, nil, discardLogger())
+			d.Dispatch(tt.event, job, nil)
+			if err := d.Shutdown(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			got := runner.snapshot()
+			sort.Strings(got)
+			sort.Strings(tt.want)
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("called hooks = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateSelection(t *testing.T) {
+	d := NewDispatcher(Config{Enabled: false, Entries: []Entry{{Name: "known"}}}, nil, discardLogger())
+	if err := d.ValidateSelection(stringSlicePtr([]string{"known", "known"})); err != nil {
+		t.Fatalf("known duplicate names rejected while hooks globally disabled: %v", err)
+	}
+	if err := d.ValidateSelection(stringSlicePtr([]string{"missing"})); err == nil || !strings.Contains(err.Error(), `unknown hook "missing"`) {
+		t.Fatalf("unknown hook error = %v", err)
+	}
+
+	emptyConfig := NewDispatcher(Config{}, nil, discardLogger())
+	if err := emptyConfig.ValidateSelection(stringSlicePtr([]string{"cannot-run"})); err != nil {
+		t.Fatalf("selection against empty hooks config rejected: %v", err)
+	}
+}
+
+func stringSlicePtr(values []string) *[]string { return &values }
 
 func TestDispatchRunsMatchingWebhookAndRecordsSuccessEvent(t *testing.T) {
 	var gotBody []byte
