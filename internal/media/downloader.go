@@ -292,6 +292,14 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 	tracks := resolved.Tracks
 	collectionName := resolved.Name
 	collectionID := resolved.ID
+	job.TotalItems = len(tracks)
+	job.Title = resolved.Name
+	// Keep the resolved URL verbatim. Private playlists return a pre-signed
+	// S3 URL here; it is intentionally persisted even though it will expire.
+	job.ArtworkURL = resolved.ArtworkURL
+	if err := reporter.SetJob(ctx, &job); err != nil {
+		return err
+	}
 	// Simulate mode never fetches artwork or writes files, so the standalone
 	// playlist cover is skipped along with the per-track disk writes.
 	if (parsed.Type == applemusic.TypePlaylist || parsed.Type == applemusic.TypeStation) && d.cfg.Download.SavePlaylistCover && len(tracks) > 0 && !d.cfg.Simulate.Enabled {
@@ -299,12 +307,6 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 		if coverErr := d.savePlaylistCover(ctx, resolved.ArtworkURL, folder); coverErr != nil {
 			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, Type: "standalone_cover_failed", Phase: "playlist_cover", Message: coverErr.Error()})
 		}
-	}
-	job.TotalItems = len(tracks)
-	job.Title = resolved.Name
-	job.ArtworkURL = resolved.ArtworkURL
-	if err := reporter.SetJob(ctx, &job); err != nil {
-		return err
 	}
 	// Emit after title/total_items/artwork are persisted so the overview feed
 	// can push a download_upserted with the real name (not just the URL).

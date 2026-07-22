@@ -1492,8 +1492,10 @@ components:
           description: >-
             Cover artwork URL template with {w}x{h} (and optionally {f})
             placeholders; substitute the desired pixel size client-side,
-            e.g. 600x600. Populated once the job's input is resolved;
-            absent for jobs created before this field existed.
+            e.g. 600x600. A private playlist may instead expose the owner's
+            pre-signed S3 artwork URL verbatim; that URL can expire and has no
+            placeholders. Populated once the job's input is resolved; absent
+            for jobs created before this field existed.
         force:
           type: boolean
         overrides:
