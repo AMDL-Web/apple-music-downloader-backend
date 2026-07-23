@@ -80,7 +80,7 @@ type Job struct {
 	Type         string `json:"type"`
 	Storefront   string `json:"storefront,omitempty"`
 	Title        string `json:"title,omitempty"`
-	ArtworkURL   string `json:"artwork_url,omitempty"`
+	ArtworkURL   string `json:"artwork_url"`
 	CanonicalKey string `json:"-"`
 	// Force is legacy: it was the submission-time overwrite flag before
 	// download.force_overwrite existed as a global config key with a
@@ -123,7 +123,7 @@ type JobItem struct {
 	Title         string       `json:"title,omitempty"`
 	Artist        string       `json:"artist,omitempty"`
 	Album         string       `json:"album,omitempty"`
-	ArtworkURL    string       `json:"artwork_url,omitempty"`
+	ArtworkURL    string       `json:"artwork_url"`
 	HasLyrics     bool         `json:"has_lyrics"`
 	LyricsStatus  LyricsStatus `json:"lyrics_status,omitempty"`
 	Status        ItemStatus   `json:"status"`
