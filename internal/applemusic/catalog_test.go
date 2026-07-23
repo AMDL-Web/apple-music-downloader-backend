@@ -321,6 +321,35 @@ func TestAlbumFetchesAllTrackPages(t *testing.T) {
 	}
 }
 
+// TestAlbumDecodesArtworkColors pins the wire keys of the artwork palette
+// (bgColor/textColor1..4) so a mistyped JSON tag cannot silently drop the
+// colors from every collection.
+func TestAlbumDecodesArtworkColors(t *testing.T) {
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client.token = "test-token"
+	client.tokenUntil = time.Now().Add(time.Hour)
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{"data":[{"id":"album-1","type":"albums","attributes":{"name":"Album","artistName":"Album Artist","artwork":{"url":"album-art","bgColor":"1a1a1a","textColor1":"ffffff","textColor2":"eeeeee","textColor3":"cccccc","textColor4":"aaaaaa"}},"relationships":{"tracks":{"data":[{"id":"song-1","type":"songs","attributes":{"name":"One","artwork":{"url":"song-art","bgColor":"0b0b0b","textColor1":"f1f1f1"}}}]}}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+
+	album, err := client.Album(context.Background(), "cn", "album-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ArtworkColors{BgColor: "1a1a1a", TextColor1: "ffffff", TextColor2: "eeeeee", TextColor3: "cccccc", TextColor4: "aaaaaa"}
+	if album.ArtworkColors != want {
+		t.Fatalf("album artwork colors = %+v, want %+v", album.ArtworkColors, want)
+	}
+	if len(album.Tracks) != 1 {
+		t.Fatalf("tracks = %+v, want one song", album.Tracks)
+	}
+	trackWant := ArtworkColors{BgColor: "0b0b0b", TextColor1: "f1f1f1"}
+	if album.Tracks[0].ArtworkColors != trackWant {
+		t.Fatalf("track artwork colors = %+v, want %+v", album.Tracks[0].ArtworkColors, trackWant)
+	}
+}
+
 func TestPlaylistFetchesAllTrackPages(t *testing.T) {
 	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 	client.token = "test-token"

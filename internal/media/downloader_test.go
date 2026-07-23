@@ -555,6 +555,12 @@ func TestResolveCollectionPropagatesArtwork(t *testing.T) {
 }
 
 func TestResolveCollectionBackfillsDisplayMetadata(t *testing.T) {
+	palette := applemusic.ArtworkColors{
+		BgColor: "1a1a1a", TextColor1: "ffffff", TextColor2: "eeeeee", TextColor3: "cccccc", TextColor4: "aaaaaa",
+	}
+	albumPalette := applemusic.ArtworkColors{
+		BgColor: "202020", TextColor1: "fafafa", TextColor2: "e0e0e0", TextColor3: "c0c0c0", TextColor4: "a0a0a0",
+	}
 	tests := []struct {
 		name    string
 		catalog fakeDownloaderCatalog
@@ -562,49 +568,62 @@ func TestResolveCollectionBackfillsDisplayMetadata(t *testing.T) {
 		want    resolvedCollection
 	}{
 		{
-			name: "album carries artist, release date and primary genre",
+			name: "album carries artist, release date, primary genre and palette",
 			catalog: fakeDownloaderCatalog{album: applemusic.Collection{
 				ID: "album-1", Name: "First", Artist: "Album Artist",
 				ReleaseDate: "2024-06-01", GenreNames: []string{"Music", "Pop"},
-				Tracks: []applemusic.Song{{ID: "song-1"}},
+				ArtworkColors: palette,
+				Tracks:        []applemusic.Song{{ID: "song-1"}},
 			}},
 			parsed: applemusic.ParsedURL{Storefront: "cn", Type: applemusic.TypeAlbum, ID: "album-1"},
-			want:   resolvedCollection{ArtistName: "Album Artist", ReleaseDate: "2024-06-01", Genre: "Pop"},
+			want:   resolvedCollection{ArtistName: "Album Artist", ReleaseDate: "2024-06-01", Genre: "Pop", ArtworkColors: palette},
 		},
 		{
-			name: "song carries artist, release date and primary genre",
+			name: "song carries artist, release date, primary genre and its own palette",
 			catalog: fakeDownloaderCatalog{song: applemusic.Song{
 				ID: "song-1", Name: "One", ArtistName: "Song Artist",
 				ReleaseDate: "2023-12-24", GenreNames: []string{"Music", "Electronic", "Dance"},
+				ArtworkURL: "https://example.invalid/song/{w}x{h}bb.jpg", ArtworkColors: palette, AlbumArtworkColors: albumPalette,
 			}},
 			parsed: applemusic.ParsedURL{Storefront: "cn", Type: applemusic.TypeSong, ID: "song-1"},
-			want:   resolvedCollection{ArtistName: "Song Artist", ReleaseDate: "2023-12-24", Genre: "Electronic"},
+			want:   resolvedCollection{ArtistName: "Song Artist", ReleaseDate: "2023-12-24", Genre: "Electronic", ArtworkColors: palette},
 		},
 		{
-			name: "playlist carries curator only",
+			name: "song without own artwork falls back to the album palette",
+			catalog: fakeDownloaderCatalog{song: applemusic.Song{
+				ID: "song-1", Name: "One", ArtistName: "Song Artist",
+				AlbumArtworkURL: "https://example.invalid/album/{w}x{h}bb.jpg", AlbumArtworkColors: albumPalette,
+			}},
+			parsed: applemusic.ParsedURL{Storefront: "cn", Type: applemusic.TypeSong, ID: "song-1"},
+			want:   resolvedCollection{ArtistName: "Song Artist", ArtworkColors: albumPalette},
+		},
+		{
+			name: "playlist carries curator and palette",
 			catalog: fakeDownloaderCatalog{playlist: applemusic.Collection{
 				ID: "pl-1", Name: "Mix", Artist: "Apple Music Pop",
-				Tracks: []applemusic.Song{{ID: "song-1"}},
+				ArtworkColors: palette,
+				Tracks:        []applemusic.Song{{ID: "song-1"}},
 			}},
 			parsed: applemusic.ParsedURL{Storefront: "cn", Type: applemusic.TypePlaylist, ID: "pl-1"},
-			want:   resolvedCollection{CuratorName: "Apple Music Pop"},
+			want:   resolvedCollection{CuratorName: "Apple Music Pop", ArtworkColors: palette},
 		},
 		{
-			name: "station carries provider as curator",
+			name: "station carries provider as curator and palette",
 			catalog: fakeDownloaderCatalog{station: applemusic.Collection{
 				ID: "ra.1", Name: "My Station", Artist: "Apple Music Station",
-				Tracks: []applemusic.Song{{ID: "song-1"}},
+				ArtworkColors: palette,
+				Tracks:        []applemusic.Song{{ID: "song-1"}},
 			}},
 			parsed: applemusic.ParsedURL{Storefront: "us", Type: applemusic.TypeStation, ID: "ra.1"},
-			want:   resolvedCollection{CuratorName: "Apple Music Station"},
+			want:   resolvedCollection{CuratorName: "Apple Music Station", ArtworkColors: palette},
 		},
 		{
-			name: "artist carries its own name as artist",
+			name: "artist carries its own name as artist and its palette",
 			catalog: fakeDownloaderCatalog{artistAlbums: applemusic.ArtistAlbums{
-				Artist: applemusic.Artist{ID: "artist-1", Name: "The Artist"},
+				Artist: applemusic.Artist{ID: "artist-1", Name: "The Artist", ArtworkColors: palette},
 			}},
 			parsed: applemusic.ParsedURL{Storefront: "cn", Type: applemusic.TypeArtist, ID: "artist-1"},
-			want:   resolvedCollection{ArtistName: "The Artist"},
+			want:   resolvedCollection{ArtistName: "The Artist", ArtworkColors: palette},
 		},
 	}
 	for _, tt := range tests {
@@ -619,6 +638,9 @@ func TestResolveCollectionBackfillsDisplayMetadata(t *testing.T) {
 				t.Fatalf("display metadata = %q/%q/%q/%q, want %q/%q/%q/%q",
 					resolved.ArtistName, resolved.CuratorName, resolved.ReleaseDate, resolved.Genre,
 					tt.want.ArtistName, tt.want.CuratorName, tt.want.ReleaseDate, tt.want.Genre)
+			}
+			if resolved.ArtworkColors != tt.want.ArtworkColors {
+				t.Fatalf("artwork colors = %+v, want %+v", resolved.ArtworkColors, tt.want.ArtworkColors)
 			}
 		})
 	}

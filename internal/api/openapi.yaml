@@ -1523,6 +1523,38 @@ components:
             genreNames entry that is not the generic "Music" umbrella genre.
             Absent for other job types, before the input is resolved, or for
             jobs resolved before this field existed.
+        artwork_bg_color:
+          type: string
+          description: >-
+            Background color of the resolved collection artwork, from Apple
+            Music's attributes.artwork bgColor: a hex string without a
+            leading "#" (e.g. "1a1a1a"). Absent before the input is resolved,
+            when the catalog omits the palette, or for jobs resolved before
+            this field existed.
+        artwork_text_color1:
+          type: string
+          description: >-
+            Primary text color paired with artwork_bg_color, from Apple
+            Music's attributes.artwork textColor1: a hex string without a
+            leading "#". Absent under the same conditions as artwork_bg_color.
+        artwork_text_color2:
+          type: string
+          description: >-
+            Secondary text color paired with artwork_bg_color, from Apple
+            Music's attributes.artwork textColor2: a hex string without a
+            leading "#". Absent under the same conditions as artwork_bg_color.
+        artwork_text_color3:
+          type: string
+          description: >-
+            Tertiary text color paired with artwork_bg_color, from Apple
+            Music's attributes.artwork textColor3: a hex string without a
+            leading "#". Absent under the same conditions as artwork_bg_color.
+        artwork_text_color4:
+          type: string
+          description: >-
+            Quaternary text color paired with artwork_bg_color, from Apple
+            Music's attributes.artwork textColor4: a hex string without a
+            leading "#". Absent under the same conditions as artwork_bg_color.
         force:
           type: boolean
         overrides:

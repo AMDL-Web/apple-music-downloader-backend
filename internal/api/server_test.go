@@ -986,6 +986,8 @@ func TestDownloadResponsesIncludeDisplayMetadata(t *testing.T) {
 	job := domain.Job{
 		ID: "job1", Input: "album|us|1", Type: "album",
 		ArtistName: "Album Artist", CuratorName: "Curator", ReleaseDate: "2024-06-01", Genre: "Pop",
+		ArtworkBgColor: "1a1a1a", ArtworkTextColor1: "ffffff", ArtworkTextColor2: "eeeeee",
+		ArtworkTextColor3: "cccccc", ArtworkTextColor4: "aaaaaa",
 		Status: domain.JobRunning, TotalItems: 1,
 	}
 	if err := server.store.CreateJob(ctx, job); err != nil {
@@ -1006,6 +1008,11 @@ func TestDownloadResponsesIncludeDisplayMetadata(t *testing.T) {
 		detail.Job.ReleaseDate != job.ReleaseDate || detail.Job.Genre != job.Genre {
 		t.Fatalf("detail job metadata = %+v, want artist/curator/release/genre from %+v", detail.Job, job)
 	}
+	if detail.Job.ArtworkBgColor != job.ArtworkBgColor || detail.Job.ArtworkTextColor1 != job.ArtworkTextColor1 ||
+		detail.Job.ArtworkTextColor2 != job.ArtworkTextColor2 || detail.Job.ArtworkTextColor3 != job.ArtworkTextColor3 ||
+		detail.Job.ArtworkTextColor4 != job.ArtworkTextColor4 {
+		t.Fatalf("detail job artwork colors = %+v, want palette from %+v", detail.Job, job)
+	}
 	// Raw-body check so a renamed/mistyped json tag can't slip through the
 	// struct round-trip above.
 	for _, key := range []string{
@@ -1013,6 +1020,11 @@ func TestDownloadResponsesIncludeDisplayMetadata(t *testing.T) {
 		`"curator_name":"Curator"`,
 		`"release_date":"2024-06-01"`,
 		`"genre":"Pop"`,
+		`"artwork_bg_color":"1a1a1a"`,
+		`"artwork_text_color1":"ffffff"`,
+		`"artwork_text_color2":"eeeeee"`,
+		`"artwork_text_color3":"cccccc"`,
+		`"artwork_text_color4":"aaaaaa"`,
 	} {
 		if !strings.Contains(recorder.Body.String(), key) {
 			t.Fatalf("detail body missing %s: %s", key, recorder.Body.String())
@@ -1033,6 +1045,11 @@ func TestDownloadResponsesIncludeDisplayMetadata(t *testing.T) {
 		resp.Downloads[0].CuratorName != job.CuratorName || resp.Downloads[0].ReleaseDate != job.ReleaseDate ||
 		resp.Downloads[0].Genre != job.Genre {
 		t.Fatalf("listed downloads = %+v, want the job's display metadata", resp.Downloads)
+	}
+	if resp.Downloads[0].ArtworkBgColor != job.ArtworkBgColor || resp.Downloads[0].ArtworkTextColor1 != job.ArtworkTextColor1 ||
+		resp.Downloads[0].ArtworkTextColor2 != job.ArtworkTextColor2 || resp.Downloads[0].ArtworkTextColor3 != job.ArtworkTextColor3 ||
+		resp.Downloads[0].ArtworkTextColor4 != job.ArtworkTextColor4 {
+		t.Fatalf("listed downloads = %+v, want the job's artwork palette", resp.Downloads)
 	}
 }
 

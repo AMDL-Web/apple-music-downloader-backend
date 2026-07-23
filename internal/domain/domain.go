@@ -75,23 +75,33 @@ const (
 )
 
 type Job struct {
-	ID           string `json:"id"`
-	Input        string `json:"input"`
-	Type         string `json:"type"`
-	Storefront   string `json:"storefront,omitempty"`
-	Title        string `json:"title,omitempty"`
-	ArtworkURL   string `json:"artwork_url"`
+	ID         string `json:"id"`
+	Input      string `json:"input"`
+	Type       string `json:"type"`
+	Storefront string `json:"storefront,omitempty"`
+	Title      string `json:"title,omitempty"`
+	ArtworkURL string `json:"artwork_url"`
 	// Display metadata resolved from the Apple Music catalog alongside
 	// Title/ArtworkURL. Which fields are populated depends on Type:
 	// album/song fill ArtistName/ReleaseDate/Genre, playlist fills
 	// CuratorName, artist fills ArtistName (the artist's own name), and
 	// station fills CuratorName with the station provider. All are optional;
 	// jobs resolved before these fields existed keep them empty.
-	ArtistName   string `json:"artist_name,omitempty"`
-	CuratorName  string `json:"curator_name,omitempty"`
-	ReleaseDate  string `json:"release_date,omitempty"`
-	Genre        string `json:"genre,omitempty"`
-	CanonicalKey string `json:"-"`
+	ArtistName  string `json:"artist_name,omitempty"`
+	CuratorName string `json:"curator_name,omitempty"`
+	ReleaseDate string `json:"release_date,omitempty"`
+	Genre       string `json:"genre,omitempty"`
+	// ArtworkBgColor/ArtworkTextColor1..4 carry the color palette Apple
+	// attaches to the resolved collection's artwork (attributes.artwork
+	// bgColor/textColor1..4): hex strings without a leading "#". Resolved
+	// next to ArtworkURL; empty when the catalog omits the palette or the
+	// job was resolved before these fields existed.
+	ArtworkBgColor    string `json:"artwork_bg_color,omitempty"`
+	ArtworkTextColor1 string `json:"artwork_text_color1,omitempty"`
+	ArtworkTextColor2 string `json:"artwork_text_color2,omitempty"`
+	ArtworkTextColor3 string `json:"artwork_text_color3,omitempty"`
+	ArtworkTextColor4 string `json:"artwork_text_color4,omitempty"`
+	CanonicalKey      string `json:"-"`
 	// Force is legacy: it was the submission-time overwrite flag before
 	// download.force_overwrite existed as a global config key with a
 	// per-request override (Overrides.ForceOverwrite). New jobs never set it;
