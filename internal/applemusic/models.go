@@ -39,7 +39,12 @@ type Collection struct {
 	ArtworkURL       string
 	ArtistID         string
 	ArtistArtworkURL string
-	Tracks           []Song
+	// ReleaseDate/GenreNames carry the album-level attributes (YYYY-MM-DD and
+	// Apple's genreNames list); only populated for album collections — the
+	// catalog does not expose them on playlists or stations.
+	ReleaseDate string
+	GenreNames  []string
+	Tracks      []Song
 }
 
 type Artist struct {

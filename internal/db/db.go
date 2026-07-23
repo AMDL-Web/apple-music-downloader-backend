@@ -92,6 +92,10 @@ func (s *Store) initSchema(ctx context.Context) error {
 			storefront TEXT,
 			title TEXT NOT NULL DEFAULT '',
 			artwork_url TEXT NOT NULL DEFAULT '',
+			artist_name TEXT NOT NULL DEFAULT '',
+			curator_name TEXT NOT NULL DEFAULT '',
+			release_date TEXT NOT NULL DEFAULT '',
+			genre TEXT NOT NULL DEFAULT '',
 			canonical_key TEXT NOT NULL,
 			force INTEGER NOT NULL DEFAULT 0,
 			overrides TEXT NOT NULL DEFAULT '',
@@ -158,6 +162,10 @@ func (s *Store) initSchema(ctx context.Context) error {
 		{"jobs", "artwork_url", "TEXT NOT NULL DEFAULT ''"},
 		{"jobs", "title", "TEXT NOT NULL DEFAULT ''"},
 		{"jobs", "overrides", "TEXT NOT NULL DEFAULT ''"},
+		{"jobs", "artist_name", "TEXT NOT NULL DEFAULT ''"},
+		{"jobs", "curator_name", "TEXT NOT NULL DEFAULT ''"},
+		{"jobs", "release_date", "TEXT NOT NULL DEFAULT ''"},
+		{"jobs", "genre", "TEXT NOT NULL DEFAULT ''"},
 		{"job_items", "artwork_url", "TEXT NOT NULL DEFAULT ''"},
 		{"job_items", "bit_depth", "INTEGER NOT NULL DEFAULT 0"},
 		{"job_items", "sample_rate", "INTEGER NOT NULL DEFAULT 0"},
@@ -277,8 +285,8 @@ func (s *Store) CreateJob(ctx context.Context, job domain.Job) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO jobs(id,input,type,storefront,title,artwork_url,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, job.ID, job.Input, job.Type, job.Storefront, job.Title, job.ArtworkURL, job.CanonicalKey, job.Force, overrides, string(job.Status), job.TotalItems,
+	_, err = s.db.ExecContext(ctx, `INSERT INTO jobs(id,input,type,storefront,title,artwork_url,artist_name,curator_name,release_date,genre,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, job.ID, job.Input, job.Type, job.Storefront, job.Title, job.ArtworkURL, job.ArtistName, job.CuratorName, job.ReleaseDate, job.Genre, job.CanonicalKey, job.Force, overrides, string(job.Status), job.TotalItems,
 		job.DoneItems, job.FailedItems, job.Error, formatTime(job.CreatedAt), formatTime(job.UpdatedAt))
 	if err != nil && isUniqueConstraintErr(err) {
 		return ErrDuplicateActive
@@ -288,7 +296,7 @@ func (s *Store) CreateJob(ctx context.Context, job domain.Job) error {
 
 // FindActiveJobByKey returns the queued/running job matching canonicalKey, if any.
 func (s *Store) FindActiveJobByKey(ctx context.Context, canonicalKey string) (domain.Job, bool, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at
+	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,artist_name,curator_name,release_date,genre,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at
 		FROM jobs WHERE canonical_key=? AND status IN (?,?)`, canonicalKey, string(domain.JobQueued), string(domain.JobRunning))
 	job, err := scanJob(row)
 	if err != nil {
@@ -307,8 +315,8 @@ type execer interface {
 }
 
 func updateJob(ctx context.Context, x execer, job domain.Job) error {
-	_, err := x.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, title=?, artwork_url=?, force=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
-		job.Type, job.Storefront, job.Title, job.ArtworkURL, job.Force, string(job.Status), job.TotalItems, job.DoneItems, job.FailedItems, job.Error, formatTime(job.UpdatedAt), job.ID)
+	_, err := x.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, title=?, artwork_url=?, artist_name=?, curator_name=?, release_date=?, genre=?, force=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
+		job.Type, job.Storefront, job.Title, job.ArtworkURL, job.ArtistName, job.CuratorName, job.ReleaseDate, job.Genre, job.Force, string(job.Status), job.TotalItems, job.DoneItems, job.FailedItems, job.Error, formatTime(job.UpdatedAt), job.ID)
 	return err
 }
 
@@ -321,8 +329,8 @@ func updateFinalJob(ctx context.Context, x execer, job domain.Job) error {
 	if err != nil {
 		return err
 	}
-	_, err = x.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, title=?, artwork_url=?, force=?, overrides=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
-		job.Type, job.Storefront, job.Title, job.ArtworkURL, job.Force, overrides, string(job.Status), job.TotalItems, job.DoneItems, job.FailedItems, job.Error, formatTime(job.UpdatedAt), job.ID)
+	_, err = x.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, title=?, artwork_url=?, artist_name=?, curator_name=?, release_date=?, genre=?, force=?, overrides=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
+		job.Type, job.Storefront, job.Title, job.ArtworkURL, job.ArtistName, job.CuratorName, job.ReleaseDate, job.Genre, job.Force, overrides, string(job.Status), job.TotalItems, job.DoneItems, job.FailedItems, job.Error, formatTime(job.UpdatedAt), job.ID)
 	return err
 }
 
@@ -336,7 +344,7 @@ func (s *Store) UpdateJobStatus(ctx context.Context, id string, status domain.Jo
 }
 
 func (s *Store) GetJob(ctx context.Context, id string) (domain.Job, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,artist_name,curator_name,release_date,genre,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE id=?`, id)
 	return scanJob(row)
 }
 
@@ -469,7 +477,7 @@ func (s *Store) ListJobs(ctx context.Context, filter JobListFilter) ([]domain.Jo
 	}
 	listArgs := append([]any{string(domain.ItemCompleted), string(domain.ItemSkipped), string(domain.ItemFailed)}, args...)
 	listArgs = append(listArgs, filter.Limit, filter.Offset)
-	rows, err := s.db.QueryContext(ctx, `SELECT j.id,j.input,j.type,j.storefront,j.title,j.artwork_url,j.canonical_key,j.force,j.overrides,j.status,j.total_items,
+	rows, err := s.db.QueryContext(ctx, `SELECT j.id,j.input,j.type,j.storefront,j.title,j.artwork_url,j.artist_name,j.curator_name,j.release_date,j.genre,j.canonical_key,j.force,j.overrides,j.status,j.total_items,
 			(SELECT COUNT(*) FROM job_items i WHERE i.job_id=j.id AND i.status IN (?,?)) AS done_items,
 			(SELECT COUNT(*) FROM job_items i WHERE i.job_id=j.id AND i.status=?) AS failed_items,
 			j.error,j.created_at,j.updated_at FROM jobs j`+where+` ORDER BY `+orderCol+` `+orderDir+`, j.id `+orderDir+` LIMIT ? OFFSET ?`,
@@ -537,7 +545,7 @@ func (s *Store) DeleteJob(ctx context.Context, id string) (domain.Event, error) 
 }
 
 func (s *Store) ListRecoverableJobs(ctx context.Context) ([]domain.Job, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE status IN (?,?) ORDER BY created_at ASC`,
+	rows, err := s.db.QueryContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,artist_name,curator_name,release_date,genre,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE status IN (?,?) ORDER BY created_at ASC`,
 		string(domain.JobQueued), string(domain.JobRunning))
 	if err != nil {
 		return nil, err
@@ -561,7 +569,7 @@ type jobScanner interface {
 func scanJob(row jobScanner) (domain.Job, error) {
 	var job domain.Job
 	var overrides, status, created, updated string
-	err := row.Scan(&job.ID, &job.Input, &job.Type, &job.Storefront, &job.Title, &job.ArtworkURL, &job.CanonicalKey, &job.Force, &overrides, &status, &job.TotalItems, &job.DoneItems, &job.FailedItems, &job.Error, &created, &updated)
+	err := row.Scan(&job.ID, &job.Input, &job.Type, &job.Storefront, &job.Title, &job.ArtworkURL, &job.ArtistName, &job.CuratorName, &job.ReleaseDate, &job.Genre, &job.CanonicalKey, &job.Force, &overrides, &status, &job.TotalItems, &job.DoneItems, &job.FailedItems, &job.Error, &created, &updated)
 	if err == nil && overrides != "" {
 		parsed := &config.DownloadOverrides{}
 		// A corrupt overrides column must fail loudly: silently dropping it

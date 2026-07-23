@@ -130,6 +130,7 @@ type fakeDownloaderCatalog struct {
 	song              applemusic.Song
 	songErr           error
 	album             applemusic.Collection
+	playlist          applemusic.Collection
 	artistAlbums      applemusic.ArtistAlbums
 	station           applemusic.Collection
 	stationErr        error
@@ -160,7 +161,7 @@ func (f fakeDownloaderCatalog) Album(_ context.Context, _, id string) (applemusi
 }
 
 func (f fakeDownloaderCatalog) Playlist(context.Context, string, string, string) (applemusic.Collection, error) {
-	return applemusic.Collection{}, nil
+	return f.playlist, nil
 }
 
 func (f fakeDownloaderCatalog) StationTracks(_ context.Context, _, _, token string) (applemusic.Collection, error) {
@@ -550,6 +551,95 @@ func TestResolveCollectionPropagatesArtwork(t *testing.T) {
 				t.Fatalf("artwork url = %q, want %q", resolved.ArtworkURL, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveCollectionBackfillsDisplayMetadata(t *testing.T) {
+	tests := []struct {
+		name    string
+		catalog fakeDownloaderCatalog
+		parsed  applemusic.ParsedURL
+		want    resolvedCollection
+	}{
+		{
+			name: "album carries artist, release date and primary genre",
+			catalog: fakeDownloaderCatalog{album: applemusic.Collection{
+				ID: "album-1", Name: "First", Artist: "Album Artist",
+				ReleaseDate: "2024-06-01", GenreNames: []string{"Music", "Pop"},
+				Tracks: []applemusic.Song{{ID: "song-1"}},
+			}},
+			parsed: applemusic.ParsedURL{Storefront: "cn", Type: applemusic.TypeAlbum, ID: "album-1"},
+			want:   resolvedCollection{ArtistName: "Album Artist", ReleaseDate: "2024-06-01", Genre: "Pop"},
+		},
+		{
+			name: "song carries artist, release date and primary genre",
+			catalog: fakeDownloaderCatalog{song: applemusic.Song{
+				ID: "song-1", Name: "One", ArtistName: "Song Artist",
+				ReleaseDate: "2023-12-24", GenreNames: []string{"Music", "Electronic", "Dance"},
+			}},
+			parsed: applemusic.ParsedURL{Storefront: "cn", Type: applemusic.TypeSong, ID: "song-1"},
+			want:   resolvedCollection{ArtistName: "Song Artist", ReleaseDate: "2023-12-24", Genre: "Electronic"},
+		},
+		{
+			name: "playlist carries curator only",
+			catalog: fakeDownloaderCatalog{playlist: applemusic.Collection{
+				ID: "pl-1", Name: "Mix", Artist: "Apple Music Pop",
+				Tracks: []applemusic.Song{{ID: "song-1"}},
+			}},
+			parsed: applemusic.ParsedURL{Storefront: "cn", Type: applemusic.TypePlaylist, ID: "pl-1"},
+			want:   resolvedCollection{CuratorName: "Apple Music Pop"},
+		},
+		{
+			name: "station carries provider as curator",
+			catalog: fakeDownloaderCatalog{station: applemusic.Collection{
+				ID: "ra.1", Name: "My Station", Artist: "Apple Music Station",
+				Tracks: []applemusic.Song{{ID: "song-1"}},
+			}},
+			parsed: applemusic.ParsedURL{Storefront: "us", Type: applemusic.TypeStation, ID: "ra.1"},
+			want:   resolvedCollection{CuratorName: "Apple Music Station"},
+		},
+		{
+			name: "artist carries its own name as artist",
+			catalog: fakeDownloaderCatalog{artistAlbums: applemusic.ArtistAlbums{
+				Artist: applemusic.Artist{ID: "artist-1", Name: "The Artist"},
+			}},
+			parsed: applemusic.ParsedURL{Storefront: "cn", Type: applemusic.TypeArtist, ID: "artist-1"},
+			want:   resolvedCollection{ArtistName: "The Artist"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			downloader := &Downloader{cfg: config.Default(), catalog: tt.catalog}
+			resolved, err := downloader.resolveCollection(context.Background(), tt.parsed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolved.ArtistName != tt.want.ArtistName || resolved.CuratorName != tt.want.CuratorName ||
+				resolved.ReleaseDate != tt.want.ReleaseDate || resolved.Genre != tt.want.Genre {
+				t.Fatalf("display metadata = %q/%q/%q/%q, want %q/%q/%q/%q",
+					resolved.ArtistName, resolved.CuratorName, resolved.ReleaseDate, resolved.Genre,
+					tt.want.ArtistName, tt.want.CuratorName, tt.want.ReleaseDate, tt.want.Genre)
+			}
+		})
+	}
+}
+
+func TestPrimaryGenreSkipsMusicUmbrella(t *testing.T) {
+	tests := []struct {
+		names []string
+		want  string
+	}{
+		{nil, ""},
+		{[]string{}, ""},
+		{[]string{"Music"}, ""},
+		{[]string{"Music", "Pop"}, "Pop"},
+		{[]string{"Hip-Hop/Rap", "Music"}, "Hip-Hop/Rap"},
+		{[]string{"", "Music", "Jazz"}, "Jazz"},
+	}
+	for _, tt := range tests {
+		if got := primaryGenre(tt.names); got != tt.want {
+			t.Fatalf("primaryGenre(%v) = %q, want %q", tt.names, got, tt.want)
+		}
 	}
 }
 

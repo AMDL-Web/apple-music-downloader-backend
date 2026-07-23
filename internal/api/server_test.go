@@ -980,6 +980,62 @@ func TestDownloadResponsesIncludeArtworkURLTemplate(t *testing.T) {
 	}
 }
 
+func TestDownloadResponsesIncludeDisplayMetadata(t *testing.T) {
+	server := newTestServerWithManager(t)
+	ctx := context.Background()
+	job := domain.Job{
+		ID: "job1", Input: "album|us|1", Type: "album",
+		ArtistName: "Album Artist", CuratorName: "Curator", ReleaseDate: "2024-06-01", Genre: "Pop",
+		Status: domain.JobRunning, TotalItems: 1,
+	}
+	if err := server.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads/"+job.ID, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var detail struct {
+		Job domain.Job `json:"job"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Job.ArtistName != job.ArtistName || detail.Job.CuratorName != job.CuratorName ||
+		detail.Job.ReleaseDate != job.ReleaseDate || detail.Job.Genre != job.Genre {
+		t.Fatalf("detail job metadata = %+v, want artist/curator/release/genre from %+v", detail.Job, job)
+	}
+	// Raw-body check so a renamed/mistyped json tag can't slip through the
+	// struct round-trip above.
+	for _, key := range []string{
+		`"artist_name":"Album Artist"`,
+		`"curator_name":"Curator"`,
+		`"release_date":"2024-06-01"`,
+		`"genre":"Pop"`,
+	} {
+		if !strings.Contains(recorder.Body.String(), key) {
+			t.Fatalf("detail body missing %s: %s", key, recorder.Body.String())
+		}
+	}
+
+	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var resp struct {
+		Downloads []domain.Job `json:"downloads"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Downloads) != 1 || resp.Downloads[0].ArtistName != job.ArtistName ||
+		resp.Downloads[0].CuratorName != job.CuratorName || resp.Downloads[0].ReleaseDate != job.ReleaseDate ||
+		resp.Downloads[0].Genre != job.Genre {
+		t.Fatalf("listed downloads = %+v, want the job's display metadata", resp.Downloads)
+	}
+}
+
 // TestDownloadsFeedPushesUpsertsAndDeletes exercises the overview SSE feed:
 // initial backlog upsert from a cursor, live upsert on a new milestone, and a
 // live delete notification. Deletes carry a persisted tombstone cursor so a

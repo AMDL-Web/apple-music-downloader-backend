@@ -1496,6 +1496,33 @@ components:
             pre-signed S3 artwork URL verbatim; that URL can expire and has no
             placeholders. Populated once the job's input is resolved; absent
             for jobs created before this field existed.
+        artist_name:
+          type: string
+          description: >-
+            Display artist resolved from Apple Music metadata: the album's or
+            song's artist name, or for artist jobs the artist's own name.
+            Absent for playlist/station jobs, before the input is resolved,
+            or for jobs resolved before this field existed.
+        curator_name:
+          type: string
+          description: >-
+            Display curator resolved from Apple Music metadata: the playlist's
+            curatorName (falling back to its artistName), or the station's
+            provider label. Absent for song/album/artist jobs, before the
+            input is resolved, or for jobs resolved before this field existed.
+        release_date:
+          type: string
+          description: >-
+            Release date (YYYY-MM-DD) of the album or song. Absent for other
+            job types, before the input is resolved, or for jobs resolved
+            before this field existed.
+        genre:
+          type: string
+          description: >-
+            Primary genre of the album or song — the first Apple Music
+            genreNames entry that is not the generic "Music" umbrella genre.
+            Absent for other job types, before the input is resolved, or for
+            jobs resolved before this field existed.
         force:
           type: boolean
         overrides:

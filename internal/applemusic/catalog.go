@@ -264,7 +264,8 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 	}
 	return Collection{
 		ID: album.ID, Type: TypeAlbum, Name: album.Attributes.Name, Artist: album.Attributes.ArtistName,
-		ArtworkURL: album.Attributes.Artwork.URL, ArtistID: albumArtistID, ArtistArtworkURL: albumArtistArtworkURL, Tracks: tracks,
+		ArtworkURL: album.Attributes.Artwork.URL, ArtistID: albumArtistID, ArtistArtworkURL: albumArtistArtworkURL,
+		ReleaseDate: album.Attributes.ReleaseDate, GenreNames: album.Attributes.GenreNames, Tracks: tracks,
 	}, nil
 }
 
@@ -1061,6 +1062,7 @@ func mapAlbumSummary(raw catalogAlbumData) Collection {
 	return Collection{
 		ID: raw.ID, Type: TypeAlbum, Name: raw.Attributes.Name, Artist: raw.Attributes.ArtistName,
 		ArtworkURL: raw.Attributes.Artwork.URL, ArtistID: artistID, ArtistArtworkURL: artistArtworkURL,
+		ReleaseDate: raw.Attributes.ReleaseDate, GenreNames: raw.Attributes.GenreNames,
 	}
 }
 
