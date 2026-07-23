@@ -321,6 +321,35 @@ func TestAlbumFetchesAllTrackPages(t *testing.T) {
 	}
 }
 
+// TestAlbumDecodesArtworkColors pins the wire keys of the artwork palette
+// (bgColor/textColor1..4) so a mistyped JSON tag cannot silently drop the
+// colors from every collection.
+func TestAlbumDecodesArtworkColors(t *testing.T) {
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client.token = "test-token"
+	client.tokenUntil = time.Now().Add(time.Hour)
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{"data":[{"id":"album-1","type":"albums","attributes":{"name":"Album","artistName":"Album Artist","artwork":{"url":"album-art","bgColor":"1a1a1a","textColor1":"ffffff","textColor2":"eeeeee","textColor3":"cccccc","textColor4":"aaaaaa"}},"relationships":{"tracks":{"data":[{"id":"song-1","type":"songs","attributes":{"name":"One","artwork":{"url":"song-art","bgColor":"0b0b0b","textColor1":"f1f1f1"}}}]}}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+
+	album, err := client.Album(context.Background(), "cn", "album-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ArtworkColors{BgColor: "1a1a1a", TextColor1: "ffffff", TextColor2: "eeeeee", TextColor3: "cccccc", TextColor4: "aaaaaa"}
+	if album.ArtworkColors != want {
+		t.Fatalf("album artwork colors = %+v, want %+v", album.ArtworkColors, want)
+	}
+	if len(album.Tracks) != 1 {
+		t.Fatalf("tracks = %+v, want one song", album.Tracks)
+	}
+	trackWant := ArtworkColors{BgColor: "0b0b0b", TextColor1: "f1f1f1"}
+	if album.Tracks[0].ArtworkColors != trackWant {
+		t.Fatalf("track artwork colors = %+v, want %+v", album.Tracks[0].ArtworkColors, trackWant)
+	}
+}
+
 func TestPlaylistFetchesAllTrackPages(t *testing.T) {
 	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
 	client.token = "test-token"
@@ -381,14 +410,17 @@ func TestPlaylistPrivateCoverFallsBackToLibraryArtwork(t *testing.T) {
 	}
 }
 
-func TestPlaylistCatalogArtworkSkipsLibraryLookup(t *testing.T) {
+func TestPlaylistLibraryArtworkOverridesCatalogMosaic(t *testing.T) {
 	client := newTestCatalogClient(config.CatalogConfig{Language: "zh-Hans_CN"}, slog.Default())
 	client.token = "test-token"
 	client.tokenUntil = time.Now().Add(time.Hour)
 	var calls int
 	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		calls++
-		body := `{"data":[{"id":"pl.u-1","type":"playlists","attributes":{"name":"Shared","artwork":{"url":"catalog-art"}},"relationships":{"tracks":{"data":[]}}}]}`
+		body := `{"data":[{"id":"pl.u-1","type":"playlists","attributes":{"name":"Shared","artwork":{"url":"catalog-mosaic"}},"relationships":{"tracks":{"data":[]}}}]}`
+		if req.URL.Query().Get("include") == "library" {
+			body = `{"data":[{"id":"pl.u-1","type":"playlists","relationships":{"library":{"data":[{"id":"p.lib1","type":"library-playlists","attributes":{"artwork":{"url":"https://blob.example/correct-cover?X-Amz-Date=20260722T000000Z&X-Amz-Expires=3600"}}}]}}}]}`
+		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 	})}
 
@@ -396,11 +428,11 @@ func TestPlaylistCatalogArtworkSkipsLibraryLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if playlist.ArtworkURL != "catalog-art" {
-		t.Fatalf("ArtworkURL = %q, want catalog artwork to win", playlist.ArtworkURL)
+	if playlist.ArtworkURL != "https://blob.example/correct-cover?X-Amz-Date=20260722T000000Z&X-Amz-Expires=3600" {
+		t.Fatalf("ArtworkURL = %q, want library artwork to override catalog mosaic", playlist.ArtworkURL)
 	}
-	if calls != 1 {
-		t.Fatalf("calls = %d, want 1 (no enrichment when catalog artwork exists)", calls)
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2 (catalog plus library enrichment)", calls)
 	}
 }
 
@@ -438,7 +470,7 @@ func TestPlaylistLibraryLookupFailureIsNonFatal(t *testing.T) {
 			// Enrichment request rejected, e.g. an expired media-user-token.
 			return &http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(strings.NewReader(`{"errors":[{"status":"403"}]}`)), Header: make(http.Header)}, nil
 		}
-		body := `{"data":[{"id":"pl.u-1","type":"playlists","attributes":{"name":"Private","artwork":{"url":""}},"relationships":{"tracks":{"data":[{"id":"song-1","type":"songs","attributes":{"name":"One","artistName":"Artist"}}]}}}]}`
+		body := `{"data":[{"id":"pl.u-1","type":"playlists","attributes":{"name":"Private","artwork":{"url":"catalog-mosaic"}},"relationships":{"tracks":{"data":[{"id":"song-1","type":"songs","attributes":{"name":"One","artistName":"Artist"}}]}}}]}`
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 	})}
 
@@ -449,8 +481,8 @@ func TestPlaylistLibraryLookupFailureIsNonFatal(t *testing.T) {
 	if calls != 2 {
 		t.Fatalf("calls = %d, want 2", calls)
 	}
-	if playlist.ArtworkURL != "" {
-		t.Fatalf("ArtworkURL = %q, want empty after failed enrichment", playlist.ArtworkURL)
+	if playlist.ArtworkURL != "catalog-mosaic" {
+		t.Fatalf("ArtworkURL = %q, want catalog fallback after failed enrichment", playlist.ArtworkURL)
 	}
 	if len(playlist.Tracks) != 1 {
 		t.Fatalf("tracks = %d, want 1", len(playlist.Tracks))

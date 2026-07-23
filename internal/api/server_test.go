@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -130,6 +131,58 @@ func TestHealthEndpointDatabaseUnavailable(t *testing.T) {
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d, body = %s", recorder.Code, http.StatusServiceUnavailable, recorder.Body.String())
 	}
+}
+
+func TestHooksEndpoint(t *testing.T) {
+	t.Run("configured entries", func(t *testing.T) {
+		disabled := false
+		manager := jobs.NewManager(nil, nil, nil, 1, slog.Default())
+		manager.SetHooks(hooks.NewDispatcher(hooks.Config{Enabled: true, Entries: []hooks.Entry{
+			{
+				Name: "notify", Type: "webhook", Events: []string{"job_finished"},
+				URL: "https://secret.example/token", Headers: map[string]string{"Authorization": "Bearer secret"},
+			},
+			{
+				Name: "cleanup", Enabled: &disabled, Type: "exec", Events: []string{"job_failed"}, JobTypes: []string{"album"},
+				Command: "secret-command --token abc", Workdir: "/secret/workdir",
+			},
+		}}, nil, slog.Default()))
+
+		recorder := requestJSON(t, (&Server{manager: manager}).Routes(), http.MethodGet, "/api/v1/hooks", "")
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+		}
+		var got hooks.Listing
+		if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		want := hooks.Listing{Enabled: true, Entries: []hooks.ListedEntry{
+			{Name: "notify", Enabled: true, Type: "webhook", Events: []string{"job_finished"}, JobTypes: []string{}},
+			{Name: "cleanup", Enabled: false, Type: "exec", Events: []string{"job_failed"}, JobTypes: []string{"album"}},
+		}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("response = %+v, want %+v", got, want)
+		}
+		body := recorder.Body.String()
+		for _, forbidden := range []string{
+			`"url"`, `"headers"`, `"command"`, `"workdir"`,
+			"https://secret.example/token", "Bearer secret", "secret-command --token abc", "/secret/workdir",
+		} {
+			if strings.Contains(body, forbidden) {
+				t.Errorf("response exposes forbidden hook configuration %q: %s", forbidden, body)
+			}
+		}
+	})
+
+	t.Run("missing configuration", func(t *testing.T) {
+		recorder := requestJSON(t, (&Server{}).Routes(), http.MethodGet, "/api/v1/hooks", "")
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+		}
+		if got := strings.TrimSpace(recorder.Body.String()); got != `{"enabled":false,"entries":[]}` {
+			t.Fatalf("body = %s, want disabled hooks with an empty array", got)
+		}
+	})
 }
 
 func TestWrapperStatusEndpoint(t *testing.T) {
@@ -494,6 +547,7 @@ func TestOpenAPISpecification(t *testing.T) {
 	wantOperations := map[string][]string{
 		"/api/v1/health":                       {"get"},
 		"/api/v1/config":                       {"get", "put"},
+		"/api/v1/hooks":                        {"get"},
 		"/api/v1/wrapper/status":               {"get"},
 		"/api/v1/wrapper/login":                {"post"},
 		"/api/v1/wrapper/login/{login_id}/2fa": {"post"},
@@ -923,6 +977,79 @@ func TestDownloadResponsesIncludeArtworkURLTemplate(t *testing.T) {
 	}
 	if len(resp.Downloads) != 1 || resp.Downloads[0].ArtworkURL != jobArt {
 		t.Fatalf("listed downloads = %+v, want one job with artwork_url %q", resp.Downloads, jobArt)
+	}
+}
+
+func TestDownloadResponsesIncludeDisplayMetadata(t *testing.T) {
+	server := newTestServerWithManager(t)
+	ctx := context.Background()
+	job := domain.Job{
+		ID: "job1", Input: "album|us|1", Type: "album",
+		ArtistName: "Album Artist", CuratorName: "Curator", ReleaseDate: "2024-06-01", Genre: "Pop",
+		ArtworkBgColor: "1a1a1a", ArtworkTextColor1: "ffffff", ArtworkTextColor2: "eeeeee",
+		ArtworkTextColor3: "cccccc", ArtworkTextColor4: "aaaaaa",
+		Status: domain.JobRunning, TotalItems: 1,
+	}
+	if err := server.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads/"+job.ID, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var detail struct {
+		Job domain.Job `json:"job"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Job.ArtistName != job.ArtistName || detail.Job.CuratorName != job.CuratorName ||
+		detail.Job.ReleaseDate != job.ReleaseDate || detail.Job.Genre != job.Genre {
+		t.Fatalf("detail job metadata = %+v, want artist/curator/release/genre from %+v", detail.Job, job)
+	}
+	if detail.Job.ArtworkBgColor != job.ArtworkBgColor || detail.Job.ArtworkTextColor1 != job.ArtworkTextColor1 ||
+		detail.Job.ArtworkTextColor2 != job.ArtworkTextColor2 || detail.Job.ArtworkTextColor3 != job.ArtworkTextColor3 ||
+		detail.Job.ArtworkTextColor4 != job.ArtworkTextColor4 {
+		t.Fatalf("detail job artwork colors = %+v, want palette from %+v", detail.Job, job)
+	}
+	// Raw-body check so a renamed/mistyped json tag can't slip through the
+	// struct round-trip above.
+	for _, key := range []string{
+		`"artist_name":"Album Artist"`,
+		`"curator_name":"Curator"`,
+		`"release_date":"2024-06-01"`,
+		`"genre":"Pop"`,
+		`"artwork_bg_color":"1a1a1a"`,
+		`"artwork_text_color1":"ffffff"`,
+		`"artwork_text_color2":"eeeeee"`,
+		`"artwork_text_color3":"cccccc"`,
+		`"artwork_text_color4":"aaaaaa"`,
+	} {
+		if !strings.Contains(recorder.Body.String(), key) {
+			t.Fatalf("detail body missing %s: %s", key, recorder.Body.String())
+		}
+	}
+
+	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var resp struct {
+		Downloads []domain.Job `json:"downloads"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Downloads) != 1 || resp.Downloads[0].ArtistName != job.ArtistName ||
+		resp.Downloads[0].CuratorName != job.CuratorName || resp.Downloads[0].ReleaseDate != job.ReleaseDate ||
+		resp.Downloads[0].Genre != job.Genre {
+		t.Fatalf("listed downloads = %+v, want the job's display metadata", resp.Downloads)
+	}
+	if resp.Downloads[0].ArtworkBgColor != job.ArtworkBgColor || resp.Downloads[0].ArtworkTextColor1 != job.ArtworkTextColor1 ||
+		resp.Downloads[0].ArtworkTextColor2 != job.ArtworkTextColor2 || resp.Downloads[0].ArtworkTextColor3 != job.ArtworkTextColor3 ||
+		resp.Downloads[0].ArtworkTextColor4 != job.ArtworkTextColor4 {
+		t.Fatalf("listed downloads = %+v, want the job's artwork palette", resp.Downloads)
 	}
 }
 

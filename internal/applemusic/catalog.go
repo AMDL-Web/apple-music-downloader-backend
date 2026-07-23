@@ -193,6 +193,7 @@ func (c *CatalogClient) SongMetadata(ctx context.Context, storefront, id string)
 
 func enrichSongWithAlbum(song Song, album Collection) Song {
 	song.AlbumArtworkURL = album.ArtworkURL
+	song.AlbumArtworkColors = album.ArtworkColors
 	song.AlbumArtistID = album.ArtistID
 	song.AlbumArtistArtworkURL = album.ArtistArtworkURL
 	for _, track := range album.Tracks {
@@ -264,17 +265,19 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 	}
 	return Collection{
 		ID: album.ID, Type: TypeAlbum, Name: album.Attributes.Name, Artist: album.Attributes.ArtistName,
-		ArtworkURL: album.Attributes.Artwork.URL, ArtistID: albumArtistID, ArtistArtworkURL: albumArtistArtworkURL, Tracks: tracks,
+		ArtworkURL: album.Attributes.Artwork.URL, ArtworkColors: album.Attributes.Artwork.colors(),
+		ArtistID: albumArtistID, ArtistArtworkURL: albumArtistArtworkURL,
+		ReleaseDate: album.Attributes.ReleaseDate, GenreNames: album.Attributes.GenreNames, Tracks: tracks,
 	}, nil
 }
 
 // Playlist fetches a catalog playlist. The fetch itself never carries the
 // media-user-token, so an invalid or expired token can never fail a playlist
 // that resolves fine without one. mediaUserToken only powers a best-effort
-// artwork enrichment afterwards: a private (user-shared, pl.u-) playlist has
-// no artwork in its public catalog attributes, and the owner's library copy —
-// only visible with the user's subscription identity — is the sole place its
-// user-uploaded cover lives (see libraryArtworkURL).
+// artwork enrichment afterwards: a private (user-shared, pl.u-) playlist's
+// public catalog artwork may be Apple's generated track mosaic, while the
+// owner's library copy — only visible with the user's subscription identity —
+// carries the actual user-selected cover (see libraryArtworkURL).
 func (c *CatalogClient) Playlist(ctx context.Context, storefront, id, mediaUserToken string) (Collection, error) {
 	var resp catalogPlaylistResponse
 	if err := c.get(ctx, fmt.Sprintf("%s/v1/catalog/%s/playlists/%s", c.apiBase(), storefront, id), url.Values{
@@ -298,10 +301,17 @@ func (c *CatalogClient) Playlist(ctx context.Context, storefront, id, mediaUserT
 		tracks = append(tracks, mapSong(raw))
 	}
 	artworkURL := playlist.Attributes.Artwork.URL
-	if artworkURL == "" && mediaUserToken != "" && strings.HasPrefix(id, "pl.u-") {
-		artworkURL = c.libraryArtworkURL(ctx, storefront, id, mediaUserToken)
+	if mediaUserToken != "" && strings.HasPrefix(id, "pl.u-") {
+		artworkURL = firstNonEmpty(c.libraryArtworkURL(ctx, storefront, id, mediaUserToken), artworkURL)
 	}
-	return Collection{ID: playlist.ID, Type: TypePlaylist, Name: playlist.Attributes.Name, Artist: firstNonEmpty(playlist.Attributes.CuratorName, playlist.Attributes.ArtistName), ArtworkURL: artworkURL, Tracks: tracks}, nil
+	// ArtworkColors always describes the public catalog artwork: the private
+	// library-copy cover (when it replaces artworkURL above) carries no
+	// palette of its own in the library relationship payload.
+	return Collection{
+		ID: playlist.ID, Type: TypePlaylist, Name: playlist.Attributes.Name,
+		Artist:     firstNonEmpty(playlist.Attributes.CuratorName, playlist.Attributes.ArtistName),
+		ArtworkURL: artworkURL, ArtworkColors: playlist.Attributes.Artwork.colors(), Tracks: tracks,
+	}, nil
 }
 
 // libraryArtworkURL fetches a private playlist's cover from the owner's
@@ -347,7 +357,8 @@ func (c *CatalogClient) Station(ctx context.Context, storefront, id string) (Sta
 	station := resp.Data[0]
 	return StationInfo{
 		ID: station.ID, Name: station.Attributes.Name, ArtworkURL: station.Attributes.Artwork.URL,
-		Format: station.Attributes.PlayParams.Format, IsLive: station.Attributes.IsLive,
+		ArtworkColors: station.Attributes.Artwork.colors(),
+		Format:        station.Attributes.PlayParams.Format, IsLive: station.Attributes.IsLive,
 	}, nil
 }
 
@@ -380,7 +391,7 @@ func (c *CatalogClient) StationTracks(ctx context.Context, storefront, id, media
 		}
 		tracks = append(tracks, mapSong(raw))
 	}
-	return Collection{ID: info.ID, Type: TypeStation, Name: info.Name, Artist: "Apple Music Station", ArtworkURL: info.ArtworkURL, Tracks: tracks}, nil
+	return Collection{ID: info.ID, Type: TypeStation, Name: info.Name, Artist: "Apple Music Station", ArtworkURL: info.ArtworkURL, ArtworkColors: info.ArtworkColors, Tracks: tracks}, nil
 }
 
 // stationNextTracks performs the authenticated POST to the personalized
@@ -447,7 +458,7 @@ func (c *CatalogClient) ArtistAlbums(ctx context.Context, storefront, id string)
 		albums = append(albums, mapAlbumSummary(rawAlbum))
 	}
 	return ArtistAlbums{
-		Artist: Artist{ID: raw.ID, Name: raw.Attributes.Name, ArtworkURL: raw.Attributes.Artwork.URL},
+		Artist: Artist{ID: raw.ID, Name: raw.Attributes.Name, ArtworkURL: raw.Attributes.Artwork.URL, ArtworkColors: raw.Attributes.Artwork.colors()},
 		Albums: albums,
 	}, nil
 }
@@ -499,7 +510,7 @@ func (c *CatalogClient) Artist(ctx context.Context, storefront, id string) (Arti
 		return Artist{}, fmt.Errorf("artist %s not found", id)
 	}
 	raw := resp.Data[0]
-	return Artist{ID: raw.ID, Name: raw.Attributes.Name, ArtworkURL: raw.Attributes.Artwork.URL}, nil
+	return Artist{ID: raw.ID, Name: raw.Attributes.Name, ArtworkURL: raw.Attributes.Artwork.URL, ArtworkColors: raw.Attributes.Artwork.colors()}, nil
 }
 
 func (c *CatalogClient) Cover(ctx context.Context, artworkURL, format, size string) ([]byte, error) {
@@ -1030,7 +1041,8 @@ func mapSong(raw catalogSongData) Song {
 		TrackNumber: raw.Attributes.TrackNumber, DiscNumber: raw.Attributes.DiscNumber, ISRC: raw.Attributes.ISRC,
 		DurationInMillis: raw.Attributes.DurationInMillis,
 		ContentRating:    raw.Attributes.ContentRating, HasLyrics: raw.Attributes.HasLyrics || raw.Attributes.HasTimeSyncedLyrics,
-		ArtworkURL: raw.Attributes.Artwork.URL, EnhancedHLS: raw.Attributes.ExtendedAssetURLs.EnhancedHLS,
+		ArtworkURL: raw.Attributes.Artwork.URL, ArtworkColors: raw.Attributes.Artwork.colors(),
+		EnhancedHLS: raw.Attributes.ExtendedAssetURLs.EnhancedHLS,
 	}
 	if len(raw.Relationships.Albums.Data) > 0 {
 		album := raw.Relationships.Albums.Data[0]
@@ -1038,6 +1050,7 @@ func mapSong(raw catalogSongData) Song {
 		s.AlbumArtist = album.Attributes.ArtistName
 		s.AlbumRelease = album.Attributes.ReleaseDate
 		s.AlbumArtworkURL = album.Attributes.Artwork.URL
+		s.AlbumArtworkColors = album.Attributes.Artwork.colors()
 		s.Copyright = album.Attributes.Copyright
 		s.RecordLabel = album.Attributes.RecordLabel
 		s.UPC = album.Attributes.UPC
@@ -1060,7 +1073,9 @@ func mapAlbumSummary(raw catalogAlbumData) Collection {
 	}
 	return Collection{
 		ID: raw.ID, Type: TypeAlbum, Name: raw.Attributes.Name, Artist: raw.Attributes.ArtistName,
-		ArtworkURL: raw.Attributes.Artwork.URL, ArtistID: artistID, ArtistArtworkURL: artistArtworkURL,
+		ArtworkURL: raw.Attributes.Artwork.URL, ArtworkColors: raw.Attributes.Artwork.colors(),
+		ArtistID: artistID, ArtistArtworkURL: artistArtworkURL,
+		ReleaseDate: raw.Attributes.ReleaseDate, GenreNames: raw.Attributes.GenreNames,
 	}
 }
 

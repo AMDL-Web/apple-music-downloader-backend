@@ -327,6 +327,79 @@ func TestArtworkURLRoundTrip(t *testing.T) {
 	}
 }
 
+func TestJobDisplayMetadataRoundTrip(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	job := domain.Job{
+		ID: "job-meta", Input: "https://music.apple.com/cn/album/test/1", Type: "album", Storefront: "cn",
+		Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	// Display metadata is written back after the input resolves, via UpdateJob.
+	job.ArtistName = "Album Artist"
+	job.CuratorName = "Curator"
+	job.ReleaseDate = "2024-06-01"
+	job.Genre = "Pop"
+	job.ArtworkBgColor = "1a1a1a"
+	job.ArtworkTextColor1 = "ffffff"
+	job.ArtworkTextColor2 = "eeeeee"
+	job.ArtworkTextColor3 = "cccccc"
+	job.ArtworkTextColor4 = "aaaaaa"
+	job.Status = domain.JobRunning
+	if err := store.UpdateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	assertMeta := func(where string, got domain.Job) {
+		t.Helper()
+		if got.ArtistName != job.ArtistName || got.CuratorName != job.CuratorName || got.ReleaseDate != job.ReleaseDate || got.Genre != job.Genre {
+			t.Fatalf("%s metadata = %q/%q/%q/%q, want %q/%q/%q/%q", where,
+				got.ArtistName, got.CuratorName, got.ReleaseDate, got.Genre,
+				job.ArtistName, job.CuratorName, job.ReleaseDate, job.Genre)
+		}
+		if got.ArtworkBgColor != job.ArtworkBgColor || got.ArtworkTextColor1 != job.ArtworkTextColor1 ||
+			got.ArtworkTextColor2 != job.ArtworkTextColor2 || got.ArtworkTextColor3 != job.ArtworkTextColor3 ||
+			got.ArtworkTextColor4 != job.ArtworkTextColor4 {
+			t.Fatalf("%s artwork colors = %q/%q/%q/%q/%q, want %q/%q/%q/%q/%q", where,
+				got.ArtworkBgColor, got.ArtworkTextColor1, got.ArtworkTextColor2, got.ArtworkTextColor3, got.ArtworkTextColor4,
+				job.ArtworkBgColor, job.ArtworkTextColor1, job.ArtworkTextColor2, job.ArtworkTextColor3, job.ArtworkTextColor4)
+		}
+	}
+	got, err := store.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMeta("GetJob", got)
+	listed, total, err := store.ListJobs(ctx, JobListFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(listed) != 1 {
+		t.Fatalf("listed = %+v (total %d), want exactly the created job", listed, total)
+	}
+	assertMeta("ListJobs", listed[0])
+	recoverable, err := store.ListRecoverableJobs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recoverable) != 1 {
+		t.Fatalf("recoverable = %+v, want the running job", recoverable)
+	}
+	assertMeta("ListRecoverableJobs", recoverable[0])
+	active, ok, err := store.FindActiveJobByKey(ctx, job.CanonicalKey)
+	if err != nil || !ok {
+		t.Fatalf("FindActiveJobByKey ok=%v err=%v, want the active job", ok, err)
+	}
+	assertMeta("FindActiveJobByKey", active)
+}
+
 func TestOpenMigratesExistingSchemaWithoutArtworkColumns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "amdl.db")
 	raw, err := sql.Open("sqlite", path)
@@ -400,6 +473,14 @@ func TestOpenMigratesExistingSchemaWithoutArtworkColumns(t *testing.T) {
 		if got.ArtworkURL != "" {
 			t.Fatalf("legacy job artwork_url = %q, want empty", got.ArtworkURL)
 		}
+		if got.ArtistName != "" || got.CuratorName != "" || got.ReleaseDate != "" || got.Genre != "" {
+			t.Fatalf("legacy job display metadata = %q/%q/%q/%q, want empty", got.ArtistName, got.CuratorName, got.ReleaseDate, got.Genre)
+		}
+		if got.ArtworkBgColor != "" || got.ArtworkTextColor1 != "" || got.ArtworkTextColor2 != "" ||
+			got.ArtworkTextColor3 != "" || got.ArtworkTextColor4 != "" {
+			t.Fatalf("legacy job artwork colors = %q/%q/%q/%q/%q, want empty",
+				got.ArtworkBgColor, got.ArtworkTextColor1, got.ArtworkTextColor2, got.ArtworkTextColor3, got.ArtworkTextColor4)
+		}
 		items, err := store.ListItems(ctx, "job-old")
 		if err != nil {
 			t.Fatal(err)
@@ -427,6 +508,14 @@ func TestOpenMigratesExistingSchemaWithoutArtworkColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	job.ArtworkURL = "https://is1-ssl.mzstatic.com/image/thumb/Music/old/{w}x{h}bb.jpg"
+	job.ArtistName = "Old Artist"
+	job.ReleaseDate = "2020-01-01"
+	job.Genre = "Rock"
+	job.ArtworkBgColor = "101010"
+	job.ArtworkTextColor1 = "fafafa"
+	job.ArtworkTextColor2 = "e0e0e0"
+	job.ArtworkTextColor3 = "c0c0c0"
+	job.ArtworkTextColor4 = "a0a0a0"
 	if err := store.UpdateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
@@ -436,6 +525,16 @@ func TestOpenMigratesExistingSchemaWithoutArtworkColumns(t *testing.T) {
 	}
 	if got.ArtworkURL != job.ArtworkURL {
 		t.Fatalf("migrated job artwork_url = %q, want %q", got.ArtworkURL, job.ArtworkURL)
+	}
+	if got.ArtistName != job.ArtistName || got.ReleaseDate != job.ReleaseDate || got.Genre != job.Genre {
+		t.Fatalf("migrated job display metadata = %q/%q/%q, want %q/%q/%q", got.ArtistName, got.ReleaseDate, got.Genre, job.ArtistName, job.ReleaseDate, job.Genre)
+	}
+	if got.ArtworkBgColor != job.ArtworkBgColor || got.ArtworkTextColor1 != job.ArtworkTextColor1 ||
+		got.ArtworkTextColor2 != job.ArtworkTextColor2 || got.ArtworkTextColor3 != job.ArtworkTextColor3 ||
+		got.ArtworkTextColor4 != job.ArtworkTextColor4 {
+		t.Fatalf("migrated job artwork colors = %q/%q/%q/%q/%q, want %q/%q/%q/%q/%q",
+			got.ArtworkBgColor, got.ArtworkTextColor1, got.ArtworkTextColor2, got.ArtworkTextColor3, got.ArtworkTextColor4,
+			job.ArtworkBgColor, job.ArtworkTextColor1, job.ArtworkTextColor2, job.ArtworkTextColor3, job.ArtworkTextColor4)
 	}
 	items, err := store.ListItems(ctx, job.ID)
 	if err != nil {

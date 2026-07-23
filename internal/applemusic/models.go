@@ -1,24 +1,40 @@
 package applemusic
 
+// ArtworkColors is the color palette Apple attaches to attributes.artwork
+// next to url/width/height: a background color plus four text colors, all
+// hex strings without a leading "#". Fields are empty when the catalog
+// omits the palette.
+type ArtworkColors struct {
+	BgColor    string
+	TextColor1 string
+	TextColor2 string
+	TextColor3 string
+	TextColor4 string
+}
+
 type Song struct {
-	ID                    string
-	Name                  string
-	ArtistName            string
-	AlbumName             string
-	ComposerName          string
-	GenreNames            []string
-	ReleaseDate           string
-	TrackNumber           int
-	DiscNumber            int
-	TrackCount            int
-	DiscCount             int
-	DurationInMillis      int
-	ISRC                  string
-	ContentRating         string
-	HasLyrics             bool
-	ArtworkURL            string
-	AlbumArtworkURL       string
-	ArtistArtworkURL      string
+	ID               string
+	Name             string
+	ArtistName       string
+	AlbumName        string
+	ComposerName     string
+	GenreNames       []string
+	ReleaseDate      string
+	TrackNumber      int
+	DiscNumber       int
+	TrackCount       int
+	DiscCount        int
+	DurationInMillis int
+	ISRC             string
+	ContentRating    string
+	HasLyrics        bool
+	ArtworkURL       string
+	AlbumArtworkURL  string
+	ArtistArtworkURL string
+	// ArtworkColors/AlbumArtworkColors are the palettes of the artwork behind
+	// ArtworkURL and AlbumArtworkURL respectively.
+	ArtworkColors         ArtworkColors
+	AlbumArtworkColors    ArtworkColors
 	EnhancedHLS           string
 	AlbumID               string
 	AlbumArtist           string
@@ -37,15 +53,22 @@ type Collection struct {
 	Name             string
 	Artist           string
 	ArtworkURL       string
+	ArtworkColors    ArtworkColors
 	ArtistID         string
 	ArtistArtworkURL string
-	Tracks           []Song
+	// ReleaseDate/GenreNames carry the album-level attributes (YYYY-MM-DD and
+	// Apple's genreNames list); only populated for album collections — the
+	// catalog does not expose them on playlists or stations.
+	ReleaseDate string
+	GenreNames  []string
+	Tracks      []Song
 }
 
 type Artist struct {
-	ID         string
-	Name       string
-	ArtworkURL string
+	ID            string
+	Name          string
+	ArtworkURL    string
+	ArtworkColors ArtworkColors
 }
 
 // StationInfo is the catalog metadata for an Apple Music radio station. Format
@@ -53,11 +76,12 @@ type Artist struct {
 // station that resolves to a finite next-tracks list (downloadable here), or
 // "stream" for a live broadcast (not downloadable — no static track list).
 type StationInfo struct {
-	ID         string
-	Name       string
-	ArtworkURL string
-	Format     string
-	IsLive     bool
+	ID            string
+	Name          string
+	ArtworkURL    string
+	ArtworkColors ArtworkColors
+	Format        string
+	IsLive        bool
 }
 
 type ArtistAlbums struct {
@@ -167,7 +191,23 @@ type playlistAttributes struct {
 }
 
 type artwork struct {
-	URL string `json:"url"`
+	URL        string `json:"url"`
+	BgColor    string `json:"bgColor"`
+	TextColor1 string `json:"textColor1"`
+	TextColor2 string `json:"textColor2"`
+	TextColor3 string `json:"textColor3"`
+	TextColor4 string `json:"textColor4"`
+}
+
+// colors lifts the wire palette into the exported ArtworkColors value.
+func (a artwork) colors() ArtworkColors {
+	return ArtworkColors{
+		BgColor:    a.BgColor,
+		TextColor1: a.TextColor1,
+		TextColor2: a.TextColor2,
+		TextColor3: a.TextColor3,
+		TextColor4: a.TextColor4,
+	}
 }
 
 type extendedAssetURLs struct {
