@@ -271,10 +271,10 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 // Playlist fetches a catalog playlist. The fetch itself never carries the
 // media-user-token, so an invalid or expired token can never fail a playlist
 // that resolves fine without one. mediaUserToken only powers a best-effort
-// artwork enrichment afterwards: a private (user-shared, pl.u-) playlist has
-// no artwork in its public catalog attributes, and the owner's library copy —
-// only visible with the user's subscription identity — is the sole place its
-// user-uploaded cover lives (see libraryArtworkURL).
+// artwork enrichment afterwards: a private (user-shared, pl.u-) playlist's
+// public catalog artwork may be Apple's generated track mosaic, while the
+// owner's library copy — only visible with the user's subscription identity —
+// carries the actual user-selected cover (see libraryArtworkURL).
 func (c *CatalogClient) Playlist(ctx context.Context, storefront, id, mediaUserToken string) (Collection, error) {
 	var resp catalogPlaylistResponse
 	if err := c.get(ctx, fmt.Sprintf("%s/v1/catalog/%s/playlists/%s", c.apiBase(), storefront, id), url.Values{
@@ -298,8 +298,8 @@ func (c *CatalogClient) Playlist(ctx context.Context, storefront, id, mediaUserT
 		tracks = append(tracks, mapSong(raw))
 	}
 	artworkURL := playlist.Attributes.Artwork.URL
-	if artworkURL == "" && mediaUserToken != "" && strings.HasPrefix(id, "pl.u-") {
-		artworkURL = c.libraryArtworkURL(ctx, storefront, id, mediaUserToken)
+	if mediaUserToken != "" && strings.HasPrefix(id, "pl.u-") {
+		artworkURL = firstNonEmpty(c.libraryArtworkURL(ctx, storefront, id, mediaUserToken), artworkURL)
 	}
 	return Collection{ID: playlist.ID, Type: TypePlaylist, Name: playlist.Attributes.Name, Artist: firstNonEmpty(playlist.Attributes.CuratorName, playlist.Attributes.ArtistName), ArtworkURL: artworkURL, Tracks: tracks}, nil
 }
