@@ -65,8 +65,11 @@ func TestJobItemRetryStateRoundTrip(t *testing.T) {
 	if got.RetryKind != want.RetryKind || got.Attempt != want.Attempt || got.MaxAttempts != want.MaxAttempts || got.StatusMessage != want.StatusMessage {
 		t.Fatalf("retry state = %+v, want %+v", got, want)
 	}
-	if got.Codec != want.Codec || got.BitDepth != want.BitDepth || got.SampleRate != want.SampleRate || got.Bitrate != want.Bitrate || got.FileSize != want.FileSize {
+	if got.Codec != want.Codec || got.BitDepth != want.BitDepth || got.SampleRate != want.SampleRate || got.Bitrate != want.Bitrate {
 		t.Fatalf("quality = %+v, want %+v", got, want)
+	}
+	if got.FileSize != want.FileSize {
+		t.Fatalf("file_size = %d, want %d", got.FileSize, want.FileSize)
 	}
 	if got.DurationMS != want.DurationMS {
 		t.Fatalf("duration_ms = %d, want %d", got.DurationMS, want.DurationMS)
