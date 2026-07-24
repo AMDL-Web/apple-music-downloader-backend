@@ -52,9 +52,10 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 		// config already carries overrides.force_overwrite, and job.Force
 		// covers jobs persisted before the flag moved into the config.
 		force := d.cfg.Download.ForceOverwrite || job.Force
-		if _, statErr := os.Stat(outPath); statErr == nil && !force {
+		if fi, statErr := os.Stat(outPath); statErr == nil && !force {
 			item.Status = domain.ItemSkipped
 			item.Progress = 1
+			item.FileSize = fi.Size()
 			item.RetryKind = ""
 			item.Attempt = 0
 			item.MaxAttempts = 0
@@ -188,6 +189,7 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 		item.Progress = 1
 		item.OutputPath = outPath
 		item.Codec = codec
+		item.FileSize = totalBytes
 		switch {
 		case codecIndex > 0:
 			item.StatusMessage = fmt.Sprintf("Completed after fallback to %s", codecName)

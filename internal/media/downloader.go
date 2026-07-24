@@ -435,7 +435,7 @@ func syncJobItems(ctx context.Context, job domain.Job, tracks []applemusic.Song,
 		}
 		items[i] = domain.JobItem{
 			ID: storage.NewID("item"), JobID: job.ID, AdamID: track.ID, Kind: "song", Index: i + 1,
-			Title: track.Name, Artist: track.ArtistName, Album: track.AlbumName,
+			Title: track.Name, Artist: track.ArtistName, Album: track.AlbumName, DurationMS: track.DurationInMillis,
 			ArtworkURL: firstNonEmpty(track.ArtworkURL, track.AlbumArtworkURL), HasLyrics: track.HasLyrics,
 			Status: domain.ItemQueued,
 		}
@@ -878,6 +878,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 	item.Title = song.Name
 	item.Artist = song.ArtistName
 	item.Album = song.AlbumName
+	item.DurationMS = song.DurationInMillis
 	item.ArtworkURL = firstNonEmpty(song.ArtworkURL, song.AlbumArtworkURL, item.ArtworkURL)
 	item.HasLyrics = song.HasLyrics
 	_ = reporter.UpdateItem(ctx, &item)
@@ -1220,10 +1221,11 @@ func (d *Downloader) handleExistingOutput(ctx context.Context, reporter jobs.Rep
 	// job.Force keeps forcing for jobs persisted before the flag moved into
 	// the config/overrides.
 	force := d.cfg.Download.ForceOverwrite || job.Force
-	if _, err := os.Stat(outPath); err == nil && !force {
+	if fi, err := os.Stat(outPath); err == nil && !force {
 		cleanupResumeForKey(d.cfg.Download.TempDir, job.ID, outPath)
 		item.Status = domain.ItemSkipped
 		item.Progress = 1
+		item.FileSize = fi.Size()
 		item.RetryKind = ""
 		item.Attempt = 0
 		item.MaxAttempts = 0
@@ -1478,7 +1480,19 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	item.Progress = 1
 	item.OutputPath = outPath
 	item.Codec = codec
+	item.FileSize = outputFileSize(outPath)
 	return nil
+}
+
+// outputFileSize returns the size in bytes of the finished output file, or 0
+// when it cannot be stat'd (the caller treats 0 as "unknown" and omits it from
+// the item's JSON), so a stat hiccup never fails an otherwise-complete download.
+func outputFileSize(path string) int64 {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
 }
 
 // repairALACFile is the ALAC integrity-repair fallback, run only when the
@@ -1638,6 +1652,7 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 	item.Progress = 1
 	item.OutputPath = outPath
 	item.Codec = "aac-lc"
+	item.FileSize = outputFileSize(outPath)
 	return nil
 }
 
