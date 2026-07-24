@@ -46,8 +46,8 @@ func TestJobItemRetryStateRoundTrip(t *testing.T) {
 	defer store.Close()
 	now := time.Now().UTC()
 	want := domain.JobItem{
-		ID: "item-1", JobID: "job-1", AdamID: "123", Kind: "song", Index: 1,
-		Status: domain.ItemDownloading, Codec: "alac", BitDepth: 24, SampleRate: 96000, Bitrate: 2500000,
+		ID: "item-1", JobID: "job-1", AdamID: "123", Kind: "song", Index: 1, DurationMS: 245000,
+		Status: domain.ItemDownloading, Codec: "alac", BitDepth: 24, SampleRate: 96000, Bitrate: 2500000, FileSize: 34567890,
 		RetryKind: "codec", Attempt: 2, MaxAttempts: 4,
 		StatusMessage: "ALAC 第 2/4 次尝试", CreatedAt: now, UpdatedAt: now,
 	}
@@ -67,6 +67,12 @@ func TestJobItemRetryStateRoundTrip(t *testing.T) {
 	}
 	if got.Codec != want.Codec || got.BitDepth != want.BitDepth || got.SampleRate != want.SampleRate || got.Bitrate != want.Bitrate {
 		t.Fatalf("quality = %+v, want %+v", got, want)
+	}
+	if got.FileSize != want.FileSize {
+		t.Fatalf("file_size = %d, want %d", got.FileSize, want.FileSize)
+	}
+	if got.DurationMS != want.DurationMS {
+		t.Fatalf("duration_ms = %d, want %d", got.DurationMS, want.DurationMS)
 	}
 
 	// Falling back to aac-lc, which has no per-track manifest to read quality

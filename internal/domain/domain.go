@@ -135,31 +135,42 @@ func (j Job) MarshalJSON() ([]byte, error) {
 }
 
 type JobItem struct {
-	ID            string       `json:"id"`
-	JobID         string       `json:"job_id"`
-	AdamID        string       `json:"adam_id"`
-	Kind          string       `json:"kind"`
-	Index         int          `json:"index"`
-	Title         string       `json:"title,omitempty"`
-	Artist        string       `json:"artist,omitempty"`
-	Album         string       `json:"album,omitempty"`
-	ArtworkURL    string       `json:"artwork_url"`
-	HasLyrics     bool         `json:"has_lyrics"`
-	LyricsStatus  LyricsStatus `json:"lyrics_status,omitempty"`
-	Status        ItemStatus   `json:"status"`
-	Progress      float64      `json:"progress"`
-	Codec         string       `json:"codec,omitempty"`
-	BitDepth      int          `json:"bit_depth,omitempty"`
-	SampleRate    int          `json:"sample_rate,omitempty"`
-	Bitrate       int          `json:"bitrate,omitempty"`
-	RetryKind     string       `json:"retry_kind,omitempty"`
-	Attempt       int          `json:"attempt,omitempty"`
-	MaxAttempts   int          `json:"max_attempts,omitempty"`
-	StatusMessage string       `json:"status_message,omitempty"`
-	OutputPath    string       `json:"-"`
-	Error         string       `json:"error,omitempty"`
-	CreatedAt     time.Time    `json:"created_at"`
-	UpdatedAt     time.Time    `json:"updated_at"`
+	ID     string `json:"id"`
+	JobID  string `json:"job_id"`
+	AdamID string `json:"adam_id"`
+	Kind   string `json:"kind"`
+	Index  int    `json:"index"`
+	Title  string `json:"title,omitempty"`
+	Artist string `json:"artist,omitempty"`
+	Album  string `json:"album,omitempty"`
+	// DurationMS is the track's playback duration in milliseconds, resolved
+	// from the Apple Music catalog alongside Title/Artist/Album (so it is
+	// available before the download runs). 0/absent for items produced before
+	// this field existed or when the catalog omits it. Unlike the quality and
+	// file_size fields it is stable catalog metadata, so a retry keeps it.
+	DurationMS   int          `json:"duration_ms,omitempty"`
+	ArtworkURL   string       `json:"artwork_url"`
+	HasLyrics    bool         `json:"has_lyrics"`
+	LyricsStatus LyricsStatus `json:"lyrics_status,omitempty"`
+	Status       ItemStatus   `json:"status"`
+	Progress     float64      `json:"progress"`
+	Codec        string       `json:"codec,omitempty"`
+	BitDepth     int          `json:"bit_depth,omitempty"`
+	SampleRate   int          `json:"sample_rate,omitempty"`
+	Bitrate      int          `json:"bitrate,omitempty"`
+	// FileSize is the size in bytes of the final output file, set once the
+	// track is written to disk (completed) or found already present
+	// (skipped_existing). Zero until then, and for items produced before this
+	// field existed or whose file the backend could not stat.
+	FileSize      int64     `json:"file_size,omitempty"`
+	RetryKind     string    `json:"retry_kind,omitempty"`
+	Attempt       int       `json:"attempt,omitempty"`
+	MaxAttempts   int       `json:"max_attempts,omitempty"`
+	StatusMessage string    `json:"status_message,omitempty"`
+	OutputPath    string    `json:"-"`
+	Error         string    `json:"error,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // Finished reports whether the item ended in a state that a job retry must
@@ -178,6 +189,7 @@ func (i *JobItem) ResetForRetry() {
 	i.Progress = 0
 	i.Codec = ""
 	i.BitDepth, i.SampleRate, i.Bitrate = 0, 0, 0
+	i.FileSize = 0
 	i.LyricsStatus = LyricsPending
 	i.RetryKind = ""
 	i.Attempt = 0

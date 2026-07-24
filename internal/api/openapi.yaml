@@ -1591,6 +1591,13 @@ components:
         title: {type: string}
         artist: {type: string}
         album: {type: string}
+        duration_ms:
+          type: integer
+          description: >-
+            Track playback duration in milliseconds, resolved from the Apple
+            Music catalog alongside title/artist/album (available before the
+            download runs). 0/absent for items created before this field
+            existed or when the catalog omits it; a retry keeps it.
         artwork_url:
           type: string
           description: >-
@@ -1654,6 +1661,14 @@ components:
             advertised average bandwidth, not a true constant bitrate.
             0/absent for aac-lc (no per-track manifest to read it from) and
             before the codec's quality has been resolved.
+        file_size:
+          type: integer
+          format: int64
+          description: >-
+            Size in bytes of the final output file, set once the track is
+            written to disk (completed) or found already present
+            (skipped_existing). 0/absent until then, and for items produced
+            before this field existed or whose file could not be stat'd.
         retry_kind: {type: string}
         attempt: {type: integer}
         max_attempts: {type: integer}
