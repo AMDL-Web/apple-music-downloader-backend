@@ -102,6 +102,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/logs", s.listLogs)
 	mux.HandleFunc("GET /api/v1/logs/stream", s.streamLogs)
+	mux.HandleFunc("GET /api/v1/logs/stream/ws", s.streamLogsWS)
 	mux.HandleFunc("GET /api/v1/config", s.getConfig)
 	mux.HandleFunc("PUT /api/v1/config", s.updateConfig)
 	mux.HandleFunc("GET /api/v1/hooks", s.listHooks)
