@@ -2,13 +2,17 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 
 	"amdl/internal/config"
 	"amdl/internal/logging"
@@ -114,5 +118,100 @@ func TestLogStreamReplaysAndPublishes(t *testing.T) {
 	}
 	if len(dataLines) != 2 || !strings.Contains(dataLines[0], `"message":"backlog"`) || !strings.Contains(dataLines[1], `"message":"live"`) {
 		t.Fatalf("stream data = %#v", dataLines)
+	}
+}
+
+func TestLogStreamWebSocketReplaysAndPublishes(t *testing.T) {
+	server, system := newObservedServer(t)
+	system.Logger.Info("backlog", "component", "wstest")
+	httpServer := httptest.NewServer(server.Routes())
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/api/v1/logs/stream/ws?component=wstest&limit=10"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+
+	// The backlog is queued before Dial returns, so publishing now exercises the
+	// live path rather than racing the replay.
+	system.Logger.Warn("live", "component", "wstest")
+
+	var messages []logging.Entry
+	for len(messages) < 2 {
+		_, raw, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("read %d: %v", len(messages), err)
+		}
+		var entry logging.Entry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			t.Fatalf("decode %q: %v", raw, err)
+		}
+		messages = append(messages, entry)
+	}
+	if messages[0].Message != "backlog" || messages[0].Level != "info" {
+		t.Fatalf("backlog message = %+v", messages[0])
+	}
+	if messages[1].Message != "live" || messages[1].Level != "warn" {
+		t.Fatalf("live message = %+v", messages[1])
+	}
+	if messages[1].Sequence <= messages[0].Sequence {
+		t.Fatalf("sequences not increasing: %d then %d", messages[0].Sequence, messages[1].Sequence)
+	}
+}
+
+func TestLogStreamWebSocketResumesAfterSequence(t *testing.T) {
+	server, system := newObservedServer(t)
+	system.Logger.Info("first", "component", "wsresume")
+	system.Logger.Info("second", "component", "wsresume")
+	httpServer := httptest.NewServer(server.Routes())
+	defer httpServer.Close()
+
+	page := system.Store.List(logging.Filter{Component: "wsresume", Limit: 10})
+	if len(page.Entries) != 2 {
+		t.Fatalf("seeded entries = %#v", page.Entries)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") +
+		"/api/v1/logs/stream/ws?component=wsresume&after=" + strconv.FormatUint(page.Entries[0].Sequence, 10)
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+
+	_, raw, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry logging.Entry
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.Message != "second" {
+		t.Fatalf("resumed entry = %+v, want the record after the cursor", entry)
+	}
+}
+
+func TestLogStreamWebSocketRejectsInvalidFilter(t *testing.T) {
+	server, _ := newObservedServer(t)
+	httpServer := httptest.NewServer(server.Routes())
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/api/v1/logs/stream/ws?level=nope"
+	conn, resp, err := websocket.Dial(ctx, wsURL, nil)
+	if err == nil {
+		conn.CloseNow()
+		t.Fatal("dial succeeded, want the handshake refused before the upgrade")
+	}
+	if resp == nil || resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("handshake response = %+v", resp)
 	}
 }

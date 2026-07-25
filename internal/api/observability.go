@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/coder/websocket"
 
 	"amdl/internal/logging"
 )
@@ -194,20 +197,106 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
+	write := func(entry logging.Entry) error {
+		if err := writeLogEvent(w, entry); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}
+	keepalive := func() error {
+		if _, err := io.WriteString(w, ": keepalive\n\n"); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}
+	runLogStream(r.Context(), live, heartbeat.C, write, keepalive)
+}
+
+// streamLogsWS is the WebSocket twin of streamLogs: it streams the same
+// logging.Entry payloads — one entry encoded as a JSON text message, identical
+// to the SSE data payload — over a WebSocket connection. Resume works via the
+// ?after= query parameter (WebSocket has no Last-Event-ID header convention);
+// clients pass the sequence of the last entry they saw. The ticker pings the
+// peer so half-open mobile connections are detected and torn down instead of
+// holding the goroutine forever.
+func (s *Server) streamLogsWS(w http.ResponseWriter, r *http.Request) {
+	filter, err := parseLogFilter(r, true)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if s.logStore == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("log buffer is not configured"))
+		return
+	}
+
+	// Subscribe before the handshake so a record published while the upgrade is
+	// in flight still reaches this client, mirroring the SSE endpoint.
+	backlog, live, unsubscribe := s.logStore.Subscribe(filter)
+	defer unsubscribe()
+
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+	if err != nil {
+		return // Accept already wrote the handshake failure response
+	}
+	defer conn.CloseNow()
+
+	// CloseRead answers control frames (ping/pong/close) in the background and
+	// cancels the returned context when the client goes away. The protocol is
+	// server-push only, so a client data frame also terminates the connection.
+	ctx := conn.CloseRead(r.Context())
+
+	write := func(entry logging.Entry) error {
+		raw, err := json.Marshal(entry)
+		if err != nil {
+			// Drop the single unencodable record rather than the connection; the
+			// SSE twin behaves the same way via writeLogEvent's error return.
+			return nil
+		}
+		return conn.Write(ctx, websocket.MessageText, raw)
+	}
+	for _, entry := range backlog {
+		if write(entry) != nil {
+			return
+		}
+	}
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	keepalive := func() error {
+		pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer pingCancel()
+		return conn.Ping(pingCtx)
+	}
+	runLogStream(ctx, live, ticker.C, write, keepalive)
+}
+
+// runLogStream drives the live phase shared by the SSE and WS log endpoints.
+// Callers replay their own backlog first, then hand the subscription here: each
+// published record goes out through write, and every tick calls keepalive so an
+// idle connection stays open and a dead peer is detected. A closed live channel
+// means the store dropped this slow subscriber, so the client must reconnect
+// with its last sequence to fill the gap.
+func runLogStream(
+	ctx context.Context,
+	live <-chan logging.Entry,
+	tick <-chan time.Time,
+	write func(logging.Entry) error,
+	keepalive func() error,
+) {
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		case entry, ok := <-live:
-			if !ok || writeLogEvent(w, entry) != nil {
+			if !ok || write(entry) != nil {
 				return
 			}
-			flusher.Flush()
-		case <-heartbeat.C:
-			if _, err := io.WriteString(w, ": keepalive\n\n"); err != nil {
+		case <-tick:
+			if keepalive() != nil {
 				return
 			}
-			flusher.Flush()
 		}
 	}
 }

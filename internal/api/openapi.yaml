@@ -97,6 +97,39 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/logs/stream/ws:
+    get:
+      tags: [System]
+      summary: 实时订阅进程日志（WebSocket）
+      description: |
+        /api/v1/logs/stream 的 WebSocket 版本，面向移动端（如 iOS
+        URLSessionWebSocketTask），过滤语义与 SSE 端点完全一致。握手成功后服务端
+        先重放内存中匹配的记录，再持续推送新记录；每条 LogEntry 作为一条 JSON
+        文本消息发送，内容与 SSE 端点 data 字段完全一致。断线重连时通过 after
+        查询参数续接（WebSocket 无 Last-Event-ID 请求头约定），传入最后收到的
+        sequence。服务端每 15 秒发送一次 WebSocket ping 探测半开连接；连接为
+        服务端单向推送，客户端发送数据帧会导致连接关闭。客户端持续读取过慢时
+        服务端会关闭连接，应携带最后收到的 sequence 重连补齐。
+      operationId: streamLogsWebSocket
+      parameters:
+        - $ref: '#/components/parameters/LogLevel'
+        - $ref: '#/components/parameters/LogComponent'
+        - $ref: '#/components/parameters/LogRequestID'
+        - $ref: '#/components/parameters/LogJobID'
+        - $ref: '#/components/parameters/LogQuery'
+        - $ref: '#/components/parameters/LogSince'
+        - $ref: '#/components/parameters/LogUntil'
+        - $ref: '#/components/parameters/LogAfter'
+        - $ref: '#/components/parameters/LogLimit'
+      responses:
+        '101':
+          description: 协议切换成功，开始重放并推送日志。
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '426':
+          description: 请求不是 WebSocket 握手（缺少 Upgrade/Connection 等升级头），由握手库直接拒绝。
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/config:
     get:
       tags: [System]

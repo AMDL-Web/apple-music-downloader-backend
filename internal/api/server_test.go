@@ -546,6 +546,9 @@ func TestOpenAPISpecification(t *testing.T) {
 	}
 	wantOperations := map[string][]string{
 		"/api/v1/health":                       {"get"},
+		"/api/v1/logs":                         {"get"},
+		"/api/v1/logs/stream":                  {"get"},
+		"/api/v1/logs/stream/ws":               {"get"},
 		"/api/v1/config":                       {"get", "put"},
 		"/api/v1/hooks":                        {"get"},
 		"/api/v1/wrapper/status":               {"get"},
