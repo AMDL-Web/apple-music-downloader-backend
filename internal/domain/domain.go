@@ -101,7 +101,17 @@ type Job struct {
 	ArtworkTextColor2 string `json:"artwork_text_color2,omitempty"`
 	ArtworkTextColor3 string `json:"artwork_text_color3,omitempty"`
 	ArtworkTextColor4 string `json:"artwork_text_color4,omitempty"`
-	CanonicalKey      string `json:"-"`
+	// MotionArtworkURL/MotionArtworkTallURL are HLS master playlists for the
+	// animated cover Apple Music shows on albums that have one (1:1 and 3:4).
+	// Public, unsigned URLs a client can hand straight to a player.
+	//
+	// Only album and song jobs can have them, and only some albums do. They are
+	// filled in asynchronously after the input resolves, so a job that has just
+	// started will report them empty and gain them a moment later — clients must
+	// treat "absent" as "no animated cover" and re-render when the job updates.
+	MotionArtworkURL     string `json:"motion_artwork_url,omitempty"`
+	MotionArtworkTallURL string `json:"motion_artwork_tall_url,omitempty"`
+	CanonicalKey         string `json:"-"`
 	// Force is legacy: it was the submission-time overwrite flag before
 	// download.force_overwrite existed as a global config key with a
 	// per-request override (Overrides.ForceOverwrite). New jobs never set it;

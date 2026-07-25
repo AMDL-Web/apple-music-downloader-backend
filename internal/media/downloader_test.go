@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -138,6 +140,8 @@ type fakeDownloaderCatalog struct {
 	webTokenHLS       string
 	webTokenErr       error
 	webTokenCallCount *int
+	motionArtwork     applemusic.MotionArtwork
+	motionArtworkErr  error
 }
 
 func (f fakeDownloaderCatalog) Song(context.Context, string, string) (applemusic.Song, error) {
@@ -181,6 +185,10 @@ func (f fakeDownloaderCatalog) Artist(context.Context, string, string) (applemus
 
 func (f fakeDownloaderCatalog) FetchCover(context.Context, []string, string, string) ([]byte, error) {
 	return nil, nil
+}
+
+func (f fakeDownloaderCatalog) MotionArtworkViaWebToken(context.Context, string, string) (applemusic.MotionArtwork, error) {
+	return f.motionArtwork, f.motionArtworkErr
 }
 
 func (f fakeDownloaderCatalog) EnhancedHLSViaWebToken(context.Context, string, string) (string, error) {
@@ -268,12 +276,19 @@ func TestHandleExistingOutputHonorsForceOverwriteConfig(t *testing.T) {
 }
 
 type recordingReporter struct {
-	mu       sync.Mutex
-	events   []domain.Event
-	items    []domain.JobItem
-	existing []domain.JobItem
-	added    []domain.JobItem
-	removed  []string
+	mu            sync.Mutex
+	events        []domain.Event
+	items         []domain.JobItem
+	existing      []domain.JobItem
+	added         []domain.JobItem
+	removed       []string
+	motionArtwork []motionArtworkWrite
+}
+
+type motionArtworkWrite struct {
+	JobID  string
+	Square string
+	Tall   string
 }
 
 type metadataCountingCatalog struct {
@@ -347,6 +362,13 @@ func (c *metadataCountingCatalog) counts() (map[string]int, map[string]int, map[
 
 func (*recordingReporter) SetJob(_ context.Context, job *domain.Job) error {
 	job.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (r *recordingReporter) SetJobMotionArtwork(_ context.Context, jobID, squareURL, tallURL string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.motionArtwork = append(r.motionArtwork, motionArtworkWrite{JobID: jobID, Square: squareURL, Tall: tallURL})
 	return nil
 }
 func (r *recordingReporter) AddItem(_ context.Context, item *domain.JobItem) error {
@@ -1476,4 +1498,143 @@ func TestSyncJobItemsFirstRunCreatesAllItems(t *testing.T) {
 			t.Fatalf("item %d has_lyrics = %v, want %v from the resolved track", i, items[i].HasLyrics, tracks[i].HasLyrics)
 		}
 	}
+}
+
+func TestMotionArtworkAlbumIDPicksTheAlbumBehindTheJob(t *testing.T) {
+	tests := []struct {
+		name   string
+		parsed applemusic.ParsedURL
+		tracks []applemusic.Song
+		want   string
+	}{
+		{
+			name:   "album uses the parsed id",
+			parsed: applemusic.ParsedURL{Type: applemusic.TypeAlbum, ID: "1858184006"},
+			want:   "1858184006",
+		},
+		{
+			// The parsed id of a song job is the track, and editorialVideo only
+			// exists on albums, so the lookup has to hop to the track's album.
+			name:   "song hops to its album",
+			parsed: applemusic.ParsedURL{Type: applemusic.TypeSong, ID: "1858184100"},
+			tracks: []applemusic.Song{{ID: "1858184100", AlbumID: "1858184006"}},
+			want:   "1858184006",
+		},
+		{
+			name:   "song without a resolved album is skipped",
+			parsed: applemusic.ParsedURL{Type: applemusic.TypeSong, ID: "1858184100"},
+			tracks: []applemusic.Song{{ID: "1858184100"}},
+			want:   "",
+		},
+		{
+			name:   "playlists have no album motion artwork",
+			parsed: applemusic.ParsedURL{Type: applemusic.TypePlaylist, ID: "pl.1"},
+			tracks: []applemusic.Song{{ID: "s1", AlbumID: "1858184006"}},
+			want:   "",
+		},
+		{
+			name:   "stations have no album motion artwork",
+			parsed: applemusic.ParsedURL{Type: applemusic.TypeStation, ID: "ra.1"},
+			tracks: []applemusic.Song{{ID: "s1", AlbumID: "1858184006"}},
+			want:   "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := motionArtworkAlbumID(tc.parsed, tc.tracks); got != tc.want {
+				t.Fatalf("motionArtworkAlbumID = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The backfill must survive the job context, which the manager cancels as soon
+// as the job finishes. Short jobs would otherwise cancel the lookup mid-flight
+// and silently never persist a cover the album actually has.
+func TestMotionArtworkBackfillOutlivesTheJobContext(t *testing.T) {
+	reporter := &recordingReporter{}
+	d := &Downloader{
+		catalog: fakeDownloaderCatalog{motionArtwork: applemusic.MotionArtwork{
+			Square: "https://mvod.example/square.m3u8",
+			Tall:   "https://mvod.example/tall.m3u8",
+		}},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d.startMotionArtworkBackfill(ctx, "job-1", applemusic.ParsedURL{
+		Storefront: "cn", Type: applemusic.TypeAlbum, ID: "1858184006",
+	}, nil, reporter)
+	cancel()
+
+	writes := waitForMotionArtworkWrites(t, reporter)
+	if len(writes) != 1 {
+		t.Fatalf("motion artwork writes = %d, want 1", len(writes))
+	}
+	if writes[0].JobID != "job-1" || writes[0].Square != "https://mvod.example/square.m3u8" || writes[0].Tall != "https://mvod.example/tall.m3u8" {
+		t.Fatalf("unexpected write %+v", writes[0])
+	}
+}
+
+// A catalog failure means "no animated cover", never a job failure: the caller
+// already returned and the download is in flight by now.
+func TestMotionArtworkBackfillSwallowsCatalogFailure(t *testing.T) {
+	reporter := &recordingReporter{}
+	d := &Downloader{
+		catalog: fakeDownloaderCatalog{motionArtworkErr: errors.New("amp-api unavailable")},
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	d.startMotionArtworkBackfill(context.Background(), "job-1", applemusic.ParsedURL{
+		Storefront: "cn", Type: applemusic.TypeAlbum, ID: "1858184006",
+	}, nil, reporter)
+
+	// Nothing to wait on when it fails, so give the goroutine room to misbehave.
+	time.Sleep(100 * time.Millisecond)
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	if len(reporter.motionArtwork) != 0 {
+		t.Fatalf("motion artwork writes = %d, want none", len(reporter.motionArtwork))
+	}
+	for _, ev := range reporter.events {
+		if ev.Type == "motion_artwork_resolved" {
+			t.Fatal("a failed lookup must not announce a motion cover")
+		}
+	}
+}
+
+// An album with no animated cover writes nothing rather than blanking the row.
+func TestMotionArtworkBackfillIgnoresEmptyResult(t *testing.T) {
+	reporter := &recordingReporter{}
+	d := &Downloader{
+		catalog: fakeDownloaderCatalog{motionArtwork: applemusic.MotionArtwork{}},
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	d.startMotionArtworkBackfill(context.Background(), "job-1", applemusic.ParsedURL{
+		Storefront: "cn", Type: applemusic.TypeAlbum, ID: "1858184006",
+	}, nil, reporter)
+
+	time.Sleep(100 * time.Millisecond)
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	if len(reporter.motionArtwork) != 0 {
+		t.Fatalf("motion artwork writes = %d, want none", len(reporter.motionArtwork))
+	}
+}
+
+func waitForMotionArtworkWrites(t *testing.T, reporter *recordingReporter) []motionArtworkWrite {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		reporter.mu.Lock()
+		writes := append([]motionArtworkWrite(nil), reporter.motionArtwork...)
+		reporter.mu.Unlock()
+		if len(writes) > 0 {
+			return writes
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the motion artwork write")
+	return nil
 }

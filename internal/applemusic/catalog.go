@@ -970,6 +970,68 @@ func (c *CatalogClient) doWithWebAuth(ctx context.Context, buildReq func(token s
 	return c.doAppleRequest(ctx, req, true)
 }
 
+// MotionArtworkViaWebToken fetches an album's animated cover loops.
+//
+// Same shape as EnhancedHLSViaWebToken and for the same reason: editorialVideo
+// is not available to third-party developer tokens at all. Apple states this
+// outright — the only extended attribute a third party may load on Albums is
+// artistUrl. Verified empirically: a self-signed token returns no editorialVideo
+// on any storefront, and even the web-player token returns none from the public
+// api.music.apple.com host. Both the amp-api host and a scraped web-player JWT
+// are required, so this always goes through doWithWebAuth regardless of whether
+// developer-token signing is enabled.
+//
+// amp-api is Apple's internal web-player endpoint, not a documented API. Treat a
+// failure here as "this album has no motion artwork", never as a job error.
+func (c *CatalogClient) MotionArtworkViaWebToken(ctx context.Context, storefront, id string) (MotionArtwork, error) {
+	params := url.Values{
+		"extend": []string{"editorialVideo"},
+		"l":      []string{c.cfg.Language},
+	}
+	endpoint := fmt.Sprintf("https://amp-api.music.apple.com/v1/catalog/%s/albums/%s?%s", storefront, id, params.Encode())
+	resp, err := c.doWithWebAuth(ctx, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Origin", "https://music.apple.com")
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+		return req, nil
+	})
+	if err != nil {
+		return MotionArtwork{}, fmt.Errorf("fetch motion artwork with web token: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return MotionArtwork{}, fmt.Errorf("catalog request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var out catalogMotionArtworkResponse
+	if err := decodeJSONLimited(resp.Body, maxCatalogResponseBytes, &out); err != nil {
+		return MotionArtwork{}, err
+	}
+	if len(out.Data) == 0 {
+		return MotionArtwork{}, fmt.Errorf("album %s not found", id)
+	}
+	video := out.Data[0].Attributes.EditorialVideo
+	// Most albums expose the motionDetail* pair; a few only carry the
+	// motion*Video* aliases, which hold the same asset.
+	return MotionArtwork{
+		Square: firstNonEmptyString(video.MotionDetailSquare.Video, video.MotionSquareVideo1x1.Video),
+		Tall:   firstNonEmptyString(video.MotionDetailTall.Video, video.MotionTallVideo3x4.Video),
+	}, nil
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // EnhancedHLSViaWebToken fetches a song's Enhanced HLS master playlist URL
 // from amp-api.music.apple.com using a scraped music.apple.com web-player
 // JWT, regardless of whether developer-token signing is enabled. It is used

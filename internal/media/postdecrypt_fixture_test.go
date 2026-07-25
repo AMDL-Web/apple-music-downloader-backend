@@ -415,7 +415,10 @@ func (t *postDecryptRestrictedTransport) RoundTrip(req *http.Request) (*http.Res
 
 type postDecryptReporter struct{}
 
-func (postDecryptReporter) SetJob(context.Context, *domain.Job) error         { return nil }
+func (postDecryptReporter) SetJob(context.Context, *domain.Job) error { return nil }
+func (postDecryptReporter) SetJobMotionArtwork(context.Context, string, string, string) error {
+	return nil
+}
 func (postDecryptReporter) AddItem(context.Context, *domain.JobItem) error    { return nil }
 func (postDecryptReporter) UpdateItem(context.Context, *domain.JobItem) error { return nil }
 func (postDecryptReporter) RemoveItem(context.Context, string) error          { return nil }

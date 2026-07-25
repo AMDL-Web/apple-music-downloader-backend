@@ -29,6 +29,26 @@ default behavior, list item options, supported template variables.
 `internal/config/config_test.go` fails if the example's key set drifts from the
 struct, but it can't check whether your comment is any good.
 
+## Two Apple hosts, not one
+
+`api.music.apple.com` is the documented API and takes the self-signed developer
+token. `amp-api.music.apple.com` is Apple's internal web-player endpoint and only
+answers to a JWT scraped out of music.apple.com's JS bundle, with an `Origin`
+header attached.
+
+Some fields exist **only** on the amp-api side, and no amount of `extend=` will
+coax them out of the public host — `enhancedHls` and `editorialVideo` (animated
+covers) are both like this. Apple states outright that a third party may load
+only `artistUrl` as an extended attribute on Albums. So MusicKit in the iOS app
+cannot reach them either; it goes through the public host. Verified on a real
+device, not assumed.
+
+`apiBase()` picks the host, and `doWithWebAuth` handles the scraped token. When a
+field turns up empty for no apparent reason, check which host you asked.
+
+Being undocumented, amp-api can change without notice. Anything read from it must
+degrade to "this album doesn't have that" rather than failing a job.
+
 ## Data safety
 
 Schema changes need a migration that preserves existing rows, and confirmation

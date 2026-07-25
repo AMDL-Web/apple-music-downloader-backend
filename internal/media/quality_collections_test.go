@@ -118,6 +118,10 @@ func (f *collectionQualityCatalog) FetchCover(context.Context, []string, string,
 	return nil, nil
 }
 
+func (f *collectionQualityCatalog) MotionArtworkViaWebToken(context.Context, string, string) (applemusic.MotionArtwork, error) {
+	return applemusic.MotionArtwork{}, nil
+}
+
 func (f *collectionQualityCatalog) EnhancedHLSViaWebToken(_ context.Context, storefront, id string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

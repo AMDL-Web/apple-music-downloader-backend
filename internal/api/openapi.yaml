@@ -1588,6 +1588,24 @@ components:
             Quaternary text color paired with artwork_bg_color, from Apple
             Music's attributes.artwork textColor4: a hex string without a
             leading "#". Absent under the same conditions as artwork_bg_color.
+        motion_artwork_url:
+          type: string
+          description: >-
+            HLS master playlist for the album's animated cover (1:1), from Apple
+            Music's attributes.editorialVideo motionDetailSquare. A public,
+            unsigned URL that a client can hand straight to a video player.
+
+            Only album and song jobs can have one, and only some albums do. It is
+            resolved out of band after the input resolves, so a freshly started
+            job reports it absent and gains it moments later, announced by a
+            motion_artwork_resolved event. Treat absent as "no animated cover"
+            and re-render when the job updates.
+        motion_artwork_tall_url:
+          type: string
+          description: >-
+            The 3:4 variant of motion_artwork_url (motionDetailTall), for
+            full-bleed presentations. Present and absent under the same
+            conditions.
         force:
           type: boolean
         overrides:

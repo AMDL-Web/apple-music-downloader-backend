@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
@@ -65,6 +66,7 @@ type downloaderCatalog interface {
 	Artist(context.Context, string, string) (applemusic.Artist, error)
 	FetchCover(context.Context, []string, string, string) ([]byte, error)
 	EnhancedHLSViaWebToken(context.Context, string, string) (string, error)
+	MotionArtworkViaWebToken(context.Context, string, string) (applemusic.MotionArtwork, error)
 }
 
 type downloaderWrapper interface {
@@ -326,6 +328,7 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 	if len(tracks) == 0 {
 		return fmt.Errorf("no downloadable songs found")
 	}
+	d.startMotionArtworkBackfill(ctx, job.ID, parsed, tracks, reporter)
 	folderArtist := collectionFolderArtist(parsed.Type, tracks)
 
 	items, finished, err := syncJobItems(ctx, job, tracks, reporter)
@@ -503,6 +506,70 @@ func primaryGenre(names []string) string {
 // catalog value, so retries and post-restart recovery follow the same path.
 func (d *Downloader) mediaUserToken() string {
 	return strings.TrimSpace(d.cfg.Catalog.MediaUserToken)
+}
+
+// motionArtworkTimeout bounds the out-of-band amp-api lookup. Generous, because
+// nothing waits on it; short enough that the goroutine cannot outlive the job by
+// much.
+const motionArtworkTimeout = 30 * time.Second
+
+// startMotionArtworkBackfill resolves the album's animated cover in the
+// background and patches it onto the job when it arrives.
+//
+// Deliberately not part of resolveCollection. That runs on the critical path —
+// nothing downloads until it returns — and its error fails the whole job through
+// retryValue. An animated cover is decoration; paying a round trip before the
+// first byte of audio, or failing a download because amp-api hiccuped, would both
+// be bad trades. So this fires and forgets: the job proceeds immediately, and the
+// cover appears a moment later via motion_artwork_resolved.
+//
+// The context is detached from the job's, which is cancelled the moment the job
+// finishes. Short jobs would otherwise routinely cancel this mid-flight and never
+// persist a cover they are entitled to.
+func (d *Downloader) startMotionArtworkBackfill(ctx context.Context, jobID string, parsed applemusic.ParsedURL, tracks []applemusic.Song, reporter jobs.Reporter) {
+	albumID := motionArtworkAlbumID(parsed, tracks)
+	if albumID == "" {
+		return
+	}
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), motionArtworkTimeout)
+	go func() {
+		defer cancel()
+		log := logging.FromContext(ctx, d.logger)
+		art, err := d.catalog.MotionArtworkViaWebToken(detached, parsed.Storefront, albumID)
+		if err != nil {
+			// Expected whenever the album simply has no animated cover, or the
+			// web token could not be scraped. Never surfaced to the client.
+			log.Debug("motion artwork unavailable", "job_id", jobID, "album_id", albumID, "error", err)
+			return
+		}
+		if art.IsZero() {
+			return
+		}
+		if err := reporter.SetJobMotionArtwork(detached, jobID, art.Square, art.Tall); err != nil {
+			log.Warn("persist motion artwork", "job_id", jobID, "error", err)
+			return
+		}
+		_ = reporter.Event(detached, domain.Event{
+			JobID: jobID,
+			Type:  "motion_artwork_resolved",
+			Phase: "motion_artwork",
+		})
+	}()
+}
+
+// motionArtworkAlbumID picks the album whose animated cover represents the job.
+// Only albums carry editorialVideo; a single-song job borrows its own album's,
+// which is the same cover the job already displays.
+func motionArtworkAlbumID(parsed applemusic.ParsedURL, tracks []applemusic.Song) string {
+	switch parsed.Type {
+	case applemusic.TypeAlbum:
+		return parsed.ID
+	case applemusic.TypeSong:
+		if len(tracks) > 0 {
+			return tracks[0].AlbumID
+		}
+	}
+	return ""
 }
 
 func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.ParsedURL) (resolvedCollection, error) {
