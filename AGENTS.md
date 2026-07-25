@@ -42,6 +42,9 @@ used for design guidance.
 
 Full workflow in [CONTRIBUTING.md](CONTRIBUTING.md). What bites in practice:
 
+- Only `main` requires a pull request. Work lands on `dev` directly — small
+  changes don't need their own branch, and cutting one off `main` puts the work
+  in the wrong place. `dev` is promoted into `main` by PR for releases.
 - Every commit needs a DCO `Signed-off-by` trailer (`git commit -s`). The
   [DCO app](https://github.com/apps/dco) blocks the PR otherwise. Non-merge
   commits follow [Conventional Commits](https://www.conventionalcommits.org/).
