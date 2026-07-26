@@ -1128,7 +1128,7 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 		applemusic.Song{ID: "song-1", EnhancedHLS: server.URL + "/master.m3u8"},
 		"alac",
 		reporter,
-		func(domain.ItemStatus, float64, string) {},
+		func(domain.ItemStatus, string, func(*domain.ItemProgress)) {},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1159,7 +1159,7 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 		t.Fatalf("persisted item quality = %+v, want bit_depth=24 sample_rate=96000 bitrate=2500000", last)
 	}
 
-	selected, err = downloader.downloadSelectedEnhancedMedia(context.Background(), selected, "alac", "job-1", filepath.Join(cfg.Download.DownloadsDir, "song.m4a"), func(domain.ItemStatus, float64, string) {})
+	selected, err = downloader.downloadSelectedEnhancedMedia(context.Background(), selected, "alac", "job-1", filepath.Join(cfg.Download.DownloadsDir, "song.m4a"), func(domain.ItemStatus, string, func(*domain.ItemProgress)) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1232,7 +1232,7 @@ func TestFetchAACLCMediaCodecSelectedCarriesRESTItemSnapshot(t *testing.T) {
 		item,
 		applemusic.Song{ID: "song-1"},
 		reporter,
-		func(domain.ItemStatus, float64, string) {},
+		func(domain.ItemStatus, string, func(*domain.ItemProgress)) {},
 	); err != nil {
 		t.Fatal(err)
 	} else if release != nil {
@@ -1284,7 +1284,7 @@ func TestDownloadSelectedEnhancedMediaHighKeepsOnlyMemoryCopy(t *testing.T) {
 		"alac",
 		"job-high",
 		filepath.Join(cfg.Download.DownloadsDir, "song.m4a"),
-		func(domain.ItemStatus, float64, string) {},
+		func(domain.ItemStatus, string, func(*domain.ItemProgress)) {},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1340,7 +1340,7 @@ func TestDownloadSelectedEnhancedMediaHighResumesInterruptedTransfer(t *testing.
 		"alac",
 		"job-high-resume",
 		filepath.Join(cfg.Download.DownloadsDir, "song.m4a"),
-		func(domain.ItemStatus, float64, string) {},
+		func(domain.ItemStatus, string, func(*domain.ItemProgress)) {},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1422,8 +1422,8 @@ func TestCleanupFailedOutputRemovesPartFile(t *testing.T) {
 
 func TestSyncJobItemsReusesPreviousRowsAndSkipsFinishedTracks(t *testing.T) {
 	reporter := &recordingReporter{existing: []domain.JobItem{
-		{ID: "item-done", JobID: "job-1", AdamID: "song-1", Kind: "song", Index: 1, Status: domain.ItemCompleted, Progress: 1, Codec: "alac"},
-		{ID: "item-failed", JobID: "job-1", AdamID: "song-2", Kind: "song", Index: 2, Status: domain.ItemFailed, Progress: 0.4, Codec: "alac", RetryKind: "download", Attempt: 3, MaxAttempts: 3, Error: "boom"},
+		{ID: "item-done", JobID: "job-1", AdamID: "song-1", Kind: "song", Index: 1, Status: domain.ItemCompleted, Progress: domain.ItemProgress{Download: 1, Decrypt: 1, Resolved: true, Remuxed: true, Verified: true, Tagged: true, Saved: true}, Codec: "alac"},
+		{ID: "item-failed", JobID: "job-1", AdamID: "song-2", Kind: "song", Index: 2, Status: domain.ItemFailed, Progress: domain.ItemProgress{Download: 0.4, Resolved: true}, Codec: "alac", RetryKind: "download", Attempt: 3, MaxAttempts: 3, Error: "boom"},
 		{ID: "item-stale", JobID: "job-1", AdamID: "song-gone", Kind: "song", Index: 3, Status: domain.ItemFailed},
 	}}
 	tracks := []applemusic.Song{
@@ -1461,7 +1461,7 @@ func TestSyncJobItemsReusesPreviousRowsAndSkipsFinishedTracks(t *testing.T) {
 	if items[1].ID != "item-failed" {
 		t.Fatalf("failed track item id = %s, want reused item-failed", items[1].ID)
 	}
-	if items[1].Status != domain.ItemQueued || items[1].Progress != 0 || items[1].Codec != "" || items[1].Error != "" || items[1].Attempt != 0 {
+	if items[1].Status != domain.ItemQueued || items[1].Progress != (domain.ItemProgress{}) || items[1].Codec != "" || items[1].Error != "" || items[1].Attempt != 0 {
 		t.Fatalf("failed item was not reset for retry: %+v", items[1])
 	}
 	if len(reporter.added) != 1 || reporter.added[0].AdamID != "song-3" || reporter.added[0].Status != domain.ItemQueued {
@@ -1642,4 +1642,72 @@ func waitForMotionArtworkWrites(t *testing.T, reporter *recordingReporter) []mot
 	}
 	t.Fatal("timed out waiting for the motion artwork write")
 	return nil
+}
+
+func TestProgressChangedThrottle(t *testing.T) {
+	base := domain.ItemProgress{Download: 0.5, Decrypt: 0.25, Resolved: true}
+	for _, tc := range []struct {
+		name string
+		next domain.ItemProgress
+		want bool
+	}{
+		{"identical", base, false},
+		{
+			// Sub-percent meter movement is the 32KB-chunk case: dropping it is
+			// the whole point of the gate.
+			name: "download moves less than a percentage point",
+			next: domain.ItemProgress{Download: 0.502, Decrypt: 0.25, Resolved: true},
+			want: false,
+		},
+		{
+			name: "download crosses a percentage point",
+			next: domain.ItemProgress{Download: 0.51, Decrypt: 0.25, Resolved: true},
+			want: true,
+		},
+		{
+			name: "decrypt crosses a percentage point",
+			next: domain.ItemProgress{Download: 0.5, Decrypt: 0.26, Resolved: true},
+			want: true,
+		},
+		{
+			// A stage finishing is never throttled, however little the meters
+			// moved — it is the only signal that step happened.
+			name: "stage flag flips with both meters still",
+			next: domain.ItemProgress{Download: 0.5, Decrypt: 0.25, Resolved: true, Tagged: true},
+			want: true,
+		},
+		{
+			name: "verified flips with both meters still",
+			next: domain.ItemProgress{Download: 0.5, Decrypt: 0.25, Resolved: true, Verified: true},
+			want: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := progressChanged(base, tc.next); got != tc.want {
+				t.Fatalf("progressChanged(%+v, %+v) = %v, want %v", base, tc.next, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProgressMeterMutatorsClamp(t *testing.T) {
+	var p domain.ItemProgress
+	// A transfer whose reported total turns out short must saturate, not
+	// overshoot; a negative can only come from a bad total and means "unknown".
+	downloadFrac(1.4)(&p)
+	decryptFrac(-0.2)(&p)
+	if p.Download != 1 || p.Decrypt != 0 {
+		t.Fatalf("clamped meters = %+v, want download=1 decrypt=0", p)
+	}
+}
+
+func TestCompleteTransfersLeavesVerifiedAlone(t *testing.T) {
+	// An unmeasurable download plus check_integrity=false: completion pins the
+	// meters but must not claim an integrity check that never ran.
+	p := domain.ItemProgress{Resolved: true, Remuxed: true, Tagged: true, Saved: true}
+	p.CompleteTransfers()
+	want := domain.ItemProgress{Download: 1, Decrypt: 1, Resolved: true, Remuxed: true, Tagged: true, Saved: true}
+	if p != want {
+		t.Fatalf("after CompleteTransfers = %+v, want %+v", p, want)
+	}
 }

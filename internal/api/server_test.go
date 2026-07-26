@@ -1535,7 +1535,8 @@ func TestEventsWebSocketStreamsBacklogLiveAndResume(t *testing.T) {
 	// Live: a hub publish must wake the drain without waiting for the ticker.
 	item := domain.JobItem{
 		ID: "item-1", JobID: job.ID, AdamID: "song-1", Kind: "song", Index: 1,
-		ArtworkURL: "https://example.test/{w}x{h}.jpg", Status: domain.ItemDownloading, Progress: 0.5,
+		ArtworkURL: "https://example.test/{w}x{h}.jpg", Status: domain.ItemDownloading,
+		Progress: domain.ItemProgress{Download: 0.5, Resolved: true},
 		BitDepth: 24, SampleRate: 96000, Bitrate: 2500000, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
 	if err := manager.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "item_progress", Message: "halfway", Payload: domain.MarshalEventPayload(item, nil)}); err != nil {
@@ -2202,7 +2203,7 @@ func TestRetryDownloadRequeuesFailedJobAndKeepsFinishedItems(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, item := range []domain.JobItem{
-		{ID: "item1", JobID: job.ID, AdamID: "s1", Kind: "song", Index: 1, Status: domain.ItemCompleted, Progress: 1},
+		{ID: "item1", JobID: job.ID, AdamID: "s1", Kind: "song", Index: 1, Status: domain.ItemCompleted, Progress: domain.ItemProgress{Download: 1, Decrypt: 1, Resolved: true, Remuxed: true, Verified: true, Tagged: true, Saved: true}},
 		{ID: "item2", JobID: job.ID, AdamID: "s2", Kind: "song", Index: 2, Status: domain.ItemFailed, Error: "boom"},
 	} {
 		if err := server.store.CreateItem(ctx, item); err != nil {

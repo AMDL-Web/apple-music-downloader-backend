@@ -434,7 +434,7 @@ type postDecryptPhaseRecorder struct {
 	phases []string
 }
 
-func (r *postDecryptPhaseRecorder) set(status domain.ItemStatus, _ float64, _ string) {
+func (r *postDecryptPhaseRecorder) set(status domain.ItemStatus, _ string, _ func(*domain.ItemProgress)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	phase := string(status)

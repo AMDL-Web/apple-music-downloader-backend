@@ -141,7 +141,13 @@ func (s *Store) initSchema(ctx context.Context) error {
 			has_lyrics INTEGER NOT NULL DEFAULT 0,
 			lyrics_status TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL,
-			progress REAL NOT NULL DEFAULT 0,
+			download_progress REAL NOT NULL DEFAULT 0,
+			decrypt_progress REAL NOT NULL DEFAULT 0,
+			progress_resolved INTEGER NOT NULL DEFAULT 0,
+			progress_remuxed INTEGER NOT NULL DEFAULT 0,
+			progress_verified INTEGER NOT NULL DEFAULT 0,
+			progress_tagged INTEGER NOT NULL DEFAULT 0,
+			progress_saved INTEGER NOT NULL DEFAULT 0,
 			codec TEXT NOT NULL DEFAULT '',
 			bit_depth INTEGER NOT NULL DEFAULT 0,
 			sample_rate INTEGER NOT NULL DEFAULT 0,
@@ -210,15 +216,52 @@ func (s *Store) initSchema(ctx context.Context) error {
 		{"job_items", "file_size", "INTEGER NOT NULL DEFAULT 0"},
 		{"job_items", "has_lyrics", "INTEGER NOT NULL DEFAULT 0"},
 		{"job_items", "lyrics_status", "TEXT NOT NULL DEFAULT ''"},
+		// The per-stage progress breakdown that replaced the single `progress`
+		// aggregate. That column is left in place on databases that have it:
+		// nothing reads or writes it any more, and it carries a DEFAULT so
+		// inserts that omit it succeed. Dropping it would buy nothing and
+		// ALTER TABLE DROP COLUMN needs SQLite 3.35+.
+		{"job_items", "download_progress", "REAL NOT NULL DEFAULT 0"},
+		{"job_items", "decrypt_progress", "REAL NOT NULL DEFAULT 0"},
+		{"job_items", "progress_resolved", "INTEGER NOT NULL DEFAULT 0"},
+		{"job_items", "progress_remuxed", "INTEGER NOT NULL DEFAULT 0"},
+		{"job_items", "progress_verified", "INTEGER NOT NULL DEFAULT 0"},
+		{"job_items", "progress_tagged", "INTEGER NOT NULL DEFAULT 0"},
+		{"job_items", "progress_saved", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := s.ensureColumn(ctx, col.table, col.column, col.decl); err != nil {
 			return err
 		}
 	}
+	if err := s.backfillItemProgress(ctx); err != nil {
+		return err
+	}
 	// Rewrite variable-width RFC3339Nano timestamps (trailing zeros trimmed)
 	// to a fixed 9-digit fractional form so TEXT ORDER BY / range compares
 	// match chronological order. Idempotent: already-normalized rows are skipped.
 	return s.normalizeTimestampColumns(ctx)
+}
+
+// backfillItemProgress gives already-completed rows a breakdown consistent with
+// their status. Rows written before the breakdown existed only carried the old
+// single aggregate, so the new columns land at zero — which would render a
+// finished historical download as "no stage ever ran". A completed item must
+// have passed every stage, so mark them.
+//
+// progress_verified is deliberately left at zero: false there means the
+// integrity check did not run, and whether it ran is precisely what an old row
+// no longer records. Claiming otherwise would be inventing history.
+//
+// Only the new columns are touched, and only on rows whose status already says
+// the work is done, so no existing information is overwritten. Guarding on
+// progress_resolved makes it idempotent and keeps it off rows the current code
+// wrote, which set that flag themselves.
+func (s *Store) backfillItemProgress(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE job_items
+		SET download_progress=1, decrypt_progress=1,
+			progress_resolved=1, progress_remuxed=1, progress_tagged=1, progress_saved=1
+		WHERE status=? AND progress_resolved=0`, string(domain.ItemCompleted))
+	return err
 }
 
 func (s *Store) ensureColumn(ctx context.Context, table, column, decl string) error {
@@ -655,15 +698,18 @@ func scanJob(row jobScanner) (domain.Job, error) {
 }
 
 func (s *Store) CreateItem(ctx context.Context, item domain.JobItem) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO job_items(id,job_id,adam_id,kind,idx,title,artist,album,duration_ms,artwork_url,has_lyrics,lyrics_status,status,progress,codec,bit_depth,sample_rate,bitrate,file_size,retry_kind,attempt,max_attempts,status_message,output_path,error,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, item.ID, item.JobID, item.AdamID, item.Kind, item.Index, item.Title, item.Artist, item.Album, item.DurationMS, item.ArtworkURL, item.HasLyrics, string(item.LyricsStatus),
-		string(item.Status), item.Progress, item.Codec, item.BitDepth, item.SampleRate, item.Bitrate, item.FileSize, item.RetryKind, item.Attempt, item.MaxAttempts, item.StatusMessage, item.OutputPath, item.Error, formatTime(item.CreatedAt), formatTime(item.UpdatedAt))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO job_items(id,job_id,adam_id,kind,idx,title,artist,album,duration_ms,artwork_url,has_lyrics,lyrics_status,status,download_progress,decrypt_progress,progress_resolved,progress_remuxed,progress_verified,progress_tagged,progress_saved,codec,bit_depth,sample_rate,bitrate,file_size,retry_kind,attempt,max_attempts,status_message,output_path,error,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, item.ID, item.JobID, item.AdamID, item.Kind, item.Index, item.Title, item.Artist, item.Album, item.DurationMS, item.ArtworkURL, item.HasLyrics, string(item.LyricsStatus),
+		string(item.Status), item.Progress.Download, item.Progress.Decrypt, item.Progress.Resolved, item.Progress.Remuxed, item.Progress.Verified, item.Progress.Tagged, item.Progress.Saved,
+		item.Codec, item.BitDepth, item.SampleRate, item.Bitrate, item.FileSize, item.RetryKind, item.Attempt, item.MaxAttempts, item.StatusMessage, item.OutputPath, item.Error, formatTime(item.CreatedAt), formatTime(item.UpdatedAt))
 	return err
 }
 
 func (s *Store) UpdateItem(ctx context.Context, item domain.JobItem) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE job_items SET title=?,artist=?,album=?,duration_ms=?,artwork_url=?,has_lyrics=?,lyrics_status=?,status=?,progress=?,codec=?,bit_depth=?,sample_rate=?,bitrate=?,file_size=?,retry_kind=?,attempt=?,max_attempts=?,status_message=?,output_path=?,error=?,updated_at=? WHERE id=?`,
-		item.Title, item.Artist, item.Album, item.DurationMS, item.ArtworkURL, item.HasLyrics, string(item.LyricsStatus), string(item.Status), item.Progress, item.Codec, item.BitDepth, item.SampleRate, item.Bitrate, item.FileSize, item.RetryKind, item.Attempt, item.MaxAttempts, item.StatusMessage, item.OutputPath, item.Error, formatTime(item.UpdatedAt), item.ID)
+	_, err := s.db.ExecContext(ctx, `UPDATE job_items SET title=?,artist=?,album=?,duration_ms=?,artwork_url=?,has_lyrics=?,lyrics_status=?,status=?,download_progress=?,decrypt_progress=?,progress_resolved=?,progress_remuxed=?,progress_verified=?,progress_tagged=?,progress_saved=?,codec=?,bit_depth=?,sample_rate=?,bitrate=?,file_size=?,retry_kind=?,attempt=?,max_attempts=?,status_message=?,output_path=?,error=?,updated_at=? WHERE id=?`,
+		item.Title, item.Artist, item.Album, item.DurationMS, item.ArtworkURL, item.HasLyrics, string(item.LyricsStatus), string(item.Status),
+		item.Progress.Download, item.Progress.Decrypt, item.Progress.Resolved, item.Progress.Remuxed, item.Progress.Verified, item.Progress.Tagged, item.Progress.Saved,
+		item.Codec, item.BitDepth, item.SampleRate, item.Bitrate, item.FileSize, item.RetryKind, item.Attempt, item.MaxAttempts, item.StatusMessage, item.OutputPath, item.Error, formatTime(item.UpdatedAt), item.ID)
 	return err
 }
 
@@ -675,7 +721,9 @@ func (s *Store) UpdateItem(ctx context.Context, item domain.JobItem) error {
 // the same reset.
 func (s *Store) ResetUnfinishedItems(ctx context.Context, jobID string, updatedAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE job_items
-		SET status=?, progress=0, codec='', bit_depth=0, sample_rate=0, bitrate=0, file_size=0,
+		SET status=?, download_progress=0, decrypt_progress=0,
+			progress_resolved=0, progress_remuxed=0, progress_verified=0, progress_tagged=0, progress_saved=0,
+			codec='', bit_depth=0, sample_rate=0, bitrate=0, file_size=0,
 			lyrics_status='', retry_kind='', attempt=0, max_attempts=0, status_message='', error='', updated_at=?
 		WHERE job_id=? AND status NOT IN (?,?)`,
 		string(domain.ItemQueued), formatTime(updatedAt), jobID,
@@ -693,7 +741,7 @@ func (s *Store) DeleteItem(ctx context.Context, id string) error {
 }
 
 func (s *Store) ListItems(ctx context.Context, jobID string) ([]domain.JobItem, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,job_id,adam_id,kind,idx,title,artist,album,duration_ms,artwork_url,has_lyrics,lyrics_status,status,progress,codec,bit_depth,sample_rate,bitrate,file_size,retry_kind,attempt,max_attempts,status_message,output_path,error,created_at,updated_at FROM job_items WHERE job_id=? ORDER BY idx`, jobID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,job_id,adam_id,kind,idx,title,artist,album,duration_ms,artwork_url,has_lyrics,lyrics_status,status,download_progress,decrypt_progress,progress_resolved,progress_remuxed,progress_verified,progress_tagged,progress_saved,codec,bit_depth,sample_rate,bitrate,file_size,retry_kind,attempt,max_attempts,status_message,output_path,error,created_at,updated_at FROM job_items WHERE job_id=? ORDER BY idx`, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -713,7 +761,8 @@ func scanItem(row jobScanner) (domain.JobItem, error) {
 	var item domain.JobItem
 	var lyricsStatus, status, created, updated string
 	err := row.Scan(&item.ID, &item.JobID, &item.AdamID, &item.Kind, &item.Index, &item.Title, &item.Artist, &item.Album, &item.DurationMS, &item.ArtworkURL, &item.HasLyrics, &lyricsStatus, &status,
-		&item.Progress, &item.Codec, &item.BitDepth, &item.SampleRate, &item.Bitrate, &item.FileSize, &item.RetryKind, &item.Attempt, &item.MaxAttempts, &item.StatusMessage, &item.OutputPath, &item.Error, &created, &updated)
+		&item.Progress.Download, &item.Progress.Decrypt, &item.Progress.Resolved, &item.Progress.Remuxed, &item.Progress.Verified, &item.Progress.Tagged, &item.Progress.Saved,
+		&item.Codec, &item.BitDepth, &item.SampleRate, &item.Bitrate, &item.FileSize, &item.RetryKind, &item.Attempt, &item.MaxAttempts, &item.StatusMessage, &item.OutputPath, &item.Error, &created, &updated)
 	item.LyricsStatus = domain.LyricsStatus(lyricsStatus)
 	item.Status = domain.ItemStatus(status)
 	item.CreatedAt = parseTime(created)

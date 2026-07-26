@@ -22,7 +22,7 @@ import (
 // encrypted transfer, decryption, remux, and disk writes are simulated. The
 // transfer phases are paced by a random speed drawn from the configured
 // simulate speed range.
-func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, collectionType applemusic.URLType, collectionName, collectionID string, playlistIndex int, folderArtist string, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) error {
+func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, collectionType applemusic.URLType, collectionName, collectionID string, playlistIndex int, folderArtist string, reporter jobs.Reporter, set publishStage) error {
 	d.ensureMediaLimits()
 	maxAttempts := clampAttempts(d.cfg.Download.MaxAttempts)
 	if d.cfg.Download.EmbedCover {
@@ -54,7 +54,7 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 		force := d.cfg.Download.ForceOverwrite || job.Force
 		if fi, statErr := os.Stat(outPath); statErr == nil && !force {
 			item.Status = domain.ItemSkipped
-			item.Progress = 1
+			// Zero breakdown, same as handleExistingOutput: no stage ran.
 			item.FileSize = fi.Size()
 			item.RetryKind = ""
 			item.Attempt = 0
@@ -97,7 +97,7 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 			if existingSkip(outPath) {
 				return nil
 			}
-			set(domain.ItemDownloading, 0.03, "requesting AAC-LC WebPlayback asset")
+			set(domain.ItemDownloading, "requesting AAC-LC WebPlayback asset", nil)
 			_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_selected", Phase: "aac-lc", Payload: domain.MarshalEventPayload(*item, map[string]any{
 				"codec_id": "aac-lc", "bit_depth": item.BitDepth, "sample_rate": item.SampleRate, "bitrate": item.Bitrate,
 				"attempt": item.Attempt, "max_attempts": item.MaxAttempts,
@@ -153,14 +153,14 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 		}
 		var transferErr error
 		if codec == "aac-lc" {
-			set(domain.ItemDownloading, 0.05, "downloading encrypted AAC-LC media")
+			set(domain.ItemDownloading, "downloading encrypted AAC-LC media", nil)
 			transferErr = d.simulateTransfer(ctx, totalBytes, func(p float64) {
-				set(domain.ItemDownloading, 0.05+p*0.50, fmt.Sprintf("downloading %.0f%%", p*100))
+				set(domain.ItemDownloading, fmt.Sprintf("downloading %.0f%%", p*100), downloadFrac(p))
 			})
 		} else {
-			set(domain.ItemDownloading, 0.05, fmt.Sprintf("Downloading %s encrypted media", codecName))
+			set(domain.ItemDownloading, fmt.Sprintf("Downloading %s encrypted media", codecName), nil)
 			transferErr = d.simulateTransfer(ctx, totalBytes, func(p float64) {
-				set(domain.ItemDownloading, 0.05+p*0.50, fmt.Sprintf("%s download %.0f%%", codecName, p*100))
+				set(domain.ItemDownloading, fmt.Sprintf("%s download %.0f%%", codecName, p*100), downloadFrac(p))
 			})
 		}
 		releaseDownload()
@@ -186,7 +186,8 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 		}
 
 		item.Status = domain.ItemCompleted
-		item.Progress = 1
+		markSaved(&item.Progress)
+		item.Progress.CompleteTransfers()
 		item.OutputPath = outPath
 		item.Codec = codec
 		item.FileSize = totalBytes
@@ -213,16 +214,19 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 
 // simulateDecryptPhase covers only the actual decrypt work and therefore only
 // this portion holds the global decrypt permit.
-func (d *Downloader) simulateDecryptPhase(ctx context.Context, song applemusic.Song, codec string, sampleRate int, totalBytes int64, set func(domain.ItemStatus, float64, string)) error {
+func (d *Downloader) simulateDecryptPhase(ctx context.Context, song applemusic.Song, codec string, sampleRate int, totalBytes int64, set publishStage) error {
+	// Entering decrypt pins the download meter, same as the real paths do.
 	if codec == "aac-lc" {
-		set(domain.ItemDecrypting, 0.55, "acquiring Widevine license")
+		set(domain.ItemDecrypting, "acquiring Widevine license", downloadFrac(1))
 		if err := simulatePause(ctx, 200*time.Millisecond); err != nil {
 			return err
 		}
-		set(domain.ItemDecrypting, 0.57, "decrypting AAC-LC")
+		// Mirrors the real AAC-LC path: one opaque pass, so the meter only
+		// resolves to 1 at the remux boundary in simulatePostprocess.
+		set(domain.ItemDecrypting, "decrypting AAC-LC", nil)
 		return simulatePause(ctx, 200*time.Millisecond)
 	}
-	set(domain.ItemDecrypting, 0.55, "extracting samples")
+	set(domain.ItemDecrypting, "extracting samples", downloadFrac(1))
 	totalSamples := simulatedSampleCount(song, codec, sampleRate)
 	// Decrypt works on bytes already in memory, so pace it faster than the
 	// network transfer: the same speed range over roughly a third of the size.
@@ -231,7 +235,7 @@ func (d *Downloader) simulateDecryptPhase(ctx context.Context, song applemusic.S
 		if done > totalSamples {
 			done = totalSamples
 		}
-		set(domain.ItemDecrypting, 0.55+p*0.35, fmt.Sprintf("decrypting %d/%d samples", done, totalSamples))
+		set(domain.ItemDecrypting, fmt.Sprintf("decrypting %d/%d samples", done, totalSamples), decryptFrac(p))
 	}); err != nil {
 		return err
 	}
@@ -240,31 +244,39 @@ func (d *Downloader) simulateDecryptPhase(ctx context.Context, song applemusic.S
 
 // simulatePostprocess mirrors local remux/save/tag work after both the decrypt
 // and in-flight permits have been released.
-func (d *Downloader) simulatePostprocess(ctx context.Context, codec string, set func(domain.ItemStatus, float64, string)) error {
+func (d *Downloader) simulatePostprocess(ctx context.Context, codec string, set publishStage) error {
+	// Each step is announced, paused through, then marked done — the same
+	// enter/complete split the real pipeline uses, so a simulated item walks
+	// the breakdown through exactly the states a real one does.
 	type postprocessStep struct {
-		status  domain.ItemStatus
-		prog    float64
-		message string
-		pause   time.Duration
+		status   domain.ItemStatus
+		message  string
+		enter    func(*domain.ItemProgress)
+		complete func(*domain.ItemProgress)
+		pause    time.Duration
 	}
-	var steps []postprocessStep
+	suffix := ""
 	if codec == "aac-lc" {
-		steps = append(steps,
-			postprocessStep{domain.ItemRemuxing, 0.90, "remuxing AAC-LC", 300 * time.Millisecond},
-			postprocessStep{domain.ItemSaving, 0.94, "saving AAC-LC", 150 * time.Millisecond},
-			postprocessStep{domain.ItemTagging, 0.97, "writing AAC-LC metadata", 200 * time.Millisecond},
-		)
-	} else {
-		steps = append(steps,
-			postprocessStep{domain.ItemRemuxing, 0.90, "remuxing", 300 * time.Millisecond},
-			postprocessStep{domain.ItemSaving, 0.94, "saving", 150 * time.Millisecond},
-			postprocessStep{domain.ItemTagging, 0.97, "writing metadata", 200 * time.Millisecond},
-		)
+		suffix = " AAC-LC"
+	}
+	steps := []postprocessStep{
+		// Decrypt is finished by the time remuxing starts, matching the real
+		// path's meter pin at the same boundary.
+		{domain.ItemRemuxing, "remuxing" + suffix, decryptFrac(1), markRemuxed, 300 * time.Millisecond},
+		{domain.ItemSaving, "saving" + suffix, nil, nil, 150 * time.Millisecond},
+		{domain.ItemTagging, "writing" + suffix + " metadata", nil, markTagged, 200 * time.Millisecond},
+	}
+	if d.cfg.Download.CheckIntegrity {
+		// Same condition as the real path: no check configured, no mark.
+		steps[1].complete = markVerified
 	}
 	for _, step := range steps {
-		set(step.status, step.prog, step.message)
+		set(step.status, step.message, step.enter)
 		if err := simulatePause(ctx, step.pause); err != nil {
 			return err
+		}
+		if step.complete != nil {
+			set(step.status, step.message, step.complete)
 		}
 	}
 	return nil

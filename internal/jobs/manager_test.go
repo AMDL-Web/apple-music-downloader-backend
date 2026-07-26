@@ -1486,8 +1486,9 @@ func TestRetryRequeuesFailedJobAndResetsOnlyUnfinishedItems(t *testing.T) {
 	if err := store.CreateJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
-	completed := domain.JobItem{ID: "item-done", JobID: job.ID, AdamID: "song-1", Kind: "song", Index: 1, Status: domain.ItemCompleted, Progress: 1, Codec: "alac", CreatedAt: now, UpdatedAt: now}
-	failed := domain.JobItem{ID: "item-failed", JobID: job.ID, AdamID: "song-2", Kind: "song", Index: 2, Status: domain.ItemFailed, Progress: 0.4, Codec: "alac", RetryKind: "download", Attempt: 3, MaxAttempts: 3, StatusMessage: "ALAC failed", Error: "boom", CreatedAt: now, UpdatedAt: now}
+	donePR := domain.ItemProgress{Download: 1, Decrypt: 1, Resolved: true, Remuxed: true, Verified: true, Tagged: true, Saved: true}
+	completed := domain.JobItem{ID: "item-done", JobID: job.ID, AdamID: "song-1", Kind: "song", Index: 1, Status: domain.ItemCompleted, Progress: donePR, Codec: "alac", CreatedAt: now, UpdatedAt: now}
+	failed := domain.JobItem{ID: "item-failed", JobID: job.ID, AdamID: "song-2", Kind: "song", Index: 2, Status: domain.ItemFailed, Progress: domain.ItemProgress{Download: 0.4, Resolved: true}, Codec: "alac", RetryKind: "download", Attempt: 3, MaxAttempts: 3, StatusMessage: "ALAC failed", Error: "boom", CreatedAt: now, UpdatedAt: now}
 	for _, item := range []domain.JobItem{completed, failed} {
 		if err := store.CreateItem(ctx, item); err != nil {
 			t.Fatal(err)
@@ -1513,11 +1514,11 @@ func TestRetryRequeuesFailedJobAndResetsOnlyUnfinishedItems(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("items = %d, want 2", len(items))
 	}
-	if items[0].Status != domain.ItemCompleted || items[0].Progress != 1 || items[0].Codec != "alac" {
+	if items[0].Status != domain.ItemCompleted || items[0].Progress != donePR || items[0].Codec != "alac" {
 		t.Fatalf("completed item was touched by retry: %+v", items[0])
 	}
 	reset := items[1]
-	if reset.Status != domain.ItemQueued || reset.Progress != 0 || reset.Codec != "" || reset.Error != "" ||
+	if reset.Status != domain.ItemQueued || reset.Progress != (domain.ItemProgress{}) || reset.Codec != "" || reset.Error != "" ||
 		reset.RetryKind != "" || reset.Attempt != 0 || reset.MaxAttempts != 0 || reset.StatusMessage != "" {
 		t.Fatalf("failed item was not reset to queued: %+v", reset)
 	}

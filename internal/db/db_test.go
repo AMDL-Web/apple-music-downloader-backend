@@ -953,3 +953,183 @@ func idsOf(jobs []domain.Job) []string {
 	}
 	return out
 }
+
+func TestJobItemProgressRoundTrip(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	// A half-decrypted item: both meters carry a fraction and only the earlier
+	// stages are marked, so a round-trip that silently collapsed the breakdown
+	// into one value could not reproduce it.
+	want := domain.ItemProgress{Download: 1, Decrypt: 0.42, Resolved: true}
+	item := domain.JobItem{
+		ID: "item-1", JobID: "job-1", AdamID: "123", Kind: "song", Index: 1,
+		Status: domain.ItemDecrypting, Progress: want, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateItem(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ListItems(ctx, item.JobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if got := items[0].Progress; got != want {
+		t.Fatalf("progress after CreateItem = %+v, want %+v", got, want)
+	}
+
+	updated := items[0]
+	updated.Status = domain.ItemCompleted
+	updated.Progress = domain.ItemProgress{Download: 1, Decrypt: 1, Resolved: true, Remuxed: true, Verified: true, Tagged: true, Saved: true}
+	if err := store.UpdateItem(ctx, updated); err != nil {
+		t.Fatal(err)
+	}
+	items, err = store.ListItems(ctx, item.JobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := items[0].Progress; got != updated.Progress {
+		t.Fatalf("progress after UpdateItem = %+v, want %+v", got, updated.Progress)
+	}
+
+	// ResetUnfinishedItems must clear every breakdown column, matching
+	// domain.JobItem.ResetForRetry. A completed item is left alone, so reset a
+	// non-finished one.
+	updated.Status = domain.ItemFailed
+	if err := store.UpdateItem(ctx, updated); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ResetUnfinishedItems(ctx, item.JobID, now); err != nil {
+		t.Fatal(err)
+	}
+	items, err = store.ListItems(ctx, item.JobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := items[0].Progress; got != (domain.ItemProgress{}) {
+		t.Fatalf("progress after ResetUnfinishedItems = %+v, want zero", got)
+	}
+}
+
+// legacyJobItemsDDL is the job_items schema as it stood before the per-stage
+// progress breakdown replaced the single `progress` aggregate.
+const legacyJobItemsDDL = `CREATE TABLE job_items (
+	id TEXT PRIMARY KEY,
+	job_id TEXT NOT NULL,
+	adam_id TEXT NOT NULL,
+	kind TEXT NOT NULL,
+	idx INTEGER NOT NULL,
+	title TEXT NOT NULL DEFAULT '',
+	artist TEXT NOT NULL DEFAULT '',
+	album TEXT NOT NULL DEFAULT '',
+	duration_ms INTEGER NOT NULL DEFAULT 0,
+	artwork_url TEXT NOT NULL DEFAULT '',
+	has_lyrics INTEGER NOT NULL DEFAULT 0,
+	lyrics_status TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	progress REAL NOT NULL DEFAULT 0,
+	codec TEXT NOT NULL DEFAULT '',
+	bit_depth INTEGER NOT NULL DEFAULT 0,
+	sample_rate INTEGER NOT NULL DEFAULT 0,
+	bitrate INTEGER NOT NULL DEFAULT 0,
+	file_size INTEGER NOT NULL DEFAULT 0,
+	retry_kind TEXT NOT NULL DEFAULT '',
+	attempt INTEGER NOT NULL DEFAULT 0,
+	max_attempts INTEGER NOT NULL DEFAULT 0,
+	status_message TEXT NOT NULL DEFAULT '',
+	output_path TEXT NOT NULL DEFAULT '',
+	error TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`
+
+func TestOpenMigratesLegacyItemProgress(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "amdl.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(legacyJobItemsDDL); err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Now().UTC().Format("2006-01-02T15:04:05.000000000Z")
+	for _, row := range []struct {
+		id, status string
+		progress   float64
+	}{
+		{"item-done", string(domain.ItemCompleted), 1},
+		{"item-skipped", string(domain.ItemSkipped), 1},
+		{"item-partial", string(domain.ItemFailed), 0.4},
+		{"item-queued", string(domain.ItemQueued), 0},
+	} {
+		if _, err := legacy.Exec(`INSERT INTO job_items(id,job_id,adam_id,kind,idx,status,progress,created_at,updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?)`, row.id, "job-1", "123", "song", 1, row.status, row.progress, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	defer store.Close()
+	items, err := store.ListItems(context.Background(), "job-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]domain.JobItem{}
+	for _, item := range items {
+		byID[item.ID] = item
+	}
+	if len(byID) != 4 {
+		t.Fatalf("got %d items after migration, want the 4 legacy rows preserved", len(byID))
+	}
+	// A completed row gets the stages it must have passed. Verified stays false:
+	// whether the integrity check ran is exactly what the old row no longer says.
+	wantDone := domain.ItemProgress{Download: 1, Decrypt: 1, Resolved: true, Remuxed: true, Tagged: true, Saved: true}
+	if got := byID["item-done"].Progress; got != wantDone {
+		t.Fatalf("completed row progress = %+v, want %+v", got, wantDone)
+	}
+	// Everything else keeps a zero breakdown — including the skipped row, which
+	// under the new model ran no stage at all despite its old progress of 1.
+	for _, id := range []string{"item-skipped", "item-partial", "item-queued"} {
+		if got := byID[id].Progress; got != (domain.ItemProgress{}) {
+			t.Fatalf("%s progress = %+v, want zero", id, got)
+		}
+	}
+
+	// Idempotent: reopening must not re-run the backfill over rows the current
+	// code has since written.
+	reset := byID["item-done"]
+	reset.Progress = domain.ItemProgress{Download: 1, Resolved: true}
+	reset.UpdatedAt = time.Now().UTC()
+	if err := store.UpdateItem(context.Background(), reset); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	items, err = reopened.ListItems(context.Background(), "job-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.ID == "item-done" && item.Progress != reset.Progress {
+			t.Fatalf("reopen re-ran the backfill: progress = %+v, want %+v", item.Progress, reset.Progress)
+		}
+	}
+}

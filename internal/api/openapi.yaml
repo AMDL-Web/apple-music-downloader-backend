@@ -1671,6 +1671,71 @@ components:
         updated_at:
           type: string
           format: date-time
+    ItemProgress:
+      type: object
+      description: >-
+        Per-stage breakdown of one item's download pipeline. Replaces the single
+        0..1 `progress` aggregate that used to span every stage on one axis:
+        download and decrypt shared sub-ranges of it, and the atomic stages were
+        only fixed points — 0.97 never meant "97% tagged", just "tagging
+        started".
+
+        The two stages that genuinely have a fraction get their own meter; every
+        other stage is a done/not-done flag. There is deliberately no overall
+        percentage: any single number would have to re-impose the arbitrary
+        weighting this object exists to remove. A client that wants one bar
+        should weight these fields to suit its own UI.
+
+        All fields are always present. The zero value means nothing has run yet,
+        which is what a queued item reports. Use `status`, not this object, to
+        decide whether an item is finished — a `skipped_existing` item ran no
+        stage and reports every field at zero.
+      required: [download, decrypt, resolved, remuxed, verified, tagged, saved]
+      properties:
+        download:
+          type: number
+          format: double
+          description: >-
+            Fraction in [0,1] of the encrypted media transferred. Stays at 0
+            while the transfer cannot be measured (a media response without a
+            Content-Length never yields a fraction), so 0 alongside
+            status=downloading means "running, size unknown", not "no bytes
+            yet". Pinned to 1 when the item completes.
+        decrypt:
+          type: number
+          format: double
+          description: >-
+            Fraction in [0,1] of the encrypted bytes fed through the decryptor.
+            The aac-lc path decrypts in one opaque pass with no intermediate
+            count, so there it jumps 0 → 1 at the remux boundary instead of
+            sweeping. Pinned to 1 when the item completes.
+        resolved:
+          type: boolean
+          description: Catalog metadata for the track was fetched.
+        remuxed:
+          type: boolean
+          description: >-
+            The decrypted stream was flattened into a progressive MP4.
+        verified:
+          type: boolean
+          description: >-
+            The integrity check ran and passed (for ALAC, possibly after a
+            successful repair). Also false when the check is switched off by
+            the `download.check_integrity` config key, so false means "not
+            verified", never "corrupt" — a failed check fails the whole item
+            instead. This is the one flag a completed item may legitimately
+            leave false.
+        tagged:
+          type: boolean
+          description: >-
+            Metadata — and cover art / lyrics, per config — was written into
+            the file.
+        saved:
+          type: boolean
+          description: >-
+            The finished file was moved to its final output path. This is the
+            last step of the pipeline, so `saved` is true for exactly those
+            items that reached status=completed.
     JobItem:
       type: object
       required: [id, job_id, adam_id, kind, index, has_lyrics, status, progress, created_at, updated_at]
@@ -1731,7 +1796,8 @@ components:
         status:
           type: string
           enum: [queued, resolving, downloading, decrypting, remuxing, tagging, saving, completed, failed, skipped_existing, cancelled]
-        progress: {type: number, format: double}
+        progress:
+          $ref: '#/components/schemas/ItemProgress'
         codec: {type: string}
         bit_depth:
           type: integer

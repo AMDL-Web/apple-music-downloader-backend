@@ -864,6 +864,47 @@ func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item doma
 	return d.processTrackWithMetadata(ctx, job, item, initial, storefront, collectionType, collectionName, collectionID, playlistIndex, folderArtist, newTrackMetadataResolver(d, storefront), reporter)
 }
 
+// publishStage publishes one item state change: the status/message transition,
+// plus an optional mutation of the item's progress breakdown. Entering a stage
+// and finishing it are separate calls, because they carry different facts —
+// a nil mutate means "this stage has started", and the mark helpers below are
+// only passed once the work they name has actually succeeded.
+type publishStage func(status domain.ItemStatus, message string, mutate func(*domain.ItemProgress))
+
+func markResolved(p *domain.ItemProgress) { p.Resolved = true }
+func markRemuxed(p *domain.ItemProgress)  { p.Remuxed = true }
+func markVerified(p *domain.ItemProgress) { p.Verified = true }
+func markTagged(p *domain.ItemProgress)   { p.Tagged = true }
+func markSaved(p *domain.ItemProgress)    { p.Saved = true }
+
+// downloadFrac and decryptFrac move one meter. Fractions outside [0,1] are
+// clamped rather than rejected: a transfer whose reported total turns out to be
+// short should saturate the bar, not push it past full.
+func downloadFrac(v float64) func(*domain.ItemProgress) {
+	return func(p *domain.ItemProgress) { p.Download = clampFrac(v) }
+}
+
+func decryptFrac(v float64) func(*domain.ItemProgress) {
+	return func(p *domain.ItemProgress) { p.Decrypt = clampFrac(v) }
+}
+
+func clampFrac(v float64) float64 {
+	return math.Max(0, math.Min(1, v))
+}
+
+// progressChanged reports whether the breakdown moved enough to justify a DB
+// write and an SSE frame: any stage flag flipping, or either meter crossing a
+// whole percentage point. Sub-percent meter movement is dropped — see the
+// throttle comment on set.
+func progressChanged(prev, next domain.ItemProgress) bool {
+	if prev.Resolved != next.Resolved || prev.Remuxed != next.Remuxed ||
+		prev.Verified != next.Verified || prev.Tagged != next.Tagged || prev.Saved != next.Saved {
+		return true
+	}
+	return math.Round(prev.Download*100) != math.Round(next.Download*100) ||
+		math.Round(prev.Decrypt*100) != math.Round(next.Decrypt*100)
+}
+
 func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Job, item domain.JobItem, initial applemusic.Song, storefront string, collectionType applemusic.URLType, collectionName, collectionID string, playlistIndex int, folderArtist string, metadata *trackMetadataResolver, reporter jobs.Reporter) error {
 	// Once a codec's concrete output path is known, keep its process-wide lock
 	// through the existence/force check, retries, sidecar writes, and final
@@ -905,21 +946,21 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 	// fields.
 	// To avoid flooding the stream — and hammering SQLite with one UPDATE per
 	// 32KB download chunk — both the DB write and the event are gated on the
-	// same threshold: status changed or progress moved by at least 1
-	// percentage point. Intermediate progress has no durability value anyway
-	// (unfinished items are reset to queued on resume); persisting it at 1pp
-	// granularity only serves REST polling.
+	// same threshold: status changed, a stage finished, or one of the two
+	// meters moved by at least 1 percentage point. Intermediate progress has no
+	// durability value anyway (unfinished items are reset to queued on resume);
+	// persisting it at 1pp granularity only serves REST polling.
 	var lastEmittedStatus domain.ItemStatus
-	var lastEmittedProgress float64 = -1
-	set := func(status domain.ItemStatus, progress float64, message string) {
+	lastEmittedProgress := domain.ItemProgress{Download: -1, Decrypt: -1}
+	set := func(status domain.ItemStatus, message string, mutate func(*domain.ItemProgress)) {
 		item.Status = status
-		item.Progress = progress
 		item.StatusMessage = message
-		progPct := math.Round(progress * 100)
-		lastPct := math.Round(lastEmittedProgress * 100)
-		if status != lastEmittedStatus || progPct != lastPct {
+		if mutate != nil {
+			mutate(&item.Progress)
+		}
+		if status != lastEmittedStatus || progressChanged(lastEmittedProgress, item.Progress) {
 			lastEmittedStatus = status
-			lastEmittedProgress = progress
+			lastEmittedProgress = item.Progress
 			_ = reporter.UpdateItem(ctx, &item)
 			_ = reporter.Event(ctx, domain.Event{
 				JobID:   job.ID,
@@ -932,7 +973,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 		}
 	}
 
-	set(domain.ItemResolving, 0.01, "resolving metadata")
+	set(domain.ItemResolving, "resolving metadata", nil)
 
 	song, metadataAttempts, err := retryValue(ctx, d.cfg.Download.MaxAttempts, retryBackoff, func(attempt int) (applemusic.Song, error) {
 		d.setItemAttempt(ctx, reporter, &item, "metadata", attempt, clampAttempts(d.cfg.Download.MaxAttempts), fmt.Sprintf("Fetching track metadata (%d/%d)", attempt, clampAttempts(d.cfg.Download.MaxAttempts)))
@@ -953,6 +994,9 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 	item.DurationMS = song.DurationInMillis
 	item.ArtworkURL = firstNonEmpty(song.ArtworkURL, song.AlbumArtworkURL, item.ArtworkURL)
 	item.HasLyrics = song.HasLyrics
+	// The resolving stage is done. No event of its own: the next set call is
+	// immediate and carries the flag with it.
+	markResolved(&item.Progress)
 	_ = reporter.UpdateItem(ctx, &item)
 
 	if d.cfg.Simulate.Enabled {
@@ -1311,7 +1355,9 @@ func (d *Downloader) handleExistingOutput(ctx context.Context, reporter jobs.Rep
 	if fi, err := os.Stat(outPath); err == nil && !force {
 		cleanupResumeForKey(d.cfg.Download.TempDir, job.ID, outPath)
 		item.Status = domain.ItemSkipped
-		item.Progress = 1
+		// The progress breakdown stays at zero: no stage ran, the file was
+		// already on disk. skipped_existing is the item's status, not a claim
+		// that the pipeline executed.
 		item.FileSize = fi.Size()
 		item.RetryKind = ""
 		item.Attempt = 0
@@ -1328,8 +1374,8 @@ func (d *Downloader) handleExistingOutput(ctx context.Context, reporter jobs.Rep
 	return false, nil
 }
 
-func (d *Downloader) selectEnhancedMedia(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, codec string, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) (selectedDownloadMedia, error) {
-	set(domain.ItemDownloading, 0.03, fmt.Sprintf("Selecting %s media stream", strings.ToUpper(codec)))
+func (d *Downloader) selectEnhancedMedia(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, codec string, reporter jobs.Reporter, set publishStage) (selectedDownloadMedia, error) {
+	set(domain.ItemDownloading, fmt.Sprintf("Selecting %s media stream", strings.ToUpper(codec)), nil)
 	info, err := d.selectEnhancedStream(ctx, job.Storefront, song, codec)
 	if err != nil {
 		return selectedDownloadMedia{}, err
@@ -1389,16 +1435,15 @@ func (d *Downloader) resolveEnhancedHLS(ctx context.Context, storefront string, 
 	return master, nil
 }
 
-func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected selectedDownloadMedia, codec, jobID, outPath string, set func(domain.ItemStatus, float64, string)) (selectedDownloadMedia, error) {
+func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected selectedDownloadMedia, codec, jobID, outPath string, set publishStage) (selectedDownloadMedia, error) {
 	d.ensureMediaLimits()
 	codecName := strings.ToUpper(codec)
-	set(domain.ItemDownloading, 0.05, fmt.Sprintf("Downloading %s encrypted media", codecName))
+	set(domain.ItemDownloading, fmt.Sprintf("Downloading %s encrypted media", codecName), nil)
 	onProgress := func(p float64) {
 		if p < 0 {
-			return // Content-Length unknown, stay at 5%
+			return // Content-Length unknown; the meter stays at 0
 		}
-		// map [0,1] → [0.05, 0.55]
-		set(domain.ItemDownloading, 0.05+p*0.50, fmt.Sprintf("%s download %.0f%%", codecName, p*100))
+		set(domain.ItemDownloading, fmt.Sprintf("%s download %.0f%%", codecName, p*100), downloadFrac(p))
 	}
 	releaseInFlight, err := d.inFlightLimit.Acquire(ctx)
 	if err != nil {
@@ -1445,7 +1490,7 @@ func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected
 	return selected, nil
 }
 
-func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, codec, lyrics string, cover []byte, outPath string, selected selectedDownloadMedia, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) error {
+func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, codec, lyrics string, cover []byte, outPath string, selected selectedDownloadMedia, reporter jobs.Reporter, set publishStage) error {
 	d.ensureMediaLimits()
 	info := selected.info
 	var (
@@ -1492,16 +1537,20 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 		if openErr != nil {
 			return fmt.Errorf("open decrypt session: %w", openErr), nil
 		}
-		set(domain.ItemDecrypting, 0.55, "decrypting")
-		// Progress tracks encrypted bytes consumed (55% → 90%); the total sample
+		// Reaching decrypt means the transfer finished, whether or not the
+		// download meter got to say so (an unmeasurable response never reports
+		// a fraction), so pin it here rather than leaving it stale until the
+		// item completes.
+		set(domain.ItemDecrypting, "decrypting", downloadFrac(1))
+		// The decrypt meter tracks encrypted bytes consumed; the total sample
 		// count isn't known until the last fragment is read.
 		decryptFragment := func(key string, samples [][]byte) ([][]byte, error) {
 			return session.DecryptFragment(key, samples)
 		}
 		onProgress := func(consumed uint64) {
 			if rawSize > 0 {
-				p := math.Min(1, float64(consumed)/float64(rawSize))
-				set(domain.ItemDecrypting, 0.55+p*0.35, fmt.Sprintf("decrypting %.0f%%", p*100))
+				p := float64(consumed) / float64(rawSize)
+				set(domain.ItemDecrypting, fmt.Sprintf("decrypting %.0f%%", clampFrac(p)*100), decryptFrac(p))
 			}
 		}
 		// mp4ff parses one fragment, the wrapper returns one plaintext fragment,
@@ -1510,8 +1559,9 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 		return d.mp4.streamDecryptToFlatFile(ctx, rawReader, flatPath, info.Keys, decryptFragment, onProgress, func() {
 			// The decrypted input has reached EOF and ffmpeg is now flushing the
 			// progressive MP4 trailer. Publish remuxing inside that real window,
-			// before produceToFlatFile waits for ffmpeg to exit.
-			set(domain.ItemRemuxing, 0.90, "remuxing")
+			// before produceToFlatFile waits for ffmpeg to exit. Decrypt is done
+			// by definition here, whether or not the meter got to say so.
+			set(domain.ItemRemuxing, "remuxing", decryptFrac(1))
 		}), session.Close()
 	}()
 	if streamErr != nil {
@@ -1520,6 +1570,7 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	if closeErr != nil {
 		return fmt.Errorf("close decrypt session: %w", closeErr)
 	}
+	set(domain.ItemRemuxing, "remuxed", markRemuxed)
 	if selected.releaseInFlight != nil {
 		selected.releaseInFlight()
 	}
@@ -1531,14 +1582,19 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	// fast local disk) means a possibly-slow downloads volume sees just one
 	// sequential write; see finalizeToOutput. The decoder configuration is
 	// carried over from the original init segment, so no esds fixup is needed.
-	set(domain.ItemSaving, 0.94, "saving")
-	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrityFile(ctx, flatPath) {
-		if codec != "alac" {
-			return fmt.Errorf("integrity check failed")
+	set(domain.ItemSaving, "saving", nil)
+	if d.cfg.Download.CheckIntegrity {
+		if !d.mp4.checkIntegrityFile(ctx, flatPath) {
+			if codec != "alac" {
+				return fmt.Errorf("integrity check failed")
+			}
+			// repairALACFile re-verifies after patching, so reaching the mark
+			// below still means the file passed a real check.
+			if err := d.repairALACFile(ctx, job, item, flatPath, codec, reporter); err != nil {
+				return err
+			}
 		}
-		if err := d.repairALACFile(ctx, job, item, flatPath, codec, reporter); err != nil {
-			return err
-		}
+		set(domain.ItemSaving, "integrity verified", markVerified)
 	}
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
@@ -1552,10 +1608,11 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 			return fmt.Errorf("write lyrics file: %w", err)
 		}
 	}
-	set(domain.ItemTagging, 0.97, "writing metadata")
+	set(domain.ItemTagging, "writing metadata", nil)
 	if err := d.mp4.writeMetadata(ctx, flatPath, song, lyrics, cover, songInfo{Codec: codec}); err != nil {
 		return fmt.Errorf("write metadata: %w", err)
 	}
+	set(domain.ItemTagging, "metadata written", markTagged)
 	// Only ever expose a complete, tagged file at outPath: finalizeToOutput
 	// renames (same filesystem) or copies through a .part then renames
 	// (cross-filesystem), so handleExistingOutput's "bare existence = done" skip
@@ -1564,7 +1621,8 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 		return fmt.Errorf("finalize output file: %w", err)
 	}
 	item.Status = domain.ItemCompleted
-	item.Progress = 1
+	markSaved(&item.Progress)
+	item.Progress.CompleteTransfers()
 	item.OutputPath = outPath
 	item.Codec = codec
 	item.FileSize = outputFileSize(outPath)
@@ -1612,9 +1670,9 @@ func (d *Downloader) repairALACFile(ctx context.Context, job domain.Job, item *d
 // fetchAACLCMedia resolves the AAC-LC media playlist and downloads the
 // still-encrypted stream into memory. Kept separate from decryptAACLC so a
 // decrypt-phase retry can reuse these bytes instead of re-hitting the CDN.
-func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, reporter jobs.Reporter, set func(domain.ItemStatus, float64, string)) (aacLCMedia, []byte, func(), error) {
+func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, reporter jobs.Reporter, set publishStage) (aacLCMedia, []byte, func(), error) {
 	d.ensureMediaLimits()
-	set(domain.ItemDownloading, 0.03, "requesting AAC-LC WebPlayback asset")
+	set(domain.ItemDownloading, "requesting AAC-LC WebPlayback asset", nil)
 	playlistURL, err := d.wrapper.WebPlayback(ctx, song.ID)
 	if err != nil {
 		return aacLCMedia{}, nil, nil, fmt.Errorf("request AAC-LC WebPlayback: %w", err)
@@ -1627,7 +1685,7 @@ func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *
 		"codec_id": "aac-lc", "attempt": item.Attempt, "max_attempts": item.MaxAttempts,
 	})})
 
-	set(domain.ItemDownloading, 0.05, "downloading encrypted AAC-LC media")
+	set(domain.ItemDownloading, "downloading encrypted AAC-LC media", nil)
 	releaseInFlight, err := d.inFlightLimit.Acquire(ctx)
 	if err != nil {
 		return aacLCMedia{}, nil, nil, err
@@ -1637,12 +1695,12 @@ func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *
 		releaseInFlight()
 		return aacLCMedia{}, nil, nil, err
 	}
-	// Stream-download with per-chunk progress from 5% → 55%
+	// Stream-download, advancing the download meter per chunk.
 	raw, err := func() ([]byte, error) {
 		defer releaseDownload()
 		return downloadBytes(ctx, d.http, media.MediaURI, func(p float64) {
 			if p >= 0 {
-				set(domain.ItemDownloading, 0.05+p*0.50, fmt.Sprintf("downloading %.0f%%", p*100))
+				set(domain.ItemDownloading, fmt.Sprintf("downloading %.0f%%", p*100), downloadFrac(p))
 			}
 		})
 	}()
@@ -1659,7 +1717,7 @@ func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *
 // decoded box tree is written straight to ffmpeg, avoiding the previous extra
 // whole-track output buffer and fix-*/in.m4a intermediate. Gowidevine itself
 // still retains the decoded media boxes until it has emitted the track.
-func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, song applemusic.Song, media aacLCMedia, raw []byte, lyrics string, cover []byte, outPath string, releaseInFlight func(), set func(domain.ItemStatus, float64, string)) error {
+func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, song applemusic.Song, media aacLCMedia, raw []byte, lyrics string, cover []byte, outPath string, releaseInFlight func(), set publishStage) error {
 	d.ensureMediaLimits()
 	// Flatten, verify, and tag on temp storage, then move the finished file to
 	// its final path, same as downloadEnhancedCodec (see finalizeToOutput).
@@ -1671,7 +1729,9 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 	flatFile.Close()
 	defer os.Remove(flatPath)
 
-	set(domain.ItemDecrypting, 0.55, "acquiring Widevine license")
+	// Download is finished by the time the license is requested; see the same
+	// pin in downloadEnhancedCodec.
+	set(domain.ItemDecrypting, "acquiring Widevine license", downloadFrac(1))
 	releaseDecrypt, err := d.decryptLimit.Acquire(ctx)
 	if err != nil {
 		return err
@@ -1695,7 +1755,10 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 	if err != nil {
 		return err
 	}
-	set(domain.ItemDecrypting, 0.57, "decrypting AAC-LC")
+	// AAC-LC decrypts in one gowidevine pass with no intermediate byte count to
+	// report, so the decrypt meter jumps straight from 0 to 1 at the remux
+	// boundary below rather than sweeping.
+	set(domain.ItemDecrypting, "decrypting AAC-LC", nil)
 	if err := d.mp4.decryptWidevineToFlatFile(ctx, bytes.NewReader(raw), keys, flatPath, func() {
 		// Decryption has consumed the immutable retry buffer. Match the old
 		// phase boundary: release both permits before the container's final
@@ -1704,17 +1767,21 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 		if releaseInFlight != nil {
 			releaseInFlight()
 		}
-		set(domain.ItemRemuxing, 0.90, "remuxing AAC-LC")
+		set(domain.ItemRemuxing, "remuxing AAC-LC", decryptFrac(1))
 	}); err != nil {
 		return fmt.Errorf("normalize AAC-LC container: %w", err)
 	}
+	set(domain.ItemRemuxing, "AAC-LC remuxed", markRemuxed)
 
-	set(domain.ItemSaving, 0.94, "saving AAC-LC")
+	set(domain.ItemSaving, "saving AAC-LC", nil)
 	// The ffmpeg copy pass also normalises the M4A brand and creates the
 	// moov.udta.meta.ilst structure that go-mp4tag writes into. The decrypted
 	// WebPlayback asset has no udta box, so tagging would otherwise fail.
-	if d.cfg.Download.CheckIntegrity && !d.mp4.checkIntegrityFile(ctx, flatPath) {
-		return fmt.Errorf("AAC-LC integrity check failed")
+	if d.cfg.Download.CheckIntegrity {
+		if !d.mp4.checkIntegrityFile(ctx, flatPath) {
+			return fmt.Errorf("AAC-LC integrity check failed")
+		}
+		set(domain.ItemSaving, "AAC-LC integrity verified", markVerified)
 	}
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
@@ -1728,15 +1795,17 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 			return fmt.Errorf("write lyrics file: %w", err)
 		}
 	}
-	set(domain.ItemTagging, 0.97, "writing AAC-LC metadata")
+	set(domain.ItemTagging, "writing AAC-LC metadata", nil)
 	if err := d.mp4.writeMetadata(ctx, flatPath, song, lyrics, cover, songInfo{Codec: "aac-lc"}); err != nil {
 		return fmt.Errorf("write AAC-LC metadata: %w", err)
 	}
+	set(domain.ItemTagging, "AAC-LC metadata written", markTagged)
 	if err := finalizeToOutput(flatPath, outPath); err != nil {
 		return fmt.Errorf("finalize AAC-LC output file: %w", err)
 	}
 	item.Status = domain.ItemCompleted
-	item.Progress = 1
+	markSaved(&item.Progress)
+	item.Progress.CompleteTransfers()
 	item.OutputPath = outPath
 	item.Codec = "aac-lc"
 	item.FileSize = outputFileSize(outPath)

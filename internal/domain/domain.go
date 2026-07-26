@@ -180,6 +180,56 @@ func (j Job) MarshalJSON() ([]byte, error) {
 	return json.Marshal(public)
 }
 
+// ItemProgress is a per-item breakdown of the download pipeline. It replaced a
+// single 0..1 aggregate that spanned every stage on one axis, which forced two
+// unrelated measurements (bytes off the CDN, bytes through the decryptor) into
+// shared sub-ranges and reduced the atomic stages to fixed points on that axis
+// — 0.97 never meant "97% tagged", only "tagging started".
+//
+// So the two stages that genuinely have a fraction each get their own meter,
+// and everything else is a plain done/not-done flag. There is deliberately no
+// overall percentage: with the stages separated, any single number would have
+// to re-invent the arbitrary weighting this type exists to remove. A client
+// that wants one bar should pick a weighting that suits its own UI.
+//
+// Zero value = nothing has run yet, which is also what a queued item reports.
+// Read Status, not this, to decide whether an item is finished: a
+// skipped_existing item ran no stage at all and reports every field at zero.
+type ItemProgress struct {
+	// Download and Decrypt are fractions in [0,1] of their stage. Both stay at
+	// 0 while the stage cannot be measured — a media response without a
+	// Content-Length never yields a fraction — so a 0 here alongside
+	// status=downloading means "running, size unknown", not "no bytes yet".
+	// Both are pinned to 1 when the item completes, whatever they reported
+	// along the way.
+	Download float64 `json:"download"`
+	Decrypt  float64 `json:"decrypt"`
+	// Resolved: catalog metadata for the track was fetched.
+	Resolved bool `json:"resolved"`
+	// Remuxed: the decrypted stream was flattened into a progressive MP4.
+	Remuxed bool `json:"remuxed"`
+	// Verified: the integrity check ran and passed (for ALAC, possibly after a
+	// successful repair). Also false when the check is switched off by
+	// download.check_integrity, so false means "not verified", never "corrupt"
+	// — a failed check fails the item instead.
+	Verified bool `json:"verified"`
+	// Tagged: metadata (and cover/lyrics, per config) was written into the file.
+	Tagged bool `json:"tagged"`
+	// Saved: the finished file was moved to its final output path. This is the
+	// last step, so Saved is true for exactly the items that completed.
+	Saved bool `json:"saved"`
+}
+
+// CompleteTransfers pins both meters to 1 for an item that reached completed.
+// A completed track has by definition finished downloading and decrypting, but
+// neither meter is guaranteed to have said so: an unmeasurable transfer never
+// reports a fraction. Verified is deliberately not forced — false there means
+// the integrity check never ran, which stays true of a completed item.
+func (p *ItemProgress) CompleteTransfers() {
+	p.Download = 1
+	p.Decrypt = 1
+}
+
 type JobItem struct {
 	ID     string `json:"id"`
 	JobID  string `json:"job_id"`
@@ -199,7 +249,7 @@ type JobItem struct {
 	HasLyrics    bool         `json:"has_lyrics"`
 	LyricsStatus LyricsStatus `json:"lyrics_status,omitempty"`
 	Status       ItemStatus   `json:"status"`
-	Progress     float64      `json:"progress"`
+	Progress     ItemProgress `json:"progress"`
 	Codec        string       `json:"codec,omitempty"`
 	BitDepth     int          `json:"bit_depth,omitempty"`
 	SampleRate   int          `json:"sample_rate,omitempty"`
@@ -232,7 +282,7 @@ func (i JobItem) Finished() bool {
 // retried job re-processes the track under the same item id.
 func (i *JobItem) ResetForRetry() {
 	i.Status = ItemQueued
-	i.Progress = 0
+	i.Progress = ItemProgress{}
 	i.Codec = ""
 	i.BitDepth, i.SampleRate, i.Bitrate = 0, 0, 0
 	i.FileSize = 0
