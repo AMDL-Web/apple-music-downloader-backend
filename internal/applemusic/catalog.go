@@ -1017,10 +1017,25 @@ func (c *CatalogClient) MotionArtworkViaWebToken(ctx context.Context, storefront
 	video := out.Data[0].Attributes.EditorialVideo
 	// Most albums expose the motionDetail* pair; a few only carry the
 	// motion*Video* aliases, which hold the same asset.
+	square := pickMotionClip(video.MotionDetailSquare, video.MotionSquareVideo1x1)
+	tall := pickMotionClip(video.MotionDetailTall, video.MotionTallVideo3x4)
 	return MotionArtwork{
-		Square: firstNonEmptyString(video.MotionDetailSquare.Video, video.MotionSquareVideo1x1.Video),
-		Tall:   firstNonEmptyString(video.MotionDetailTall.Video, video.MotionTallVideo3x4.Video),
+		Square:       square.Video,
+		Tall:         tall.Video,
+		SquareColors: square.PreviewFrame.colors(),
+		TallColors:   tall.PreviewFrame.colors(),
 	}, nil
+}
+
+// pickMotionClip returns the first clip that actually has a video, so the
+// palette stays attached to the asset it describes.
+func pickMotionClip(clips ...motionArtworkClip) motionArtworkClip {
+	for _, clip := range clips {
+		if clip.Video != "" {
+			return clip
+		}
+	}
+	return motionArtworkClip{}
 }
 
 func firstNonEmptyString(values ...string) string {

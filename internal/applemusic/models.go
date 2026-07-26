@@ -108,6 +108,16 @@ type MotionArtwork struct {
 	Square string
 	// Tall is motionDetailTall, the 3:4 variant for full-bleed presentations.
 	Tall string
+	// SquareColors/TallColors are the palettes Apple attaches to each variant's
+	// previewFrame — and they are NOT the static artwork's palette. For one
+	// album the still cover reports bgColor 598090 with near-black text, the
+	// square loop 5c6786 with near-white text, and the tall loop 05104b with
+	// light text. Apple Music's own page uses the palette belonging to whichever
+	// asset it shows, which is why its background looks nothing like the still
+	// cover's. A client that mixes the still palette with a motion asset gets
+	// dark text on a dark video.
+	SquareColors ArtworkColors
+	TallColors   ArtworkColors
 }
 
 func (m MotionArtwork) IsZero() bool { return m.Square == "" && m.Tall == "" }
@@ -130,7 +140,8 @@ type catalogMotionArtworkResponse struct {
 }
 
 type motionArtworkClip struct {
-	Video string `json:"video"`
+	Video        string  `json:"video"`
+	PreviewFrame artwork `json:"previewFrame"`
 }
 
 type catalogPlaylistResponse struct {

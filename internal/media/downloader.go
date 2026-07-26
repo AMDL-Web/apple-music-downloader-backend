@@ -545,7 +545,12 @@ func (d *Downloader) startMotionArtworkBackfill(ctx context.Context, jobID strin
 		if art.IsZero() {
 			return
 		}
-		if err := reporter.SetJobMotionArtwork(detached, jobID, art.Square, art.Tall); err != nil {
+		if err := reporter.SetJobMotionArtwork(detached, jobID, domain.MotionArtwork{
+			SquareURL:    art.Square,
+			TallURL:      art.Tall,
+			SquareColors: domain.ArtworkPalette(art.SquareColors),
+			TallColors:   domain.ArtworkPalette(art.TallColors),
+		}); err != nil {
 			log.Warn("persist motion artwork", "job_id", jobID, "error", err)
 			return
 		}

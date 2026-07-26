@@ -1606,6 +1606,47 @@ components:
             The 3:4 variant of motion_artwork_url (motionDetailTall), for
             full-bleed presentations. Present and absent under the same
             conditions.
+        motion_artwork_bg_color:
+          type: string
+          description: >-
+            Background color for the 1:1 animated cover, from that variant's
+            previewFrame. Hex without a leading "#".
+
+            This is NOT artwork_bg_color. Each asset carries its own palette and
+            they differ sharply — one album reports 598090 with near-black text
+            for the still cover, 5c6786 with near-white text for the square loop,
+            and 05104b with light text for the tall one. Apple Music pairs the
+            palette with whichever asset it displays; mixing the still palette
+            with a motion asset yields dark text on a dark video.
+        motion_artwork_text_color1:
+          type: string
+          description: Primary text color paired with motion_artwork_bg_color.
+        motion_artwork_text_color2:
+          type: string
+          description: Secondary text color paired with motion_artwork_bg_color.
+        motion_artwork_text_color3:
+          type: string
+          description: Tertiary text color paired with motion_artwork_bg_color.
+        motion_artwork_text_color4:
+          type: string
+          description: Quaternary text color paired with motion_artwork_bg_color.
+        motion_artwork_tall_bg_color:
+          type: string
+          description: >-
+            Background color for the 3:4 animated cover, from the tall variant's
+            previewFrame. Use this one when presenting motion_artwork_tall_url.
+        motion_artwork_tall_text_color1:
+          type: string
+          description: Primary text color paired with motion_artwork_tall_bg_color.
+        motion_artwork_tall_text_color2:
+          type: string
+          description: Secondary text color paired with motion_artwork_tall_bg_color.
+        motion_artwork_tall_text_color3:
+          type: string
+          description: Tertiary text color paired with motion_artwork_tall_bg_color.
+        motion_artwork_tall_text_color4:
+          type: string
+          description: Quaternary text color paired with motion_artwork_tall_bg_color.
         force:
           type: boolean
         overrides:

@@ -286,9 +286,8 @@ type recordingReporter struct {
 }
 
 type motionArtworkWrite struct {
-	JobID  string
-	Square string
-	Tall   string
+	JobID string
+	Art   domain.MotionArtwork
 }
 
 type metadataCountingCatalog struct {
@@ -365,10 +364,10 @@ func (*recordingReporter) SetJob(_ context.Context, job *domain.Job) error {
 	return nil
 }
 
-func (r *recordingReporter) SetJobMotionArtwork(_ context.Context, jobID, squareURL, tallURL string) error {
+func (r *recordingReporter) SetJobMotionArtwork(_ context.Context, jobID string, art domain.MotionArtwork) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.motionArtwork = append(r.motionArtwork, motionArtworkWrite{JobID: jobID, Square: squareURL, Tall: tallURL})
+	r.motionArtwork = append(r.motionArtwork, motionArtworkWrite{JobID: jobID, Art: art})
 	return nil
 }
 func (r *recordingReporter) AddItem(_ context.Context, item *domain.JobItem) error {
@@ -1555,8 +1554,10 @@ func TestMotionArtworkBackfillOutlivesTheJobContext(t *testing.T) {
 	reporter := &recordingReporter{}
 	d := &Downloader{
 		catalog: fakeDownloaderCatalog{motionArtwork: applemusic.MotionArtwork{
-			Square: "https://mvod.example/square.m3u8",
-			Tall:   "https://mvod.example/tall.m3u8",
+			Square:       "https://mvod.example/square.m3u8",
+			Tall:         "https://mvod.example/tall.m3u8",
+			SquareColors: applemusic.ArtworkColors{BgColor: "5c6786", TextColor1: "f7ebf6"},
+			TallColors:   applemusic.ArtworkColors{BgColor: "05104b", TextColor1: "d5d9ed"},
 		}},
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -1571,8 +1572,12 @@ func TestMotionArtworkBackfillOutlivesTheJobContext(t *testing.T) {
 	if len(writes) != 1 {
 		t.Fatalf("motion artwork writes = %d, want 1", len(writes))
 	}
-	if writes[0].JobID != "job-1" || writes[0].Square != "https://mvod.example/square.m3u8" || writes[0].Tall != "https://mvod.example/tall.m3u8" {
+	if writes[0].JobID != "job-1" || writes[0].Art.SquareURL != "https://mvod.example/square.m3u8" || writes[0].Art.TallURL != "https://mvod.example/tall.m3u8" {
 		t.Fatalf("unexpected write %+v", writes[0])
+	}
+	// The palette must travel with its own variant, never the still cover's.
+	if writes[0].Art.TallColors.BgColor != "05104b" {
+		t.Fatalf("tall palette = %+v, want the tall previewFrame background", writes[0].Art.TallColors)
 	}
 }
 

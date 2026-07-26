@@ -74,6 +74,26 @@ const (
 	LyricsDisabled LyricsStatus = "disabled"
 )
 
+// MotionArtwork is one album's animated covers plus the palette belonging to
+// each variant. Grouped rather than passed as a dozen loose strings, since the
+// URL and its palette must always travel together — pairing a motion asset with
+// the still cover's palette is exactly the bug this prevents.
+type MotionArtwork struct {
+	SquareURL    string
+	TallURL      string
+	SquareColors ArtworkPalette
+	TallColors   ArtworkPalette
+}
+
+// ArtworkPalette is a background color plus four text colors, hex without "#".
+type ArtworkPalette struct {
+	BgColor    string
+	TextColor1 string
+	TextColor2 string
+	TextColor3 string
+	TextColor4 string
+}
+
 type Job struct {
 	ID         string `json:"id"`
 	Input      string `json:"input"`
@@ -111,7 +131,23 @@ type Job struct {
 	// treat "absent" as "no animated cover" and re-render when the job updates.
 	MotionArtworkURL     string `json:"motion_artwork_url,omitempty"`
 	MotionArtworkTallURL string `json:"motion_artwork_tall_url,omitempty"`
-	CanonicalKey         string `json:"-"`
+	// Each motion variant carries its own palette, taken from that variant's
+	// previewFrame — not from the still cover. They differ sharply: one album
+	// reports 598090 with near-black text for the still, 5c6786 with near-white
+	// for the square loop, and 05104b with light text for the tall one. Pair the
+	// palette with the asset actually on screen or you get dark text on a dark
+	// video. Empty whenever the matching URL is empty.
+	MotionArtworkBgColor        string `json:"motion_artwork_bg_color,omitempty"`
+	MotionArtworkTextColor1     string `json:"motion_artwork_text_color1,omitempty"`
+	MotionArtworkTextColor2     string `json:"motion_artwork_text_color2,omitempty"`
+	MotionArtworkTextColor3     string `json:"motion_artwork_text_color3,omitempty"`
+	MotionArtworkTextColor4     string `json:"motion_artwork_text_color4,omitempty"`
+	MotionArtworkTallBgColor    string `json:"motion_artwork_tall_bg_color,omitempty"`
+	MotionArtworkTallTextColor1 string `json:"motion_artwork_tall_text_color1,omitempty"`
+	MotionArtworkTallTextColor2 string `json:"motion_artwork_tall_text_color2,omitempty"`
+	MotionArtworkTallTextColor3 string `json:"motion_artwork_tall_text_color3,omitempty"`
+	MotionArtworkTallTextColor4 string `json:"motion_artwork_tall_text_color4,omitempty"`
+	CanonicalKey                string `json:"-"`
 	// Force is legacy: it was the submission-time overwrite flag before
 	// download.force_overwrite existed as a global config key with a
 	// per-request override (Overrides.ForceOverwrite). New jobs never set it;
