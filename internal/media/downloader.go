@@ -1204,6 +1204,14 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			"codec": codec, "download_attempts": fetchAttempts, "decrypt_attempts": decryptAttempts,
 			"max_attempts": clampAttempts(codecMaxAttempts), "fallback_from": fallbackCodec(codecs, codecIndex),
 		})})
+		if codecIndex > 0 {
+			// The one line that says the output is not what was asked for. Warn,
+			// not Info: the item itself completed, so nothing else in the log
+			// distinguishes a degraded track from a clean one.
+			logging.FromContext(ctx, d.logger).Warn("track completed on fallback codec",
+				"item_id", item.ID, "adam_id", item.AdamID, "title", item.Title,
+				"codec", codec, "fallback_from", fallbackCodec(codecs, codecIndex))
+		}
 		releaseOutput()
 		return nil
 	}
@@ -1215,11 +1223,18 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 
 // reportCodecFailed emits the codec_failed event for either the download or
 // the decrypt phase, using the attempts actually spent in that phase.
+//
+// It also logs, because job_events are deleted along with their job: once the
+// user removes a finished job, the process log is the only surviving record of
+// why a track was degraded to a fallback codec.
 func (d *Downloader) reportCodecFailed(ctx context.Context, reporter jobs.Reporter, job domain.Job, item domain.JobItem, codec, phase string, codecMaxAttempts, attempts int, err error) {
 	attemptMaximum := clampAttempts(codecMaxAttempts)
 	if isNonRetryableError(err) {
 		attemptMaximum = attempts
 	}
+	logging.FromContext(ctx, d.logger).Warn("codec attempt failed",
+		"item_id", item.ID, "adam_id", item.AdamID, "title", item.Title,
+		"codec", codec, "phase", phase, "attempts", attempts, "max_attempts", attemptMaximum, "error", err)
 	_ = reporter.Event(ctx, domain.Event{JobID: job.ID, ItemID: item.ID, Type: "codec_failed", Phase: codec, Message: err.Error(), Payload: domain.MarshalEventPayload(item, map[string]any{
 		"codec": codec, "phase": phase, "attempts": attempts, "max_attempts": attemptMaximum, "error": err.Error(),
 	})})
