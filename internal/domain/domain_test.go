@@ -119,3 +119,28 @@ func TestIsOverviewMilestone(t *testing.T) {
 		}
 	}
 }
+
+// The animated cover routinely resolves after the job is terminal and its
+// per-job stream has closed, so the overview feed is the only channel left that
+// can tell a client the fields appeared — both live and on cursor replay.
+func TestMotionArtworkResolvedIsAnOverviewMilestone(t *testing.T) {
+	if !IsOverviewMilestone("motion_artwork_resolved") {
+		t.Fatal("motion_artwork_resolved must wake the overview feed")
+	}
+	var persisted bool
+	for _, t := range PersistedOverviewMilestones {
+		if t == "motion_artwork_resolved" {
+			persisted = true
+		}
+	}
+	if !persisted {
+		t.Fatal("motion_artwork_resolved must be replayable from a cursor, not only live")
+	}
+	// The detail-level chatter must stay out, or the overview feed degenerates
+	// into the per-item stream it exists to filter.
+	for _, noisy := range []string{"item_progress", "codec_selected", "operation_retry"} {
+		if IsOverviewMilestone(noisy) {
+			t.Fatalf("%s must not wake the overview feed", noisy)
+		}
+	}
+}

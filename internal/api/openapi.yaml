@@ -585,7 +585,9 @@ paths:
           按实时进度计算）；
         - download_deleted：某个任务被删除，data.job_id 为被删任务 id。
         只有影响列表展示的「里程碑」事件才会触发推送（新建/恢复/开始/解析完成/
-        单曲完成或跳过或失败/终态/删除），逐曲下载进度等高频细节不会推送。
+        动态封面解析完成/单曲完成或跳过或失败/终态/删除），逐曲下载进度等高频细节
+        不会推送。动态封面是任务进入终态之后仍可能到达的唯一一类变化：它在带外解析，
+        逐任务的事件流那时通常已经结束，因此只有本端点会送到它。
         断线续接：先 GET /downloads 取得 last_event_id，再用 Last-Event-ID 头
         续接，只接收此后新增的变化。download_upserted 与 download_deleted 都带
         event_id，客户端每处理完一条消息后将该值作为新的续接游标。
@@ -1610,6 +1612,13 @@ components:
             job reports it absent and gains it moments later, announced by a
             motion_artwork_resolved event. Treat absent as "no animated cover"
             and re-render when the job updates.
+
+            That event is an overview milestone, so the downloads feed
+            (GET /api/v1/downloads/events) both pushes it live and replays it
+            from a cursor. Follow the feed rather than the per-job stream for
+            this one field: short jobs commonly resolve their cover after
+            reaching a terminal status, by which point the per-job stream has
+            already closed.
         motion_artwork_tall_url:
           type: string
           description: >-
