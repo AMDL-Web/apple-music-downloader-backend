@@ -526,7 +526,14 @@ const motionArtworkTimeout = 30 * time.Second
 // The context is detached from the job's, which is cancelled the moment the job
 // finishes. Short jobs would otherwise routinely cancel this mid-flight and never
 // persist a cover they are entitled to.
+// catalog.motion_artwork_enabled turns the lookup off outright, before the
+// request is built: this is the only amp-api traffic the backend generates
+// purely for decoration, so an install that never shows animated covers should
+// be able to stop paying for it.
 func (d *Downloader) startMotionArtworkBackfill(ctx context.Context, jobID string, parsed applemusic.ParsedURL, tracks []applemusic.Song, reporter jobs.Reporter) {
+	if !d.cfg.Catalog.MotionArtworkEnabled {
+		return
+	}
 	albumID := motionArtworkAlbumID(parsed, tracks)
 	if albumID == "" {
 		return
@@ -877,6 +884,20 @@ func markVerified(p *domain.ItemProgress) { p.Verified = true }
 func markTagged(p *domain.ItemProgress)   { p.Tagged = true }
 func markSaved(p *domain.ItemProgress)    { p.Saved = true }
 
+// startDownload and startDecrypt are the stage-entry mutators. Entering a stage
+// restates what is known rather than only adding to it, so a retry within one
+// codec corrects a meter the previous attempt left behind — the codec-fallback
+// boundary has ResetForAttempt, but a retry inside a codec does not pass
+// through it. Reaching decrypt also means the transfer finished, whether or not
+// the download meter got to say so (an unmeasurable response never reports a
+// fraction), so pin it here rather than leave it stale until the item completes.
+func startDownload(p *domain.ItemProgress) { p.Download = 0 }
+
+func startDecrypt(p *domain.ItemProgress) {
+	p.Download = 1
+	p.Decrypt = 0
+}
+
 // downloadFrac and decryptFrac move one meter. Fractions outside [0,1] are
 // clamped rather than rejected: a transfer whose reported total turns out to be
 // short should saturate the bar, not push it past full.
@@ -893,9 +914,9 @@ func clampFrac(v float64) float64 {
 }
 
 // progressChanged reports whether the breakdown moved enough to justify a DB
-// write and an SSE frame: any stage flag flipping, or either meter crossing a
-// whole percentage point. Sub-percent meter movement is dropped — see the
-// throttle comment on set.
+// write and an SSE frame: any stage flag flipping, or either meter rounding to
+// a different whole percent. Movement that rounds to the same percent is
+// dropped — see the throttle comment on set.
 func progressChanged(prev, next domain.ItemProgress) bool {
 	if prev.Resolved != next.Resolved || prev.Remuxed != next.Remuxed ||
 		prev.Verified != next.Verified || prev.Tagged != next.Tagged || prev.Saved != next.Saved {
@@ -947,9 +968,10 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 	// To avoid flooding the stream — and hammering SQLite with one UPDATE per
 	// 32KB download chunk — both the DB write and the event are gated on the
 	// same threshold: status changed, a stage finished, or one of the two
-	// meters moved by at least 1 percentage point. Intermediate progress has no
-	// durability value anyway (unfinished items are reset to queued on resume);
-	// persisting it at 1pp granularity only serves REST polling.
+	// meters landed on a different whole percent. That is rounding, not a 1pp
+	// delta: 0.4% → 0.6% crosses because it rounds 0 → 1. Intermediate progress
+	// has no durability value anyway (unfinished items are reset to queued on
+	// resume); persisting it at percent granularity only serves REST polling.
 	var lastEmittedStatus domain.ItemStatus
 	lastEmittedProgress := domain.ItemProgress{Download: -1, Decrypt: -1}
 	set := func(status domain.ItemStatus, message string, mutate func(*domain.ItemProgress)) {
@@ -1108,6 +1130,9 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 		// previous codec's quality paired with the new codec's name; setItemQuality
 		// repopulates them once the new attempt's actual quality is known.
 		item.BitDepth, item.SampleRate, item.Bitrate = 0, 0, 0
+		// Same reasoning for the progress breakdown: the stages this codec has
+		// yet to run must not still be reporting the previous codec's results.
+		item.Progress.ResetForAttempt()
 		if codecIndex > 0 {
 			item.StatusMessage = fmt.Sprintf("Codec %s failed; falling back to %s", strings.ToUpper(codecs[codecIndex-1]), strings.ToUpper(codec))
 			_ = reporter.UpdateItem(ctx, &item)
@@ -1355,9 +1380,10 @@ func (d *Downloader) handleExistingOutput(ctx context.Context, reporter jobs.Rep
 	if fi, err := os.Stat(outPath); err == nil && !force {
 		cleanupResumeForKey(d.cfg.Download.TempDir, job.ID, outPath)
 		item.Status = domain.ItemSkipped
-		// The progress breakdown stays at zero: no stage ran, the file was
-		// already on disk. skipped_existing is the item's status, not a claim
-		// that the pipeline executed.
+		// The breakdown is left as it stands: resolved is already true — the
+		// catalog lookup is what produced the path checked just above — and
+		// every later stage is still false, because none of them ran. Zeroing
+		// it here would erase a stage that genuinely happened.
 		item.FileSize = fi.Size()
 		item.RetryKind = ""
 		item.Attempt = 0
@@ -1438,7 +1464,7 @@ func (d *Downloader) resolveEnhancedHLS(ctx context.Context, storefront string, 
 func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected selectedDownloadMedia, codec, jobID, outPath string, set publishStage) (selectedDownloadMedia, error) {
 	d.ensureMediaLimits()
 	codecName := strings.ToUpper(codec)
-	set(domain.ItemDownloading, fmt.Sprintf("Downloading %s encrypted media", codecName), nil)
+	set(domain.ItemDownloading, fmt.Sprintf("Downloading %s encrypted media", codecName), startDownload)
 	onProgress := func(p float64) {
 		if p < 0 {
 			return // Content-Length unknown; the meter stays at 0
@@ -1537,11 +1563,7 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 		if openErr != nil {
 			return fmt.Errorf("open decrypt session: %w", openErr), nil
 		}
-		// Reaching decrypt means the transfer finished, whether or not the
-		// download meter got to say so (an unmeasurable response never reports
-		// a fraction), so pin it here rather than leaving it stale until the
-		// item completes.
-		set(domain.ItemDecrypting, "decrypting", downloadFrac(1))
+		set(domain.ItemDecrypting, "decrypting", startDecrypt)
 		// The decrypt meter tracks encrypted bytes consumed; the total sample
 		// count isn't known until the last fragment is read.
 		decryptFragment := func(key string, samples [][]byte) ([][]byte, error) {
@@ -1685,7 +1707,7 @@ func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *
 		"codec_id": "aac-lc", "attempt": item.Attempt, "max_attempts": item.MaxAttempts,
 	})})
 
-	set(domain.ItemDownloading, "downloading encrypted AAC-LC media", nil)
+	set(domain.ItemDownloading, "downloading encrypted AAC-LC media", startDownload)
 	releaseInFlight, err := d.inFlightLimit.Acquire(ctx)
 	if err != nil {
 		return aacLCMedia{}, nil, nil, err
@@ -1729,9 +1751,7 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 	flatFile.Close()
 	defer os.Remove(flatPath)
 
-	// Download is finished by the time the license is requested; see the same
-	// pin in downloadEnhancedCodec.
-	set(domain.ItemDecrypting, "acquiring Widevine license", downloadFrac(1))
+	set(domain.ItemDecrypting, "acquiring Widevine license", startDecrypt)
 	releaseDecrypt, err := d.decryptLimit.Acquire(ctx)
 	if err != nil {
 		return err

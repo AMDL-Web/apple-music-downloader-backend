@@ -313,8 +313,9 @@ func TestMutableViewOmitsStartupBoundFields(t *testing.T) {
 		}
 	}
 	catalog, ok := view["catalog"].(map[string]any)
-	if !ok || len(catalog) != 3 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["signed_mode_hls_source"] != "wrapper" {
-		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/signed_mode_hls_source", view["catalog"])
+	if !ok || len(catalog) != 4 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" ||
+		catalog["signed_mode_hls_source"] != "wrapper" || catalog["motion_artwork_enabled"] != true {
+		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/signed_mode_hls_source/motion_artwork_enabled", view["catalog"])
 	}
 	logging, ok := view["logging"].(map[string]any)
 	if !ok || len(logging) != 2 || logging["level"] != "info" || logging["access_log"] != false {

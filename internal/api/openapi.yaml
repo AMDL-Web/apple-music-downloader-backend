@@ -137,7 +137,7 @@ paths:
       description: >-
         返回当前生效配置中可运行时修改的部分：download 段（max_running_jobs、
         max_parallel_downloads、max_parallel_decrypts、max_parallel_wrapper_requests 除外）、logging.level/access_log、simulate 段、
-        catalog.album_track_url_mode/media_user_token/signed_mode_hls_source。
+        catalog.album_track_url_mode/media_user_token/signed_mode_hls_source/motion_artwork_enabled。
         仅启动时生效的字段（server、database、logging 其它字段、wrapper、tools、catalog 其它字段）不返回——
         它们无法通过本 API 修改，请编辑启动配置 configs/config.yaml 并重启。
 
@@ -164,7 +164,7 @@ paths:
 
         仅 GET 返回的字段可以修改：download 段（max_running_jobs、max_parallel_downloads、
         max_parallel_decrypts、max_parallel_wrapper_requests 除外）、
-        logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/signed_mode_hls_source。其余字段只在进程启动时
+        logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/signed_mode_hls_source/motion_artwork_enabled。其余字段只在进程启动时
         被消费，修改请求会被 422 拒绝——请改启动配置 configs/config.yaml 并重启。
         作为唯一例外，旧客户端提交的 catalog.media_user_token_priority 仍会被
         接受，但该字段已弃用且值会被忽略，不再参与令牌选择。
@@ -1285,6 +1285,16 @@ components:
                 enhancedHls）；legacy 模式下忽略。wrapper（默认）取
                 wrapper.M3U8 的授权设备清单；web_token 抓取
                 music.apple.com 网页端 JWT，从 amp-api 读取 enhancedHls。
+            motion_artwork_enabled:
+              type: boolean
+              description: >-
+                是否查询 Apple Music 动态专辑封面（attributes.editorialVideo），
+                默认 true。true 时每张专辑在解析完成后额外发起一次 amp-api
+                请求（脱离任务上下文，不阻塞也不会让下载失败），成功则通过
+                motion_artwork_resolved 事件补上任务上的 motion_artwork_*
+                字段。false 时不发请求也不抓取网页端令牌，任务不带这些字段，
+                对客户端而言与「这张专辑没有动态封面」完全一致。修改在新启动
+                的任务上生效。
         download:
           type: object
           description: >-
@@ -1688,8 +1698,14 @@ components:
 
         All fields are always present. The zero value means nothing has run yet,
         which is what a queued item reports. Use `status`, not this object, to
-        decide whether an item is finished — a `skipped_existing` item ran no
-        stage and reports every field at zero.
+        decide whether an item is finished — a `skipped_existing` item reports
+        `resolved` true (the catalog lookup is what produced the path found to
+        already exist) with every later stage false, because the file was
+        already on disk and nothing downloaded, decrypted, or wrote it.
+
+        A codec fallback or retry resets the breakdown to `resolved` only, so
+        the meters and flags always describe the attempt currently in flight,
+        never one that already failed.
       required: [download, decrypt, resolved, remuxed, verified, tagged, saved]
       properties:
         download:

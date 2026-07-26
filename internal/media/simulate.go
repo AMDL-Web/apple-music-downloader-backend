@@ -54,7 +54,8 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 		force := d.cfg.Download.ForceOverwrite || job.Force
 		if fi, statErr := os.Stat(outPath); statErr == nil && !force {
 			item.Status = domain.ItemSkipped
-			// Zero breakdown, same as handleExistingOutput: no stage ran.
+			// Breakdown left as it stands, same as handleExistingOutput:
+			// resolved true, every later stage false.
 			item.FileSize = fi.Size()
 			item.RetryKind = ""
 			item.Attempt = 0
@@ -76,6 +77,9 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 		codecName := strings.ToUpper(codec)
 		item.Codec = codec
 		item.BitDepth, item.SampleRate, item.Bitrate = 0, 0, 0
+		// Same per-attempt reset as the real codec loop, so a simulated
+		// fallback walks the breakdown exactly like a real one.
+		item.Progress.ResetForAttempt()
 		if codecIndex > 0 {
 			item.StatusMessage = fmt.Sprintf("Codec %s failed; falling back to %s", strings.ToUpper(codecs[codecIndex-1]), codecName)
 			_ = reporter.UpdateItem(ctx, item)
@@ -153,12 +157,12 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 		}
 		var transferErr error
 		if codec == "aac-lc" {
-			set(domain.ItemDownloading, "downloading encrypted AAC-LC media", nil)
+			set(domain.ItemDownloading, "downloading encrypted AAC-LC media", startDownload)
 			transferErr = d.simulateTransfer(ctx, totalBytes, func(p float64) {
 				set(domain.ItemDownloading, fmt.Sprintf("downloading %.0f%%", p*100), downloadFrac(p))
 			})
 		} else {
-			set(domain.ItemDownloading, fmt.Sprintf("Downloading %s encrypted media", codecName), nil)
+			set(domain.ItemDownloading, fmt.Sprintf("Downloading %s encrypted media", codecName), startDownload)
 			transferErr = d.simulateTransfer(ctx, totalBytes, func(p float64) {
 				set(domain.ItemDownloading, fmt.Sprintf("%s download %.0f%%", codecName, p*100), downloadFrac(p))
 			})
@@ -215,9 +219,8 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 // simulateDecryptPhase covers only the actual decrypt work and therefore only
 // this portion holds the global decrypt permit.
 func (d *Downloader) simulateDecryptPhase(ctx context.Context, song applemusic.Song, codec string, sampleRate int, totalBytes int64, set publishStage) error {
-	// Entering decrypt pins the download meter, same as the real paths do.
 	if codec == "aac-lc" {
-		set(domain.ItemDecrypting, "acquiring Widevine license", downloadFrac(1))
+		set(domain.ItemDecrypting, "acquiring Widevine license", startDecrypt)
 		if err := simulatePause(ctx, 200*time.Millisecond); err != nil {
 			return err
 		}
@@ -226,7 +229,7 @@ func (d *Downloader) simulateDecryptPhase(ctx context.Context, song applemusic.S
 		set(domain.ItemDecrypting, "decrypting AAC-LC", nil)
 		return simulatePause(ctx, 200*time.Millisecond)
 	}
-	set(domain.ItemDecrypting, "extracting samples", downloadFrac(1))
+	set(domain.ItemDecrypting, "extracting samples", startDecrypt)
 	totalSamples := simulatedSampleCount(song, codec, sampleRate)
 	// Decrypt works on bytes already in memory, so pace it faster than the
 	// network transfer: the same speed range over roughly a third of the size.

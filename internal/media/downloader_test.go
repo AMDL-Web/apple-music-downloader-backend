@@ -1553,6 +1553,7 @@ func TestMotionArtworkAlbumIDPicksTheAlbumBehindTheJob(t *testing.T) {
 func TestMotionArtworkBackfillOutlivesTheJobContext(t *testing.T) {
 	reporter := &recordingReporter{}
 	d := &Downloader{
+		cfg: motionArtworkEnabledConfig(),
 		catalog: fakeDownloaderCatalog{motionArtwork: applemusic.MotionArtwork{
 			Square:       "https://mvod.example/square.m3u8",
 			Tall:         "https://mvod.example/tall.m3u8",
@@ -1586,6 +1587,7 @@ func TestMotionArtworkBackfillOutlivesTheJobContext(t *testing.T) {
 func TestMotionArtworkBackfillSwallowsCatalogFailure(t *testing.T) {
 	reporter := &recordingReporter{}
 	d := &Downloader{
+		cfg:     motionArtworkEnabledConfig(),
 		catalog: fakeDownloaderCatalog{motionArtworkErr: errors.New("amp-api unavailable")},
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -1612,6 +1614,7 @@ func TestMotionArtworkBackfillSwallowsCatalogFailure(t *testing.T) {
 func TestMotionArtworkBackfillIgnoresEmptyResult(t *testing.T) {
 	reporter := &recordingReporter{}
 	d := &Downloader{
+		cfg:     motionArtworkEnabledConfig(),
 		catalog: fakeDownloaderCatalog{motionArtwork: applemusic.MotionArtwork{}},
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -1709,5 +1712,99 @@ func TestCompleteTransfersLeavesVerifiedAlone(t *testing.T) {
 	want := domain.ItemProgress{Download: 1, Decrypt: 1, Resolved: true, Remuxed: true, Tagged: true, Saved: true}
 	if p != want {
 		t.Fatalf("after CompleteTransfers = %+v, want %+v", p, want)
+	}
+}
+
+// motionArtworkEnabledConfig is the config these backfill tests need: the
+// lookup is opt-out, but a zero-value Config reads as disabled, so a test that
+// builds a Downloader literal has to say so explicitly.
+func motionArtworkEnabledConfig() config.Config {
+	return config.Config{Catalog: config.CatalogConfig{MotionArtworkEnabled: true}}
+}
+
+// catalog.motion_artwork_enabled=false must stop the lookup before any request
+// is built — the point of the switch is not generating the amp-api traffic at
+// all, not discarding the answer.
+func TestMotionArtworkBackfillDisabledByConfig(t *testing.T) {
+	reporter := &recordingReporter{}
+	catalog := &countingMotionArtworkCatalog{art: applemusic.MotionArtwork{
+		Square: "https://example.test/square.m3u8",
+	}}
+	d := &Downloader{
+		cfg:     config.Config{Catalog: config.CatalogConfig{MotionArtworkEnabled: false}},
+		catalog: catalog,
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	d.startMotionArtworkBackfill(context.Background(), "job-1", applemusic.ParsedURL{
+		Storefront: "cn", Type: applemusic.TypeAlbum, ID: "1858184006",
+	}, nil, reporter)
+
+	// No goroutine should have been started at all; sleep so one that was gets
+	// a chance to show itself.
+	time.Sleep(100 * time.Millisecond)
+	if got := catalog.calls.Load(); got != 0 {
+		t.Fatalf("amp-api calls = %d, want 0 when the lookup is switched off", got)
+	}
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	if len(reporter.motionArtwork) != 0 {
+		t.Fatalf("motion artwork writes = %d, want none", len(reporter.motionArtwork))
+	}
+	for _, ev := range reporter.events {
+		if ev.Type == "motion_artwork_resolved" {
+			t.Fatal("a disabled lookup must not announce a motion cover")
+		}
+	}
+}
+
+type countingMotionArtworkCatalog struct {
+	fakeDownloaderCatalog
+	art   applemusic.MotionArtwork
+	calls atomic.Int32
+}
+
+func (c *countingMotionArtworkCatalog) MotionArtworkViaWebToken(context.Context, string, string) (applemusic.MotionArtwork, error) {
+	c.calls.Add(1)
+	return c.art, nil
+}
+
+// A codec fallback must not carry the failed codec's stages into the next
+// attempt: an ALAC that died at the integrity check leaves remuxed true, and an
+// unmeasurable transfer leaves the download meter full.
+func TestItemProgressResetForAttemptKeepsOnlyResolved(t *testing.T) {
+	spent := domain.ItemProgress{
+		Download: 1, Decrypt: 1,
+		Resolved: true, Remuxed: true, Verified: true, Tagged: true,
+	}
+	spent.ResetForAttempt()
+	want := domain.ItemProgress{Resolved: true}
+	if spent != want {
+		t.Fatalf("after ResetForAttempt = %+v, want %+v", spent, want)
+	}
+
+	// Resolving genuinely has not run for an item reset before metadata came
+	// back, and the reset must not invent it.
+	fresh := domain.ItemProgress{Download: 0.3}
+	fresh.ResetForAttempt()
+	if fresh != (domain.ItemProgress{}) {
+		t.Fatalf("after ResetForAttempt = %+v, want zero", fresh)
+	}
+}
+
+// Entering a stage restates what is known, so a retry inside one codec corrects
+// a meter the previous attempt left behind without going through the
+// codec-fallback reset.
+func TestStageEntryMutatorsRestateMeters(t *testing.T) {
+	stale := domain.ItemProgress{Download: 1, Decrypt: 0.8, Resolved: true}
+	startDownload(&stale)
+	if stale.Download != 0 {
+		t.Fatalf("download after re-entering the download stage = %v, want 0", stale.Download)
+	}
+
+	midDownload := domain.ItemProgress{Download: 0.2, Decrypt: 0.5, Resolved: true}
+	startDecrypt(&midDownload)
+	if midDownload.Download != 1 || midDownload.Decrypt != 0 {
+		t.Fatalf("meters after entering decrypt = %+v, want download=1 decrypt=0", midDownload)
 	}
 }

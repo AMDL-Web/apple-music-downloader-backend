@@ -131,6 +131,19 @@ catalog:
   #     enhancedHls from amp-api.music.apple.com with that token, independent of the signed developer token used
   #     for catalog metadata. Use this if the wrapper cannot supply a usable device manifest.
   signed_mode_hls_source: "wrapper"
+  # bool: true/false. Whether to look up Apple Music animated album covers (attributes.editorialVideo) and
+  # expose them on jobs as motion_artwork_url / motion_artwork_tall_url plus each variant's palette.
+  # Default when the key is absent: true (the behavior before this switch existed).
+  # - true: after a job's input resolves, one extra amp-api request per album runs out of band, on a context
+  #     detached from the job. It never blocks or fails a download; the fields appear a moment later via the
+  #     motion_artwork_resolved event. Requires a scraped music.apple.com web-player token — the public API
+  #     host never returns editorialVideo, whatever token it is given.
+  # - false: no lookup, no request, no token scrape. Jobs simply carry no motion artwork fields, which is
+  #     indistinguishable to clients from an album that has no animated cover. Set this if nothing you use
+  #     renders animated covers and you would rather not generate undocumented-endpoint traffic.
+  # This is the only amp-api traffic the backend makes purely for decoration; enhanced HLS media selection
+  # is unaffected and has its own switch in signed_mode_hls_source above.
+  motion_artwork_enabled: true
 
 download:
   # quality_priority, codec_alternative, and memory_mode below are runtime-mutable;

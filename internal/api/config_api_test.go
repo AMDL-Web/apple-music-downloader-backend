@@ -63,8 +63,9 @@ func TestGetConfigReturnsOnlyMutableFields(t *testing.T) {
 	if err := json.Unmarshal(resp.Config["catalog"], &catalog); err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog) != 3 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" || catalog["signed_mode_hls_source"] != "wrapper" {
-		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/signed_mode_hls_source", catalog)
+	if len(catalog) != 4 || catalog["album_track_url_mode"] != "song" || catalog["media_user_token"] != "" ||
+		catalog["signed_mode_hls_source"] != "wrapper" || catalog["motion_artwork_enabled"] != true {
+		t.Fatalf("catalog section = %v, want album_track_url_mode/media_user_token/signed_mode_hls_source/motion_artwork_enabled", catalog)
 	}
 	var logging map[string]any
 	if err := json.Unmarshal(resp.Config["logging"], &logging); err != nil {

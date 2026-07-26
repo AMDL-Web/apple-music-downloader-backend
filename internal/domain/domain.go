@@ -194,7 +194,9 @@ func (j Job) MarshalJSON() ([]byte, error) {
 //
 // Zero value = nothing has run yet, which is also what a queued item reports.
 // Read Status, not this, to decide whether an item is finished: a
-// skipped_existing item ran no stage at all and reports every field at zero.
+// skipped_existing item reports Resolved (the catalog lookup is what produced
+// the path found to already exist) with every later stage false, because the
+// file was on disk and nothing downloaded, decrypted, or wrote it.
 type ItemProgress struct {
 	// Download and Decrypt are fractions in [0,1] of their stage. Both stay at
 	// 0 while the stage cannot be measured — a media response without a
@@ -218,6 +220,17 @@ type ItemProgress struct {
 	// Saved: the finished file was moved to its final output path. This is the
 	// last step, so Saved is true for exactly the items that completed.
 	Saved bool `json:"saved"`
+}
+
+// ResetForAttempt clears everything a fresh download attempt has to earn again,
+// keeping only Resolved: the catalog metadata was fetched once and stays valid
+// across codec fallbacks and retries. Without this a codec that failed late —
+// say at the integrity check, with remuxed already true — would leave those
+// flags set while the replacement codec is still downloading, and an
+// unmeasurable transfer would inherit the previous attempt's full meter.
+func (p *ItemProgress) ResetForAttempt() {
+	resolved := p.Resolved
+	*p = ItemProgress{Resolved: resolved}
 }
 
 // CompleteTransfers pins both meters to 1 for an item that reached completed.
