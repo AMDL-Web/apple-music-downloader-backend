@@ -431,8 +431,13 @@ func (s *Store) UpdateJob(ctx context.Context, job domain.Job) error {
 // predates it. A generic UPDATE carrying that stale struct would blank the
 // columns right after this fills them. updated_at is left alone too — gaining an
 // animated cover is not job progress and should not reorder a list sorted by it.
-func (s *Store) SetJobMotionArtwork(ctx context.Context, id string, art domain.MotionArtwork) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET
+// SetJobMotionArtwork writes the animated-cover columns and reports whether a
+// row actually matched. The caller runs on a context detached from the job's,
+// so the job can be deleted between the lookup starting and this landing; an
+// UPDATE that matches nothing is not an error, but it must not be mistaken for
+// a successful write.
+func (s *Store) SetJobMotionArtwork(ctx context.Context, id string, art domain.MotionArtwork) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET
 		motion_artwork_url=?, motion_artwork_tall_url=?,
 		motion_artwork_bg_color=?, motion_artwork_text_color1=?, motion_artwork_text_color2=?, motion_artwork_text_color3=?, motion_artwork_text_color4=?,
 		motion_artwork_tall_bg_color=?, motion_artwork_tall_text_color1=?, motion_artwork_tall_text_color2=?, motion_artwork_tall_text_color3=?, motion_artwork_tall_text_color4=?
@@ -441,7 +446,14 @@ func (s *Store) SetJobMotionArtwork(ctx context.Context, id string, art domain.M
 		art.SquareColors.BgColor, art.SquareColors.TextColor1, art.SquareColors.TextColor2, art.SquareColors.TextColor3, art.SquareColors.TextColor4,
 		art.TallColors.BgColor, art.TallColors.TextColor1, art.TallColors.TextColor2, art.TallColors.TextColor3, art.TallColors.TextColor4,
 		id)
-	return err
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
 }
 
 func (s *Store) UpdateJobStatus(ctx context.Context, id string, status domain.JobStatus, updatedAt time.Time) error {

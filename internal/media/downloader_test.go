@@ -283,6 +283,9 @@ type recordingReporter struct {
 	added         []domain.JobItem
 	removed       []string
 	motionArtwork []motionArtworkWrite
+	// missingJobs makes SetJobMotionArtwork report that no row matched, which
+	// is what the store does once the job has been deleted.
+	missingJobs bool
 }
 
 type motionArtworkWrite struct {
@@ -364,11 +367,13 @@ func (*recordingReporter) SetJob(_ context.Context, job *domain.Job) error {
 	return nil
 }
 
-func (r *recordingReporter) SetJobMotionArtwork(_ context.Context, jobID string, art domain.MotionArtwork) error {
+// missingJobs makes SetJobMotionArtwork report "no such row", standing in for a
+// job deleted while the detached lookup was in flight.
+func (r *recordingReporter) SetJobMotionArtwork(_ context.Context, jobID string, art domain.MotionArtwork) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.motionArtwork = append(r.motionArtwork, motionArtworkWrite{JobID: jobID, Art: art})
-	return nil
+	return !r.missingJobs, nil
 }
 func (r *recordingReporter) AddItem(_ context.Context, item *domain.JobItem) error {
 	now := time.Now().UTC()
@@ -1806,5 +1811,35 @@ func TestStageEntryMutatorsRestateMeters(t *testing.T) {
 	startDecrypt(&midDownload)
 	if midDownload.Download != 1 || midDownload.Decrypt != 0 {
 		t.Fatalf("meters after entering decrypt = %+v, want download=1 decrypt=0", midDownload)
+	}
+}
+
+// A job deleted while the detached lookup was in flight must not get a
+// motion_artwork_resolved event: it would land after the job_deleted tombstone
+// the overview feed replays as that job's last word.
+func TestMotionArtworkBackfillSkipsTheEventWhenTheJobIsGone(t *testing.T) {
+	reporter := &recordingReporter{missingJobs: true}
+	d := &Downloader{
+		cfg: motionArtworkEnabledConfig(),
+		catalog: fakeDownloaderCatalog{motionArtwork: applemusic.MotionArtwork{
+			Square: "https://example.test/square.m3u8",
+		}},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	d.startMotionArtworkBackfill(context.Background(), "job-gone", applemusic.ParsedURL{
+		Storefront: "cn", Type: applemusic.TypeAlbum, ID: "1858184006",
+	}, nil, reporter)
+
+	// The write is attempted — only its outcome decides whether the event goes
+	// out — so wait for it rather than for an event that must never arrive.
+	waitForMotionArtworkWrites(t, reporter)
+	time.Sleep(100 * time.Millisecond)
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	for _, ev := range reporter.events {
+		if ev.Type == "motion_artwork_resolved" {
+			t.Fatal("announced a motion cover for a job that no longer exists")
+		}
 	}
 }

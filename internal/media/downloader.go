@@ -552,13 +552,23 @@ func (d *Downloader) startMotionArtworkBackfill(ctx context.Context, jobID strin
 		if art.IsZero() {
 			return
 		}
-		if err := reporter.SetJobMotionArtwork(detached, jobID, domain.MotionArtwork{
+		applied, err := reporter.SetJobMotionArtwork(detached, jobID, domain.MotionArtwork{
 			SquareURL:    art.Square,
 			TallURL:      art.Tall,
 			SquareColors: domain.ArtworkPalette(art.SquareColors),
 			TallColors:   domain.ArtworkPalette(art.TallColors),
-		}); err != nil {
+		})
+		if err != nil {
 			log.Warn("persist motion artwork", "job_id", jobID, "error", err)
+			return
+		}
+		if !applied {
+			// The job was deleted while this was in flight. Announcing a cover
+			// for a row that no longer exists would file the event behind the
+			// job_deleted tombstone, which the overview feed replays as the
+			// last word on that job — an orphan event after it would resurrect
+			// a deleted download in any client replaying from a cursor.
+			log.Debug("motion artwork discarded, job is gone", "job_id", jobID, "album_id", albumID)
 			return
 		}
 		_ = reporter.Event(detached, domain.Event{

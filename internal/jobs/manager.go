@@ -72,8 +72,9 @@ type Reporter interface {
 	SetJob(ctx context.Context, job *domain.Job) error
 	// SetJobMotionArtwork persists only the animated-cover columns. Separate
 	// from SetJob because it lands out of band, after the caller's Job value
-	// has gone stale.
-	SetJobMotionArtwork(ctx context.Context, jobID string, art domain.MotionArtwork) error
+	// has gone stale. Reports false when no job row matched, which is the
+	// normal outcome when the job was deleted while the lookup was in flight.
+	SetJobMotionArtwork(ctx context.Context, jobID string, art domain.MotionArtwork) (bool, error)
 	AddItem(ctx context.Context, item *domain.JobItem) error
 	UpdateItem(ctx context.Context, item *domain.JobItem) error
 	RemoveItem(ctx context.Context, itemID string) error
@@ -841,7 +842,7 @@ func (m *Manager) SetJob(ctx context.Context, job *domain.Job) error {
 	return m.store.UpdateJob(ctx, *job)
 }
 
-func (m *Manager) SetJobMotionArtwork(ctx context.Context, jobID string, art domain.MotionArtwork) error {
+func (m *Manager) SetJobMotionArtwork(ctx context.Context, jobID string, art domain.MotionArtwork) (bool, error) {
 	return m.store.SetJobMotionArtwork(ctx, jobID, art)
 }
 
