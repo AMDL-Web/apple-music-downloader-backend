@@ -13,7 +13,10 @@ func isRuntimeKey(key string) bool {
 	switch key {
 	case "logging.level", "logging.access_log",
 		"catalog.album_track_url_mode", "catalog.media_user_token",
-		"catalog.media_user_token_priority", "catalog.signed_mode_hls_source":
+		"catalog.media_user_token_priority", "catalog.signed_mode_hls_source",
+		// Read per job when the input resolves, so flipping it takes effect on
+		// newly started jobs without a restart.
+		"catalog.motion_artwork_enabled":
 		return true
 	}
 	section, _, _ := strings.Cut(key, ".")

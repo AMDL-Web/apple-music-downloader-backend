@@ -70,6 +70,10 @@ var ErrJobFinalizing = errors.New("job is still finalizing its previous run; ret
 
 type Reporter interface {
 	SetJob(ctx context.Context, job *domain.Job) error
+	// SetJobMotionArtwork persists only the animated-cover columns. Separate
+	// from SetJob because it lands out of band, after the caller's Job value
+	// has gone stale.
+	SetJobMotionArtwork(ctx context.Context, jobID string, art domain.MotionArtwork) error
 	AddItem(ctx context.Context, item *domain.JobItem) error
 	UpdateItem(ctx context.Context, item *domain.JobItem) error
 	RemoveItem(ctx context.Context, itemID string) error
@@ -835,6 +839,10 @@ func (m *Manager) refreshCounts(job *domain.Job) {
 func (m *Manager) SetJob(ctx context.Context, job *domain.Job) error {
 	job.UpdatedAt = time.Now().UTC()
 	return m.store.UpdateJob(ctx, *job)
+}
+
+func (m *Manager) SetJobMotionArtwork(ctx context.Context, jobID string, art domain.MotionArtwork) error {
+	return m.store.SetJobMotionArtwork(ctx, jobID, art)
 }
 
 func (m *Manager) AddItem(ctx context.Context, item *domain.JobItem) error {

@@ -89,6 +89,15 @@ type CatalogConfig struct {
 	// validated and discarded by Config.NormalizeDeprecated.
 	LegacyMediaUserTokenPriority string `yaml:"media_user_token_priority,omitempty" json:"media_user_token_priority,omitempty"`
 	SignedModeHLSSource          string `yaml:"signed_mode_hls_source" json:"signed_mode_hls_source"`
+	// MotionArtworkEnabled controls the out-of-band animated-cover lookup. It
+	// is the only feature that talks to amp-api purely for decoration, and it
+	// costs one undocumented-endpoint request plus a scraped web-player token
+	// per album, so an install that never renders animated covers can switch
+	// the traffic off entirely. Off simply means jobs carry no motion artwork
+	// fields, which clients already have to handle — an album without an
+	// animated cover looks the same. Defaults to true; load decodes onto
+	// Default(), so a config file predating this key keeps the lookup on.
+	MotionArtworkEnabled bool `yaml:"motion_artwork_enabled" json:"motion_artwork_enabled"`
 }
 
 // DeveloperTokenTTL returns the validity of developer tokens minted for
@@ -200,6 +209,7 @@ func Default() Config {
 			DefaultStorefront: "us", Language: "en-US",
 			MaxParallelRequests: 16, RequestsPerSecond: 10, RequestBurst: 16,
 			DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song", SignedModeHLSSource: "wrapper",
+			MotionArtworkEnabled: true,
 		},
 		Download: DownloadConfig{
 			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true, MemoryMode: MemoryModeLow,

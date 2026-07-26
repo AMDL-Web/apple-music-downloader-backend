@@ -137,7 +137,7 @@ paths:
       description: >-
         返回当前生效配置中可运行时修改的部分：download 段（max_running_jobs、
         max_parallel_downloads、max_parallel_decrypts、max_parallel_wrapper_requests 除外）、logging.level/access_log、simulate 段、
-        catalog.album_track_url_mode/media_user_token/signed_mode_hls_source。
+        catalog.album_track_url_mode/media_user_token/signed_mode_hls_source/motion_artwork_enabled。
         仅启动时生效的字段（server、database、logging 其它字段、wrapper、tools、catalog 其它字段）不返回——
         它们无法通过本 API 修改，请编辑启动配置 configs/config.yaml 并重启。
 
@@ -164,7 +164,7 @@ paths:
 
         仅 GET 返回的字段可以修改：download 段（max_running_jobs、max_parallel_downloads、
         max_parallel_decrypts、max_parallel_wrapper_requests 除外）、
-        logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/signed_mode_hls_source。其余字段只在进程启动时
+        logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/signed_mode_hls_source/motion_artwork_enabled。其余字段只在进程启动时
         被消费，修改请求会被 422 拒绝——请改启动配置 configs/config.yaml 并重启。
         作为唯一例外，旧客户端提交的 catalog.media_user_token_priority 仍会被
         接受，但该字段已弃用且值会被忽略，不再参与令牌选择。
@@ -1285,6 +1285,16 @@ components:
                 enhancedHls）；legacy 模式下忽略。wrapper（默认）取
                 wrapper.M3U8 的授权设备清单；web_token 抓取
                 music.apple.com 网页端 JWT，从 amp-api 读取 enhancedHls。
+            motion_artwork_enabled:
+              type: boolean
+              description: >-
+                是否查询 Apple Music 动态专辑封面（attributes.editorialVideo），
+                默认 true。true 时每张专辑在解析完成后额外发起一次 amp-api
+                请求（脱离任务上下文，不阻塞也不会让下载失败），成功则通过
+                motion_artwork_resolved 事件补上任务上的 motion_artwork_*
+                字段。false 时不发请求也不抓取网页端令牌，任务不带这些字段，
+                对客户端而言与「这张专辑没有动态封面」完全一致。修改在新启动
+                的任务上生效。
         download:
           type: object
           description: >-
@@ -1588,6 +1598,65 @@ components:
             Quaternary text color paired with artwork_bg_color, from Apple
             Music's attributes.artwork textColor4: a hex string without a
             leading "#". Absent under the same conditions as artwork_bg_color.
+        motion_artwork_url:
+          type: string
+          description: >-
+            HLS master playlist for the album's animated cover (1:1), from Apple
+            Music's attributes.editorialVideo motionDetailSquare. A public,
+            unsigned URL that a client can hand straight to a video player.
+
+            Only album and song jobs can have one, and only some albums do. It is
+            resolved out of band after the input resolves, so a freshly started
+            job reports it absent and gains it moments later, announced by a
+            motion_artwork_resolved event. Treat absent as "no animated cover"
+            and re-render when the job updates.
+        motion_artwork_tall_url:
+          type: string
+          description: >-
+            The 3:4 variant of motion_artwork_url (motionDetailTall), for
+            full-bleed presentations. Present and absent under the same
+            conditions.
+        motion_artwork_bg_color:
+          type: string
+          description: >-
+            Background color for the 1:1 animated cover, from that variant's
+            previewFrame. Hex without a leading "#".
+
+            This is NOT artwork_bg_color. Each asset carries its own palette and
+            they differ sharply — one album reports 598090 with near-black text
+            for the still cover, 5c6786 with near-white text for the square loop,
+            and 05104b with light text for the tall one. Apple Music pairs the
+            palette with whichever asset it displays; mixing the still palette
+            with a motion asset yields dark text on a dark video.
+        motion_artwork_text_color1:
+          type: string
+          description: Primary text color paired with motion_artwork_bg_color.
+        motion_artwork_text_color2:
+          type: string
+          description: Secondary text color paired with motion_artwork_bg_color.
+        motion_artwork_text_color3:
+          type: string
+          description: Tertiary text color paired with motion_artwork_bg_color.
+        motion_artwork_text_color4:
+          type: string
+          description: Quaternary text color paired with motion_artwork_bg_color.
+        motion_artwork_tall_bg_color:
+          type: string
+          description: >-
+            Background color for the 3:4 animated cover, from the tall variant's
+            previewFrame. Use this one when presenting motion_artwork_tall_url.
+        motion_artwork_tall_text_color1:
+          type: string
+          description: Primary text color paired with motion_artwork_tall_bg_color.
+        motion_artwork_tall_text_color2:
+          type: string
+          description: Secondary text color paired with motion_artwork_tall_bg_color.
+        motion_artwork_tall_text_color3:
+          type: string
+          description: Tertiary text color paired with motion_artwork_tall_bg_color.
+        motion_artwork_tall_text_color4:
+          type: string
+          description: Quaternary text color paired with motion_artwork_tall_bg_color.
         force:
           type: boolean
         overrides:
@@ -1612,6 +1681,77 @@ components:
         updated_at:
           type: string
           format: date-time
+    ItemProgress:
+      type: object
+      description: >-
+        Per-stage breakdown of one item's download pipeline. Replaces the single
+        0..1 `progress` aggregate that used to span every stage on one axis:
+        download and decrypt shared sub-ranges of it, and the atomic stages were
+        only fixed points — 0.97 never meant "97% tagged", just "tagging
+        started".
+
+        The two stages that genuinely have a fraction get their own meter; every
+        other stage is a done/not-done flag. There is deliberately no overall
+        percentage: any single number would have to re-impose the arbitrary
+        weighting this object exists to remove. A client that wants one bar
+        should weight these fields to suit its own UI.
+
+        All fields are always present. The zero value means nothing has run yet,
+        which is what a queued item reports. Use `status`, not this object, to
+        decide whether an item is finished — a `skipped_existing` item reports
+        `resolved` true (the catalog lookup is what produced the path found to
+        already exist) with every later stage false, because the file was
+        already on disk and nothing downloaded, decrypted, or wrote it.
+
+        A codec fallback or retry resets the breakdown to `resolved` only, so
+        the meters and flags always describe the attempt currently in flight,
+        never one that already failed.
+      required: [download, decrypt, resolved, remuxed, verified, tagged, saved]
+      properties:
+        download:
+          type: number
+          format: double
+          description: >-
+            Fraction in [0,1] of the encrypted media transferred. Stays at 0
+            while the transfer cannot be measured (a media response without a
+            Content-Length never yields a fraction), so 0 alongside
+            status=downloading means "running, size unknown", not "no bytes
+            yet". Pinned to 1 when the item completes.
+        decrypt:
+          type: number
+          format: double
+          description: >-
+            Fraction in [0,1] of the encrypted bytes fed through the decryptor.
+            The aac-lc path decrypts in one opaque pass with no intermediate
+            count, so there it jumps 0 → 1 at the remux boundary instead of
+            sweeping. Pinned to 1 when the item completes.
+        resolved:
+          type: boolean
+          description: Catalog metadata for the track was fetched.
+        remuxed:
+          type: boolean
+          description: >-
+            The decrypted stream was flattened into a progressive MP4.
+        verified:
+          type: boolean
+          description: >-
+            The integrity check ran and passed (for ALAC, possibly after a
+            successful repair). Also false when the check is switched off by
+            the `download.check_integrity` config key, so false means "not
+            verified", never "corrupt" — a failed check fails the whole item
+            instead. This is the one flag a completed item may legitimately
+            leave false.
+        tagged:
+          type: boolean
+          description: >-
+            Metadata — and cover art / lyrics, per config — was written into
+            the file.
+        saved:
+          type: boolean
+          description: >-
+            The finished file was moved to its final output path. This is the
+            last step of the pipeline, so `saved` is true for exactly those
+            items that reached status=completed.
     JobItem:
       type: object
       required: [id, job_id, adam_id, kind, index, has_lyrics, status, progress, created_at, updated_at]
@@ -1672,7 +1812,8 @@ components:
         status:
           type: string
           enum: [queued, resolving, downloading, decrypting, remuxing, tagging, saving, completed, failed, skipped_existing, cancelled]
-        progress: {type: number, format: double}
+        progress:
+          $ref: '#/components/schemas/ItemProgress'
         codec: {type: string}
         bit_depth:
           type: integer

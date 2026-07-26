@@ -18,6 +18,22 @@ import (
 	"amdl/internal/domain"
 )
 
+// wantSimulatedProgress is the breakdown a simulated track must finish on when
+// it is driven through the real entry point: every stage marked, both meters
+// full. Verified follows the config exactly as the real pipeline does — no
+// integrity check configured, no mark.
+func wantSimulatedProgress(cfg config.Config) domain.ItemProgress {
+	return domain.ItemProgress{
+		Download: 1,
+		Decrypt:  1,
+		Resolved: true,
+		Remuxed:  true,
+		Verified: cfg.Download.CheckIntegrity,
+		Tagged:   true,
+		Saved:    true,
+	}
+}
+
 func TestSimulateUsesSharedPipelinedMediaPools(t *testing.T) {
 	cfg := config.Default()
 	cfg.Simulate = config.SimulateConfig{Enabled: true, MinSpeedKBps: 1_000_000, MaxSpeedKBps: 1_000_000}
@@ -38,7 +54,7 @@ func TestSimulateUsesSharedPipelinedMediaPools(t *testing.T) {
 			item := domain.JobItem{ID: fmt.Sprintf("item-%d", i), JobID: fmt.Sprintf("job-%d", i)}
 			err := base.withConfig(cfg).simulateTrack(context.Background(), domain.Job{ID: item.JobID, Force: true}, &item,
 				applemusic.Song{ID: item.ID, Name: "Track", DurationInMillis: 1000}, applemusic.TypeAlbum,
-				"Album", "album", 1, "Artist", reporter, func(domain.ItemStatus, float64, string) {})
+				"Album", "album", 1, "Artist", reporter, func(domain.ItemStatus, string, func(*domain.ItemProgress)) {})
 			if err != nil {
 				t.Errorf("simulateTrack: %v", err)
 			}
@@ -119,7 +135,7 @@ func TestSimulateTrackSelectsRealMediaButNeverDownloadsOrWrites(t *testing.T) {
 			if err := json.Unmarshal([]byte(ev.Payload), &snapshot); err != nil {
 				t.Fatalf("decode item_completed payload: %v", err)
 			}
-			if snapshot.Status != domain.ItemCompleted || snapshot.Progress != 1 || snapshot.Bitrate != 2500000 || snapshot.UpdatedAt.IsZero() {
+			if snapshot.Status != domain.ItemCompleted || snapshot.Progress != wantSimulatedProgress(cfg) || snapshot.Bitrate != 2500000 || snapshot.UpdatedAt.IsZero() {
 				t.Fatalf("item_completed snapshot = %+v, want complete REST item state", snapshot)
 			}
 		case "item_failed", "item_skipped", "codec_failed", "codec_fallback":
@@ -145,8 +161,8 @@ func TestSimulateTrackSelectsRealMediaButNeverDownloadsOrWrites(t *testing.T) {
 		t.Fatal("expected item updates")
 	}
 	final := reporter.items[len(reporter.items)-1]
-	if final.Status != domain.ItemCompleted || final.Progress != 1 {
-		t.Fatalf("final item state = %s/%v, want completed/1", final.Status, final.Progress)
+	if final.Status != domain.ItemCompleted || final.Progress != wantSimulatedProgress(cfg) {
+		t.Fatalf("final item state = %s/%+v, want completed/%+v", final.Status, final.Progress, wantSimulatedProgress(cfg))
 	}
 	if final.Codec != "alac" || final.OutputPath == "" {
 		t.Fatalf("final item codec/output_path = %q/%q, want alac and a non-empty path", final.Codec, final.OutputPath)

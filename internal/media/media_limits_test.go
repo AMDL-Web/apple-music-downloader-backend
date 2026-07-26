@@ -69,7 +69,7 @@ func TestMediaDownloadLimitSharedAcrossJobClones(t *testing.T) {
 			// Distinct output paths: the resume checkpoint is keyed by output
 			// path, and in production the output lock keeps same-output
 			// downloads from running concurrently.
-			got, err := d.downloadSelectedEnhancedMedia(context.Background(), selectedDownloadMedia{info: selectedMediaInfo{MediaURI: server.URL}}, "alac", "job-pool", fmt.Sprintf("out-%d.m4a", i), func(domain.ItemStatus, float64, string) {})
+			got, err := d.downloadSelectedEnhancedMedia(context.Background(), selectedDownloadMedia{info: selectedMediaInfo{MediaURI: server.URL}}, "alac", "job-pool", fmt.Sprintf("out-%d.m4a", i), func(domain.ItemStatus, string, func(*domain.ItemProgress)) {})
 			if err != nil {
 				t.Errorf("download: %v", err)
 			}
@@ -125,7 +125,7 @@ func TestMediaInFlightBackpressureAndDownloadFailureRelease(t *testing.T) {
 		downloadLimit: limits.NewSemaphore(2), decryptLimit: limits.NewSemaphore(1), inFlightLimit: limits.NewSemaphore(3),
 	}
 	input := selectedDownloadMedia{info: selectedMediaInfo{MediaURI: server.URL}}
-	if _, err := d.downloadSelectedEnhancedMedia(context.Background(), input, "alac", "job-backpressure", "out-first.m4a", func(domain.ItemStatus, float64, string) {}); err == nil {
+	if _, err := d.downloadSelectedEnhancedMedia(context.Background(), input, "alac", "job-backpressure", "out-first.m4a", func(domain.ItemStatus, string, func(*domain.ItemProgress)) {}); err == nil {
 		t.Fatal("first failed media response unexpectedly succeeded")
 	}
 
@@ -135,7 +135,7 @@ func TestMediaInFlightBackpressureAndDownloadFailureRelease(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			got, err := d.downloadSelectedEnhancedMedia(context.Background(), input, "alac", "job-backpressure", fmt.Sprintf("out-%d.m4a", i), func(domain.ItemStatus, float64, string) {})
+			got, err := d.downloadSelectedEnhancedMedia(context.Background(), input, "alac", "job-backpressure", fmt.Sprintf("out-%d.m4a", i), func(domain.ItemStatus, string, func(*domain.ItemProgress)) {})
 			if err != nil {
 				t.Errorf("download after failure: %v", err)
 				return
@@ -182,7 +182,7 @@ func TestDecryptLimitIsGlobalAndCanceledWaiterDoesNotEnter(t *testing.T) {
 	selected := selectedDownloadMedia{rawPath: rawPath, info: selectedMediaInfo{}}
 	call := func(ctx context.Context, d *Downloader) error {
 		return d.downloadEnhancedCodec(ctx, domain.Job{ID: "job"}, &domain.JobItem{ID: "item"}, applemusic.Song{ID: "song"},
-			"alac", "", nil, cfg.Download.TempDir+"/out.m4a", selected, &recordingReporter{}, func(domain.ItemStatus, float64, string) {})
+			"alac", "", nil, cfg.Download.TempDir+"/out.m4a", selected, &recordingReporter{}, func(domain.ItemStatus, string, func(*domain.ItemProgress)) {})
 	}
 	firstDone := make(chan error, 1)
 	go func() { firstDone <- call(context.Background(), base.withConfig(cfg)) }()

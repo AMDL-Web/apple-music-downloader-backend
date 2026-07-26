@@ -74,6 +74,26 @@ const (
 	LyricsDisabled LyricsStatus = "disabled"
 )
 
+// MotionArtwork is one album's animated covers plus the palette belonging to
+// each variant. Grouped rather than passed as a dozen loose strings, since the
+// URL and its palette must always travel together — pairing a motion asset with
+// the still cover's palette is exactly the bug this prevents.
+type MotionArtwork struct {
+	SquareURL    string
+	TallURL      string
+	SquareColors ArtworkPalette
+	TallColors   ArtworkPalette
+}
+
+// ArtworkPalette is a background color plus four text colors, hex without "#".
+type ArtworkPalette struct {
+	BgColor    string
+	TextColor1 string
+	TextColor2 string
+	TextColor3 string
+	TextColor4 string
+}
+
 type Job struct {
 	ID         string `json:"id"`
 	Input      string `json:"input"`
@@ -101,7 +121,33 @@ type Job struct {
 	ArtworkTextColor2 string `json:"artwork_text_color2,omitempty"`
 	ArtworkTextColor3 string `json:"artwork_text_color3,omitempty"`
 	ArtworkTextColor4 string `json:"artwork_text_color4,omitempty"`
-	CanonicalKey      string `json:"-"`
+	// MotionArtworkURL/MotionArtworkTallURL are HLS master playlists for the
+	// animated cover Apple Music shows on albums that have one (1:1 and 3:4).
+	// Public, unsigned URLs a client can hand straight to a player.
+	//
+	// Only album and song jobs can have them, and only some albums do. They are
+	// filled in asynchronously after the input resolves, so a job that has just
+	// started will report them empty and gain them a moment later — clients must
+	// treat "absent" as "no animated cover" and re-render when the job updates.
+	MotionArtworkURL     string `json:"motion_artwork_url,omitempty"`
+	MotionArtworkTallURL string `json:"motion_artwork_tall_url,omitempty"`
+	// Each motion variant carries its own palette, taken from that variant's
+	// previewFrame — not from the still cover. They differ sharply: one album
+	// reports 598090 with near-black text for the still, 5c6786 with near-white
+	// for the square loop, and 05104b with light text for the tall one. Pair the
+	// palette with the asset actually on screen or you get dark text on a dark
+	// video. Empty whenever the matching URL is empty.
+	MotionArtworkBgColor        string `json:"motion_artwork_bg_color,omitempty"`
+	MotionArtworkTextColor1     string `json:"motion_artwork_text_color1,omitempty"`
+	MotionArtworkTextColor2     string `json:"motion_artwork_text_color2,omitempty"`
+	MotionArtworkTextColor3     string `json:"motion_artwork_text_color3,omitempty"`
+	MotionArtworkTextColor4     string `json:"motion_artwork_text_color4,omitempty"`
+	MotionArtworkTallBgColor    string `json:"motion_artwork_tall_bg_color,omitempty"`
+	MotionArtworkTallTextColor1 string `json:"motion_artwork_tall_text_color1,omitempty"`
+	MotionArtworkTallTextColor2 string `json:"motion_artwork_tall_text_color2,omitempty"`
+	MotionArtworkTallTextColor3 string `json:"motion_artwork_tall_text_color3,omitempty"`
+	MotionArtworkTallTextColor4 string `json:"motion_artwork_tall_text_color4,omitempty"`
+	CanonicalKey                string `json:"-"`
 	// Force is legacy: it was the submission-time overwrite flag before
 	// download.force_overwrite existed as a global config key with a
 	// per-request override (Overrides.ForceOverwrite). New jobs never set it;
@@ -134,6 +180,69 @@ func (j Job) MarshalJSON() ([]byte, error) {
 	return json.Marshal(public)
 }
 
+// ItemProgress is a per-item breakdown of the download pipeline. It replaced a
+// single 0..1 aggregate that spanned every stage on one axis, which forced two
+// unrelated measurements (bytes off the CDN, bytes through the decryptor) into
+// shared sub-ranges and reduced the atomic stages to fixed points on that axis
+// — 0.97 never meant "97% tagged", only "tagging started".
+//
+// So the two stages that genuinely have a fraction each get their own meter,
+// and everything else is a plain done/not-done flag. There is deliberately no
+// overall percentage: with the stages separated, any single number would have
+// to re-invent the arbitrary weighting this type exists to remove. A client
+// that wants one bar should pick a weighting that suits its own UI.
+//
+// Zero value = nothing has run yet, which is also what a queued item reports.
+// Read Status, not this, to decide whether an item is finished: a
+// skipped_existing item reports Resolved (the catalog lookup is what produced
+// the path found to already exist) with every later stage false, because the
+// file was on disk and nothing downloaded, decrypted, or wrote it.
+type ItemProgress struct {
+	// Download and Decrypt are fractions in [0,1] of their stage. Both stay at
+	// 0 while the stage cannot be measured — a media response without a
+	// Content-Length never yields a fraction — so a 0 here alongside
+	// status=downloading means "running, size unknown", not "no bytes yet".
+	// Both are pinned to 1 when the item completes, whatever they reported
+	// along the way.
+	Download float64 `json:"download"`
+	Decrypt  float64 `json:"decrypt"`
+	// Resolved: catalog metadata for the track was fetched.
+	Resolved bool `json:"resolved"`
+	// Remuxed: the decrypted stream was flattened into a progressive MP4.
+	Remuxed bool `json:"remuxed"`
+	// Verified: the integrity check ran and passed (for ALAC, possibly after a
+	// successful repair). Also false when the check is switched off by
+	// download.check_integrity, so false means "not verified", never "corrupt"
+	// — a failed check fails the item instead.
+	Verified bool `json:"verified"`
+	// Tagged: metadata (and cover/lyrics, per config) was written into the file.
+	Tagged bool `json:"tagged"`
+	// Saved: the finished file was moved to its final output path. This is the
+	// last step, so Saved is true for exactly the items that completed.
+	Saved bool `json:"saved"`
+}
+
+// ResetForAttempt clears everything a fresh download attempt has to earn again,
+// keeping only Resolved: the catalog metadata was fetched once and stays valid
+// across codec fallbacks and retries. Without this a codec that failed late —
+// say at the integrity check, with remuxed already true — would leave those
+// flags set while the replacement codec is still downloading, and an
+// unmeasurable transfer would inherit the previous attempt's full meter.
+func (p *ItemProgress) ResetForAttempt() {
+	resolved := p.Resolved
+	*p = ItemProgress{Resolved: resolved}
+}
+
+// CompleteTransfers pins both meters to 1 for an item that reached completed.
+// A completed track has by definition finished downloading and decrypting, but
+// neither meter is guaranteed to have said so: an unmeasurable transfer never
+// reports a fraction. Verified is deliberately not forced — false there means
+// the integrity check never ran, which stays true of a completed item.
+func (p *ItemProgress) CompleteTransfers() {
+	p.Download = 1
+	p.Decrypt = 1
+}
+
 type JobItem struct {
 	ID     string `json:"id"`
 	JobID  string `json:"job_id"`
@@ -153,7 +262,7 @@ type JobItem struct {
 	HasLyrics    bool         `json:"has_lyrics"`
 	LyricsStatus LyricsStatus `json:"lyrics_status,omitempty"`
 	Status       ItemStatus   `json:"status"`
-	Progress     float64      `json:"progress"`
+	Progress     ItemProgress `json:"progress"`
 	Codec        string       `json:"codec,omitempty"`
 	BitDepth     int          `json:"bit_depth,omitempty"`
 	SampleRate   int          `json:"sample_rate,omitempty"`
@@ -186,7 +295,7 @@ func (i JobItem) Finished() bool {
 // retried job re-processes the track under the same item id.
 func (i *JobItem) ResetForRetry() {
 	i.Status = ItemQueued
-	i.Progress = 0
+	i.Progress = ItemProgress{}
 	i.Codec = ""
 	i.BitDepth, i.SampleRate, i.Bitrate = 0, 0, 0
 	i.FileSize = 0

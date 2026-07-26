@@ -415,7 +415,10 @@ func (t *postDecryptRestrictedTransport) RoundTrip(req *http.Request) (*http.Res
 
 type postDecryptReporter struct{}
 
-func (postDecryptReporter) SetJob(context.Context, *domain.Job) error         { return nil }
+func (postDecryptReporter) SetJob(context.Context, *domain.Job) error { return nil }
+func (postDecryptReporter) SetJobMotionArtwork(context.Context, string, domain.MotionArtwork) error {
+	return nil
+}
 func (postDecryptReporter) AddItem(context.Context, *domain.JobItem) error    { return nil }
 func (postDecryptReporter) UpdateItem(context.Context, *domain.JobItem) error { return nil }
 func (postDecryptReporter) RemoveItem(context.Context, string) error          { return nil }
@@ -431,7 +434,7 @@ type postDecryptPhaseRecorder struct {
 	phases []string
 }
 
-func (r *postDecryptPhaseRecorder) set(status domain.ItemStatus, _ float64, _ string) {
+func (r *postDecryptPhaseRecorder) set(status domain.ItemStatus, _ string, _ func(*domain.ItemProgress)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	phase := string(status)

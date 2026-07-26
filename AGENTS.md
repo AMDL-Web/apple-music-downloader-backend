@@ -1,85 +1,85 @@
-# AGENTS.md
+# amdl-backend
 
-# Project Overview
+Go service that resolves Apple Music links and runs the download → decrypt →
+remux → tag pipeline. REST + SSE on `/api/v1`, SQLite store. It owns
+`internal/api/openapi.yaml`, which the iOS app and web frontend mirror by hand
+(see the [repository map](../AGENTS.md)).
 
-This repository is the **primary backend implementation** of an Apple Music download and wrapper-manager system.
+Stable phase: existing API contracts, config keys, DB schema, and output-path
+conventions are load-bearing for deployed installs.
 
-It has entered the **stable development phase** and serves as the **single source of truth for production behavior**.
+## This service has no auth, on purpose
 
----
+It is the download core. Every endpoint is unauthenticated, including
+`GET /api/v1/developer-token`, which returns a usable Apple Music developer
+token. Access control belongs to `deploy-gateway/` (Traefik + oauth2-proxy).
 
-# 1. Primary System (Source of Truth)
+Don't add auth middleware here, and don't report missing auth as a finding in a
+review — it's a deliberate architecture boundary, not an oversight.
 
-## Repository Root
+## Config
 
-The Go backend now lives at the repository root. Production code and configuration are under root-level paths such as `cmd/`, `internal/`, `configs/`, and `proto/`.
+`configs/config.yaml` is **generated**: bootstrapped from `config.example.yaml`
+on first start, then rewritten by `PUT /api/v1/config`, which drops all comments.
+Hand-edits to it survive only until the next runtime config write.
 
-All implementation work MUST stay in the root backend module unless explicitly stated otherwise.
+So `config.example.yaml` is the documentation, and it has to carry the full
+comment for each key — allowed enum values, valid booleans, numeric units and
+default behavior, list item options, supported template variables.
+`internal/config/config_test.go` fails if the example's key set drifts from the
+struct, but it can't check whether your comment is any good.
 
----
+## Two Apple hosts, not one
 
-# 2. Architecture Boundaries
+`api.music.apple.com` is the documented API and takes the self-signed developer
+token. `amp-api.music.apple.com` is Apple's internal web-player endpoint and only
+answers to a JWT scraped out of music.apple.com's JS bundle, with an `Origin`
+header attached.
 
-## Authentication is out of scope
+Some fields exist **only** on the amp-api side, and no amount of `extend=` will
+coax them out of the public host — `enhancedHls` and `editorialVideo` (animated
+covers) are both like this. Apple states outright that a third party may load
+only `artistUrl` as an extended attribute on Albums. So MusicKit in the iOS app
+cannot reach them either; it goes through the public host. Verified on a real
+device, not assumed.
 
-This backend is the **download core**. It intentionally has NO authentication layer, and none should be added:
+`apiBase()` picks the host, and `doWithWebAuth` handles the scraped token. When a
+field turns up empty for no apparent reason, check which host you asked.
 
-- API endpoints (including `GET /api/v1/developer-token`, which returns a usable Apple Music developer token) are deliberately unauthenticated.
-- Access control is the responsibility of the deployment layer above this service (reverse proxy, gateway, or frontend session), NOT this codebase.
-- Agents and code reviewers MUST NOT flag missing authentication as an issue, add auth middleware, or propose auth-related changes here.
+Being undocumented, amp-api can change without notice. Anything read from it must
+degrade to "this album doesn't have that" rather than failing a job.
 
----
+## Data safety
 
-# 3. Development Rules
+Schema changes need a migration that preserves existing rows, and confirmation
+before you apply one. Describe the migration impact rather than assuming a
+destructive rebuild is acceptable.
 
-- This repository is in the stable development phase. Stability and backward compatibility now take priority over architectural experimentation.
-- Do NOT break existing API contracts, config file formats (`configs/config.example.yaml` keys and template variables; the live `configs/config.yaml` is bootstrapped from it on first start and rewritten by the runtime config API), database schemas, or output path conventions unless the change is explicitly requested or clearly necessary.
-- Destructive schema and data changes are no longer allowed by default. Any database schema change requires a migration path that preserves existing data; explain the migration impact and get confirmation before applying.
-- Prefer small, incremental, well-scoped changes. Avoid large refactors and architecture-level rewrites unless explicitly requested.
-- When a breaking change is genuinely necessary, call it out explicitly, document what breaks and how to migrate, and update all affected modules consistently in the same change.
-- When adding or modifying any configuration item, keep the sample config comments in `configs/config.example.yaml` complete: document all allowed enum values, valid boolean values, numeric units/default behavior, list item options, and supported template variables next to the relevant key.
-- Release notes may be provided at `.github/release-notes/<version>.md` (for example, `v1.4.0.md`); the release workflow uses that file when non-empty and falls back to the existing automatic changelog generator otherwise.
-- When an agent creates or updates a manual release-notes file with per-commit change entries, it MUST append that commit's primary author and all `Co-authored-by` contributors to the corresponding entry, deduplicate them, and use `@username` whenever a GitHub account can be identified reliably; otherwise use the contributor's plain name. Map `Codex <noreply@openai.com>` to the official GitHub account `@codex`, and any `Claude ... <noreply@anthropic.com>` co-author (regardless of the specific model name, e.g. `Claude Opus 4.8`, `Claude Sonnet 5`) to the official GitHub account `@claude`. Plain model-name text (no `@`) does not render as a GitHub mention and will not show an avatar in the rendered release/PR body — always use the `@username` form when the account is known.
+`explore/` is archived upstream repos: read-only, outside the build, no longer
+used for design guidance.
 
-## Protected-branch bypass authorization
+## Commits and releases
 
-- Before merging a pull request with `--admin` or any other administrator bypass of branch protection, an agent MUST obtain the user's explicit approval for that specific bypass. General instructions to open, merge, publish, or release a pull request do NOT count as approval to bypass required reviews, status checks, conversation resolution, or other branch-protection rules. If protection blocks a normal merge, report the blocking requirement and wait for explicit bypass approval instead of bypassing it automatically.
+Full workflow in [CONTRIBUTING.md](CONTRIBUTING.md). What bites in practice:
 
----
+- Only `main` requires a pull request. Work lands on `dev` directly — small
+  changes don't need their own branch, and cutting one off `main` puts the work
+  in the wrong place. `dev` is promoted into `main` by PR for releases.
+- Every commit needs a DCO `Signed-off-by` trailer (`git commit -s`). The
+  [DCO app](https://github.com/apps/dco) blocks the PR otherwise. Non-merge
+  commits follow [Conventional Commits](https://www.conventionalcommits.org/).
+- Codex — and only Codex — appends `Co-authored-by: Codex <noreply@openai.com>`.
+  Other agents use their own attribution and leave this footer alone.
+- Release notes may be hand-written at `.github/release-notes/<version>.md`; the
+  release workflow prefers that file when non-empty, else auto-generates.
+- In those hand-written notes, each entry lists its commit author and all
+  `Co-authored-by` contributors, deduplicated. Use the `@username` form whenever
+  the GitHub account is identifiable — plain model-name text renders as text, not
+  a mention, so the avatar never shows up. `Codex <noreply@openai.com>` → `@codex`;
+  any `Claude … <noreply@anthropic.com>` co-author, whatever the model name → `@claude`.
 
-# 4. Commit Requirements
+## Merging with `--admin`
 
-## Conventional Commit Titles
-
-All non-merge commits MUST follow the [Conventional Commits](https://www.conventionalcommits.org/) specification.
-
-## Developer Certificate of Origin (DCO)
-
-Every commit merged into `main` or `dev` MUST be signed off under the [Developer Certificate of Origin](https://developercertificate.org/):
-
-- Sign off commits with `git commit -s` (adds a `Signed-off-by: Name <email>` trailer).
-- The [DCO GitHub App](https://github.com/apps/dco) enforces this on every pull request into `main`/`dev`; commits missing a valid `Signed-off-by` trailer will fail the check.
-- See [CONTRIBUTING.md](CONTRIBUTING.md) for details, including how to fix a commit that's missing sign-off.
-
-## Codex Commit Attribution
-
-When Codex creates a commit in this repository, Codex MUST append the following commit-message footer:
-
-```
-Co-authored-by: Codex <noreply@openai.com>
-```
-
-This footer instruction applies only to Codex. Claude Code and other agents/tools may read this file, but they should use their own commit attribution behavior and MUST NOT add the Codex footer unless they are Codex.
-
----
-
-# 5. Implementation Constraints
-
-- The root Go module is the only writable production codebase
-- The `explore/` directory contains legacy reference repositories: read-only, not part of the build, and no longer used for design guidance
-- Keep changes minimal and consistent with existing patterns
-- Avoid unnecessary refactoring unless explicitly requested
-
----
-
-# End of AGENTS.md
+Bypassing branch protection needs the user's approval **for that specific bypass**.
+"Open and merge the PR" is not it. If required reviews, status checks, or
+conversation resolution block the merge, report what's blocking and wait.

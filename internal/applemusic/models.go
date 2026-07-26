@@ -97,6 +97,53 @@ type catalogAlbumResponse struct {
 	Data []catalogAlbumData `json:"data"`
 }
 
+// MotionArtwork carries the HLS loops Apple Music shows in place of the still
+// cover on albums that have them. Both are square-ish master playlists on
+// mvod.itunes.apple.com, served without authentication and without a signature,
+// so a client can play the URL directly and the value can be cached for a long
+// time.
+type MotionArtwork struct {
+	// Square is attributes.editorialVideo.motionDetailSquare — the 1:1 loop
+	// Apple's own album page uses behind the cover.
+	Square string
+	// Tall is motionDetailTall, the 3:4 variant for full-bleed presentations.
+	Tall string
+	// SquareColors/TallColors are the palettes Apple attaches to each variant's
+	// previewFrame — and they are NOT the static artwork's palette. For one
+	// album the still cover reports bgColor 598090 with near-black text, the
+	// square loop 5c6786 with near-white text, and the tall loop 05104b with
+	// light text. Apple Music's own page uses the palette belonging to whichever
+	// asset it shows, which is why its background looks nothing like the still
+	// cover's. A client that mixes the still palette with a motion asset gets
+	// dark text on a dark video.
+	SquareColors ArtworkColors
+	TallColors   ArtworkColors
+}
+
+func (m MotionArtwork) IsZero() bool { return m.Square == "" && m.Tall == "" }
+
+// catalogMotionArtworkResponse decodes only the editorialVideo attribute. It is
+// deliberately separate from catalogAlbumResponse: editorialVideo is fetched in
+// its own amp-api request (see CatalogClient.MotionArtworkViaWebToken) rather
+// than alongside the album metadata.
+type catalogMotionArtworkResponse struct {
+	Data []struct {
+		Attributes struct {
+			EditorialVideo struct {
+				MotionDetailSquare   motionArtworkClip `json:"motionDetailSquare"`
+				MotionDetailTall     motionArtworkClip `json:"motionDetailTall"`
+				MotionSquareVideo1x1 motionArtworkClip `json:"motionSquareVideo1x1"`
+				MotionTallVideo3x4   motionArtworkClip `json:"motionTallVideo3x4"`
+			} `json:"editorialVideo"`
+		} `json:"attributes"`
+	} `json:"data"`
+}
+
+type motionArtworkClip struct {
+	Video        string  `json:"video"`
+	PreviewFrame artwork `json:"previewFrame"`
+}
+
 type catalogPlaylistResponse struct {
 	Data []catalogPlaylistData `json:"data"`
 }

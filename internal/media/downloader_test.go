@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -138,6 +140,8 @@ type fakeDownloaderCatalog struct {
 	webTokenHLS       string
 	webTokenErr       error
 	webTokenCallCount *int
+	motionArtwork     applemusic.MotionArtwork
+	motionArtworkErr  error
 }
 
 func (f fakeDownloaderCatalog) Song(context.Context, string, string) (applemusic.Song, error) {
@@ -181,6 +185,10 @@ func (f fakeDownloaderCatalog) Artist(context.Context, string, string) (applemus
 
 func (f fakeDownloaderCatalog) FetchCover(context.Context, []string, string, string) ([]byte, error) {
 	return nil, nil
+}
+
+func (f fakeDownloaderCatalog) MotionArtworkViaWebToken(context.Context, string, string) (applemusic.MotionArtwork, error) {
+	return f.motionArtwork, f.motionArtworkErr
 }
 
 func (f fakeDownloaderCatalog) EnhancedHLSViaWebToken(context.Context, string, string) (string, error) {
@@ -268,12 +276,18 @@ func TestHandleExistingOutputHonorsForceOverwriteConfig(t *testing.T) {
 }
 
 type recordingReporter struct {
-	mu       sync.Mutex
-	events   []domain.Event
-	items    []domain.JobItem
-	existing []domain.JobItem
-	added    []domain.JobItem
-	removed  []string
+	mu            sync.Mutex
+	events        []domain.Event
+	items         []domain.JobItem
+	existing      []domain.JobItem
+	added         []domain.JobItem
+	removed       []string
+	motionArtwork []motionArtworkWrite
+}
+
+type motionArtworkWrite struct {
+	JobID string
+	Art   domain.MotionArtwork
 }
 
 type metadataCountingCatalog struct {
@@ -347,6 +361,13 @@ func (c *metadataCountingCatalog) counts() (map[string]int, map[string]int, map[
 
 func (*recordingReporter) SetJob(_ context.Context, job *domain.Job) error {
 	job.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (r *recordingReporter) SetJobMotionArtwork(_ context.Context, jobID string, art domain.MotionArtwork) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.motionArtwork = append(r.motionArtwork, motionArtworkWrite{JobID: jobID, Art: art})
 	return nil
 }
 func (r *recordingReporter) AddItem(_ context.Context, item *domain.JobItem) error {
@@ -1107,7 +1128,7 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 		applemusic.Song{ID: "song-1", EnhancedHLS: server.URL + "/master.m3u8"},
 		"alac",
 		reporter,
-		func(domain.ItemStatus, float64, string) {},
+		func(domain.ItemStatus, string, func(*domain.ItemProgress)) {},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1138,7 +1159,7 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 		t.Fatalf("persisted item quality = %+v, want bit_depth=24 sample_rate=96000 bitrate=2500000", last)
 	}
 
-	selected, err = downloader.downloadSelectedEnhancedMedia(context.Background(), selected, "alac", "job-1", filepath.Join(cfg.Download.DownloadsDir, "song.m4a"), func(domain.ItemStatus, float64, string) {})
+	selected, err = downloader.downloadSelectedEnhancedMedia(context.Background(), selected, "alac", "job-1", filepath.Join(cfg.Download.DownloadsDir, "song.m4a"), func(domain.ItemStatus, string, func(*domain.ItemProgress)) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1211,7 +1232,7 @@ func TestFetchAACLCMediaCodecSelectedCarriesRESTItemSnapshot(t *testing.T) {
 		item,
 		applemusic.Song{ID: "song-1"},
 		reporter,
-		func(domain.ItemStatus, float64, string) {},
+		func(domain.ItemStatus, string, func(*domain.ItemProgress)) {},
 	); err != nil {
 		t.Fatal(err)
 	} else if release != nil {
@@ -1263,7 +1284,7 @@ func TestDownloadSelectedEnhancedMediaHighKeepsOnlyMemoryCopy(t *testing.T) {
 		"alac",
 		"job-high",
 		filepath.Join(cfg.Download.DownloadsDir, "song.m4a"),
-		func(domain.ItemStatus, float64, string) {},
+		func(domain.ItemStatus, string, func(*domain.ItemProgress)) {},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1319,7 +1340,7 @@ func TestDownloadSelectedEnhancedMediaHighResumesInterruptedTransfer(t *testing.
 		"alac",
 		"job-high-resume",
 		filepath.Join(cfg.Download.DownloadsDir, "song.m4a"),
-		func(domain.ItemStatus, float64, string) {},
+		func(domain.ItemStatus, string, func(*domain.ItemProgress)) {},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1401,8 +1422,8 @@ func TestCleanupFailedOutputRemovesPartFile(t *testing.T) {
 
 func TestSyncJobItemsReusesPreviousRowsAndSkipsFinishedTracks(t *testing.T) {
 	reporter := &recordingReporter{existing: []domain.JobItem{
-		{ID: "item-done", JobID: "job-1", AdamID: "song-1", Kind: "song", Index: 1, Status: domain.ItemCompleted, Progress: 1, Codec: "alac"},
-		{ID: "item-failed", JobID: "job-1", AdamID: "song-2", Kind: "song", Index: 2, Status: domain.ItemFailed, Progress: 0.4, Codec: "alac", RetryKind: "download", Attempt: 3, MaxAttempts: 3, Error: "boom"},
+		{ID: "item-done", JobID: "job-1", AdamID: "song-1", Kind: "song", Index: 1, Status: domain.ItemCompleted, Progress: domain.ItemProgress{Download: 1, Decrypt: 1, Resolved: true, Remuxed: true, Verified: true, Tagged: true, Saved: true}, Codec: "alac"},
+		{ID: "item-failed", JobID: "job-1", AdamID: "song-2", Kind: "song", Index: 2, Status: domain.ItemFailed, Progress: domain.ItemProgress{Download: 0.4, Resolved: true}, Codec: "alac", RetryKind: "download", Attempt: 3, MaxAttempts: 3, Error: "boom"},
 		{ID: "item-stale", JobID: "job-1", AdamID: "song-gone", Kind: "song", Index: 3, Status: domain.ItemFailed},
 	}}
 	tracks := []applemusic.Song{
@@ -1440,7 +1461,7 @@ func TestSyncJobItemsReusesPreviousRowsAndSkipsFinishedTracks(t *testing.T) {
 	if items[1].ID != "item-failed" {
 		t.Fatalf("failed track item id = %s, want reused item-failed", items[1].ID)
 	}
-	if items[1].Status != domain.ItemQueued || items[1].Progress != 0 || items[1].Codec != "" || items[1].Error != "" || items[1].Attempt != 0 {
+	if items[1].Status != domain.ItemQueued || items[1].Progress != (domain.ItemProgress{}) || items[1].Codec != "" || items[1].Error != "" || items[1].Attempt != 0 {
 		t.Fatalf("failed item was not reset for retry: %+v", items[1])
 	}
 	if len(reporter.added) != 1 || reporter.added[0].AdamID != "song-3" || reporter.added[0].Status != domain.ItemQueued {
@@ -1475,5 +1496,315 @@ func TestSyncJobItemsFirstRunCreatesAllItems(t *testing.T) {
 		if items[i].HasLyrics != tracks[i].HasLyrics {
 			t.Fatalf("item %d has_lyrics = %v, want %v from the resolved track", i, items[i].HasLyrics, tracks[i].HasLyrics)
 		}
+	}
+}
+
+func TestMotionArtworkAlbumIDPicksTheAlbumBehindTheJob(t *testing.T) {
+	tests := []struct {
+		name   string
+		parsed applemusic.ParsedURL
+		tracks []applemusic.Song
+		want   string
+	}{
+		{
+			name:   "album uses the parsed id",
+			parsed: applemusic.ParsedURL{Type: applemusic.TypeAlbum, ID: "1858184006"},
+			want:   "1858184006",
+		},
+		{
+			// The parsed id of a song job is the track, and editorialVideo only
+			// exists on albums, so the lookup has to hop to the track's album.
+			name:   "song hops to its album",
+			parsed: applemusic.ParsedURL{Type: applemusic.TypeSong, ID: "1858184100"},
+			tracks: []applemusic.Song{{ID: "1858184100", AlbumID: "1858184006"}},
+			want:   "1858184006",
+		},
+		{
+			name:   "song without a resolved album is skipped",
+			parsed: applemusic.ParsedURL{Type: applemusic.TypeSong, ID: "1858184100"},
+			tracks: []applemusic.Song{{ID: "1858184100"}},
+			want:   "",
+		},
+		{
+			name:   "playlists have no album motion artwork",
+			parsed: applemusic.ParsedURL{Type: applemusic.TypePlaylist, ID: "pl.1"},
+			tracks: []applemusic.Song{{ID: "s1", AlbumID: "1858184006"}},
+			want:   "",
+		},
+		{
+			name:   "stations have no album motion artwork",
+			parsed: applemusic.ParsedURL{Type: applemusic.TypeStation, ID: "ra.1"},
+			tracks: []applemusic.Song{{ID: "s1", AlbumID: "1858184006"}},
+			want:   "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := motionArtworkAlbumID(tc.parsed, tc.tracks); got != tc.want {
+				t.Fatalf("motionArtworkAlbumID = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The backfill must survive the job context, which the manager cancels as soon
+// as the job finishes. Short jobs would otherwise cancel the lookup mid-flight
+// and silently never persist a cover the album actually has.
+func TestMotionArtworkBackfillOutlivesTheJobContext(t *testing.T) {
+	reporter := &recordingReporter{}
+	d := &Downloader{
+		cfg: motionArtworkEnabledConfig(),
+		catalog: fakeDownloaderCatalog{motionArtwork: applemusic.MotionArtwork{
+			Square:       "https://mvod.example/square.m3u8",
+			Tall:         "https://mvod.example/tall.m3u8",
+			SquareColors: applemusic.ArtworkColors{BgColor: "5c6786", TextColor1: "f7ebf6"},
+			TallColors:   applemusic.ArtworkColors{BgColor: "05104b", TextColor1: "d5d9ed"},
+		}},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d.startMotionArtworkBackfill(ctx, "job-1", applemusic.ParsedURL{
+		Storefront: "cn", Type: applemusic.TypeAlbum, ID: "1858184006",
+	}, nil, reporter)
+	cancel()
+
+	writes := waitForMotionArtworkWrites(t, reporter)
+	if len(writes) != 1 {
+		t.Fatalf("motion artwork writes = %d, want 1", len(writes))
+	}
+	if writes[0].JobID != "job-1" || writes[0].Art.SquareURL != "https://mvod.example/square.m3u8" || writes[0].Art.TallURL != "https://mvod.example/tall.m3u8" {
+		t.Fatalf("unexpected write %+v", writes[0])
+	}
+	// The palette must travel with its own variant, never the still cover's.
+	if writes[0].Art.TallColors.BgColor != "05104b" {
+		t.Fatalf("tall palette = %+v, want the tall previewFrame background", writes[0].Art.TallColors)
+	}
+}
+
+// A catalog failure means "no animated cover", never a job failure: the caller
+// already returned and the download is in flight by now.
+func TestMotionArtworkBackfillSwallowsCatalogFailure(t *testing.T) {
+	reporter := &recordingReporter{}
+	d := &Downloader{
+		cfg:     motionArtworkEnabledConfig(),
+		catalog: fakeDownloaderCatalog{motionArtworkErr: errors.New("amp-api unavailable")},
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	d.startMotionArtworkBackfill(context.Background(), "job-1", applemusic.ParsedURL{
+		Storefront: "cn", Type: applemusic.TypeAlbum, ID: "1858184006",
+	}, nil, reporter)
+
+	// Nothing to wait on when it fails, so give the goroutine room to misbehave.
+	time.Sleep(100 * time.Millisecond)
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	if len(reporter.motionArtwork) != 0 {
+		t.Fatalf("motion artwork writes = %d, want none", len(reporter.motionArtwork))
+	}
+	for _, ev := range reporter.events {
+		if ev.Type == "motion_artwork_resolved" {
+			t.Fatal("a failed lookup must not announce a motion cover")
+		}
+	}
+}
+
+// An album with no animated cover writes nothing rather than blanking the row.
+func TestMotionArtworkBackfillIgnoresEmptyResult(t *testing.T) {
+	reporter := &recordingReporter{}
+	d := &Downloader{
+		cfg:     motionArtworkEnabledConfig(),
+		catalog: fakeDownloaderCatalog{motionArtwork: applemusic.MotionArtwork{}},
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	d.startMotionArtworkBackfill(context.Background(), "job-1", applemusic.ParsedURL{
+		Storefront: "cn", Type: applemusic.TypeAlbum, ID: "1858184006",
+	}, nil, reporter)
+
+	time.Sleep(100 * time.Millisecond)
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	if len(reporter.motionArtwork) != 0 {
+		t.Fatalf("motion artwork writes = %d, want none", len(reporter.motionArtwork))
+	}
+}
+
+func waitForMotionArtworkWrites(t *testing.T, reporter *recordingReporter) []motionArtworkWrite {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		reporter.mu.Lock()
+		writes := append([]motionArtworkWrite(nil), reporter.motionArtwork...)
+		reporter.mu.Unlock()
+		if len(writes) > 0 {
+			return writes
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the motion artwork write")
+	return nil
+}
+
+func TestProgressChangedThrottle(t *testing.T) {
+	base := domain.ItemProgress{Download: 0.5, Decrypt: 0.25, Resolved: true}
+	for _, tc := range []struct {
+		name string
+		next domain.ItemProgress
+		want bool
+	}{
+		{"identical", base, false},
+		{
+			// Sub-percent meter movement is the 32KB-chunk case: dropping it is
+			// the whole point of the gate.
+			name: "download moves less than a percentage point",
+			next: domain.ItemProgress{Download: 0.502, Decrypt: 0.25, Resolved: true},
+			want: false,
+		},
+		{
+			name: "download crosses a percentage point",
+			next: domain.ItemProgress{Download: 0.51, Decrypt: 0.25, Resolved: true},
+			want: true,
+		},
+		{
+			name: "decrypt crosses a percentage point",
+			next: domain.ItemProgress{Download: 0.5, Decrypt: 0.26, Resolved: true},
+			want: true,
+		},
+		{
+			// A stage finishing is never throttled, however little the meters
+			// moved — it is the only signal that step happened.
+			name: "stage flag flips with both meters still",
+			next: domain.ItemProgress{Download: 0.5, Decrypt: 0.25, Resolved: true, Tagged: true},
+			want: true,
+		},
+		{
+			name: "verified flips with both meters still",
+			next: domain.ItemProgress{Download: 0.5, Decrypt: 0.25, Resolved: true, Verified: true},
+			want: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := progressChanged(base, tc.next); got != tc.want {
+				t.Fatalf("progressChanged(%+v, %+v) = %v, want %v", base, tc.next, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProgressMeterMutatorsClamp(t *testing.T) {
+	var p domain.ItemProgress
+	// A transfer whose reported total turns out short must saturate, not
+	// overshoot; a negative can only come from a bad total and means "unknown".
+	downloadFrac(1.4)(&p)
+	decryptFrac(-0.2)(&p)
+	if p.Download != 1 || p.Decrypt != 0 {
+		t.Fatalf("clamped meters = %+v, want download=1 decrypt=0", p)
+	}
+}
+
+func TestCompleteTransfersLeavesVerifiedAlone(t *testing.T) {
+	// An unmeasurable download plus check_integrity=false: completion pins the
+	// meters but must not claim an integrity check that never ran.
+	p := domain.ItemProgress{Resolved: true, Remuxed: true, Tagged: true, Saved: true}
+	p.CompleteTransfers()
+	want := domain.ItemProgress{Download: 1, Decrypt: 1, Resolved: true, Remuxed: true, Tagged: true, Saved: true}
+	if p != want {
+		t.Fatalf("after CompleteTransfers = %+v, want %+v", p, want)
+	}
+}
+
+// motionArtworkEnabledConfig is the config these backfill tests need: the
+// lookup is opt-out, but a zero-value Config reads as disabled, so a test that
+// builds a Downloader literal has to say so explicitly.
+func motionArtworkEnabledConfig() config.Config {
+	return config.Config{Catalog: config.CatalogConfig{MotionArtworkEnabled: true}}
+}
+
+// catalog.motion_artwork_enabled=false must stop the lookup before any request
+// is built — the point of the switch is not generating the amp-api traffic at
+// all, not discarding the answer.
+func TestMotionArtworkBackfillDisabledByConfig(t *testing.T) {
+	reporter := &recordingReporter{}
+	catalog := &countingMotionArtworkCatalog{art: applemusic.MotionArtwork{
+		Square: "https://example.test/square.m3u8",
+	}}
+	d := &Downloader{
+		cfg:     config.Config{Catalog: config.CatalogConfig{MotionArtworkEnabled: false}},
+		catalog: catalog,
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	d.startMotionArtworkBackfill(context.Background(), "job-1", applemusic.ParsedURL{
+		Storefront: "cn", Type: applemusic.TypeAlbum, ID: "1858184006",
+	}, nil, reporter)
+
+	// No goroutine should have been started at all; sleep so one that was gets
+	// a chance to show itself.
+	time.Sleep(100 * time.Millisecond)
+	if got := catalog.calls.Load(); got != 0 {
+		t.Fatalf("amp-api calls = %d, want 0 when the lookup is switched off", got)
+	}
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	if len(reporter.motionArtwork) != 0 {
+		t.Fatalf("motion artwork writes = %d, want none", len(reporter.motionArtwork))
+	}
+	for _, ev := range reporter.events {
+		if ev.Type == "motion_artwork_resolved" {
+			t.Fatal("a disabled lookup must not announce a motion cover")
+		}
+	}
+}
+
+type countingMotionArtworkCatalog struct {
+	fakeDownloaderCatalog
+	art   applemusic.MotionArtwork
+	calls atomic.Int32
+}
+
+func (c *countingMotionArtworkCatalog) MotionArtworkViaWebToken(context.Context, string, string) (applemusic.MotionArtwork, error) {
+	c.calls.Add(1)
+	return c.art, nil
+}
+
+// A codec fallback must not carry the failed codec's stages into the next
+// attempt: an ALAC that died at the integrity check leaves remuxed true, and an
+// unmeasurable transfer leaves the download meter full.
+func TestItemProgressResetForAttemptKeepsOnlyResolved(t *testing.T) {
+	spent := domain.ItemProgress{
+		Download: 1, Decrypt: 1,
+		Resolved: true, Remuxed: true, Verified: true, Tagged: true,
+	}
+	spent.ResetForAttempt()
+	want := domain.ItemProgress{Resolved: true}
+	if spent != want {
+		t.Fatalf("after ResetForAttempt = %+v, want %+v", spent, want)
+	}
+
+	// Resolving genuinely has not run for an item reset before metadata came
+	// back, and the reset must not invent it.
+	fresh := domain.ItemProgress{Download: 0.3}
+	fresh.ResetForAttempt()
+	if fresh != (domain.ItemProgress{}) {
+		t.Fatalf("after ResetForAttempt = %+v, want zero", fresh)
+	}
+}
+
+// Entering a stage restates what is known, so a retry inside one codec corrects
+// a meter the previous attempt left behind without going through the
+// codec-fallback reset.
+func TestStageEntryMutatorsRestateMeters(t *testing.T) {
+	stale := domain.ItemProgress{Download: 1, Decrypt: 0.8, Resolved: true}
+	startDownload(&stale)
+	if stale.Download != 0 {
+		t.Fatalf("download after re-entering the download stage = %v, want 0", stale.Download)
+	}
+
+	midDownload := domain.ItemProgress{Download: 0.2, Decrypt: 0.5, Resolved: true}
+	startDecrypt(&midDownload)
+	if midDownload.Download != 1 || midDownload.Decrypt != 0 {
+		t.Fatalf("meters after entering decrypt = %+v, want download=1 decrypt=0", midDownload)
 	}
 }

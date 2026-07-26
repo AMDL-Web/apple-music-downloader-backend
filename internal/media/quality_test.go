@@ -151,6 +151,10 @@ func (f fakeQualityCatalog) FetchCover(context.Context, []string, string, string
 	return nil, nil
 }
 
+func (f fakeQualityCatalog) MotionArtworkViaWebToken(context.Context, string, string) (applemusic.MotionArtwork, error) {
+	return applemusic.MotionArtwork{}, nil
+}
+
 func (f fakeQualityCatalog) EnhancedHLSViaWebToken(context.Context, string, string) (string, error) {
 	if f.webTokenCallCount != nil {
 		*f.webTokenCallCount++
