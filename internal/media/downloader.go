@@ -300,6 +300,7 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 	// S3 URL here; it is intentionally persisted even though it will expire.
 	job.ArtworkURL = resolved.ArtworkURL
 	job.ArtistName = resolved.ArtistName
+	job.ArtistURL = resolved.ArtistURL
 	job.CuratorName = resolved.CuratorName
 	job.ReleaseDate = resolved.ReleaseDate
 	job.Genre = resolved.Genre
@@ -481,7 +482,11 @@ type resolvedCollection struct {
 	// Display metadata backfilled onto the job next to Name/ArtworkURL.
 	// Populated per type in resolveCollection; empty when the catalog has no
 	// suitable value (never an error).
-	ArtistName  string
+	ArtistName string
+	// ArtistURL is the artist's own music.apple.com page. Only the types whose
+	// ArtistName is a real artist carry one — album, song and artist; playlists
+	// and stations leave it empty along with ArtistName.
+	ArtistURL   string
 	CuratorName string
 	ReleaseDate string
 	Genre       string
@@ -609,7 +614,7 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 		}
 		return resolvedCollection{
 			Tracks: []applemusic.Song{song}, Name: song.Name, ArtworkURL: firstNonEmpty(song.ArtworkURL, song.AlbumArtworkURL),
-			ArtistName: song.ArtistName, ReleaseDate: song.ReleaseDate, Genre: primaryGenre(song.GenreNames),
+			ArtistName: song.ArtistName, ArtistURL: song.ArtistURL, ReleaseDate: song.ReleaseDate, Genre: primaryGenre(song.GenreNames),
 			ArtworkColors: colors,
 		}, nil
 	case applemusic.TypeAlbum:
@@ -619,7 +624,7 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 		}
 		return resolvedCollection{
 			Tracks: album.Tracks, ID: album.ID, Name: album.Name, ArtworkURL: album.ArtworkURL,
-			ArtistName: album.Artist, ReleaseDate: album.ReleaseDate, Genre: primaryGenre(album.GenreNames),
+			ArtistName: album.Artist, ArtistURL: album.ArtistURL, ReleaseDate: album.ReleaseDate, Genre: primaryGenre(album.GenreNames),
 			ArtworkColors: album.ArtworkColors,
 		}, nil
 	case applemusic.TypePlaylist:
@@ -660,6 +665,7 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 			// For artist jobs the artist's own name doubles as the display
 			// artist.
 			ArtistName:    artist.Name,
+			ArtistURL:     artist.URL,
 			ArtworkColors: artist.ArtworkColors,
 		}, nil
 	default:

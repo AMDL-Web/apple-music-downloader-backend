@@ -45,6 +45,10 @@ type Song struct {
 	RecordLabel           string
 	UPC                   string
 	ArtistID              string
+	// ArtistURL is the artist's own music.apple.com page, taken from the
+	// included artist resource's attributes.url. Empty when the catalog
+	// response carries no artist relationship.
+	ArtistURL string
 }
 
 type Collection struct {
@@ -56,6 +60,10 @@ type Collection struct {
 	ArtworkColors    ArtworkColors
 	ArtistID         string
 	ArtistArtworkURL string
+	// ArtistURL is the artist's own music.apple.com page (the included artist
+	// resource's attributes.url). Albums have one; playlists and stations do
+	// not — their Artist field is a curator or provider label, not an artist.
+	ArtistURL string
 	// ReleaseDate/GenreNames carry the album-level attributes (YYYY-MM-DD and
 	// Apple's genreNames list); only populated for album collections — the
 	// catalog does not expose them on playlists or stations.
@@ -65,8 +73,10 @@ type Collection struct {
 }
 
 type Artist struct {
-	ID            string
-	Name          string
+	ID   string
+	Name string
+	// URL is the artist's own music.apple.com page (attributes.url).
+	URL           string
 	ArtworkURL    string
 	ArtworkColors ArtworkColors
 }
@@ -219,8 +229,12 @@ type songAttributes struct {
 }
 
 type albumAttributes struct {
-	Name        string   `json:"name"`
-	ArtistName  string   `json:"artistName"`
+	Name       string `json:"name"`
+	ArtistName string `json:"artistName"`
+	// ArtistURL is an extended attribute (extend=artistUrl) — the one Apple
+	// documents as loadable by a third party on Albums. It backs up the artist
+	// relationship's own attributes.url.
+	ArtistURL   string   `json:"artistUrl"`
 	GenreNames  []string `json:"genreNames"`
 	ReleaseDate string   `json:"releaseDate"`
 	TrackCount  int      `json:"trackCount"`
@@ -314,6 +328,7 @@ type artistData struct {
 
 type artistAttributes struct {
 	Name    string  `json:"name"`
+	URL     string  `json:"url"`
 	Artwork artwork `json:"artwork"`
 }
 

@@ -107,7 +107,14 @@ type Job struct {
 	// CuratorName, artist fills ArtistName (the artist's own name), and
 	// station fills CuratorName with the station provider. All are optional;
 	// jobs resolved before these fields existed keep them empty.
-	ArtistName  string `json:"artist_name,omitempty"`
+	ArtistName string `json:"artist_name,omitempty"`
+	// ArtistURL is that artist's own music.apple.com page, from the artist
+	// resource included with the collection. Filled for album, song and artist
+	// jobs; empty for playlists and stations (their CuratorName is a curator or
+	// provider, not an artist) and for jobs resolved before this field existed.
+	// A client that wants to link the artist should use this rather than
+	// searching the name.
+	ArtistURL   string `json:"artist_url,omitempty"`
 	CuratorName string `json:"curator_name,omitempty"`
 	ReleaseDate string `json:"release_date,omitempty"`
 	Genre       string `json:"genre,omitempty"`

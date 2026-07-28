@@ -1548,6 +1548,18 @@ components:
             song's artist name, or for artist jobs the artist's own name.
             Absent for playlist/station jobs, before the input is resolved,
             or for jobs resolved before this field existed.
+        artist_url:
+          type: string
+          description: >-
+            That artist's own page on music.apple.com, read from the artist
+            resource Apple includes with the resolved collection
+            (attributes.url). A client linking the artist should use this
+            rather than searching `artist_name`. Present alongside
+            `artist_name` for song/album/artist jobs; absent for
+            playlist/station jobs (their display name is a curator, not an
+            artist), before the input is resolved, for jobs resolved before
+            this field existed, and in the rare case where the catalog
+            response carries no artist relationship.
         curator_name:
           type: string
           description: >-

@@ -988,7 +988,8 @@ func TestDownloadResponsesIncludeDisplayMetadata(t *testing.T) {
 	ctx := context.Background()
 	job := domain.Job{
 		ID: "job1", Input: "album|us|1", Type: "album",
-		ArtistName: "Album Artist", CuratorName: "Curator", ReleaseDate: "2024-06-01", Genre: "Pop",
+		ArtistName: "Album Artist", ArtistURL: "https://music.apple.com/us/artist/album-artist/1",
+		CuratorName: "Curator", ReleaseDate: "2024-06-01", Genre: "Pop",
 		ArtworkBgColor: "1a1a1a", ArtworkTextColor1: "ffffff", ArtworkTextColor2: "eeeeee",
 		ArtworkTextColor3: "cccccc", ArtworkTextColor4: "aaaaaa",
 		Status: domain.JobRunning, TotalItems: 1,
@@ -1020,6 +1021,7 @@ func TestDownloadResponsesIncludeDisplayMetadata(t *testing.T) {
 	// struct round-trip above.
 	for _, key := range []string{
 		`"artist_name":"Album Artist"`,
+		`"artist_url":"https://music.apple.com/us/artist/album-artist/1"`,
 		`"curator_name":"Curator"`,
 		`"release_date":"2024-06-01"`,
 		`"genre":"Pop"`,
@@ -1045,6 +1047,7 @@ func TestDownloadResponsesIncludeDisplayMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(resp.Downloads) != 1 || resp.Downloads[0].ArtistName != job.ArtistName ||
+		resp.Downloads[0].ArtistURL != job.ArtistURL ||
 		resp.Downloads[0].CuratorName != job.CuratorName || resp.Downloads[0].ReleaseDate != job.ReleaseDate ||
 		resp.Downloads[0].Genre != job.Genre {
 		t.Fatalf("listed downloads = %+v, want the job's display metadata", resp.Downloads)
