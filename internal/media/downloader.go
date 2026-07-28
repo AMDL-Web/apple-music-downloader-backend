@@ -248,17 +248,20 @@ func (d *Downloader) CleanupJobArtifacts(job domain.Job) {
 }
 
 // parseJobInput reconstructs the submission-time parse result from the job's
-// canonical key ("type:storefront:id", written by the manager after
-// ValidateRequest). Re-parsing the raw input here instead would apply the
-// CURRENT catalog.album_track_url_mode, so an album?i= link submitted as a
+// canonical key ("type:storefront:id:destination", written by the manager
+// after ValidateRequest). Re-parsing the raw input here instead would apply
+// the CURRENT catalog.album_track_url_mode, so an album?i= link submitted as a
 // song could silently turn into a whole-album job (or vice versa) if that
 // mode changed while the job sat in the queue — diverging from the dedup key
 // and metadata stored at submission. Jobs without a well-formed key fall
 // back to re-parsing.
+//
+// The split lives in jobs.ParseCanonicalKey next to the code that builds the
+// key: this is the site that decides which substring is the adam id, so it
+// must never be able to drift from the writer's segment layout.
 func parseJobInput(job domain.Job, albumTrackURLMode string) (applemusic.ParsedURL, error) {
-	parts := strings.SplitN(job.CanonicalKey, ":", 3)
-	if len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != "" {
-		return applemusic.ParsedURL{Raw: job.Input, Type: applemusic.URLType(parts[0]), Storefront: parts[1], ID: parts[2]}, nil
+	if jobType, storefront, id, ok := jobs.ParseCanonicalKey(job.CanonicalKey); ok {
+		return applemusic.ParsedURL{Raw: job.Input, Type: applemusic.URLType(jobType), Storefront: storefront, ID: id}, nil
 	}
 	return applemusic.ParseWithAlbumTrackMode(job.Input, albumTrackURLMode)
 }

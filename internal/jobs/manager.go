@@ -99,6 +99,12 @@ type Manager struct {
 	finalizing map[string]bool
 	workers    int
 	hooks      *hooks.Dispatcher
+	// configStore is the live runtime config, read at submit time to resolve
+	// the destination a submission would write to for its canonical key. Set
+	// after construction like hooks; a Manager without one keys every
+	// submission against the zero config's downloads dir, which is consistent
+	// within a process and so leaves dedup semantics intact for tests.
+	configStore *config.Store
 	// active counts jobs currently in ProcessJob. It gates the post-job memory
 	// scavenge so only the last-finishing job of a busy burst triggers it (see
 	// run).
@@ -139,6 +145,23 @@ func NewManager(store *db.Store, hub *events.Hub, processor Processor, workers i
 // is called) is a safe no-op — Dispatcher.Dispatch handles a nil receiver.
 func (m *Manager) SetHooks(d *hooks.Dispatcher) {
 	m.hooks = d
+}
+
+// SetConfigStore wires the live runtime config used to resolve a submission's
+// effective downloads directory for its canonical key. Called after
+// construction for the same reason as SetHooks: the store is shared with the
+// download pipeline and the API layer rather than owned here.
+func (m *Manager) SetConfigStore(store *config.Store) {
+	m.configStore = store
+}
+
+// baseConfig returns the current runtime config snapshot; nil-safe for test
+// Managers constructed without a config store.
+func (m *Manager) baseConfig() config.Config {
+	if m == nil || m.configStore == nil {
+		return config.Config{}
+	}
+	return m.configStore.Get()
 }
 
 // ListHooks returns the sanitized hook configuration snapshot used by
@@ -308,6 +331,14 @@ func (m *Manager) SubmitBatch(ctx context.Context, urls []string, overrides *con
 		key   string
 		valid ValidationResult
 	}
+	// One destination for the whole batch: overrides are batch-scoped, so
+	// every candidate shares this segment and request-internal dedup is
+	// unaffected. Resolved once, and before submitMu is taken, because
+	// canonicalizing the path touches the filesystem and submitMu serializes
+	// every submit in the process. Resolved here rather than when the job
+	// runs so the key is stable from submit through retry and post-restart
+	// recovery, which is what the unique index depends on.
+	destination := destinationSegment(m.baseConfig(), overrides)
 	var candidates []candidate
 	seenKeys := map[string]bool{}
 	for i, url := range urls {
@@ -316,7 +347,7 @@ func (m *Manager) SubmitBatch(ctx context.Context, urls []string, overrides *con
 			results[i] = domain.SubmitResult{URL: url, Status: domain.SubmitInvalid, Error: requestErrorMessage(err)}
 			continue
 		}
-		key := validated.Type + ":" + validated.Storefront + ":" + validated.ID
+		key := canonicalKey(validated.Type, validated.Storefront, validated.ID, destination)
 		if seenKeys[key] {
 			results[i] = domain.SubmitResult{URL: url, Status: domain.SubmitDuplicateInRequest}
 			continue
