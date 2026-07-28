@@ -607,6 +607,14 @@ func (s *Server) jobSnapshot(ctx context.Context, id string) (*domain.Job, error
 
 func (s *Server) cancelDownload(w http.ResponseWriter, r *http.Request) {
 	if err := s.manager.Cancel(r.Context(), r.PathValue("id")); err != nil {
+		// A missing job is a 404 here as it is on retry and delete. It used to
+		// be funnelled into 500 along with everything else, which left a client
+		// unable to tell "this job is gone, drop it from the list" from "the
+		// server is broken, back off and retry".
+		if errors.Is(err, db.ErrJobNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}

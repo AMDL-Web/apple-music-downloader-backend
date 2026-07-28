@@ -697,6 +697,8 @@ paths:
                   status:
                     type: string
                     const: cancelled
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
   /api/v1/downloads/{job_id}/retry:

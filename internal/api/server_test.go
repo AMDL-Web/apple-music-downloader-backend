@@ -2261,3 +2261,29 @@ func TestRetryDownloadRejectsNonFailedAndMissingJobs(t *testing.T) {
 		t.Fatalf("retry missing job status = %d, want 404", recorder.Code)
 	}
 }
+
+// TestCancelMissingJobIsNotFound pins a status code an iOS client had to work
+// around. Cancel used to funnel every error into 500, so a job that had already
+// been deleted was indistinguishable from a broken server — one means "drop the
+// row from the list", the other means "back off and retry".
+func TestCancelMissingJobIsNotFound(t *testing.T) {
+	server := newTestServerWithManager(t)
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"cancel", http.MethodPost, "/api/v1/downloads/job_missing/cancel"},
+		{"retry", http.MethodPost, "/api/v1/downloads/job_missing/retry"},
+		{"delete", http.MethodDelete, "/api/v1/downloads/job_missing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			server.Routes().ServeHTTP(recorder, httptest.NewRequest(tc.method, tc.path, nil))
+			if recorder.Code != http.StatusNotFound {
+				t.Errorf("%s = %d, want 404 (body %q)", tc.name, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
