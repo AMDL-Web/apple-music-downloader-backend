@@ -351,6 +351,7 @@ func TestJobDisplayMetadataRoundTrip(t *testing.T) {
 
 	// Display metadata is written back after the input resolves, via UpdateJob.
 	job.ArtistName = "Album Artist"
+	job.ArtistURL = "https://music.apple.com/cn/artist/album-artist/1"
 	job.CuratorName = "Curator"
 	job.ReleaseDate = "2024-06-01"
 	job.Genre = "Pop"
@@ -365,6 +366,9 @@ func TestJobDisplayMetadataRoundTrip(t *testing.T) {
 	}
 	assertMeta := func(where string, got domain.Job) {
 		t.Helper()
+		if got.ArtistURL != job.ArtistURL {
+			t.Fatalf("%s artist url = %q, want %q", where, got.ArtistURL, job.ArtistURL)
+		}
 		if got.ArtistName != job.ArtistName || got.CuratorName != job.CuratorName || got.ReleaseDate != job.ReleaseDate || got.Genre != job.Genre {
 			t.Fatalf("%s metadata = %q/%q/%q/%q, want %q/%q/%q/%q", where,
 				got.ArtistName, got.CuratorName, got.ReleaseDate, got.Genre,
@@ -404,6 +408,56 @@ func TestJobDisplayMetadataRoundTrip(t *testing.T) {
 		t.Fatalf("FindActiveJobByKey ok=%v err=%v, want the active job", ok, err)
 	}
 	assertMeta("FindActiveJobByKey", active)
+}
+
+// TestCreateJobEnforcesActiveKeyUniqueness exercises idx_jobs_active_key
+// directly. It is the backstop under the manager's dedup lookup — the thing
+// that closes the race between two concurrent submits of the same key — so it
+// has to keep rejecting a genuine duplicate no matter what goes into the key,
+// and it has to keep ignoring terminal rows.
+func TestCreateJobEnforcesActiveKeyUniqueness(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// A key carrying a destination segment, as written since destinations
+	// joined the key.
+	const key = "album:us:111:0123456789ab"
+	first := domain.Job{ID: "job-1", Input: "album|us|111", Type: "album", Storefront: "us", CanonicalKey: key, Status: domain.JobQueued, CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateJob(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	dup := first
+	dup.ID = "job-2"
+	if err := store.CreateJob(ctx, dup); !errors.Is(err, ErrDuplicateActive) {
+		t.Fatalf("duplicate queued job err = %v, want ErrDuplicateActive", err)
+	}
+	// Running counts as active too.
+	if err := store.UpdateJobStatus(ctx, first.ID, domain.JobRunning, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateJob(ctx, dup); !errors.Is(err, ErrDuplicateActive) {
+		t.Fatalf("duplicate against a running job err = %v, want ErrDuplicateActive", err)
+	}
+	// The index is partial: once the first job is terminal the same key is
+	// free again.
+	if err := store.UpdateJobStatus(ctx, first.ID, domain.JobCompleted, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateJob(ctx, dup); err != nil {
+		t.Fatalf("resubmit after completion: %v", err)
+	}
+	// A different destination is a different key, so it is not blocked even
+	// while job-2 is active.
+	other := dup
+	other.ID, other.CanonicalKey = "job-3", "album:us:111:ba9876543210"
+	if err := store.CreateJob(ctx, other); err != nil {
+		t.Fatalf("same album to a different destination: %v", err)
+	}
 }
 
 func TestOpenMigratesExistingSchemaWithoutArtworkColumns(t *testing.T) {
@@ -479,6 +533,9 @@ func TestOpenMigratesExistingSchemaWithoutArtworkColumns(t *testing.T) {
 		if got.ArtworkURL != "" {
 			t.Fatalf("legacy job artwork_url = %q, want empty", got.ArtworkURL)
 		}
+		if got.ArtistURL != "" {
+			t.Fatalf("legacy job artist url = %q, want empty", got.ArtistURL)
+		}
 		if got.ArtistName != "" || got.CuratorName != "" || got.ReleaseDate != "" || got.Genre != "" {
 			t.Fatalf("legacy job display metadata = %q/%q/%q/%q, want empty", got.ArtistName, got.CuratorName, got.ReleaseDate, got.Genre)
 		}
@@ -515,6 +572,7 @@ func TestOpenMigratesExistingSchemaWithoutArtworkColumns(t *testing.T) {
 	}
 	job.ArtworkURL = "https://is1-ssl.mzstatic.com/image/thumb/Music/old/{w}x{h}bb.jpg"
 	job.ArtistName = "Old Artist"
+	job.ArtistURL = "https://music.apple.com/cn/artist/old-artist/9"
 	job.ReleaseDate = "2020-01-01"
 	job.Genre = "Rock"
 	job.ArtworkBgColor = "101010"
@@ -531,6 +589,9 @@ func TestOpenMigratesExistingSchemaWithoutArtworkColumns(t *testing.T) {
 	}
 	if got.ArtworkURL != job.ArtworkURL {
 		t.Fatalf("migrated job artwork_url = %q, want %q", got.ArtworkURL, job.ArtworkURL)
+	}
+	if got.ArtistURL != job.ArtistURL {
+		t.Fatalf("migrated job artist url = %q, want %q", got.ArtistURL, job.ArtistURL)
 	}
 	if got.ArtistName != job.ArtistName || got.ReleaseDate != job.ReleaseDate || got.Genre != job.Genre {
 		t.Fatalf("migrated job display metadata = %q/%q/%q, want %q/%q/%q", got.ArtistName, got.ReleaseDate, got.Genre, job.ArtistName, job.ReleaseDate, job.Genre)

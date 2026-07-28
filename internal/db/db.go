@@ -93,6 +93,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 			title TEXT NOT NULL DEFAULT '',
 			artwork_url TEXT NOT NULL DEFAULT '',
 			artist_name TEXT NOT NULL DEFAULT '',
+			artist_url TEXT NOT NULL DEFAULT '',
 			curator_name TEXT NOT NULL DEFAULT '',
 			release_date TEXT NOT NULL DEFAULT '',
 			genre TEXT NOT NULL DEFAULT '',
@@ -188,6 +189,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 		{"jobs", "title", "TEXT NOT NULL DEFAULT ''"},
 		{"jobs", "overrides", "TEXT NOT NULL DEFAULT ''"},
 		{"jobs", "artist_name", "TEXT NOT NULL DEFAULT ''"},
+		{"jobs", "artist_url", "TEXT NOT NULL DEFAULT ''"},
 		{"jobs", "curator_name", "TEXT NOT NULL DEFAULT ''"},
 		{"jobs", "release_date", "TEXT NOT NULL DEFAULT ''"},
 		{"jobs", "genre", "TEXT NOT NULL DEFAULT ''"},
@@ -366,8 +368,8 @@ func (s *Store) CreateJob(ctx context.Context, job domain.Job) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO jobs(id,input,type,storefront,title,artwork_url,artist_name,curator_name,release_date,genre,artwork_bg_color,artwork_text_color1,artwork_text_color2,artwork_text_color3,artwork_text_color4,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, job.ID, job.Input, job.Type, job.Storefront, job.Title, job.ArtworkURL, job.ArtistName, job.CuratorName, job.ReleaseDate, job.Genre,
+	_, err = s.db.ExecContext(ctx, `INSERT INTO jobs(id,input,type,storefront,title,artwork_url,artist_name,artist_url,curator_name,release_date,genre,artwork_bg_color,artwork_text_color1,artwork_text_color2,artwork_text_color3,artwork_text_color4,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, job.ID, job.Input, job.Type, job.Storefront, job.Title, job.ArtworkURL, job.ArtistName, job.ArtistURL, job.CuratorName, job.ReleaseDate, job.Genre,
 		job.ArtworkBgColor, job.ArtworkTextColor1, job.ArtworkTextColor2, job.ArtworkTextColor3, job.ArtworkTextColor4, job.CanonicalKey, job.Force, overrides, string(job.Status), job.TotalItems,
 		job.DoneItems, job.FailedItems, job.Error, formatTime(job.CreatedAt), formatTime(job.UpdatedAt))
 	if err != nil && isUniqueConstraintErr(err) {
@@ -378,7 +380,7 @@ func (s *Store) CreateJob(ctx context.Context, job domain.Job) error {
 
 // FindActiveJobByKey returns the queued/running job matching canonicalKey, if any.
 func (s *Store) FindActiveJobByKey(ctx context.Context, canonicalKey string) (domain.Job, bool, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,artist_name,curator_name,release_date,genre,artwork_bg_color,artwork_text_color1,artwork_text_color2,artwork_text_color3,artwork_text_color4,motion_artwork_url,motion_artwork_tall_url,motion_artwork_bg_color,motion_artwork_text_color1,motion_artwork_text_color2,motion_artwork_text_color3,motion_artwork_text_color4,motion_artwork_tall_bg_color,motion_artwork_tall_text_color1,motion_artwork_tall_text_color2,motion_artwork_tall_text_color3,motion_artwork_tall_text_color4,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at
+	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,artist_name,artist_url,curator_name,release_date,genre,artwork_bg_color,artwork_text_color1,artwork_text_color2,artwork_text_color3,artwork_text_color4,motion_artwork_url,motion_artwork_tall_url,motion_artwork_bg_color,motion_artwork_text_color1,motion_artwork_text_color2,motion_artwork_text_color3,motion_artwork_text_color4,motion_artwork_tall_bg_color,motion_artwork_tall_text_color1,motion_artwork_tall_text_color2,motion_artwork_tall_text_color3,motion_artwork_tall_text_color4,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at
 		FROM jobs WHERE canonical_key=? AND status IN (?,?)`, canonicalKey, string(domain.JobQueued), string(domain.JobRunning))
 	job, err := scanJob(row)
 	if err != nil {
@@ -397,8 +399,8 @@ type execer interface {
 }
 
 func updateJob(ctx context.Context, x execer, job domain.Job) error {
-	_, err := x.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, title=?, artwork_url=?, artist_name=?, curator_name=?, release_date=?, genre=?, artwork_bg_color=?, artwork_text_color1=?, artwork_text_color2=?, artwork_text_color3=?, artwork_text_color4=?, force=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
-		job.Type, job.Storefront, job.Title, job.ArtworkURL, job.ArtistName, job.CuratorName, job.ReleaseDate, job.Genre,
+	_, err := x.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, title=?, artwork_url=?, artist_name=?, artist_url=?, curator_name=?, release_date=?, genre=?, artwork_bg_color=?, artwork_text_color1=?, artwork_text_color2=?, artwork_text_color3=?, artwork_text_color4=?, force=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
+		job.Type, job.Storefront, job.Title, job.ArtworkURL, job.ArtistName, job.ArtistURL, job.CuratorName, job.ReleaseDate, job.Genre,
 		job.ArtworkBgColor, job.ArtworkTextColor1, job.ArtworkTextColor2, job.ArtworkTextColor3, job.ArtworkTextColor4,
 		job.Force, string(job.Status), job.TotalItems, job.DoneItems, job.FailedItems, job.Error, formatTime(job.UpdatedAt), job.ID)
 	return err
@@ -413,8 +415,8 @@ func updateFinalJob(ctx context.Context, x execer, job domain.Job) error {
 	if err != nil {
 		return err
 	}
-	_, err = x.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, title=?, artwork_url=?, artist_name=?, curator_name=?, release_date=?, genre=?, artwork_bg_color=?, artwork_text_color1=?, artwork_text_color2=?, artwork_text_color3=?, artwork_text_color4=?, force=?, overrides=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
-		job.Type, job.Storefront, job.Title, job.ArtworkURL, job.ArtistName, job.CuratorName, job.ReleaseDate, job.Genre,
+	_, err = x.ExecContext(ctx, `UPDATE jobs SET type=?, storefront=?, title=?, artwork_url=?, artist_name=?, artist_url=?, curator_name=?, release_date=?, genre=?, artwork_bg_color=?, artwork_text_color1=?, artwork_text_color2=?, artwork_text_color3=?, artwork_text_color4=?, force=?, overrides=?, status=?, total_items=?, done_items=?, failed_items=?, error=?, updated_at=? WHERE id=?`,
+		job.Type, job.Storefront, job.Title, job.ArtworkURL, job.ArtistName, job.ArtistURL, job.CuratorName, job.ReleaseDate, job.Genre,
 		job.ArtworkBgColor, job.ArtworkTextColor1, job.ArtworkTextColor2, job.ArtworkTextColor3, job.ArtworkTextColor4,
 		job.Force, overrides, string(job.Status), job.TotalItems, job.DoneItems, job.FailedItems, job.Error, formatTime(job.UpdatedAt), job.ID)
 	return err
@@ -431,8 +433,13 @@ func (s *Store) UpdateJob(ctx context.Context, job domain.Job) error {
 // predates it. A generic UPDATE carrying that stale struct would blank the
 // columns right after this fills them. updated_at is left alone too — gaining an
 // animated cover is not job progress and should not reorder a list sorted by it.
-func (s *Store) SetJobMotionArtwork(ctx context.Context, id string, art domain.MotionArtwork) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET
+// SetJobMotionArtwork writes the animated-cover columns and reports whether a
+// row actually matched. The caller runs on a context detached from the job's,
+// so the job can be deleted between the lookup starting and this landing; an
+// UPDATE that matches nothing is not an error, but it must not be mistaken for
+// a successful write.
+func (s *Store) SetJobMotionArtwork(ctx context.Context, id string, art domain.MotionArtwork) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET
 		motion_artwork_url=?, motion_artwork_tall_url=?,
 		motion_artwork_bg_color=?, motion_artwork_text_color1=?, motion_artwork_text_color2=?, motion_artwork_text_color3=?, motion_artwork_text_color4=?,
 		motion_artwork_tall_bg_color=?, motion_artwork_tall_text_color1=?, motion_artwork_tall_text_color2=?, motion_artwork_tall_text_color3=?, motion_artwork_tall_text_color4=?
@@ -441,7 +448,14 @@ func (s *Store) SetJobMotionArtwork(ctx context.Context, id string, art domain.M
 		art.SquareColors.BgColor, art.SquareColors.TextColor1, art.SquareColors.TextColor2, art.SquareColors.TextColor3, art.SquareColors.TextColor4,
 		art.TallColors.BgColor, art.TallColors.TextColor1, art.TallColors.TextColor2, art.TallColors.TextColor3, art.TallColors.TextColor4,
 		id)
-	return err
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
 }
 
 func (s *Store) UpdateJobStatus(ctx context.Context, id string, status domain.JobStatus, updatedAt time.Time) error {
@@ -450,7 +464,7 @@ func (s *Store) UpdateJobStatus(ctx context.Context, id string, status domain.Jo
 }
 
 func (s *Store) GetJob(ctx context.Context, id string) (domain.Job, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,artist_name,curator_name,release_date,genre,artwork_bg_color,artwork_text_color1,artwork_text_color2,artwork_text_color3,artwork_text_color4,motion_artwork_url,motion_artwork_tall_url,motion_artwork_bg_color,motion_artwork_text_color1,motion_artwork_text_color2,motion_artwork_text_color3,motion_artwork_text_color4,motion_artwork_tall_bg_color,motion_artwork_tall_text_color1,motion_artwork_tall_text_color2,motion_artwork_tall_text_color3,motion_artwork_tall_text_color4,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,artist_name,artist_url,curator_name,release_date,genre,artwork_bg_color,artwork_text_color1,artwork_text_color2,artwork_text_color3,artwork_text_color4,motion_artwork_url,motion_artwork_tall_url,motion_artwork_bg_color,motion_artwork_text_color1,motion_artwork_text_color2,motion_artwork_text_color3,motion_artwork_text_color4,motion_artwork_tall_bg_color,motion_artwork_tall_text_color1,motion_artwork_tall_text_color2,motion_artwork_tall_text_color3,motion_artwork_tall_text_color4,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE id=?`, id)
 	return scanJob(row)
 }
 
@@ -583,7 +597,7 @@ func (s *Store) ListJobs(ctx context.Context, filter JobListFilter) ([]domain.Jo
 	}
 	listArgs := append([]any{string(domain.ItemCompleted), string(domain.ItemSkipped), string(domain.ItemFailed)}, args...)
 	listArgs = append(listArgs, filter.Limit, filter.Offset)
-	rows, err := s.db.QueryContext(ctx, `SELECT j.id,j.input,j.type,j.storefront,j.title,j.artwork_url,j.artist_name,j.curator_name,j.release_date,j.genre,j.artwork_bg_color,j.artwork_text_color1,j.artwork_text_color2,j.artwork_text_color3,j.artwork_text_color4,j.motion_artwork_url,j.motion_artwork_tall_url,j.motion_artwork_bg_color,j.motion_artwork_text_color1,j.motion_artwork_text_color2,j.motion_artwork_text_color3,j.motion_artwork_text_color4,j.motion_artwork_tall_bg_color,j.motion_artwork_tall_text_color1,j.motion_artwork_tall_text_color2,j.motion_artwork_tall_text_color3,j.motion_artwork_tall_text_color4,j.canonical_key,j.force,j.overrides,j.status,j.total_items,
+	rows, err := s.db.QueryContext(ctx, `SELECT j.id,j.input,j.type,j.storefront,j.title,j.artwork_url,j.artist_name,j.artist_url,j.curator_name,j.release_date,j.genre,j.artwork_bg_color,j.artwork_text_color1,j.artwork_text_color2,j.artwork_text_color3,j.artwork_text_color4,j.motion_artwork_url,j.motion_artwork_tall_url,j.motion_artwork_bg_color,j.motion_artwork_text_color1,j.motion_artwork_text_color2,j.motion_artwork_text_color3,j.motion_artwork_text_color4,j.motion_artwork_tall_bg_color,j.motion_artwork_tall_text_color1,j.motion_artwork_tall_text_color2,j.motion_artwork_tall_text_color3,j.motion_artwork_tall_text_color4,j.canonical_key,j.force,j.overrides,j.status,j.total_items,
 			(SELECT COUNT(*) FROM job_items i WHERE i.job_id=j.id AND i.status IN (?,?)) AS done_items,
 			(SELECT COUNT(*) FROM job_items i WHERE i.job_id=j.id AND i.status=?) AS failed_items,
 			j.error,j.created_at,j.updated_at FROM jobs j`+where+` ORDER BY `+orderCol+` `+orderDir+`, j.id `+orderDir+` LIMIT ? OFFSET ?`,
@@ -651,7 +665,7 @@ func (s *Store) DeleteJob(ctx context.Context, id string) (domain.Event, error) 
 }
 
 func (s *Store) ListRecoverableJobs(ctx context.Context) ([]domain.Job, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,artist_name,curator_name,release_date,genre,artwork_bg_color,artwork_text_color1,artwork_text_color2,artwork_text_color3,artwork_text_color4,motion_artwork_url,motion_artwork_tall_url,motion_artwork_bg_color,motion_artwork_text_color1,motion_artwork_text_color2,motion_artwork_text_color3,motion_artwork_text_color4,motion_artwork_tall_bg_color,motion_artwork_tall_text_color1,motion_artwork_tall_text_color2,motion_artwork_tall_text_color3,motion_artwork_tall_text_color4,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE status IN (?,?) ORDER BY created_at ASC`,
+	rows, err := s.db.QueryContext(ctx, `SELECT id,input,type,storefront,title,artwork_url,artist_name,artist_url,curator_name,release_date,genre,artwork_bg_color,artwork_text_color1,artwork_text_color2,artwork_text_color3,artwork_text_color4,motion_artwork_url,motion_artwork_tall_url,motion_artwork_bg_color,motion_artwork_text_color1,motion_artwork_text_color2,motion_artwork_text_color3,motion_artwork_text_color4,motion_artwork_tall_bg_color,motion_artwork_tall_text_color1,motion_artwork_tall_text_color2,motion_artwork_tall_text_color3,motion_artwork_tall_text_color4,canonical_key,force,overrides,status,total_items,done_items,failed_items,error,created_at,updated_at FROM jobs WHERE status IN (?,?) ORDER BY created_at ASC`,
 		string(domain.JobQueued), string(domain.JobRunning))
 	if err != nil {
 		return nil, err
@@ -675,7 +689,7 @@ type jobScanner interface {
 func scanJob(row jobScanner) (domain.Job, error) {
 	var job domain.Job
 	var overrides, status, created, updated string
-	err := row.Scan(&job.ID, &job.Input, &job.Type, &job.Storefront, &job.Title, &job.ArtworkURL, &job.ArtistName, &job.CuratorName, &job.ReleaseDate, &job.Genre,
+	err := row.Scan(&job.ID, &job.Input, &job.Type, &job.Storefront, &job.Title, &job.ArtworkURL, &job.ArtistName, &job.ArtistURL, &job.CuratorName, &job.ReleaseDate, &job.Genre,
 		&job.ArtworkBgColor, &job.ArtworkTextColor1, &job.ArtworkTextColor2, &job.ArtworkTextColor3, &job.ArtworkTextColor4,
 		&job.MotionArtworkURL, &job.MotionArtworkTallURL,
 		&job.MotionArtworkBgColor, &job.MotionArtworkTextColor1, &job.MotionArtworkTextColor2, &job.MotionArtworkTextColor3, &job.MotionArtworkTextColor4,

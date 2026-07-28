@@ -107,7 +107,14 @@ type Job struct {
 	// CuratorName, artist fills ArtistName (the artist's own name), and
 	// station fills CuratorName with the station provider. All are optional;
 	// jobs resolved before these fields existed keep them empty.
-	ArtistName  string `json:"artist_name,omitempty"`
+	ArtistName string `json:"artist_name,omitempty"`
+	// ArtistURL is that artist's own music.apple.com page, from the artist
+	// resource included with the collection. Filled for album, song and artist
+	// jobs; empty for playlists and stations (their CuratorName is a curator or
+	// provider, not an artist) and for jobs resolved before this field existed.
+	// A client that wants to link the artist should use this rather than
+	// searching the name.
+	ArtistURL   string `json:"artist_url,omitempty"`
 	CuratorName string `json:"curator_name,omitempty"`
 	ReleaseDate string `json:"release_date,omitempty"`
 	Genre       string `json:"genre,omitempty"`
@@ -426,10 +433,11 @@ const EventDeleted = "job_deleted"
 
 // PersistedOverviewMilestones are the persisted event types that change how a
 // job appears in the GET /downloads list — its status, resolved
-// title/total_items, or done/failed progress counters. The overview feed
-// reacts only to these (plus the unpersisted EventDeleted) and ignores the
-// higher-frequency per-item detail events (item_progress, codec_selected,
-// retries, …) that don't alter the list-level view.
+// title/total_items, done/failed progress counters, or the artwork it is drawn
+// with. The overview feed reacts only to these (plus the unpersisted
+// EventDeleted) and ignores the higher-frequency per-item detail events
+// (item_progress, codec_selected, retries, …) that don't alter the list-level
+// view.
 //
 // This is the single source of truth for non-deletion overview milestones: the
 // DB query that replays a cursor appends EventDeleted to this slice, and
@@ -441,6 +449,11 @@ var PersistedOverviewMilestones = []string{
 	"job_retried",
 	"job_started",
 	"resolved_input", // title/total_items are populated by now
+	// The animated cover lands out of band, routinely after the job is already
+	// terminal and its per-job stream has closed as exhausted. Without this the
+	// fields would only ever appear to a client that happened to poll: the
+	// overview feed would neither wake nor replay them from a cursor.
+	"motion_artwork_resolved",
 	"item_completed",
 	"item_skipped",
 	"item_failed",

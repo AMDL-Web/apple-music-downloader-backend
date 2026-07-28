@@ -17,6 +17,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"amdl/internal/applemusic"
 	"amdl/internal/config"
@@ -248,17 +249,20 @@ func (d *Downloader) CleanupJobArtifacts(job domain.Job) {
 }
 
 // parseJobInput reconstructs the submission-time parse result from the job's
-// canonical key ("type:storefront:id", written by the manager after
-// ValidateRequest). Re-parsing the raw input here instead would apply the
-// CURRENT catalog.album_track_url_mode, so an album?i= link submitted as a
+// canonical key ("type:storefront:id:destination", written by the manager
+// after ValidateRequest). Re-parsing the raw input here instead would apply
+// the CURRENT catalog.album_track_url_mode, so an album?i= link submitted as a
 // song could silently turn into a whole-album job (or vice versa) if that
 // mode changed while the job sat in the queue — diverging from the dedup key
 // and metadata stored at submission. Jobs without a well-formed key fall
 // back to re-parsing.
+//
+// The split lives in jobs.ParseCanonicalKey next to the code that builds the
+// key: this is the site that decides which substring is the adam id, so it
+// must never be able to drift from the writer's segment layout.
 func parseJobInput(job domain.Job, albumTrackURLMode string) (applemusic.ParsedURL, error) {
-	parts := strings.SplitN(job.CanonicalKey, ":", 3)
-	if len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != "" {
-		return applemusic.ParsedURL{Raw: job.Input, Type: applemusic.URLType(parts[0]), Storefront: parts[1], ID: parts[2]}, nil
+	if jobType, storefront, id, ok := jobs.ParseCanonicalKey(job.CanonicalKey); ok {
+		return applemusic.ParsedURL{Raw: job.Input, Type: applemusic.URLType(jobType), Storefront: storefront, ID: id}, nil
 	}
 	return applemusic.ParseWithAlbumTrackMode(job.Input, albumTrackURLMode)
 }
@@ -300,6 +304,7 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 	// S3 URL here; it is intentionally persisted even though it will expire.
 	job.ArtworkURL = resolved.ArtworkURL
 	job.ArtistName = resolved.ArtistName
+	job.ArtistURL = resolved.ArtistURL
 	job.CuratorName = resolved.CuratorName
 	job.ReleaseDate = resolved.ReleaseDate
 	job.Genre = resolved.Genre
@@ -481,7 +486,11 @@ type resolvedCollection struct {
 	// Display metadata backfilled onto the job next to Name/ArtworkURL.
 	// Populated per type in resolveCollection; empty when the catalog has no
 	// suitable value (never an error).
-	ArtistName  string
+	ArtistName string
+	// ArtistURL is the artist's own music.apple.com page. Only the types whose
+	// ArtistName is a real artist carry one — album, song and artist; playlists
+	// and stations leave it empty along with ArtistName.
+	ArtistURL   string
 	CuratorName string
 	ReleaseDate string
 	Genre       string
@@ -552,13 +561,23 @@ func (d *Downloader) startMotionArtworkBackfill(ctx context.Context, jobID strin
 		if art.IsZero() {
 			return
 		}
-		if err := reporter.SetJobMotionArtwork(detached, jobID, domain.MotionArtwork{
+		applied, err := reporter.SetJobMotionArtwork(detached, jobID, domain.MotionArtwork{
 			SquareURL:    art.Square,
 			TallURL:      art.Tall,
 			SquareColors: domain.ArtworkPalette(art.SquareColors),
 			TallColors:   domain.ArtworkPalette(art.TallColors),
-		}); err != nil {
+		})
+		if err != nil {
 			log.Warn("persist motion artwork", "job_id", jobID, "error", err)
+			return
+		}
+		if !applied {
+			// The job was deleted while this was in flight. Announcing a cover
+			// for a row that no longer exists would file the event behind the
+			// job_deleted tombstone, which the overview feed replays as the
+			// last word on that job — an orphan event after it would resurrect
+			// a deleted download in any client replaying from a cursor.
+			log.Debug("motion artwork discarded, job is gone", "job_id", jobID, "album_id", albumID)
 			return
 		}
 		_ = reporter.Event(detached, domain.Event{
@@ -599,7 +618,7 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 		}
 		return resolvedCollection{
 			Tracks: []applemusic.Song{song}, Name: song.Name, ArtworkURL: firstNonEmpty(song.ArtworkURL, song.AlbumArtworkURL),
-			ArtistName: song.ArtistName, ReleaseDate: song.ReleaseDate, Genre: primaryGenre(song.GenreNames),
+			ArtistName: song.ArtistName, ArtistURL: song.ArtistURL, ReleaseDate: song.ReleaseDate, Genre: primaryGenre(song.GenreNames),
 			ArtworkColors: colors,
 		}, nil
 	case applemusic.TypeAlbum:
@@ -609,7 +628,7 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 		}
 		return resolvedCollection{
 			Tracks: album.Tracks, ID: album.ID, Name: album.Name, ArtworkURL: album.ArtworkURL,
-			ArtistName: album.Artist, ReleaseDate: album.ReleaseDate, Genre: primaryGenre(album.GenreNames),
+			ArtistName: album.Artist, ArtistURL: album.ArtistURL, ReleaseDate: album.ReleaseDate, Genre: primaryGenre(album.GenreNames),
 			ArtworkColors: album.ArtworkColors,
 		}, nil
 	case applemusic.TypePlaylist:
@@ -650,6 +669,7 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 			// For artist jobs the artist's own name doubles as the display
 			// artist.
 			ArtistName:    artist.Name,
+			ArtistURL:     artist.URL,
 			ArtworkColors: artist.ArtworkColors,
 		}, nil
 	default:
@@ -1913,6 +1933,11 @@ func marshalPayload(value any) string {
 // so existence at the final path always implies a complete, tagged file.
 const partSuffix = ".part"
 
+// maxStagingNameLen bounds a staging filename. 255 bytes is the per-component
+// limit on every filesystem the downloads root realistically lives on (ext4,
+// btrfs, xfs, APFS, and the Synology ext4/btrfs volumes this is deployed to).
+const maxStagingNameLen = 255
+
 // finalizeToOutput moves the finished, tagged file at src (staged on temp
 // storage) to its final path dst. When src and dst share a filesystem this is a
 // cheap atomic rename; when they don't (e.g. temp on SSD, downloads on HDD),
@@ -1938,19 +1963,98 @@ func finalizeToOutput(src, dst string) error {
 }
 
 // copyIntoPlace materialises src at dst across a filesystem boundary: copy to a
-// dst-side .part, flush, then atomically rename into place. dst never appears as
-// a partial file. src is left for the caller to remove.
+// dst-side staging file, flush, then atomically rename into place. dst never
+// appears as a partial file. src is left for the caller to remove.
+//
+// The staging name is unique per call ("<name>.<n>.part") rather than the bare
+// dst+".part". The staging path is derived from the destination, so with a fixed
+// name any two writers aiming at the same output share one staging file: they
+// truncate and interleave into it, and whichever renames second hits ENOENT
+// after the first has already renamed the shared file away. Two writers can
+// legitimately want the same output — the same track reached through an album
+// job and through a playlist job is the ordinary case. processOutputLocks
+// serialises them inside one process, but nothing does across processes, and
+// the lock is an optimisation of scheduling rather than a property of the file
+// layout. A per-call name makes "a staging file belongs to exactly one writer"
+// true of the naming itself.
 func copyIntoPlace(src, dst string) error {
-	partPath := dst + partSuffix
+	staging, err := os.CreateTemp(filepath.Dir(dst), stagingPattern(dst))
+	if err != nil {
+		return err
+	}
+	partPath := staging.Name()
+	// copyFile reopens the path with os.Create, which truncates but leaves an
+	// existing file's mode alone — so CreateTemp's 0600 is what the bytes land
+	// under.
+	_ = staging.Close()
 	if err := copyFile(src, partPath); err != nil {
 		_ = os.Remove(partPath)
 		return err
 	}
+	// os.CreateTemp makes the file 0600 where the previous os.Create left it at
+	// 0666&^umask. finalizeToOutput chmods the finished dst either way, so this
+	// only narrows the window in which the file is owner-only; a failure here is
+	// left for that authoritative chmod to report.
+	_ = os.Chmod(partPath, 0o644)
 	if err := os.Rename(partPath, dst); err != nil {
 		_ = os.Remove(partPath)
 		return err
 	}
 	return nil
+}
+
+// stagingPattern builds the os.CreateTemp pattern for dst's staging file:
+// "<name>.*<partSuffix>", keeping the output's own name so an orphan left by a
+// hard kill says which track it belongs to.
+//
+// <name> is trimmed — on a rune boundary, because APFS rejects filenames that
+// are not valid UTF-8 — when the uniquifier would push the staging name past
+// maxStagingNameLen. Without the trim, adding 11 bytes to a name that only just
+// fits would fail the download at the very last step, after the bytes are
+// fetched, decrypted, remuxed and tagged. The old dst+".part" had the same cliff
+// 11 bytes further out; this moves it out of reach instead of closer.
+func stagingPattern(dst string) string {
+	return stagingPrefix(dst) + "*" + partSuffix
+}
+
+func stagingPrefix(dst string) string {
+	name := filepath.Base(dst)
+	// os.CreateTemp substitutes a 10-digit uniquifier for the "*".
+	const overhead = len(".") + 10 + len(partSuffix)
+	if budget := maxStagingNameLen - overhead; len(name) > budget {
+		name = trimToRuneBoundary(name, budget)
+	}
+	return name + "."
+}
+
+func trimToRuneBoundary(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit]
+}
+
+// isStagedPart reports whether name is a copyIntoPlace staging file for the
+// output file outName, i.e. "<outName>.<digits><partSuffix>". Requiring the
+// uniquifier to be the digit run os.CreateTemp produces keeps the sweep in
+// cleanupFailedOutput from matching a different track whose own title happens to
+// begin with outName.
+func isStagedPart(name, outName string) bool {
+	middle, ok := strings.CutPrefix(name, outName+".")
+	if !ok {
+		return false
+	}
+	middle, ok = strings.CutSuffix(middle, partSuffix)
+	if !ok || middle == "" {
+		return false
+	}
+	return strings.IndexFunc(middle, func(r rune) bool { return r < '0' || r > '9' }) < 0
 }
 
 func copyFile(src, dst string) error {
@@ -1976,9 +2080,48 @@ func copyFile(src, dst string) error {
 
 func cleanupFailedOutput(outPath string) {
 	_ = os.Remove(outPath)
-	_ = os.Remove(outPath + partSuffix)
+	removeStagedParts(outPath)
 	_ = os.Remove(strings.TrimSuffix(outPath, ".m4a") + ".lrc")
 	_ = os.Remove(strings.TrimSuffix(outPath, ".m4a") + ".ttml")
+}
+
+// removeStagedParts drops copyIntoPlace staging files for outPath. copyIntoPlace
+// removes its own staging file on every error return, so a survivor means the
+// process was killed mid-copy — but that survivor sits in the user's music
+// library, so the retry/force paths sweep it the way they always did.
+//
+// Both shapes are swept: the pre-uniquified outPath+".part" (an orphan from a
+// build before the staging name carried a uniquifier — the deployed instance may
+// have some) and the per-call "<name>.<digits>.part".
+//
+// Scanning the directory rather than globbing is deliberate: safeName does not
+// strip "[" or "]", so a track like "Song [Live]" would make filepath.Glob read
+// the brackets as a character class and match some *other* track's staging file.
+//
+// Every caller holds outPath's processOutputLocks entry for the whole download,
+// so nothing else in this process has a staging file for this output in flight;
+// a match is this writer's own or an orphan. isStagedPart anchors on the full
+// output name, so a concurrent download of a different track in the same album
+// directory is never matched.
+//
+// Known gap: an output name long enough for stagingPrefix to trim leaves an
+// orphan this sweep will not match, because the on-disk prefix is shorter than
+// the name checked here. It is a leftover file, not a correctness problem, and
+// the alternative — matching on the trimmed prefix — would let two tracks
+// sharing a ~240-byte title prefix delete each other's staging files.
+func removeStagedParts(outPath string) {
+	_ = os.Remove(outPath + partSuffix)
+	dir, outName := filepath.Dir(outPath), filepath.Base(outPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !isStagedPart(entry.Name(), outName) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, entry.Name()))
+	}
 }
 
 func (d *Downloader) failItem(ctx context.Context, reporter jobs.Reporter, job domain.Job, item domain.JobItem, err error) error {

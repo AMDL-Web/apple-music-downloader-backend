@@ -122,6 +122,10 @@ func main() {
 	manager := jobs.NewManager(store, hub, downloader, cfg.Download.MaxRunningJobs, logSystem.Logger.With("component", "jobs"))
 	hookDispatcher := hooks.NewDispatcher(hooksCfg, manager.Event, logSystem.Logger.With("component", "hooks"))
 	manager.SetHooks(hookDispatcher)
+	// Shares the same live config as the API layer and the download pipeline,
+	// so a submission's dedup key reflects the downloads dir the job will
+	// actually run under.
+	manager.SetConfigStore(cfgStore)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

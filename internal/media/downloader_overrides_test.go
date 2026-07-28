@@ -135,3 +135,54 @@ func TestProcessJobHonorsCanonicalKeyOverReparse(t *testing.T) {
 		t.Fatalf("final item = %s/%s, want completed song 987654321", final.Status, final.AdamID)
 	}
 }
+
+// TestParseJobInputAcceptsBothKeyGenerations guards the failure mode that
+// folding the destination into the canonical key creates here: this is the
+// site that decides which substring of the key is the adam id, and reading
+// the wrong substring produces no error at all — just a download of the wrong
+// thing. Both the four-segment key written now and the three-segment key
+// still sitting in deployed databases must yield the same adam id.
+func TestParseJobInputAcceptsBothKeyGenerations(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  string
+	}{
+		{name: "with destination", key: "song:us:987654321:0123456789ab"},
+		{name: "legacy without destination", key: "song:us:987654321"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			job := domain.Job{
+				Input:        "https://music.apple.com/us/album/foo/123456789?i=987654321",
+				CanonicalKey: tc.key,
+			}
+			// "album" is deliberately the opposite of what this key records,
+			// so a fall-through to re-parsing would resolve the album id
+			// 123456789 instead and be visible here.
+			parsed, err := parseJobInput(job, "album")
+			if err != nil {
+				t.Fatalf("parseJobInput(%q): %v", tc.key, err)
+			}
+			if parsed.Type != applemusic.TypeSong || parsed.Storefront != "us" || parsed.ID != "987654321" {
+				t.Fatalf("parseJobInput(%q) = %s/%s/%s, want song/us/987654321",
+					tc.key, parsed.Type, parsed.Storefront, parsed.ID)
+			}
+		})
+	}
+}
+
+// TestParseJobInputFallsBackForUnusableKey keeps the documented escape hatch:
+// a key that cannot be read still re-parses the raw input rather than failing
+// the job.
+func TestParseJobInputFallsBackForUnusableKey(t *testing.T) {
+	job := domain.Job{
+		Input:        "https://music.apple.com/us/album/foo/123456789",
+		CanonicalKey: "not-a-key",
+	}
+	parsed, err := parseJobInput(job, "song")
+	if err != nil {
+		t.Fatalf("parseJobInput: %v", err)
+	}
+	if parsed.Type != applemusic.TypeAlbum || parsed.ID != "123456789" {
+		t.Fatalf("parseJobInput = %s/%s, want album/123456789 from the raw input", parsed.Type, parsed.ID)
+	}
+}

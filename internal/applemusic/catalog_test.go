@@ -269,7 +269,7 @@ func TestSongStillFollowsAlbumRelationshipForFullMetadata(t *testing.T) {
 			body := `{"data":[{"id":"song-1","type":"songs","attributes":{"name":"Song","artistName":"Artist","albumName":"Album","trackNumber":1,"discNumber":1},"relationships":{"albums":{"data":[{"id":"album-1","type":"albums","attributes":{"name":"Album","artistName":"Album Artist","trackCount":2}}]}}}]}`
 			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 		case "/v1/catalog/cn/albums/album-1":
-			body := `{"data":[{"id":"album-1","type":"albums","attributes":{"name":"Album","artistName":"Album Artist","trackCount":2,"artwork":{"url":"album-art"}},"relationships":{"artists":{"data":[{"id":"artist-1","attributes":{"name":"Album Artist","artwork":{"url":"artist-art"}}}]},"tracks":{"data":[{"id":"song-1","type":"songs","attributes":{"name":"Song","trackNumber":1,"discNumber":1}},{"id":"song-2","type":"songs","attributes":{"name":"Two","trackNumber":2,"discNumber":1}}]}}}]}`
+			body := `{"data":[{"id":"album-1","type":"albums","attributes":{"name":"Album","artistName":"Album Artist","trackCount":2,"artwork":{"url":"album-art"}},"relationships":{"artists":{"data":[{"id":"artist-1","attributes":{"name":"Album Artist","url":"https://music.apple.com/cn/artist/album-artist/artist-1","artwork":{"url":"artist-art"}}}]},"tracks":{"data":[{"id":"song-1","type":"songs","attributes":{"name":"Song","trackNumber":1,"discNumber":1}},{"id":"song-2","type":"songs","attributes":{"name":"Two","trackNumber":2,"discNumber":1}}]}}}]}`
 			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 		default:
 			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("unexpected path")), Header: make(http.Header)}, nil
@@ -283,8 +283,38 @@ func TestSongStillFollowsAlbumRelationshipForFullMetadata(t *testing.T) {
 	if song.AlbumArtist != "Album Artist" || song.AlbumArtworkURL != "album-art" || song.AlbumArtistID != "artist-1" || song.AlbumArtistArtworkURL != "artist-art" || song.TrackCount != 2 || song.DiscCount != 1 {
 		t.Fatalf("enriched song = %+v", song)
 	}
+	// The song resource carried no artist relationship of its own, so the
+	// artist page has to come from the album it was enriched with.
+	if song.ArtistURL != "https://music.apple.com/cn/artist/album-artist/artist-1" {
+		t.Fatalf("enriched song artist url = %q", song.ArtistURL)
+	}
 	if got, want := paths, []string{"/v1/catalog/cn/songs/song-1", "/v1/catalog/cn/albums/album-1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("request paths = %#v, want %#v", got, want)
+	}
+}
+
+func TestAlbumFallsBackToTheExtendedArtistURL(t *testing.T) {
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client.token = "test-token"
+	client.tokenUntil = time.Now().Add(time.Hour)
+	var extend string
+	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		extend = req.URL.Query().Get("extend")
+		// Included artist without attributes.url — only the extended
+		// album attribute carries the page.
+		body := `{"data":[{"id":"album-1","type":"albums","attributes":{"name":"Album","artistName":"Album Artist","artistUrl":"https://music.apple.com/cn/artist/album-artist/artist-1","trackCount":1},"relationships":{"artists":{"data":[{"id":"artist-1","attributes":{"name":"Album Artist"}}]},"tracks":{"data":[{"id":"song-1","type":"songs","attributes":{"name":"Song","trackNumber":1,"discNumber":1}}]}}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+
+	album, err := client.Album(context.Background(), "cn", "album-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extend != "artistUrl" {
+		t.Fatalf("extend = %q, want artistUrl", extend)
+	}
+	if album.ArtistURL != "https://music.apple.com/cn/artist/album-artist/artist-1" {
+		t.Fatalf("album artist url = %q", album.ArtistURL)
 	}
 }
 

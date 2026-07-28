@@ -218,15 +218,15 @@ func (o *DownloadOverrides) applyValidated(base Config, clampLimits bool) (Confi
 
 // pathIsWithin compares canonical absolute paths. EvalSymlinks alone cannot
 // handle the normal case where a requested subdirectory does not exist yet,
-// so canonicalPath resolves the deepest existing ancestor and appends the
+// so CanonicalPath resolves the deepest existing ancestor and appends the
 // missing suffix. This catches both lexical traversal and existing symlinks
 // that point outside the configured root without rejecting new subdirectories.
 func pathIsWithin(base, candidate string) (bool, error) {
-	basePath, err := canonicalPath(base)
+	basePath, err := CanonicalPath(base)
 	if err != nil {
 		return false, err
 	}
-	candidatePath, err := canonicalPath(candidate)
+	candidatePath, err := CanonicalPath(candidate)
 	if err != nil {
 		return false, err
 	}
@@ -241,7 +241,13 @@ func startsWithParent(path string) bool {
 	return len(path) >= 3 && path[:3] == ".."+string(filepath.Separator)
 }
 
-func canonicalPath(path string) (string, error) {
+// CanonicalPath resolves path to an absolute, symlink-free, lexically clean
+// form, tolerating a tail that does not exist yet: it resolves the deepest
+// existing ancestor and re-appends the missing suffix. Two spellings of the
+// same directory ("<root>/./a/" and "<root>/a") therefore produce the same
+// string, which is what lets both the downloads-root jail check and the job
+// dedup key treat them as one destination.
+func CanonicalPath(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", err

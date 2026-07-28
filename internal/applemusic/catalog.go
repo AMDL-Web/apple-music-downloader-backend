@@ -210,6 +210,9 @@ func enrichSongWithAlbum(song Song, album Collection) Song {
 		song.DiscCount = maxDisc(album.Tracks)
 	}
 	song.AlbumArtist = album.Artist
+	if song.ArtistURL == "" {
+		song.ArtistURL = album.ArtistURL
+	}
 	return song
 }
 
@@ -218,7 +221,11 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 	if err := c.get(ctx, fmt.Sprintf("%s/v1/catalog/%s/albums/%s", c.apiBase(), storefront, id), url.Values{
 		"include":        []string{"tracks,artists,record-labels"},
 		"include[songs]": []string{"artists"},
-		"l":              []string{c.cfg.Language},
+		// artistUrl is the only extended attribute Apple documents as available
+		// to a third party on Albums, and it is a second source for the artist
+		// page below — the included artist resource may not always carry one.
+		"extend": []string{"artistUrl"},
+		"l":      []string{c.cfg.Language},
 	}, &resp); err != nil {
 		return Collection{}, err
 	}
@@ -230,12 +237,14 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 	if err != nil {
 		return Collection{}, err
 	}
-	var albumArtistID, albumArtistArtworkURL string
+	var albumArtistID, albumArtistArtworkURL, albumArtistURL string
 	if len(album.Relationships.Artists.Data) > 0 {
 		albumArtist := album.Relationships.Artists.Data[0]
 		albumArtistID = albumArtist.ID
 		albumArtistArtworkURL = albumArtist.Attributes.Artwork.URL
+		albumArtistURL = albumArtist.Attributes.URL
 	}
+	albumArtistURL = firstNonEmpty(albumArtistURL, album.Attributes.ArtistURL)
 	tracks := make([]Song, 0, len(rawTracks))
 	discCount := 0
 	for _, raw := range rawTracks {
@@ -266,7 +275,7 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 	return Collection{
 		ID: album.ID, Type: TypeAlbum, Name: album.Attributes.Name, Artist: album.Attributes.ArtistName,
 		ArtworkURL: album.Attributes.Artwork.URL, ArtworkColors: album.Attributes.Artwork.colors(),
-		ArtistID: albumArtistID, ArtistArtworkURL: albumArtistArtworkURL,
+		ArtistID: albumArtistID, ArtistArtworkURL: albumArtistArtworkURL, ArtistURL: albumArtistURL,
 		ReleaseDate: album.Attributes.ReleaseDate, GenreNames: album.Attributes.GenreNames, Tracks: tracks,
 	}, nil
 }
@@ -458,7 +467,7 @@ func (c *CatalogClient) ArtistAlbums(ctx context.Context, storefront, id string)
 		albums = append(albums, mapAlbumSummary(rawAlbum))
 	}
 	return ArtistAlbums{
-		Artist: Artist{ID: raw.ID, Name: raw.Attributes.Name, ArtworkURL: raw.Attributes.Artwork.URL, ArtworkColors: raw.Attributes.Artwork.colors()},
+		Artist: Artist{ID: raw.ID, Name: raw.Attributes.Name, URL: raw.Attributes.URL, ArtworkURL: raw.Attributes.Artwork.URL, ArtworkColors: raw.Attributes.Artwork.colors()},
 		Albums: albums,
 	}, nil
 }
@@ -1137,21 +1146,23 @@ func mapSong(raw catalogSongData) Song {
 		artist := raw.Relationships.Artists.Data[0]
 		s.ArtistID = artist.ID
 		s.ArtistArtworkURL = artist.Attributes.Artwork.URL
+		s.ArtistURL = artist.Attributes.URL
 	}
 	return s
 }
 
 func mapAlbumSummary(raw catalogAlbumData) Collection {
-	var artistID, artistArtworkURL string
+	var artistID, artistArtworkURL, artistURL string
 	if len(raw.Relationships.Artists.Data) > 0 {
 		artist := raw.Relationships.Artists.Data[0]
 		artistID = artist.ID
 		artistArtworkURL = artist.Attributes.Artwork.URL
+		artistURL = artist.Attributes.URL
 	}
 	return Collection{
 		ID: raw.ID, Type: TypeAlbum, Name: raw.Attributes.Name, Artist: raw.Attributes.ArtistName,
 		ArtworkURL: raw.Attributes.Artwork.URL, ArtworkColors: raw.Attributes.Artwork.colors(),
-		ArtistID: artistID, ArtistArtworkURL: artistArtworkURL,
+		ArtistID: artistID, ArtistArtworkURL: artistArtworkURL, ArtistURL: artistURL,
 		ReleaseDate: raw.Attributes.ReleaseDate, GenreNames: raw.Attributes.GenreNames,
 	}
 }
