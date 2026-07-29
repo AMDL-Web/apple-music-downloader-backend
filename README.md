@@ -331,6 +331,7 @@ curl -X DELETE http://localhost:18080/api/v1/downloads/{job_id}
 - `aac-lc` 无需写入 `quality_priority`；开启编码回退时会自动追加为最后的 WebPlayback 保底格式。
 - 回退链中的每个编码（含隐式 AAC-LC 保底）均使用 `download.max_attempts`；每个编码的下载阶段和解密阶段分别独立计数重试。
 - 重试、耗尽、恢复和编码回退会通过任务 SSE 事件返回；任务详情中的每个项目也会返回 `retry_kind`、`attempt`、`max_attempts` 和 `status_message`，其中 `attempt` 为当前阶段（`retry_kind`）的尝试序号（从 1 开始）。
+- `download.progress_event_interval_ms`（默认 `500`，允许 `0-10000`）：同一 item 在同一状态内两条 `item_progress` 事件的最小间隔。只节流 download/decrypt 两个进度条的推进；状态变更、阶段完成标记以及 `item_completed`/`item_failed`/`item_skipped` 等一次性事件始终立即推送。被间隔压下的进度值会在取代它的事件之前补发，因此状态变更前的最后一个百分比不会丢失，用 `last_event_id` 续传的客户端与实时客户端看到的事件序列一致。它是叠加在“整数百分比取整”门限之上的时间下限——数十首曲目并行时，仅靠百分比门限会把每条进度条的约 101 次跨越压缩进几秒内同时发出。值 `<= 0` 关闭时间合并。该值在任务启动时读取一次，只影响此后启动的任务。
 
 ### 后解密落盘微基准（当前实现）
 

@@ -1163,7 +1163,8 @@ components:
       description: >-
         按任务配置覆盖层：除 media_user_token 和 hooks 外，字段与运行时配置
         download 段一一对应。max_running_jobs、max_parallel_downloads、max_parallel_decrypts、
-        max_parallel_wrapper_requests 在启动时确定并全局共享，无法按任务覆盖。
+        max_parallel_wrapper_requests 在启动时确定并全局共享，无法按任务覆盖；
+        progress_event_interval_ms 描述的是所有订阅者共享的事件流形状，同样不接受按任务覆盖。
         所有字段可选；提交时会以“当前运行时配置 + 覆盖”做完整校验。
         downloads_dir 和 temp_dir 只能选择管理员配置根目录本身或其子目录，
         不能通过绝对路径、.. 或符号链接逃出对应根目录。media_user_token 具有
@@ -1327,6 +1328,23 @@ components:
               type: integer
               maximum: 10
               description: 正数允许 1-10；值 <=0 按 1 处理。
+            progress_event_interval_ms:
+              type: integer
+              maximum: 10000
+              description: >-
+                同一 item 在同一状态内两条 item_progress 事件的最小间隔（毫秒）。
+                只节流 download/decrypt 两个进度条的推进；状态变更
+                （waiting_download、downloading、waiting_decrypt、decrypting、
+                remuxing、saving、tagging）和阶段完成标记（resolved、remuxed、
+                verified、tagged、saved）以及 item_completed / item_failed /
+                item_skipped 等一次性事件始终立即推送，不受此值影响。被该间隔
+                压下的进度值会在取代它的事件之前补发，因此状态变更前的最后一个
+                百分比不会丢失，用 last_event_id 续传的客户端与实时客户端看到的
+                事件序列完全一致。这是叠加在“整数百分比取整”门限之上的时间下限，
+                因此无论设多小，单个进度条每阶段仍不会超过约 101 条事件。
+                允许 0-10000；值 <=0 关闭时间合并，仅保留百分比门限；本文件中超过
+                10000 会被截断为 10000，配置 API 直接拒绝。默认 500。
+                在任务启动时读取一次，因此修改只影响此后启动的任务，不影响运行中的任务。
             downloads_dir: {type: string}
             song_path_format: {type: string}
             album_path_format: {type: string}

@@ -216,6 +216,22 @@ download:
   # values above 10 in this file are clamped to 10 (the config API and new job submissions reject them;
   # job overrides persisted before the limit existed are clamped when the job runs). Default: 3.
   max_attempts: 3
+  # integer milliseconds: minimum gap between two consecutive item_progress events for the same item
+  # while it stays in one state. Only movement of the download/decrypt meters is delayed by this;
+  # status changes (queued -> resolving -> waiting_download -> downloading -> waiting_decrypt ->
+  # decrypting -> remuxing -> saving -> tagging) and pipeline-stage completions (resolved, remuxed,
+  # verified, tagged, saved) are always published immediately, as are item_completed, item_failed,
+  # item_skipped and every other one-shot event. A meter value held back by this interval is flushed
+  # out just before whichever event supersedes it, so the last percentage before a state change is
+  # never lost and clients resuming from last_event_id see the same stream as live ones.
+  # This is a floor on spacing, layered on top of the unconditional whole-percent rounding gate, so a
+  # meter still never emits more than ~101 times per stage no matter how low this is set.
+  # Allowed 0-10000; values <=0 disable time-based coalescing and leave only the percent gate;
+  # values above 10000 in this file are clamped to 10000 (the config API rejects them). Default: 500.
+  # Raise it to cut event volume for clients that fan the feed out (amdl-portal) or forward it to
+  # APNs (amdl-ios-gateway); lower it for a more granular progress bar at higher cost.
+  # Read once when a job starts, so a change applies to jobs started after it, not to running ones.
+  progress_event_interval_ms: 500
   # string path: root download directory. Relative paths are resolved from the backend working directory.
   downloads_dir: "data/downloads"
   # Per-task-type output path templates, relative to downloads_dir. Each is a single
