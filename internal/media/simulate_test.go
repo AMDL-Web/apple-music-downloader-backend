@@ -143,7 +143,8 @@ func TestSimulateTrackSelectsRealMediaButNeverDownloadsOrWrites(t *testing.T) {
 		}
 	}
 	for _, status := range []domain.ItemStatus{
-		domain.ItemResolving, domain.ItemDownloading, domain.ItemDecrypting,
+		domain.ItemResolving, domain.ItemWaitingDownload, domain.ItemDownloading,
+		domain.ItemWaitingDecrypt, domain.ItemDecrypting,
 		domain.ItemRemuxing, domain.ItemSaving, domain.ItemTagging,
 	} {
 		if !seenStatuses[string(status)] {

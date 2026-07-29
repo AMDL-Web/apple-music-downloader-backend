@@ -938,10 +938,20 @@ func clampFrac(v float64) float64 {
 // a different whole percent. Movement that rounds to the same percent is
 // dropped — see the throttle comment on set.
 func progressChanged(prev, next domain.ItemProgress) bool {
-	if prev.Resolved != next.Resolved || prev.Remuxed != next.Remuxed ||
-		prev.Verified != next.Verified || prev.Tagged != next.Tagged || prev.Saved != next.Saved {
-		return true
-	}
+	return stagesChanged(prev, next) || metersChanged(prev, next)
+}
+
+// stagesChanged reports whether a one-shot pipeline stage completed. These are
+// state transitions, not progress within a state, so they are never rate
+// limited — see the two gates documented on set.
+func stagesChanged(prev, next domain.ItemProgress) bool {
+	return prev.Resolved != next.Resolved || prev.Remuxed != next.Remuxed ||
+		prev.Verified != next.Verified || prev.Tagged != next.Tagged || prev.Saved != next.Saved
+}
+
+// metersChanged reports whether either continuous meter landed on a different
+// whole percent. This is the only thing the time gate may delay.
+func metersChanged(prev, next domain.ItemProgress) bool {
 	return math.Round(prev.Download*100) != math.Round(next.Download*100) ||
 		math.Round(prev.Decrypt*100) != math.Round(next.Decrypt*100)
 }
@@ -985,33 +995,63 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 	// Terminal item events use the same public JobItem representation, so a
 	// stream-only client does not need a final REST refresh to fill missing
 	// fields.
-	// To avoid flooding the stream — and hammering SQLite with one UPDATE per
-	// 32KB download chunk — both the DB write and the event are gated on the
-	// same threshold: status changed, a stage finished, or one of the two
-	// meters landed on a different whole percent. That is rounding, not a 1pp
-	// delta: 0.4% → 0.6% crosses because it rounds 0 → 1. Intermediate progress
-	// has no durability value anyway (unfinished items are reset to queued on
-	// resume); persisting it at percent granularity only serves REST polling.
+	//
+	// Two gates decide whether a call publishes, and both cover the DB write
+	// and the event together — intermediate progress has no durability value
+	// anyway (unfinished items are reset to queued on resume), so persisting it
+	// more finely than it is streamed would only serve REST polling.
+	//
+	// The value gate: publish when the status changed, a pipeline stage
+	// finished, or one of the two meters landed on a different whole percent.
+	// That is rounding, not a 1pp delta: 0.4% → 0.6% crosses because it rounds
+	// 0 → 1. It keeps one 32KB download chunk from becoming one SQLite UPDATE.
+	//
+	// The time gate (progressGate): a *meter-only* move additionally has to
+	// clear download.progress_event_interval_ms since the last publish, because
+	// the value gate alone puts no floor on spacing — a track that transfers in
+	// seconds fires all ~101 percent crossings in those seconds, times every
+	// track running in parallel. Status changes and stage completions skip the
+	// time gate so no transition is ever delayed, and a suppressed meter value
+	// is flushed by progressGate.Event ahead of whatever event supersedes it.
+	base := reporter
+	gate := newProgressGate(base, progressEventInterval(d.cfg))
+	// Everything downstream of here reports through the gate, so any non-
+	// progress item event flushes a held meter value first.
+	reporter = gate
+	defer gate.flush()
+
 	var lastEmittedStatus domain.ItemStatus
 	lastEmittedProgress := domain.ItemProgress{Download: -1, Decrypt: -1}
+	publish := func() {
+		lastEmittedStatus = item.Status
+		lastEmittedProgress = item.Progress
+		gate.emitted()
+		_ = base.UpdateItem(ctx, &item)
+		_ = base.Event(ctx, domain.Event{
+			JobID:   job.ID,
+			ItemID:  item.ID,
+			Type:    eventItemProgress,
+			Phase:   string(item.Status),
+			Message: item.StatusMessage,
+			Payload: marshalPayload(item),
+		})
+	}
+	gate.emit = publish
 	set := func(status domain.ItemStatus, message string, mutate func(*domain.ItemProgress)) {
 		item.Status = status
 		item.StatusMessage = message
 		if mutate != nil {
 			mutate(&item.Progress)
 		}
-		if status != lastEmittedStatus || progressChanged(lastEmittedProgress, item.Progress) {
-			lastEmittedStatus = status
-			lastEmittedProgress = item.Progress
-			_ = reporter.UpdateItem(ctx, &item)
-			_ = reporter.Event(ctx, domain.Event{
-				JobID:   job.ID,
-				ItemID:  item.ID,
-				Type:    "item_progress",
-				Phase:   string(status),
-				Message: message,
-				Payload: marshalPayload(item),
-			})
+		switch {
+		case status != lastEmittedStatus || stagesChanged(lastEmittedProgress, item.Progress):
+			publish()
+		case metersChanged(lastEmittedProgress, item.Progress):
+			if gate.allow() {
+				publish()
+			} else {
+				gate.hold()
+			}
 		}
 	}
 
@@ -1421,7 +1461,7 @@ func (d *Downloader) handleExistingOutput(ctx context.Context, reporter jobs.Rep
 }
 
 func (d *Downloader) selectEnhancedMedia(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, codec string, reporter jobs.Reporter, set publishStage) (selectedDownloadMedia, error) {
-	set(domain.ItemDownloading, fmt.Sprintf("Selecting %s media stream", strings.ToUpper(codec)), nil)
+	set(domain.ItemResolving, fmt.Sprintf("Selecting %s media stream", strings.ToUpper(codec)), nil)
 	info, err := d.selectEnhancedStream(ctx, job.Storefront, song, codec)
 	if err != nil {
 		return selectedDownloadMedia{}, err
@@ -1484,13 +1524,13 @@ func (d *Downloader) resolveEnhancedHLS(ctx context.Context, storefront string, 
 func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected selectedDownloadMedia, codec, jobID, outPath string, set publishStage) (selectedDownloadMedia, error) {
 	d.ensureMediaLimits()
 	codecName := strings.ToUpper(codec)
-	set(domain.ItemDownloading, fmt.Sprintf("Downloading %s encrypted media", codecName), startDownload)
 	onProgress := func(p float64) {
 		if p < 0 {
 			return // Content-Length unknown; the meter stays at 0
 		}
 		set(domain.ItemDownloading, fmt.Sprintf("%s download %.0f%%", codecName, p*100), downloadFrac(p))
 	}
+	set(domain.ItemWaitingDownload, "waiting for download slot", nil)
 	releaseInFlight, err := d.inFlightLimit.Acquire(ctx)
 	if err != nil {
 		return selectedDownloadMedia{}, err
@@ -1500,6 +1540,7 @@ func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected
 		releaseInFlight()
 		return selectedDownloadMedia{}, err
 	}
+	set(domain.ItemDownloading, fmt.Sprintf("Downloading %s encrypted media", codecName), startDownload)
 	if d.cfg.Download.MemoryMode == config.MemoryModeHigh {
 		// High-memory mode keeps exactly one whole-track encrypted copy. The
 		// fragment decrypt/remux stage remains streaming, so parsed, plaintext,
@@ -1573,17 +1614,19 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	flatFile.Close()
 	defer os.Remove(flatPath)
 
+	set(domain.ItemWaitingDecrypt, "waiting for decrypt slot", nil)
 	releaseDecrypt, err := d.decryptLimit.Acquire(ctx)
 	if err != nil {
 		return err
 	}
+	set(domain.ItemDecrypting, "opening decrypt session", startDecrypt)
 	streamErr, closeErr := func() (error, error) {
 		defer releaseDecrypt()
 		session, openErr := d.wrapper.NewDecryptSession(ctx, song.ID)
 		if openErr != nil {
 			return fmt.Errorf("open decrypt session: %w", openErr), nil
 		}
-		set(domain.ItemDecrypting, "decrypting", startDecrypt)
+		set(domain.ItemDecrypting, "decrypting", nil)
 		// The decrypt meter tracks encrypted bytes consumed; the total sample
 		// count isn't known until the last fragment is read.
 		decryptFragment := func(key string, samples [][]byte) ([][]byte, error) {
@@ -1714,7 +1757,7 @@ func (d *Downloader) repairALACFile(ctx context.Context, job domain.Job, item *d
 // decrypt-phase retry can reuse these bytes instead of re-hitting the CDN.
 func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, reporter jobs.Reporter, set publishStage) (aacLCMedia, []byte, func(), error) {
 	d.ensureMediaLimits()
-	set(domain.ItemDownloading, "requesting AAC-LC WebPlayback asset", nil)
+	set(domain.ItemResolving, "requesting AAC-LC WebPlayback asset", nil)
 	playlistURL, err := d.wrapper.WebPlayback(ctx, song.ID)
 	if err != nil {
 		return aacLCMedia{}, nil, nil, fmt.Errorf("request AAC-LC WebPlayback: %w", err)
@@ -1727,7 +1770,7 @@ func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *
 		"codec_id": "aac-lc", "attempt": item.Attempt, "max_attempts": item.MaxAttempts,
 	})})
 
-	set(domain.ItemDownloading, "downloading encrypted AAC-LC media", startDownload)
+	set(domain.ItemWaitingDownload, "waiting for download slot", nil)
 	releaseInFlight, err := d.inFlightLimit.Acquire(ctx)
 	if err != nil {
 		return aacLCMedia{}, nil, nil, err
@@ -1737,6 +1780,7 @@ func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *
 		releaseInFlight()
 		return aacLCMedia{}, nil, nil, err
 	}
+	set(domain.ItemDownloading, "downloading encrypted AAC-LC media", startDownload)
 	// Stream-download, advancing the download meter per chunk.
 	raw, err := func() ([]byte, error) {
 		defer releaseDownload()
@@ -1771,11 +1815,12 @@ func (d *Downloader) decryptAACLC(ctx context.Context, item *domain.JobItem, son
 	flatFile.Close()
 	defer os.Remove(flatPath)
 
-	set(domain.ItemDecrypting, "acquiring Widevine license", startDecrypt)
+	set(domain.ItemWaitingDecrypt, "waiting for decrypt slot", nil)
 	releaseDecrypt, err := d.decryptLimit.Acquire(ctx)
 	if err != nil {
 		return err
 	}
+	set(domain.ItemDecrypting, "acquiring Widevine license", startDecrypt)
 	// afterInput is the successful producer boundary, while this defer covers
 	// license, producer, stdin, ffmpeg-start, and cancellation failures. Keep a
 	// local once even though Semaphore's release is itself idempotent: ownership

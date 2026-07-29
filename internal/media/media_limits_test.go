@@ -34,6 +34,77 @@ func (w *blockingDecryptWrapper) NewDecryptSession(ctx context.Context, _ string
 	}
 }
 
+func TestDownloadPublishesWaitingUntilGlobalPermitIsGranted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("media"))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Download.TempDir = t.TempDir()
+	cfg.Download.MaxParallelDownloads = 1
+	d := (&Downloader{cfg: cfg, http: server.Client()}).withConfig(cfg)
+	releaseHeldPermit, err := d.downloadLimit.Acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	statuses := make(chan domain.ItemStatus, 8)
+	type result struct {
+		media selectedDownloadMedia
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		media, downloadErr := d.downloadSelectedEnhancedMedia(
+			context.Background(),
+			selectedDownloadMedia{info: selectedMediaInfo{MediaURI: server.URL}},
+			"alac",
+			"job-waiting",
+			"out.m4a",
+			func(status domain.ItemStatus, _ string, _ func(*domain.ItemProgress)) {
+				statuses <- status
+			},
+		)
+		done <- result{media: media, err: downloadErr}
+	}()
+
+	select {
+	case status := <-statuses:
+		if status != domain.ItemWaitingDownload {
+			t.Fatalf("first status = %q, want waiting_download", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiting_download was not published")
+	}
+	select {
+	case status := <-statuses:
+		t.Fatalf("published %q before download permit was granted", status)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releaseHeldPermit()
+	select {
+	case status := <-statuses:
+		if status != domain.ItemDownloading {
+			t.Fatalf("status after permit = %q, want downloading", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("downloading was not published after permit")
+	}
+
+	got := <-done
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if got.media.releaseInFlight != nil {
+		got.media.releaseInFlight()
+	}
+	if got.media.rawPath != "" {
+		_ = os.Remove(got.media.rawPath)
+	}
+}
+
 func TestMediaDownloadLimitSharedAcrossJobClones(t *testing.T) {
 	entered := make(chan struct{}, 2)
 	allow := make(chan struct{}, 2)

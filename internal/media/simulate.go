@@ -146,6 +146,7 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 		}
 
 		totalBytes := simulatedSizeBytes(song, info)
+		set(domain.ItemWaitingDownload, "waiting for download slot", nil)
 		releaseInFlight, acquireErr := d.inFlightLimit.Acquire(ctx)
 		if acquireErr != nil {
 			return d.failItem(ctx, reporter, job, *item, acquireErr)
@@ -174,6 +175,7 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 		}
 
 		d.setItemAttempt(ctx, reporter, item, "decrypt", 1, maxAttempts, fmt.Sprintf("Decrypting %s (1/%d)", codecName, maxAttempts))
+		set(domain.ItemWaitingDecrypt, "waiting for decrypt slot", nil)
 		releaseDecrypt, acquireErr := d.decryptLimit.Acquire(ctx)
 		if acquireErr != nil {
 			releaseInFlight()

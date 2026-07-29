@@ -143,28 +143,33 @@ type DownloadConfig struct {
 	MaxParallelDecrypts        int      `yaml:"max_parallel_decrypts" json:"max_parallel_decrypts"`
 	MaxParallelWrapperRequests int      `yaml:"max_parallel_wrapper_requests" json:"max_parallel_wrapper_requests"`
 	MaxAttempts                int      `yaml:"max_attempts" json:"max_attempts"`
-	DownloadsDir               string   `yaml:"downloads_dir" json:"downloads_dir"`
-	SongPathFormat             string   `yaml:"song_path_format" json:"song_path_format"`
-	AlbumPathFormat            string   `yaml:"album_path_format" json:"album_path_format"`
-	ArtistPathFormat           string   `yaml:"artist_path_format" json:"artist_path_format"`
-	PlaylistPathFormat         string   `yaml:"playlist_path_format" json:"playlist_path_format"`
-	StationPathFormat          string   `yaml:"station_path_format" json:"station_path_format"`
-	TempDir                    string   `yaml:"temp_dir" json:"temp_dir"`
-	CoverSize                  string   `yaml:"cover_size" json:"cover_size"`
-	CoverFormat                string   `yaml:"cover_format" json:"cover_format"`
-	EmbedCover                 bool     `yaml:"embed_cover" json:"embed_cover"`
-	SaveAlbumCover             bool     `yaml:"save_album_cover" json:"save_album_cover"`
-	SaveArtistCover            bool     `yaml:"save_artist_cover" json:"save_artist_cover"`
-	SavePlaylistCover          bool     `yaml:"save_playlist_cover" json:"save_playlist_cover"`
-	EmbedLyrics                bool     `yaml:"embed_lyrics" json:"embed_lyrics"`
-	SaveLyricsFile             bool     `yaml:"save_lyrics_file" json:"save_lyrics_file"`
-	LyricsFormat               string   `yaml:"lyrics_format" json:"lyrics_format"`
-	LyricsType                 string   `yaml:"lyrics_type" json:"lyrics_type"`
-	LyricsExtras               []string `yaml:"lyrics_extras" json:"lyrics_extras"`
-	ALACMaxSampleRate          int      `yaml:"alac_max_sample_rate" json:"alac_max_sample_rate"`
-	ALACMaxBitDepth            int      `yaml:"alac_max_bit_depth" json:"alac_max_bit_depth"`
-	CheckIntegrity             bool     `yaml:"check_integrity" json:"check_integrity"`
-	ForceOverwrite             bool     `yaml:"force_overwrite" json:"force_overwrite"`
+	// ProgressEventIntervalMS is the minimum gap between two consecutive
+	// item_progress events for the same item while it stays in one state. It
+	// throttles only movement of the download/decrypt meters; status changes
+	// and pipeline-stage completions are always published immediately.
+	ProgressEventIntervalMS int      `yaml:"progress_event_interval_ms" json:"progress_event_interval_ms"`
+	DownloadsDir            string   `yaml:"downloads_dir" json:"downloads_dir"`
+	SongPathFormat          string   `yaml:"song_path_format" json:"song_path_format"`
+	AlbumPathFormat         string   `yaml:"album_path_format" json:"album_path_format"`
+	ArtistPathFormat        string   `yaml:"artist_path_format" json:"artist_path_format"`
+	PlaylistPathFormat      string   `yaml:"playlist_path_format" json:"playlist_path_format"`
+	StationPathFormat       string   `yaml:"station_path_format" json:"station_path_format"`
+	TempDir                 string   `yaml:"temp_dir" json:"temp_dir"`
+	CoverSize               string   `yaml:"cover_size" json:"cover_size"`
+	CoverFormat             string   `yaml:"cover_format" json:"cover_format"`
+	EmbedCover              bool     `yaml:"embed_cover" json:"embed_cover"`
+	SaveAlbumCover          bool     `yaml:"save_album_cover" json:"save_album_cover"`
+	SaveArtistCover         bool     `yaml:"save_artist_cover" json:"save_artist_cover"`
+	SavePlaylistCover       bool     `yaml:"save_playlist_cover" json:"save_playlist_cover"`
+	EmbedLyrics             bool     `yaml:"embed_lyrics" json:"embed_lyrics"`
+	SaveLyricsFile          bool     `yaml:"save_lyrics_file" json:"save_lyrics_file"`
+	LyricsFormat            string   `yaml:"lyrics_format" json:"lyrics_format"`
+	LyricsType              string   `yaml:"lyrics_type" json:"lyrics_type"`
+	LyricsExtras            []string `yaml:"lyrics_extras" json:"lyrics_extras"`
+	ALACMaxSampleRate       int      `yaml:"alac_max_sample_rate" json:"alac_max_sample_rate"`
+	ALACMaxBitDepth         int      `yaml:"alac_max_bit_depth" json:"alac_max_bit_depth"`
+	CheckIntegrity          bool     `yaml:"check_integrity" json:"check_integrity"`
+	ForceOverwrite          bool     `yaml:"force_overwrite" json:"force_overwrite"`
 }
 
 const (
@@ -176,6 +181,10 @@ const (
 	maxRunningJobsLimit = 32
 	maxGlobalPoolLimit  = 64
 	maxAttemptsLimit    = 10
+	// A progress meter that only moves every few seconds still reads as live;
+	// beyond this it looks frozen, so the coalescing interval is capped rather
+	// than left open-ended.
+	maxProgressEventIntervalMSLimit = 10000
 )
 
 type ToolsConfig struct {
@@ -214,13 +223,14 @@ func Default() Config {
 		Download: DownloadConfig{
 			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true, MemoryMode: MemoryModeLow,
 			MaxRunningJobs: 2, MaxParallelDownloads: 16, MaxParallelDecrypts: 32, MaxParallelWrapperRequests: 24, MaxAttempts: 4,
-			DownloadsDir:       "data/downloads",
-			SongPathFormat:     "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
-			AlbumPathFormat:    "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
-			ArtistPathFormat:   "artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
-			PlaylistPathFormat: "playlists/{PlaylistName}/{SongNumber:02d}. {SongName}",
-			StationPathFormat:  "stations/{StationName}/{SongNumber:02d}. {SongName}",
-			TempDir:            "data/tmp", CoverSize: "5000x5000", CoverFormat: "jpg",
+			ProgressEventIntervalMS: 500,
+			DownloadsDir:            "data/downloads",
+			SongPathFormat:          "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+			AlbumPathFormat:         "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+			ArtistPathFormat:        "artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+			PlaylistPathFormat:      "playlists/{PlaylistName}/{SongNumber:02d}. {SongName}",
+			StationPathFormat:       "stations/{StationName}/{SongNumber:02d}. {SongName}",
+			TempDir:                 "data/tmp", CoverSize: "5000x5000", CoverFormat: "jpg",
 			EmbedCover: true, EmbedLyrics: true, LyricsFormat: "lrc", LyricsType: "lyrics", LyricsExtras: []string{},
 			ALACMaxSampleRate: 192000, ALACMaxBitDepth: 24, CheckIntegrity: true,
 		},
@@ -297,6 +307,9 @@ func clampDownloadLimits(d *DownloadConfig) {
 	}
 	if d.MaxAttempts > maxAttemptsLimit {
 		d.MaxAttempts = maxAttemptsLimit
+	}
+	if d.ProgressEventIntervalMS > maxProgressEventIntervalMSLimit {
+		d.ProgressEventIntervalMS = maxProgressEventIntervalMSLimit
 	}
 }
 
@@ -406,6 +419,9 @@ func (c Config) Validate() error {
 	}
 	if c.Download.MaxAttempts > maxAttemptsLimit {
 		return fmt.Errorf("download.max_attempts must be at most %d", maxAttemptsLimit)
+	}
+	if c.Download.ProgressEventIntervalMS > maxProgressEventIntervalMSLimit {
+		return fmt.Errorf("download.progress_event_interval_ms must be at most %d", maxProgressEventIntervalMSLimit)
 	}
 	switch c.Download.MemoryMode {
 	case MemoryModeLow, MemoryModeHigh:
