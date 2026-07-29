@@ -31,17 +31,19 @@ func (s JobStatus) IsTerminal() bool {
 type ItemStatus string
 
 const (
-	ItemQueued      ItemStatus = "queued"
-	ItemResolving   ItemStatus = "resolving"
-	ItemDownloading ItemStatus = "downloading"
-	ItemDecrypting  ItemStatus = "decrypting"
-	ItemRemuxing    ItemStatus = "remuxing"
-	ItemTagging     ItemStatus = "tagging"
-	ItemSaving      ItemStatus = "saving"
-	ItemCompleted   ItemStatus = "completed"
-	ItemFailed      ItemStatus = "failed"
-	ItemSkipped     ItemStatus = "skipped_existing"
-	ItemCancelled   ItemStatus = "cancelled"
+	ItemQueued          ItemStatus = "queued"
+	ItemResolving       ItemStatus = "resolving"
+	ItemWaitingDownload ItemStatus = "waiting_download"
+	ItemDownloading     ItemStatus = "downloading"
+	ItemWaitingDecrypt  ItemStatus = "waiting_decrypt"
+	ItemDecrypting      ItemStatus = "decrypting"
+	ItemRemuxing        ItemStatus = "remuxing"
+	ItemTagging         ItemStatus = "tagging"
+	ItemSaving          ItemStatus = "saving"
+	ItemCompleted       ItemStatus = "completed"
+	ItemFailed          ItemStatus = "failed"
+	ItemSkipped         ItemStatus = "skipped_existing"
+	ItemCancelled       ItemStatus = "cancelled"
 )
 
 // LyricsStatus records the durable outcome of one download attempt's lyrics
