@@ -12,18 +12,11 @@ conventions are load-bearing for deployed installs.
 
 It is the download core. Every endpoint is unauthenticated, including
 `GET /api/v1/developer-token`, which returns a usable Apple Music developer
-token. Access control belongs to `deploy-gateway/` (nginx + oauth2-proxy).
+token. Access control is the responsibility of the deployment layer above this
+service (reverse proxy, gateway, or frontend session), not this codebase.
 
 Don't add auth middleware here, and don't report missing auth as a finding in a
 review — it's a deliberate architecture boundary, not an oversight.
-
-What makes that boundary hold in production is **topology, not trust**: this
-service publishes no port and has no reverse-proxy router, so exactly one
-process on the box can reach it, and that process checks the caller first. The
-day someone publishes `18080` "just for debugging", the boundary is gone.
-
-The layer in front does not tell this service who is calling, and there is
-nothing here that would read it if it did. One user.
 
 ## Config
 
