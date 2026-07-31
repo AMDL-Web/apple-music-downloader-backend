@@ -176,6 +176,18 @@ func (s *Store) initSchema(ctx context.Context) error {
 			created_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_job_events_job_id_id ON job_events(job_id, id);`,
+		// The library watcher's whole memory: the newest N library song ids in
+		// order, position 0 being the most recently added. It is not user data
+		// and carries no foreign keys — dropping every row only makes the
+		// watcher re-anchor to the current library on its next tick, which
+		// submits nothing. song_name/album_name are stored purely so the rows
+		// are legible when someone inspects them.
+		`CREATE TABLE IF NOT EXISTS library_sync_anchor (
+			position INTEGER PRIMARY KEY,
+			song_id TEXT NOT NULL,
+			song_name TEXT NOT NULL DEFAULT '',
+			album_name TEXT NOT NULL DEFAULT ''
+		);`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {

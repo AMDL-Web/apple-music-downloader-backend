@@ -32,6 +32,11 @@ func isRuntimeKey(key string) bool {
 		return true
 	case "simulate":
 		return true
+	// The watcher re-reads both keys every tick, so the whole section is
+	// hot-reloadable: toggling it off stops the polling itself, not just the
+	// handling of its results.
+	case "library_sync":
+		return true
 	}
 	return false
 }

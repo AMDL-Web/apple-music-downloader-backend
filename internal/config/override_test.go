@@ -289,8 +289,17 @@ func TestRuntimeLockedChanges(t *testing.T) {
 
 func TestMutableViewOmitsStartupBoundFields(t *testing.T) {
 	view := MutableView(Default())
-	if len(view) != 4 {
-		t.Fatalf("view sections = %v, want catalog/download/logging/simulate only", view)
+	if len(view) != 5 {
+		t.Fatalf("view sections = %v, want catalog/download/library_sync/logging/simulate only", view)
+	}
+	librarySync, ok := view["library_sync"].(map[string]any)
+	if !ok {
+		t.Fatalf("library_sync section = %T, want map", view["library_sync"])
+	}
+	for _, key := range []string{"enabled", "interval_minutes"} {
+		if _, exists := librarySync[key]; !exists {
+			t.Fatalf("library_sync.%s missing from mutable view", key)
+		}
 	}
 	download, ok := view["download"].(map[string]any)
 	if !ok {

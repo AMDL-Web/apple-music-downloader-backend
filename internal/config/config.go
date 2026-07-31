@@ -19,6 +19,35 @@ type Config struct {
 	Download DownloadConfig `yaml:"download" json:"download"`
 	Tools    ToolsConfig    `yaml:"tools" json:"tools"`
 	Simulate SimulateConfig `yaml:"simulate" json:"simulate"`
+	// LibrarySync is last so adding it left every existing section's position
+	// in the generated config.yaml unchanged.
+	LibrarySync LibrarySyncConfig `yaml:"library_sync" json:"library_sync"`
+}
+
+// LibrarySyncConfig controls the Apple Music library watcher: it polls the
+// signed-in library for newly added songs and submits their albums as ordinary
+// download jobs, so a song added on a phone lands here without a manual submit.
+//
+// Both fields are runtime-mutable — the poller re-reads them each tick, so
+// flipping Enabled or changing the interval takes effect without a restart, and
+// disabling it stops the polling rather than merely dropping the results.
+//
+// It needs catalog.media_user_token: a personal library is not readable with
+// the developer token alone. With that empty the watcher stays idle and says so
+// once per config change instead of failing every tick.
+type LibrarySyncConfig struct {
+	Enabled         bool `yaml:"enabled" json:"enabled"`
+	IntervalMinutes int  `yaml:"interval_minutes" json:"interval_minutes"`
+}
+
+// Interval returns the poll period. Values <= 0 fall back to 15 minutes;
+// Validate rejects them on the way in, so this only guards configs that
+// predate the key.
+func (c LibrarySyncConfig) Interval() time.Duration {
+	if c.IntervalMinutes <= 0 {
+		return 15 * time.Minute
+	}
+	return time.Duration(c.IntervalMinutes) * time.Minute
 }
 
 type ServerConfig struct {
@@ -236,6 +265,9 @@ func Default() Config {
 		},
 		Tools:    ToolsConfig{FFmpeg: "ffmpeg"},
 		Simulate: SimulateConfig{Enabled: false, MinSpeedKBps: 512, MaxSpeedKBps: 4096},
+		// Off by default: this is the one feature that creates download jobs
+		// nobody asked for, so an install that upgrades into it must opt in.
+		LibrarySync: LibrarySyncConfig{Enabled: false, IntervalMinutes: 15},
 	}
 }
 
@@ -370,6 +402,13 @@ func (c Config) Validate() error {
 	}
 	if c.Catalog.SignedModeHLSSource != "wrapper" && c.Catalog.SignedModeHLSSource != "web_token" {
 		return fmt.Errorf("catalog.signed_mode_hls_source must be wrapper or web_token")
+	}
+	// The ceiling is not a resource limit — one poll is a couple of Apple
+	// requests. It exists because a value like 100000 reads as "effectively
+	// never" while the watcher still reports itself as enabled, which is worse
+	// than being told the number is out of range.
+	if c.LibrarySync.IntervalMinutes < 1 || c.LibrarySync.IntervalMinutes > 1440 {
+		return fmt.Errorf("library_sync.interval_minutes must be between 1 and 1440")
 	}
 	signingFields := 0
 	for _, v := range []string{c.Catalog.AppleMusicPrivateKeyPath, c.Catalog.AppleMusicKeyID, c.Catalog.AppleMusicTeamID} {
