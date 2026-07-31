@@ -344,3 +344,25 @@ simulate:
   # integer KB/s (kilobytes per second): upper bound of the randomized simulated transfer speed.
   # Must be >= min_speed_kbps. Default: 4096.
   max_speed_kbps: 4096
+
+library_sync:
+  # 资料库监视器：轮询已登录 Apple Music 资料库，把新加入曲目所属的**专辑**当作
+  # 普通下载任务提交。手机上收藏一首歌，这边就自动下整张专辑，不用手动提交。
+  #
+  # 两个键都可以通过 PUT /api/v1/config 和手动改文件后重载在运行时修改，无需重启：
+  # 轮询循环每一轮开始时重新读取，所以关掉是真的停止轮询，而不只是丢弃结果。
+  #
+  # 依赖 catalog.media_user_token —— 个人资料库只有订阅令牌读得到，developer
+  # token 单独不行。该字段为空时监视器保持空转并告警一次，不会每轮报错。
+  #
+  # 它怎么判断「新增」：Apple 不返回资料库曲目的加入时间（library-songs 没有
+  # dateAdded 属性，library-albums 的 dateAdded 是首曲入库时刻、之后补歌不变），
+  # 但 sort=-dateAdded 的**顺序**是准的。所以首次启用时记下当前最新一批曲目 id
+  # 作为锚点（一张专辑都不提交，启用那一刻库里已有的一律算已有），之后每轮倒序
+  # 翻页直到重新看见锚点里最老那一首，中间凡是锚点没有的就是新增。
+  # bool: true 启用轮询。默认 false —— 这是唯一会自己创建下载任务的功能，
+  # 升级到这个版本的安装必须显式开启。
+  enabled: false
+  # integer 分钟：轮询间隔，取值 1..1440。默认 15。稳态下一轮通常只有 1 次 Apple
+  # 请求（锚点窗口一页就够），每张新专辑另加 1 次把资料库 id 换成目录 id。
+  interval_minutes: 15

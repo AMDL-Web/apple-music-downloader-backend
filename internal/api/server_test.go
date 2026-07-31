@@ -551,6 +551,8 @@ func TestOpenAPISpecification(t *testing.T) {
 		"/api/v1/logs/stream/ws":               {"get"},
 		"/api/v1/config":                       {"get", "put"},
 		"/api/v1/hooks":                        {"get"},
+		"/api/v1/library-sync":                 {"get"},
+		"/api/v1/library-sync/reset":           {"post"},
 		"/api/v1/wrapper/status":               {"get"},
 		"/api/v1/wrapper/login":                {"post"},
 		"/api/v1/wrapper/login/{login_id}/2fa": {"post"},

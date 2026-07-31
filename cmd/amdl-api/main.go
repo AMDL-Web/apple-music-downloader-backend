@@ -21,6 +21,7 @@ import (
 	"amdl/internal/events"
 	"amdl/internal/hooks"
 	"amdl/internal/jobs"
+	"amdl/internal/librarysync"
 	"amdl/internal/logging"
 	"amdl/internal/media"
 	"amdl/internal/wrapper"
@@ -165,10 +166,20 @@ func main() {
 	// the deferred database/wrapper closes to run.
 	manager.Start(context.Background())
 
+	// The library watcher shares the signal context, so it stops polling the
+	// moment shutdown begins. It submits through the same manager as the REST
+	// API, so anything it queues is an ordinary job — same dedup, same hooks —
+	// and it reads catalog metadata with the backend's internal developer
+	// token, which carries no origin claim.
+	libraryWatcher := librarysync.New(cfgStore, catalog, store, manager, logSystem.Logger.With("component", "librarysync"))
+	libraryWatcher.Start(ctx)
+
 	httpHandlerCtx, cancelHTTPHandlers := context.WithCancel(context.Background())
 	defer cancelHTTPHandlers()
 	var activeHTTPHandlers sync.WaitGroup
-	routes := api.NewServer(cfgStore, store, hub, manager, wrapperClient, qualityService, catalog, logSystem.Logger, logSystem).Routes()
+	apiServer := api.NewServer(cfgStore, store, hub, manager, wrapperClient, qualityService, catalog, logSystem.Logger, logSystem)
+	apiServer.SetLibrarySync(libraryWatcher)
+	routes := apiServer.Routes()
 	httpServer := &http.Server{
 		Addr: cfg.Server.Listen,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -16,6 +16,7 @@ AMDL Backend 是 Apple Music 下载系统的核心后端服务。它负责解析
 - 支持任务生命周期 hooks（`configs/hooks.yaml`）：在任务排队或进入终态时触发 webhook 或本地命令。
 - 提供结构化日志、敏感字段脱敏、请求/任务关联、可选压缩轮转文件，以及带过滤和断线续接的日志查询/SSE API。
 - 支持本地模拟（simulate）模式：不实际下载/解密，用于联调和压测下载流水线（配置文件顶层 `simulate` 段）。
+- 支持资料库同步（`library_sync` 段）：定期轮询已登录 Apple Music 资料库，把新加入曲目所属的整张专辑作为普通下载任务提交。默认关闭。
 - 提供 Swagger UI 与 OpenAPI 3.1 规范。
 - 使用 GitHub Actions 发版，支持仓库内版本说明并在缺失时自动生成 Release changelog。
 
@@ -313,6 +314,8 @@ curl -X DELETE http://localhost:18080/api/v1/downloads/{job_id}
 - `GET /api/v1/downloads/events`（及 `/events/ws`）：跨任务的总览 feed，推送任务列表增删改，无需分别订阅每个任务。
 - `POST /api/v1/quality`：不创建任务，探测单曲、专辑、歌单、艺人或电台 URL 的 master playlist 当前声明的编码与音质信息；它复用下载任务的区域校验、集合解析、元数据刷新、重试、并发调度、HLS 来源选择及 codec/ALAC 筛选规则。正常成功路径为每个曲目出现项读取一次 master playlist 并从中汇总全部音质；失败时按 `download.max_attempts` 重新取得来源并读取 master。查询不读取具体 media playlist，也不验证媒体分片或进入加密媒体传输。区域校验要求 wrapper/decryptor 已就绪，且 URL storefront 位于其上报的 `regions` 中。所有链接类型统一返回逐曲 `tracks`；单曲包含一个元素，集合保持 Apple Music 原顺序和重复曲目出现项。电台使用运行时 `catalog.media_user_token`。
 - `GET /api/v1/developer-token`：签发可共享的 Apple Music developer token；仅在启用本地签名模式（`catalog.apple_music_*` 三个 key 配置齐全）时可用，否则返回 409。
+- `GET /api/v1/library-sync`：资料库监视器状态（开关、间隔、锚点条目数、最近一轮结果）。功能关闭时同样返回。
+- `POST /api/v1/library-sync/reset`：清空监视器的锚点。下一轮会以**当时**的资料库重新落锚且**不提交任何专辑**——这是「忘记历史」而非「重放历史」。想重新下载某张专辑请直接 `POST /api/v1/downloads`。
 
 ## 下载行为
 

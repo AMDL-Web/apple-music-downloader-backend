@@ -137,6 +137,7 @@ paths:
       description: >-
         返回当前生效配置中可运行时修改的部分：download 段（max_running_jobs、
         max_parallel_downloads、max_parallel_decrypts、max_parallel_wrapper_requests 除外）、logging.level/access_log、simulate 段、
+        library_sync 段、
         catalog.album_track_url_mode/media_user_token/signed_mode_hls_source/motion_artwork_enabled。
         仅启动时生效的字段（server、database、logging 其它字段、wrapper、tools、catalog 其它字段）不返回——
         它们无法通过本 API 修改，请编辑启动配置 configs/config.yaml 并重启。
@@ -164,7 +165,7 @@ paths:
 
         仅 GET 返回的字段可以修改：download 段（max_running_jobs、max_parallel_downloads、
         max_parallel_decrypts、max_parallel_wrapper_requests 除外）、
-        logging.level/access_log、simulate 段、catalog.album_track_url_mode/media_user_token/signed_mode_hls_source/motion_artwork_enabled。其余字段只在进程启动时
+        logging.level/access_log、simulate 段、library_sync 段、catalog.album_track_url_mode/media_user_token/signed_mode_hls_source/motion_artwork_enabled。其余字段只在进程启动时
         被消费，修改请求会被 422 拒绝——请改启动配置 configs/config.yaml 并重启。
         作为唯一例外，旧客户端提交的 catalog.media_user_token_priority 仍会被
         接受，但该字段已弃用且值会被忽略，不再参与令牌选择。
@@ -248,6 +249,60 @@ paths:
                 $ref: '#/components/schemas/DeveloperTokenResponse'
         '409':
           description: 当前为传统抓取模式，不支持签发 developer token。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v1/library-sync:
+    get:
+      tags: [System]
+      summary: 查询资料库监视器状态
+      description: >-
+        返回监视器的当前状态：配置里的开关与间隔，加上最近一轮观察到的结果。
+        功能关闭时同样返回，客户端不必猜测开关状态。
+
+        Apple 不提供资料库曲目的加入时间（library-songs 没有 dateAdded 属性，
+        library-albums 的 dateAdded 是该专辑首曲入库的时刻、之后补歌不会变），
+        但 sort=-dateAdded 的**顺序**是可靠的。所以水位线是位置而非时间：记住最新
+        一批曲目 id 作为锚点，每轮倒序读到锚点里最老那一首为止，中间凡是锚点没有
+        的即为新增。anchor_size 就是这批 id 的数量。
+      operationId: getLibrarySyncStatus
+      responses:
+        '200':
+          description: 监视器状态。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibrarySyncStatus'
+        '503':
+          description: 本进程未装配资料库监视器。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /api/v1/library-sync/reset:
+    post:
+      tags: [System]
+      summary: 重置资料库监视器的锚点
+      description: >-
+        清空锚点。下一轮找不到锚点，会以**当时**的资料库重新落锚，并且
+        **不提交任何专辑**——所以这是「忘记历史」而不是「重放历史」，不会让
+        下载队列被灌满。
+
+        适用于监视器对「已经有了」的认知与实际情况脱节时。想重新下载某张专辑
+        请直接用 POST /api/v1/downloads 提交它，这个接口做不到那件事。
+      operationId: resetLibrarySyncAnchor
+      responses:
+        '200':
+          description: 锚点已清空。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibrarySyncResetResponse'
+        '503':
+          description: 本进程未装配资料库监视器。
           content:
             application/json:
               schema:
@@ -1402,6 +1457,65 @@ components:
             enabled: {type: boolean}
             min_speed_kbps: {type: integer}
             max_speed_kbps: {type: integer}
+        library_sync:
+          type: object
+          description: >-
+            资料库监视器：轮询已登录 Apple Music 资料库，把新加入曲目所属的专辑
+            当作普通下载任务提交（与手动提交共用同一套去重、校验和 hooks）。
+            依赖 catalog.media_user_token —— 个人资料库只有订阅令牌读得到；该字段
+            为空时监视器保持空转，状态见 GET /api/v1/library-sync 的 last_error。
+          properties:
+            enabled:
+              type: boolean
+              description: >-
+                是否启用轮询。默认 false —— 这是唯一会自行创建下载任务的功能。
+                关闭是真的停止轮询，而不只是丢弃结果。
+            interval_minutes:
+              type: integer
+              minimum: 1
+              maximum: 1440
+              description: >-
+                轮询间隔（分钟），默认 15。上限 1440 不是资源限制（一轮通常只有
+                1 次 Apple 请求），而是避免出现「显示为已启用但实际上永不触发」
+                的取值。修改立即生效，不需要重启。
+    LibrarySyncStatus:
+      type: object
+      required: [enabled, interval_minutes, anchor_size, last_submitted, total_submitted]
+      properties:
+        enabled:
+          type: boolean
+          description: 取自当前运行时配置 library_sync.enabled。
+        interval_minutes:
+          type: integer
+        anchor_size:
+          type: integer
+          description: >-
+            当前锚点里记住的曲目数。0 表示尚未落锚（首次启用或刚被重置），
+            下一轮会以当时的资料库落锚且不提交任何专辑。
+        last_poll_at:
+          type: string
+          format: date-time
+          description: 最近一次实际执行轮询的时刻；从未轮询过时不出现。
+        last_error:
+          type: string
+          description: >-
+            最近一次轮询的失败原因；成功则不出现。监视器已启用但
+            catalog.media_user_token 为空时，这里说明它为何空转。
+        last_submitted:
+          type: integer
+          description: 最近一轮入队的专辑数。
+        total_submitted:
+          type: integer
+          description: 本进程启动以来累计入队的专辑数（重启归零）。
+    LibrarySyncResetResponse:
+      type: object
+      required: [cleared, status]
+      properties:
+        cleared:
+          type: integer
+          description: 被清除的锚点条目数。
+        status:
+          $ref: '#/components/schemas/LibrarySyncStatus'
     ConfigResponse:
       type: object
       required: [config, persisted]

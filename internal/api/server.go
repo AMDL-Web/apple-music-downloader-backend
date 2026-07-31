@@ -23,6 +23,7 @@ import (
 	"amdl/internal/domain"
 	"amdl/internal/events"
 	"amdl/internal/jobs"
+	"amdl/internal/librarysync"
 	"amdl/internal/logging"
 	"amdl/internal/media"
 	"amdl/internal/wrapper"
@@ -60,6 +61,8 @@ type Server struct {
 	logger    *slog.Logger
 	logStore  *logging.Store
 	logSystem *logging.System
+	// librarySync is optional; nil means the watcher was not wired.
+	librarySync librarySyncService
 }
 
 type wrapperService interface {
@@ -77,6 +80,16 @@ type developerTokenService interface {
 	MintDeveloperToken() (string, error)
 }
 
+// librarySyncService is the library watcher, wired in after construction via
+// SetLibrarySync rather than as another NewServer parameter — the watcher needs
+// the job manager, which is itself a NewServer argument, and the many existing
+// call sites should not all have to learn about an optional dependency. A nil
+// value means the feature is not wired, and its endpoints answer 503.
+type librarySyncService interface {
+	Status() librarysync.Status
+	ResetAnchor(ctx context.Context) (int64, error)
+}
+
 func NewServer(cfg *config.Store, store *db.Store, hub *events.Hub, manager *jobs.Manager, wrapperClient wrapperService, qualityClient qualityService, devToken developerTokenService, logger *slog.Logger, logSystem ...*logging.System) *Server {
 	s := &Server{cfg: cfg, store: store, hub: hub, manager: manager, wrapper: wrapperClient, quality: qualityClient, devToken: devToken, logger: logger}
 	if len(logSystem) > 0 && logSystem[0] != nil {
@@ -84,6 +97,12 @@ func NewServer(cfg *config.Store, store *db.Store, hub *events.Hub, manager *job
 		s.logStore = logSystem[0].Store
 	}
 	return s
+}
+
+// SetLibrarySync attaches the library watcher. Optional: without it the
+// /api/v1/library-sync endpoints answer 503 and nothing else changes.
+func (s *Server) SetLibrarySync(watcher librarySyncService) {
+	s.librarySync = watcher
 }
 
 // currentConfig returns the live runtime config snapshot; nil-safe for test
@@ -107,6 +126,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PUT /api/v1/config", s.updateConfig)
 	mux.HandleFunc("GET /api/v1/hooks", s.listHooks)
 	mux.HandleFunc("GET /api/v1/developer-token", s.developerToken)
+	mux.HandleFunc("GET /api/v1/library-sync", s.librarySyncStatus)
+	mux.HandleFunc("POST /api/v1/library-sync/reset", s.librarySyncReset)
 	mux.HandleFunc("GET /api/v1/wrapper/status", s.wrapperStatus)
 	mux.HandleFunc("POST /api/v1/wrapper/login", s.wrapperLogin)
 	mux.HandleFunc("POST /api/v1/wrapper/login/{login_id}/2fa", s.wrapperTwoStep)
