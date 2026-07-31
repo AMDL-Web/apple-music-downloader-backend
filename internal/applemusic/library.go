@@ -67,6 +67,12 @@ type libraryAlbumCatalogResponse struct {
 //
 // mediaUserToken is required: a personal library is invisible to the developer
 // token alone, and Apple answers 403 without it.
+//
+// Both hosts serve this. getWithUserToken routes through apiBase(), so signed
+// mode reads api.music.apple.com with the internal developer token, and legacy
+// mode reads amp-api.music.apple.com with a scraped web-player token plus the
+// Origin header it requires. Verified against a live library in both modes,
+// not assumed — /v1/me/library is one of the few paths the two hosts agree on.
 func (c *CatalogClient) LibrarySongsNewestFirst(ctx context.Context, mediaUserToken string, offset, limit int) (songs []LibrarySong, hasMore bool, err error) {
 	if mediaUserToken == "" {
 		return nil, false, fmt.Errorf("reading the library requires a media-user-token")
@@ -105,6 +111,9 @@ func (c *CatalogClient) LibrarySongsNewestFirst(ctx context.Context, mediaUserTo
 // storefront) answer 404. That is a property of the album rather than a
 // failure, so it returns ok=false with a nil error and the caller skips it
 // instead of failing the whole pass.
+//
+// Like the library listing, this resolves on both hosts — checked in legacy
+// web-token mode as well, since that path reaches amp-api instead.
 func (c *CatalogClient) LibraryAlbumCatalogURL(ctx context.Context, mediaUserToken, libraryAlbumID string) (catalogURL string, ok bool, err error) {
 	if mediaUserToken == "" {
 		return "", false, fmt.Errorf("reading the library requires a media-user-token")
