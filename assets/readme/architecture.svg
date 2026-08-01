@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="480" viewBox="0 0 1200 480"
+     role="img" aria-labelledby="archTitle archDesc">
+  <title id="archTitle">Where AMDL Backend sits</title>
+  <desc id="archDesc">Web and iOS clients call the backend over REST, SSE and WebSocket. The backend keeps a job queue in SQLite and runs the download pipeline, writing finished files to disk. It requires wrapper-manager over gRPC for device manifests, licenses and lyrics, and reads Apple Music over HTTPS from two hosts: api.music.apple.com for catalog metadata and amp-api.music.apple.com, which alone serves enhancedHls.</desc>
+
+  <rect width="1200" height="480" rx="24" fill="#0A0C0E"/>
+  <rect x="0.75" y="0.75" width="1198.5" height="478.5" rx="23.25" fill="none" stroke="#1B2127" stroke-width="1.5"/>
+
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="18" fill="#79838D" letter-spacing="2">
+    <text x="56" y="84">CLIENTS</text>
+    <text x="392" y="84">REST + SSE + WEBSOCKET  ·  /api/v1</text>
+    <text x="868" y="84">YOUR DISK</text>
+  </g>
+
+  <!-- ── clients ─────────────────────────────────────────────── -->
+  <g fill="#12161A" stroke="#232A31" stroke-width="1.5">
+    <rect x="56" y="104" width="260" height="54" rx="10"/>
+    <rect x="56" y="170" width="260" height="54" rx="10"/>
+  </g>
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="18" fill="#AEB7C0">
+    <text x="80" y="137">amdl-frontend · web</text>
+    <text x="80" y="203">amdl-ios · SwiftUI</text>
+  </g>
+
+  <path d="M316 164 H 378" stroke="#3A434C" stroke-width="2" fill="none"/>
+  <path d="M378 164 l -10 -5 v 10 z" fill="#3A434C"/>
+
+  <!-- ── backend ─────────────────────────────────────────────── -->
+  <rect x="392" y="104" width="416" height="144" rx="14" fill="#12161A" stroke="#5BC8AF" stroke-width="1.5"/>
+  <text x="420" y="146" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif"
+        font-size="26" font-weight="700" fill="#F2F5F7">AMDL Backend</text>
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="18" fill="#AEB7C0">
+    <text x="420" y="180">job queue · SQLite store</text>
+    <text x="420" y="206">download pipeline · ffmpeg</text>
+    <text x="420" y="232">SSE/WS hub · hooks · sync</text>
+  </g>
+
+  <path d="M808 164 H 858" stroke="#3A434C" stroke-width="2" fill="none"/>
+  <path d="M858 164 l -10 -5 v 10 z" fill="#3A434C"/>
+
+  <!-- ── output ──────────────────────────────────────────────── -->
+  <rect x="868" y="104" width="276" height="120" rx="12" fill="#0E1417" stroke="#232A31" stroke-width="1.5"/>
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="18">
+    <text x="892" y="140" fill="#79838D">albums/&lt;artist&gt;/</text>
+    <text x="892" y="168" fill="#5BC8AF">&lt;album&gt;/01. Song.m4a</text>
+    <text x="892" y="196" fill="#79838D">+ cover.jpg · .lrc</text>
+  </g>
+
+  <!-- ── dependency fan-out ──────────────────────────────────── -->
+  <path d="M600 248 V 286 M 418 286 H 886 M 418 286 V 310 M 886 286 V 310"
+        stroke="#3A434C" stroke-width="2" fill="none"/>
+  <path d="M418 316 l -5 -10 h 10 z M886 316 l -5 -10 h 10 z" fill="#3A434C"/>
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="18" fill="#79838D">
+    <text x="434" y="310">gRPC</text>
+    <text x="902" y="310">HTTPS</text>
+  </g>
+
+  <rect x="236" y="316" width="364" height="120" rx="12" fill="#12161A" stroke="#232A31" stroke-width="1.5"/>
+  <text x="264" y="356" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif"
+        font-size="22" font-weight="700" fill="#F2F5F7">wrapper-manager</text>
+  <rect x="472" y="334" width="104" height="28" rx="14" fill="none" stroke="#D98A4A" stroke-width="1.5"/>
+  <text x="524" y="353" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="18"
+        fill="#D98A4A" text-anchor="middle">required</text>
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="18" fill="#AEB7C0">
+    <text x="264" y="392">device manifests · licenses</text>
+    <text x="264" y="418">lyrics · account state</text>
+  </g>
+
+  <rect x="628" y="316" width="516" height="120" rx="12" fill="#12161A" stroke="#232A31" stroke-width="1.5"/>
+  <text x="656" y="356" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif"
+        font-size="22" font-weight="700" fill="#F2F5F7">Apple Music</text>
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="18">
+    <text x="656" y="392" fill="#AEB7C0">api.music.apple.com</text>
+    <text x="1116" y="392" fill="#79838D" text-anchor="end">catalog · signed token</text>
+    <text x="656" y="418" fill="#AEB7C0">amp-api.music.apple.com</text>
+    <text x="1116" y="418" fill="#79838D" text-anchor="end">enhancedHls only</text>
+  </g>
+</svg>
