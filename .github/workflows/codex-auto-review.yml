@@ -23,7 +23,12 @@ permissions: {}
 
 jobs:
   trigger-codex-review:
-    if: vars.CODEX_AUTO_REVIEW != 'false' && !github.event.pull_request.draft
+    # bot 开的 PR 不审：Renovate 的依赖升级 PR 内容是版本号，AI 审查读不出什么，
+    # 白烧额度。它们的安全网是 ci.yml 和 CodeQL，那两个照常跑。
+    if: >-
+      vars.CODEX_AUTO_REVIEW != 'false'
+      && !github.event.pull_request.draft
+      && github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
       - name: Comment "@codex review" as An0nCh1hayaa

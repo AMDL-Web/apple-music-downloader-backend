@@ -3,7 +3,7 @@
 # ---- 构建阶段 ----------------------------------------------------------
 # 交叉编译在构建平台上进行(--platform=$BUILDPLATFORM),配合 buildx
 # 可以直接产出 linux/amd64 与 linux/arm64 镜像。
-FROM --platform=$BUILDPLATFORM golang:1.25.12-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine AS build
 
 WORKDIR /src
 
@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/amdl-api ./cmd/amdl-api
 
 # ---- 运行阶段 ----------------------------------------------------------
-FROM alpine:3.22
+FROM alpine:3.24
 
 # ffmpeg:重封装扁平化与可选完整性校验(tools.ffmpeg,默认命令名即可)。
 # ca-certificates:访问 Apple Music API 的 HTTPS 请求。

@@ -114,11 +114,15 @@ func buildALACEncryptedFixture(t *testing.T, plain []byte, key, iv []byte, kid m
 	stsd.Children[0] = enca
 	stsd.Enca = enca
 
-	ipd := &mp4.InitProtectData{
-		Tenc:     tenc,
-		ProtFunc: func(sample []byte, scheme string) ([]mp4.SubSamplePattern, error) { return nil, nil },
-		Trex:     file.Init.Moov.Mvex.Trex,
-		Scheme:   "cenc",
+	// mp4ff used to let a caller assemble InitProtectData by hand (Tenc, Trex,
+	// Scheme, plus a ProtFunc returning no subsample patterns for full-sample
+	// audio encryption). Those fields are unexported now, so read the data back
+	// out of the init segment this function just protected by hand instead --
+	// which is exactly what ExtractInitProtectData is for. InitProtect is still
+	// not usable here: it would add a second sinf/tenc on top of the one above.
+	ipd, err := mp4.ExtractInitProtectData(file.Init)
+	if err != nil {
+		t.Fatalf("ExtractInitProtectData: %v", err)
 	}
 	return encryptAndEncode(t, file, key, iv, ipd)
 }
@@ -128,9 +132,14 @@ func encryptAndEncode(t *testing.T, file *mp4.File, key, iv []byte, ipd *mp4.Ini
 	var allIVs [][]mp4.InitializationVector
 	for _, seg := range file.Segments {
 		for _, frag := range seg.Fragments {
-			if err := mp4.EncryptFragment(frag, key, iv, ipd); err != nil {
+			// EncryptFragment now hands back the IV the next fragment should
+			// start from, so a multi-fragment sequence doesn't restart the
+			// AES-CTR counter -- and reuse a keystream -- on every fragment.
+			nextIV, err := mp4.EncryptFragment(frag, key, iv, ipd)
+			if err != nil {
 				t.Fatalf("EncryptFragment: %v", err)
 			}
+			iv = nextIV
 			senc := frag.Moof.Trafs[0].Senc
 			ivs := make([]mp4.InitializationVector, len(senc.IVs))
 			copy(ivs, senc.IVs)
