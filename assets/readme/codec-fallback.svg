@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="336" viewBox="0 0 1200 336"
+     role="img" aria-labelledby="codecTitle codecDesc">
+  <title id="codecTitle">Codec fallback chain</title>
+  <desc id="codecDesc">The backend tries each codec in download.quality_priority in order. Every codec gets download.max_attempts tries, with the download and decrypt phases retried independently. When one codec's attempts are exhausted the next is tried, and AAC-LC over WebPlayback is always appended as the final floor. The first codec that succeeds completes the track.</desc>
+
+  <rect width="1200" height="336" rx="24" fill="#0A0C0E"/>
+  <rect x="0.75" y="0.75" width="1198.5" height="334.5" rx="23.25" fill="none" stroke="#1B2127" stroke-width="1.5"/>
+
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace">
+    <text x="56" y="58" font-size="19" fill="#AEB7C0">download.quality_priority  ·  alac · aac · aac-binaural · aac-downmix · ec3 · ac3</text>
+    <text x="56" y="86" font-size="18" fill="#79838D">every codec gets download.max_attempts tries; download and decrypt retry independently</text>
+  </g>
+
+  <!-- ── the chain ───────────────────────────────────────────── -->
+  <g fill="#12161A" stroke="#232A31" stroke-width="1.5">
+    <rect x="56" y="120" width="296" height="100" rx="12"/>
+    <rect x="452" y="120" width="296" height="100" rx="12"/>
+  </g>
+  <rect x="848" y="120" width="296" height="100" rx="12" fill="#12161A"
+        stroke="#3A434C" stroke-width="1.5" stroke-dasharray="7 6"/>
+
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif"
+     font-size="32" font-weight="700" fill="#F2F5F7">
+    <text x="84" y="166">ALAC</text>
+    <text x="480" y="166">AAC</text>
+    <text x="876" y="166">AAC-LC</text>
+  </g>
+  <text x="1116" y="164" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="18"
+        fill="#79838D" text-anchor="end">implicit</text>
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="18" fill="#79838D">
+    <text x="84" y="198">lossless, up to 24/192</text>
+    <text x="480" y="198">Enhanced HLS lossy</text>
+    <text x="876" y="198">WebPlayback floor</text>
+  </g>
+
+  <g stroke="#D98A4A" stroke-width="2" fill="none">
+    <path d="M352 170 H 442"/>
+    <path d="M748 170 H 838"/>
+  </g>
+  <g fill="#D98A4A">
+    <path d="M442 170 l -10 -5 v 10 z"/>
+    <path d="M838 170 l -10 -5 v 10 z"/>
+  </g>
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="18" fill="#D98A4A"
+     text-anchor="middle">
+    <text x="402" y="254">attempts exhausted</text>
+    <text x="798" y="254">attempts exhausted</text>
+  </g>
+
+  <!-- ── success rail ────────────────────────────────────────── -->
+  <g stroke="#5BC8AF" stroke-width="2" fill="none">
+    <path d="M204 220 V 274 M600 220 V 274 M996 220 V 274 M204 274 H 1128"/>
+  </g>
+  <path d="M1136 274 l -10 -5 v 10 z" fill="#5BC8AF"/>
+
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="18">
+    <text x="56" y="308" fill="#79838D">codec_alternative: false stops after the first codec</text>
+    <text x="1144" y="308" fill="#5BC8AF" text-anchor="end">first codec that succeeds → item_completed</text>
+  </g>
+</svg>

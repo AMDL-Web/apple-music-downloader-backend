@@ -11,7 +11,9 @@ data/
 
 test/
 
-/docs/
+# docs/ holds the reference documentation the README links to, so it is
+# tracked. Agent plans and design scratch stay local.
+/docs/superpowers/
 
 *.p8
 keys/

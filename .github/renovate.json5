@@ -1,0 +1,83 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+
+  // Renovate 自动升级依赖。这份配置只描述"怎么升"，Renovate 本身要先把
+  // https://github.com/apps/renovate 这个 GitHub App 装到仓库上才会跑。
+  //
+  // 三个容易踩的点：
+  //
+  // 1. Renovate 永远从**默认分支**（main）读这份配置 —— 官方原话是 "Renovate always
+  //    uses the config from the repository's default branch, even if that
+  //    configuration specifies baseBranchPatterns"。所以文件本身必须进 main 才生效，
+  //    哪怕它开出来的 PR 都指向 dev。
+  // 2. config:recommended 里带的 :semanticPrefixFixDepsChoreOthers 会把 gomod 的
+  //    require 依赖标成 fix(deps)，而 .github/scripts/generate-changelog.js 按前缀分类，
+  //    fix 归进"修复 | Fix"。依赖升级不是 bug 修复，所以下面显式把类型钉死。
+  // 3. labels 里写的标签必须先在仓库里存在，Renovate 不会替你创建。
+
+  extends: [
+    "config:recommended",
+    // DCO app 本来就跳过 bot 提交，但让 Renovate 自己带上 Signed-off-by 更省心。
+    ":gitSignOff",
+  ],
+
+  // 改动先落 dev，发版时再由 PR 把 dev 合进 main。依赖升级跟着下一次发版一起进 main，
+  // 不绕过发版流程。安全更新是例外，见文件末尾。
+  baseBranchPatterns: ["dev"],
+
+  timezone: "Asia/Shanghai",
+  // 每周一早上 9 点那一小时内开 PR。cron 五段式，第一段的 * 是分钟，必填。
+  schedule: ["* 9 * * 1"],
+
+  // 开一个常驻 issue，把待升级、被忽略、被限流的依赖全列出来。
+  dependencyDashboard: true,
+  // 配置项被官方重命名时（例如 baseBranches → baseBranchPatterns）自动开 PR 迁移。
+  configMigration: true,
+
+  // 新版本发布满 3 天才升，躲开当天就被撤回的版本，也给投毒的包留出被发现的时间。
+  minimumReleaseAge: "3 days",
+
+  prConcurrentLimit: 5,
+  labels: ["dependencies"],
+  // 升完 go.mod 顺手跑 go mod tidy，免得 go.sum 留下对不上的条目。
+  postUpdateOptions: ["gomodTidy"],
+
+  packageRules: [
+    {
+      description: "依赖升级不是 bug 修复：把 config:recommended 默认的 fix(deps) 掰回 chore(deps)",
+      matchManagers: ["gomod", "dockerfile", "docker-compose"],
+      semanticCommitType: "chore",
+    },
+    {
+      description: "Go 依赖：小版本、补丁、伪版本 digest 合成一个 PR；大版本单开，逐个评估破坏性改动",
+      matchManagers: ["gomod"],
+      matchUpdateTypes: ["minor", "patch", "digest"],
+      groupName: "go dependencies",
+    },
+    {
+      description: "容器基础镜像：Dockerfile 里的 golang 和 alpine",
+      matchManagers: ["dockerfile", "docker-compose"],
+      groupName: "docker base images",
+    },
+    {
+      // 标签走 github-actions，对应 .github/release.yml 里的 CI 分类。
+      description: "action 基本只打 major tag（v6 → v7），按 update type 拆等于没拆，全部并一个 PR",
+      matchManagers: ["github-actions"],
+      groupName: "github actions",
+      semanticCommitType: "ci",
+      labels: ["github-actions"],
+    },
+    {
+      description: "本仓库自己的产物镜像，由 docker-publish.yml 推送，不是外部依赖",
+      matchPackageNames: ["ghcr.io/amdl-web/apple-music-downloader-backend"],
+      enabled: false,
+    },
+  ],
+
+  // 安全更新不受上面的 schedule 和 minimumReleaseAge 限制，Renovate 发现即开 PR。
+  // 数据来源是 GitHub 自己的 Dependabot alerts，所以仓库设置里的
+  // Dependency graph + Dependabot alerts 得是打开的，否则这条等于没配。
+  vulnerabilityAlerts: {
+    enabled: true,
+  },
+}

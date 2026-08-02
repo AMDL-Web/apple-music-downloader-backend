@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="410" viewBox="0 0 1200 410"
+     role="img" aria-labelledby="heroTitle heroDesc">
+  <title id="heroTitle">AMDL Backend</title>
+  <desc id="heroDesc">Apple Music download core. One link goes in; the backend resolves it, downloads the encrypted Enhanced HLS fragments, decrypts, remuxes, verifies, tags and saves a lossless file, publishing every stage over SSE.</desc>
+
+  <rect width="1200" height="410" rx="24" fill="#0A0C0E"/>
+  <rect x="0.75" y="0.75" width="1198.5" height="408.5" rx="23.25" fill="none" stroke="#1B2127" stroke-width="1.5"/>
+
+  <!-- ── title block ─────────────────────────────────────────── -->
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="19" fill="#79838D">
+    <text x="56" y="76" letter-spacing="3">APPLE MUSIC DOWNLOAD CORE</text>
+    <text x="1144" y="76" text-anchor="end">Go · SQLite · gRPC · ffmpeg</text>
+  </g>
+
+  <text x="56" y="150" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif"
+        font-size="62" font-weight="700" fill="#F2F5F7">AMDL Backend</text>
+
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif"
+     font-size="24" fill="#AEB7C0">
+    <text x="56" y="196">Paste an Apple Music link. Get tagged lossless files on</text>
+    <text x="56" y="228">your own disk — and watch every stage as it happens.</text>
+  </g>
+
+  <line x1="56" y1="262" x2="1144" y2="262" stroke="#232A31" stroke-width="1.5"/>
+
+  <!-- ── pipeline strip: encrypted fragments become one verified track ── -->
+  <g id="signal">
+    <!-- pre-download: nothing on the wire yet -->
+    <line x1="56" y1="292" x2="222" y2="292" stroke="#232A31" stroke-width="2" stroke-linecap="round"/>
+
+    <!-- encrypted Enhanced HLS fragments -->
+    <g fill="#D98A4A">
+      <rect x="230" y="282" width="9" height="20" rx="2"/>
+      <rect x="248" y="282" width="9" height="20" rx="2"/>
+      <rect x="266" y="282" width="9" height="20" rx="2"/>
+      <rect x="284" y="282" width="9" height="20" rx="2"/>
+      <rect x="302" y="282" width="9" height="20" rx="2"/>
+      <rect x="320" y="282" width="9" height="20" rx="2"/>
+      <rect x="338" y="282" width="9" height="20" rx="2"/>
+      <rect x="356" y="282" width="9" height="20" rx="2"/>
+      <rect x="374" y="282" width="9" height="20" rx="2"/>
+      <rect x="392" y="282" width="9" height="20" rx="2"/>
+      <rect x="410" y="282" width="9" height="20" rx="2"/>
+      <rect x="428" y="282" width="9" height="20" rx="2"/>
+    </g>
+
+    <!-- decrypted, continuous audio through remux → verify → tag → save -->
+    <rect x="452" y="286" width="668" height="12" rx="6" fill="#5BC8AF"/>
+
+    <!-- stage rule -->
+    <line x1="56" y1="322" x2="1144" y2="322" stroke="#232A31" stroke-width="2"/>
+    <g fill="#0A0C0E" stroke="#5BC8AF" stroke-width="2.5">
+      <circle cx="134" cy="322" r="5"/>
+      <circle cx="289" cy="322" r="5"/>
+      <circle cx="445" cy="322" r="5"/>
+      <circle cx="600" cy="322" r="5"/>
+      <circle cx="755" cy="322" r="5"/>
+      <circle cx="911" cy="322" r="5"/>
+      <circle cx="1066" cy="322" r="5"/>
+    </g>
+
+    <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="19"
+       fill="#AEB7C0" text-anchor="middle">
+      <text x="134" y="352">resolve</text>
+      <text x="289" y="352">download</text>
+      <text x="445" y="352">decrypt</text>
+      <text x="600" y="352">remux</text>
+      <text x="755" y="352">verify</text>
+      <text x="911" y="352">tag</text>
+      <text x="1066" y="352">save</text>
+    </g>
+  </g>
+
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="18">
+    <text x="56" y="386" fill="#79838D">in → music.apple.com/…/album/1580904295</text>
+    <text x="1144" y="386" fill="#5BC8AF" text-anchor="end">out → 01. Song.m4a · ALAC 24-bit/192 kHz</text>
+  </g>
+</svg>

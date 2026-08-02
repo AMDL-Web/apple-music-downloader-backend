@@ -1,462 +1,256 @@
-# AMDL Backend
+<p align="center">
+  <img src="./assets/readme/hero.svg" width="100%"
+       alt="AMDL Backend — paste an Apple Music link and get tagged lossless files on your own disk, through a resolve, download, decrypt, remux, verify, tag and save pipeline">
+</p>
 
-AMDL Backend 是 Apple Music 下载系统的核心后端服务。它负责解析 Apple Music 单曲、专辑、歌单、艺术家和电台链接，调度下载任务，对接 `wrapper-manager` 获取媒体数据，并通过 HTTP API 与 SSE 暴露任务状态。
+<p align="center">
+  <a href="https://github.com/AMDL-Web/apple-music-downloader-backend/actions/workflows/ci.yml"><img src="https://github.com/AMDL-Web/apple-music-downloader-backend/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/AMDL-Web/apple-music-downloader-backend/releases"><img src="https://img.shields.io/github/v/release/AMDL-Web/apple-music-downloader-backend?label=release" alt="Latest release"></a>
+  <a href="https://github.com/AMDL-Web/apple-music-downloader-backend/pkgs/container/apple-music-downloader-backend"><img src="https://img.shields.io/badge/ghcr.io-amd64%20%2B%20arm64-blue" alt="Container image on GHCR"></a>
+  <img src="https://img.shields.io/github/go-mod/go-version/AMDL-Web/apple-music-downloader-backend" alt="Go version">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="AGPL-3.0"></a>
+</p>
 
-当前仓库以根目录 Go 模块为生产代码来源，主要代码位于 `cmd/`、`internal/`、`configs/` 等目录。
+<p align="center"><a href="README.zh-CN.md">中文</a></p>
 
-## 功能
+**Send it an Apple Music URL. It resolves the songs, pulls the encrypted Enhanced HLS
+media, decrypts it, remuxes and tags it, and writes a finished file to your disk —
+publishing every stage as it happens.**
 
-- 支持 Apple Music 单曲、专辑、歌单、艺术家和电台 URL。
-- 不会支持 Apple Music MV 下载；受 L3 限制，当前链路只能获取低分辨率视频，不符合本项目的下载质量目标。
-- 通过 `wrapper-manager` gRPC 获取账号状态、播放清单和媒体数据。
-- 使用 SQLite 持久化任务、任务项和事件。
-- 通过 SSE 或 WebSocket 推送下载进度，支持单任务订阅与跨任务总览 feed。
-- 支持 Enhanced HLS 编码回退链和 AAC-LC 保底格式。
-- 支持歌词嵌入、歌词边车文件、封面嵌入和独立封面保存。
-- 支持任务生命周期 hooks（`configs/hooks.yaml`）：在任务排队或进入终态时触发 webhook 或本地命令。
-- 提供结构化日志、敏感字段脱敏、请求/任务关联、可选压缩轮转文件，以及带过滤和断线续接的日志查询/SSE API。
-- 支持本地模拟（simulate）模式：不实际下载/解密，用于联调和压测下载流水线（配置文件顶层 `simulate` 段）。
-- 支持资料库同步（`library_sync` 段）：定期轮询已登录 Apple Music 资料库，把新加入曲目所属的整张专辑作为普通下载任务提交。默认关闭。
-- 提供 Swagger UI 与 OpenAPI 3.1 规范。
-- 使用 GitHub Actions 发版，支持仓库内版本说明并在缺失时自动生成 Release changelog。
+One Go binary, one SQLite file, a REST + SSE + WebSocket API on `/api/v1`, and an
+OpenAPI 3.1 spec that the AMDL web and iOS clients are built against. It handles
+songs, albums, playlists, artists and radio stations.
 
-## 依赖
+---
 
-- Go 版本以 `go.mod` 为准。
-- 可访问的 `wrapper-manager` 服务。
-- 媒体封装阶段需要以下外部命令：
-  - `ffmpeg`（用于重封装扁平化与可选的完整性校验）
+## Quick start
 
-  > 样本抽取、重封装、元数据与封面写入均已改为进程内的 Go 库实现（`mp4ff` / `go-mp4tag`），不再依赖 `gpac`、`MP4Box`、`mp4extract`、`mp4edit`。
-
-## 快速启动
-
-```bash
-go run ./cmd/amdl-api
-```
-
-所有配置统一存放在一个文件中（可用 `AMDL_CONFIG` 指定路径）：
-
-```text
-configs/config.yaml
-```
-
-首次启动时会以 `configs/config.example.yaml` 为模板自动生成
-`configs/config.yaml`；完整字段说明也以示例文件为准。`config.yaml` 由后端
-管理：`PUT /api/v1/config` 只允许修改运行时字段，但会将包含启动字段在内
-的完整配置整体写回，因此文件内注释和自定义格式不会保留。手工编辑运行时
-字段后，下一次 `GET /api/v1/config` 会重读并立即应用；启动字段仍需重启。
-
-从此前的双文件版本升级时，后端会在首次启动时把旧 `runtime.yaml` 的值合并
-进 `config.yaml`，再将旧文件重命名为 `runtime.yaml.pre-merge.bak`（若同名
-备份已存在会追加序号）。确认配置无误后可自行删除该备份。
-
-若旧配置里还有已删除的键（如 `download.max_parallel_tracks` 等按任务并发
-键），启动会以明确的未知字段错误拒绝加载，需要先手工删掉这些键再启动
-（见[下载行为](#重试与编码降级)一节的破坏性变更说明）。
-
-启动前请按实际环境修改 `configs/config.yaml`（或先改示例文件再首次启动），尤其是：
-
-- `server.listen`：API 监听地址。
-- `wrapper.address`：`wrapper-manager` gRPC 地址。
-- `database.path`：SQLite 数据库路径（默认 `data/db/amdl.db`）。
-- `logging.*`：日志格式、内存保留和可选轮转文件（级别与访问日志开关可运行时修改；字段完整说明见示例配置）。
-- `tools.*`：外部媒体工具命令路径或命令名。
-
-下载相关选项（如 `download.downloads_dir` 下载保存目录）可随时通过
-`PUT /api/v1/config` 或编辑 `config.yaml` 调整。
-
-### 环境变量覆盖
-
-任何配置项都可以用环境变量覆盖，变量名为 `AMDL_<大写段名>_<大写键名>`，
-例如 `AMDL_SERVER_LISTEN`、`AMDL_WRAPPER_ADDRESS`、`AMDL_DATABASE_PATH`、
-`AMDL_LOGGING_LEVEL`、
-`AMDL_DOWNLOAD_QUALITY_PRIORITY`。规则：
-
-- 环境变量优先于配置文件，每次启动（以及每次配置重载）都生效，单纯加载
-  不会写回文件。注意 `PUT /api/v1/config` 重写 `config.yaml` 时，运行时
-  字段写入的是包含环境变量在内的当前生效值；启动字段仍保留磁盘值，不会
-  把其环境变量覆盖烘焙进文件。
-- 值的写法：字符串原样填写；布尔用 `true`/`false`；整数直接写数字；
-  字符串列表用逗号分隔（如 `alac,aac`），空值表示空列表。
-- 无法识别的 `AMDL_*` 变量会让启动失败，避免拼写错误被静默忽略
-  （`AMDL_CONFIG`、`AMDL_HOOKS_CONFIG` 除外）。
-- 被环境变量覆盖的字段无法再通过 `PUT /api/v1/config` 修改（返回 422），
-  请改环境变量并重启。
-
-## Docker 部署
-
-仓库根目录提供 `Dockerfile` 与 `docker-compose.yml`。发版时 GitHub Actions 会自动构建多架构镜像（linux/amd64 + linux/arm64）并推送到 GHCR（镜像 tag 与版本对应，如 `v1.2.3` → `1.2.3`、`1.2`、`latest`），`docker-compose.yml` 默认就直接拉取该镜像，无需本地构建：
+You need a reachable [`wrapper-manager`](#how-it-works) instance — the backend gets
+device manifests, licenses and lyrics from it and cannot download anything without one.
 
 ```bash
 docker compose up -d
 ```
 
-> 匿名拉取要求 GHCR 上的镜像 package 为 public。本仓库已公开;若你 fork 自建,首次推送到 GHCR 时 package 默认是私有的,`docker compose up -d` 会以 `unauthorized`/`denied` 失败——到你仓库的 Packages 设置里改成 public 即可(详见下方[发版](#发版)小节),或改用本地构建。
+That pulls the multi-arch image from GHCR (no local build), seeds `configs/config.yaml`
+from the bundled example, and listens on `:18080`. Point it at your wrapper with
+`AMDL_WRAPPER_ADDRESS` in `docker-compose.yml`.
 
-想固定版本，把 compose 里的 `:latest` 换成具体 tag（如 `:1.1`）。
-
-若想从源码本地构建（镜像为多阶段构建：构建阶段产出静态二进制——纯 Go SQLite，无 CGO；运行阶段基于 Alpine 并内置 `ffmpeg`。容器以 root 启动入口脚本，完成配置播种和挂载目录属主修正后，通过 `su-exec` 降权到 `PUID:PGID`（默认 `1000:1000`）运行后端进程），取消 `docker-compose.yml` 里 `build: .` 的注释后：
-
-```bash
-docker compose up -d --build
-```
-
-或者不用 compose：
+From source instead — Go per [`go.mod`](go.mod), plus `ffmpeg` on `PATH`:
 
 ```bash
-docker build -t amdl-backend .
-docker run -d --name amdl-backend \
-  -p 18080:18080 \
-  -v ./configs:/app/configs \
-  -v ./data/db:/app/data/db \
-  -v ./data/logs:/app/data/logs \
-  -v ./data/downloads:/app/data/downloads \
-  --add-host host.docker.internal:host-gateway \
-  amdl-backend
+go run ./cmd/amdl-api
 ```
 
-### 配置播种
-
-入口脚本会把镜像内置的示例配置同步到配置目录 `/app/configs`：
-
-- `config.example.yaml`：每次启动都从当前镜像同步（后端的 bootstrap 逻辑要求它与 `config.yaml` 同目录，同时充当字段文档）。
-- `hooks.yaml`：复制注释完整的模板（默认禁用）。
-
-`config.yaml` 由后端在首次启动时从示例生成。两个容器内不可用的仓库默认值不再写进文件，而是由入口脚本通过环境变量覆盖机制在每次启动时改写：`server.listen` 覆盖为 `AMDL_SERVER_LISTEN`（默认 `:18080`，容器内必须监听非回环地址），`wrapper.address` 覆盖为 `AMDL_WRAPPER_ADDRESS`（默认 `host.docker.internal:8080`）。
-
-入口脚本会从当前镜像同步 `config.example.yaml`，确保字段文档随版本更新；
-不会覆盖已有的 hooks 文件。后端通过 `PUT /api/v1/config` 写回的
-`config.yaml` 在容器重建后保持不变。
-
-### 环境变量
-
-任何配置项都可以用 `AMDL_<大写段名>_<大写键名>` 环境变量覆盖（见上文
-[环境变量覆盖](#环境变量覆盖)），例如 `AMDL_DOWNLOAD_QUALITY_PRIORITY: "alac,aac"`、
-`AMDL_SIMULATE_ENABLED: "true"`。容器相关的其它变量：
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `PUID` | `1000` | 后端进程的运行用户 UID。每次启动生效：配置目录每次整体修正属主；数据目录仅在顶层属主不匹配时递归修正一次（首次绑定挂载或变更 `PUID`/`PGID` 后的启动可能因此稍慢）。 |
-| `PGID` | `1000` | 后端进程的运行用户 GID。行为同 `PUID`。 |
-| `TZ` | UTC | 容器时区（IANA 名称，如 `Asia/Shanghai`），影响日志时间戳与 exec hooks 命令看到的本地时间。镜像已内置 tzdata，Go 运行时自动识别。 |
-| `AMDL_SERVER_LISTEN` | `:18080`（入口脚本的容器默认值） | API 监听地址，每次启动覆盖 `server.listen`。健康检查端口也从它推导。 |
-| `AMDL_WRAPPER_ADDRESS` | `host.docker.internal:8080`（入口脚本的容器默认值） | `wrapper-manager` gRPC 地址，每次启动覆盖 `wrapper.address`。 |
-| `AMDL_CONFIG` | `/app/configs/config.yaml` | 配置文件路径（后端原生支持）。 |
-| `AMDL_HOOKS_CONFIG` | `/app/configs/hooks.yaml` | hooks 配置文件路径（后端原生支持）。 |
-
-修改配置的三种方式：运行期字段用 `PUT /api/v1/config`，立即生效；任意字段用环境变量覆盖后 `docker compose up -d`；或编辑挂载目录里的 `config.yaml`——运行期字段在下一次 `GET /api/v1/config` 时重读并生效，启动期字段需重启容器（监听地址与 wrapper 地址在容器内始终以环境变量为准）。注意 PUT 会整体重写文件并丢弃注释。
-
-> **破坏性变更**：旧变量名 `AMDL_LISTEN`、`AMDL_WRAPPER_ADDR` 已移除。仍设置它们会因「未知配置环境变量」导致启动失败，请改用 `AMDL_SERVER_LISTEN`、`AMDL_WRAPPER_ADDRESS`。
-
-如果偏好完全不以 root 启动容器，也可以用 `docker run --user <uid>:<gid>`（或 compose 的 `user:`）直接指定运行用户：此时入口脚本跳过降权与属主修正，忽略 `PUID`/`PGID`，挂载目录对该用户可写需自行保证。
-
-### 挂载目录
-
-`docker-compose.yml` 默认把四个目录绑定挂载到宿主机：
-
-- `./configs` → `/app/configs`：配置目录（`config.yaml`、`config.example.yaml`、`hooks.yaml`）。
-- `./data/db` → `/app/data/db`：SQLite 数据库目录（`database.path` 默认 `data/db/amdl.db`）。
-- `./data/logs` → `/app/data/logs`：轮转日志目录；仅在 `logging.file_enabled: true` 时写入。
-- `./data/downloads` → `/app/data/downloads`：下载产物目录。想放到宿主机其它位置，改冒号左边的宿主机路径即可（例如 `/path/to/music:/app/data/downloads`）。
-- 临时目录 `data/tmp` 默认留在容器内，无需挂载。它承担下载/解密/转封装/校验/打标签这几步的落盘中转（见 `configs/config.example.yaml` 里 `download.temp_dir` 的注释），如果容器存储驱动较慢，可以把它单独挂载到宿主机的快速磁盘（如 SSD）上，与 `data/downloads` 分开。
-- 启用开发者令牌签名时，把 `.p8` 私钥以只读方式挂载进容器（例如 `-v ./keys:/app/keys:ro`），并将 `catalog.apple_music_private_key_path` 指向容器内路径。密钥不会也不应打进镜像（`.dockerignore` 已排除 `keys/` 与 `*.p8`）。
-- 把 `PUID`/`PGID` 设成宿主机目录属主的 uid/gid 即可，入口脚本会自动修正容器内挂载目录的属主。
-
-### wrapper-manager 地址
-
-- wrapper 跑在宿主机：保持默认 `host.docker.internal:8080`（compose 文件已通过 `extra_hosts: host-gateway` 让 Linux 容器也能解析该域名）。
-- wrapper 也是 compose 服务：将 `AMDL_WRAPPER_ADDRESS` 设为 `<服务名>:8080`。
-- gRPC 连接是懒建立的，后端启动不要求 wrapper 在线；可用 `GET /api/v1/wrapper/status` 验证连通性。
-
-容器健康检查使用 `GET /api/v1/health`。
-
-## API
-
-以下示例假设服务监听在 `http://localhost:18080`。
-
-交互式 Swagger UI：
-
-```text
-http://localhost:18080/docs
-```
-
-OpenAPI 3.1 规范：
-
-```text
-http://localhost:18080/api/openapi.yaml
-```
-
-读取运行时配置：
-
-```bash
-curl http://localhost:18080/api/v1/config
-```
-
-查询最近的错误日志：
-
-```bash
-curl 'http://localhost:18080/api/v1/logs?level=error&limit=100'
-```
-
-按任务过滤并实时订阅日志（SSE `id` 可作为重连时的 `Last-Event-ID`）：
-
-```bash
-curl -N 'http://localhost:18080/api/v1/logs/stream?job_id=job_01JZ0000000000000000000000'
-```
-
-每个 HTTP 响应都带 `X-Request-ID`。调用方也可以在请求中传入同名头，随后用
-`GET /api/v1/logs?request_id=<id>` 聚合同一请求的访问日志与同步任务操作日志。
-日志 API 的内存保留量由 `logging.buffer_size` 控制；设为 `0` 时不保留历史，
-实时 SSE 仍会推送新记录。文件输出默认关闭，启用后按 `max_size_mb`、
-`max_backups`、`max_age_days` 自动轮转，并可用 `compress` 压缩旧文件。
-`logging.level` 与 `logging.access_log` 可通过 `PUT /api/v1/config` 即时调整；
-格式、输出目标、缓冲容量和轮转参数修改后需要重启。
-
-检查 `wrapper-manager` 状态：
-
-```bash
-curl http://localhost:18080/api/v1/wrapper/status
-```
-
-登录 wrapper 账号：
-
-```bash
-curl -X POST http://localhost:18080/api/v1/wrapper/login \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"apple-id@example.com","password":"password"}'
-```
-
-如果响应包含 `"status":"needs_2fa"`，使用响应中的 `login_id` 在 30 秒内提交验证码：
-
-```bash
-curl -X POST http://localhost:18080/api/v1/wrapper/login/{login_id}/2fa \
-  -H 'Content-Type: application/json' \
-  -d '{"two_step_code":"123456"}'
-```
-
-登出 wrapper 账号：
-
-```bash
-curl -X POST http://localhost:18080/api/v1/wrapper/logout \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"apple-id@example.com"}'
-```
-
-创建下载任务：
+Submit an album:
 
 ```bash
 curl -X POST http://localhost:18080/api/v1/downloads \
   -H 'Content-Type: application/json' \
-  -d '{"url":"https://music.apple.com/us/album/example/123456789?i=987654321","overrides":{"force_overwrite":true}}'
+  -d '{"url":"https://music.apple.com/cn/album/1580904295"}'
 ```
 
-是否覆盖已存在的文件由配置项 `download.force_overwrite` 控制：`true` 会覆盖已存在的音频及其歌词边车文件，`false`（默认）会跳过已存在的文件。提交任务时可通过 `overrides.force_overwrite` 按批次覆盖该全局配置（省略时沿用全局值）。旧的请求顶层 `force` 字段不再接受，会作为未知字段返回 `400`。
-
-任务 hooks 可通过 `overrides.hooks` 按批次筛选，值为 `configs/hooks.yaml` 中 entry 的 `name` 列表。前端可先调用 `GET /api/v1/hooks` 获取全局开关及各 entry 的名称、启用状态、类型、事件和任务类型，用于构造允许列表；该接口不会返回 URL、请求头、命令或工作目录等敏感配置。省略该字段时保持默认行为（所有已启用且匹配事件/任务类型的 hooks 均可运行）；显式传 `[]` 时本批任务不运行任何 hook；非空列表只允许同名 entries 运行。该列表不能启用 `enabled: false` 的 entry，也不会绕过 `events` 或 `job_types` 匹配。重复名称允许且等同于只写一次；配置存在时，未知名称会返回 `422`。若未配置任何 hook entry（包括缺失的 hooks 文件），列表会被接受但不会产生效果。筛选随任务持久化：`job_queued` hook 只在首次提交时派发一次（重试和重启恢复不会重发），重试或重启恢复后到达的终态事件 hook 仍受同一名单约束。
-
-下载电台（station，链接形如 `https://music.apple.com/us/station/.../ra.xxxx`）：仅支持能解析为曲目列表的个性化/精选电台，需提供 Apple Music 订阅令牌（media-user-token）。按任务入口是 `overrides.media_user_token`；未提供该覆盖时，后端使用运行时配置中的 `catalog.media_user_token` 作为 fallback。覆盖字段具有三态语义：省略表示沿用全局 fallback，非空字符串表示本批任务使用该值，显式空字符串 `""` 表示为本批任务清空全局 fallback。旧的请求顶层 `media_user_token` 不再接受，会作为未知字段返回 `400`。`catalog.media_user_token_priority` 只为兼容旧配置保留，现已弃用且不再参与选择。
-
-请求覆盖令牌只会持久化到实际需要它的电台任务和私人歌单（`pl.u-xxx`）任务；同一批中的单曲、专辑、艺人和其它歌单任务不会保存它。任务完成或取消后令牌会被清除；失败任务会保留令牌，以便后续重试继续解析。创建、列表、详情以及 SSE/WebSocket 等任务响应永不回显令牌。写入 `catalog.media_user_token` 的全局 fallback 则随配置文件持久化，并可能由 `GET /api/v1/config` 返回。该令牌还用于私人歌单的封面获取：公共目录不含私人歌单封面，提供令牌后会以用户身份从库副本读取；不提供令牌时私人歌单仍可下载，只是没有歌单封面。
-
-直播电台（Apple Music 1 等）没有静态曲目列表，任务会以明确错误结束。电台曲目取自 Apple Music 的「接下来播放」滚动列表，因此一次下载捕获的是当前返回的若干首曲目，而非固定编目。电台产物存入独立的电台目录，按 `download.station_path_format`（默认 `stations/{StationName}/{SongNumber:02d}. {SongName}`）归档。
-
-```bash
-curl -X POST http://localhost:18080/api/v1/downloads \
-  -H 'Content-Type: application/json' \
-  -d '{"urls":["https://music.apple.com/us/station/example/ra.978194965"],"overrides":{"media_user_token":"<你的 media-user-token>"}}'
-```
-
-查询任务：
-
-```bash
-curl http://localhost:18080/api/v1/downloads/{job_id}
-```
-
-列出任务（支持分页与筛选）：
-
-```bash
-curl 'http://localhost:18080/api/v1/downloads?limit=20&offset=0&status=failed,cancelled&type=album&storefront=cn&q=beta&created_after=2024-07-01&sort=updated_at&order=desc'
-```
-
-可用查询参数：`limit`、`offset`、`status`、`type`、`storefront`、`q`、`created_after`、`created_before`、`updated_after`、`updated_before`、`sort`、`order`。响应额外返回 `total`、`limit`、`offset`。
-
-监听任务事件：
+Watch it run — one line per stage transition, per track:
 
 ```bash
 curl -N http://localhost:18080/api/v1/downloads/{job_id}/events
 ```
 
-取消任务：
-
-```bash
-curl -X POST http://localhost:18080/api/v1/downloads/{job_id}/cancel
-```
-
-重试失败任务（仅 `failed` 状态的任务可重试；非失败状态、仍在收尾上一次运行、或已有同 key 任务在跑时返回 409）：
-
-```bash
-curl -X POST http://localhost:18080/api/v1/downloads/{job_id}/retry
-```
-
-删除已结束（终态）的任务及其记录：
-
-```bash
-curl -X DELETE http://localhost:18080/api/v1/downloads/{job_id}
-```
-
-任务事件也可通过 WebSocket 订阅（`GET /api/v1/downloads/{job_id}/events/ws`），与上面的 SSE 端点等价，供偏好 WS 的客户端使用。
-
-具体任务的 SSE/WS 事件中，`payload` 是需要二次解析的 JSON 字符串。任务生命周期事件携带与 REST `Job` 一致的公开快照字段；曲目状态、重试、编码选择和曲目终态事件携带与 REST `JobItem` 一致的公开快照字段，同时保留 `download_attempts`、`will_retry` 等事件专属字段。客户端先取得一次初始详情后，可以直接合并后续事件；收到 `item_completed`、`item_failed`、`item_skipped` 或任务终态事件时不需要为了补字段再次 GET。任务 override 中的 `media_user_token` 仍会按所有其它任务响应相同的规则隐藏。
-
-其它端点（详细请求/响应结构见 Swagger UI）：
-
-- `GET /api/v1/downloads/events`（及 `/events/ws`）：跨任务的总览 feed，推送任务列表增删改，无需分别订阅每个任务。
-- `POST /api/v1/quality`：不创建任务，探测单曲、专辑、歌单、艺人或电台 URL 的 master playlist 当前声明的编码与音质信息；它复用下载任务的区域校验、集合解析、元数据刷新、重试、并发调度、HLS 来源选择及 codec/ALAC 筛选规则。正常成功路径为每个曲目出现项读取一次 master playlist 并从中汇总全部音质；失败时按 `download.max_attempts` 重新取得来源并读取 master。查询不读取具体 media playlist，也不验证媒体分片或进入加密媒体传输。区域校验要求 wrapper/decryptor 已就绪，且 URL storefront 位于其上报的 `regions` 中。所有链接类型统一返回逐曲 `tracks`；单曲包含一个元素，集合保持 Apple Music 原顺序和重复曲目出现项。电台使用运行时 `catalog.media_user_token`。
-- `GET /api/v1/developer-token`：签发可共享的 Apple Music developer token；仅在启用本地签名模式（`catalog.apple_music_*` 三个 key 配置齐全）时可用，否则返回 409。
-- `GET /api/v1/library-sync`：资料库监视器状态（开关、间隔、锚点条目数、最近一轮结果）。功能关闭时同样返回。
-- `POST /api/v1/library-sync/reset`：清空监视器的锚点。下一轮会以**当时**的资料库重新落锚且**不提交任何专辑**——这是「忘记历史」而非「重放历史」。想重新下载某张专辑请直接 `POST /api/v1/downloads`。
-
-## 下载行为
-
-仅音频下载是受支持目标。Apple Music MV 下载不会支持，因为 L3 限制下只能获取低分辨率视频。
-
-### 重试与编码降级
-
-- `download.max_parallel_downloads` 和 `download.max_parallel_decrypts` 分别限制单个 backend 进程内、跨全部任务共享的加密媒体下载与解密阶段，默认 `16` 和 `32`；已下载但尚未完成解密的媒体还受内部 in-flight 背压保护。`download.max_parallel_wrapper_requests`（默认 `24`）限制 wrapper-manager 的数据类 RPC（M3U8、歌词、web playback、license）的进程级并发，登录/登出不受限，解密流由 `max_parallel_decrypts` 约束。旧 `download.max_parallel_tracks` 等按任务键已删除，升级时必须手工迁移配置。
-- `catalog.max_parallel_requests`（默认 `16`）限制 Catalog API、web token、封面和 HLS 清单等 Apple 小请求的进程级并发；认证 Catalog/amp-api 请求另受 `catalog.requests_per_second`（默认 `10`）和 `catalog.request_burst`（默认 `16`）约束。Apple 返回 429 时会遵循 `Retry-After`、触发全局冷却并自动重试一次。这五个并发/速率值均在启动时固定，修改配置后需要重启；多个 backend 副本之间不共享槽位。
-- 多任务争抢池容量时按任务提交时间分配：最早提交且未完成的任务优先拿到许可，因此任务倾向于逐个完成而非交错推进；被恢复的任务保留原提交时间、重启后不丢排位。优先级只在池满时起作用——前面的任务喂不满池子时，空闲许可立即分给后续任务，不浪费吞吐。URL 校验、音质探测等交互式 API 请求不参与任务排队，始终优先放行。
-- `download.max_attempts`：元数据、封面、歌词以及每个编码的下载/解密阶段的最大总尝试次数（含首次）；正数允许 `1-10`。例如 `4` 表示每个操作最多尝试 4 次；值 `<= 0` 仍按 1 处理（仅尝试一次，不重试）。
-- 可重试错误使用带随机抖动的指数退避；Apple Catalog 返回 `Retry-After` 时，等待时间不会短于该提示，避免同一批请求同步重放。
-- `download.quality_priority`：按顺序尝试的 Enhanced HLS 编码回退链，支持 `alac`、`aac`、`aac-binaural`、`aac-downmix`、`ec3` 和 `ac3`。
-- `download.memory_mode`：控制 Enhanced HLS 路径的内存/磁盘取舍。两种模式现在都会逐片段解密并直接送入 ffmpeg，不再落盘整轨明文 `dec-*`：`low`（默认）从可续传的加密 `raw-*` 检查点读取，只有片段级内存，但临时目录会同时存在加密检查点和重封装输出；`high` 将一份加密整轨保留在内存，只在临时目录保留重封装输出。High 在已取得可用于 `If-Range` 的 ETag 或 Last-Modified 时，可对一次 CDN 中途断流执行纯内存 `Range` 重连，但不持久化断点，进程或容器重启后仍从零开始。高模式的单轨内存媒体上限为 512 MiB；由于 Go GC 会保留分配余量，实际堆峰值可能接近整轨大小的两倍，进程内存和临时盘占用也会随任务及曲目并发数放大。AAC-LC 回退不受此选项影响：加密重试数据仍保留在内存，Widevine 解密结果直接流入 ffmpeg，不再额外保留整轨明文 `[]byte` 或输入文件；当前 gowidevine 解析器仍可能在输出结束前持有整轨 box 结构。
-- `download.codec_alternative`：是否在前一个编码重试耗尽后继续尝试回退链；关闭时只尝试第一个编码。
-- `aac-lc` 无需写入 `quality_priority`；开启编码回退时会自动追加为最后的 WebPlayback 保底格式。
-- 回退链中的每个编码（含隐式 AAC-LC 保底）均使用 `download.max_attempts`；每个编码的下载阶段和解密阶段分别独立计数重试。
-- 重试、耗尽、恢复和编码回退会通过任务 SSE 事件返回；任务详情中的每个项目也会返回 `retry_kind`、`attempt`、`max_attempts` 和 `status_message`，其中 `attempt` 为当前阶段（`retry_kind`）的尝试序号（从 1 开始）。
-- `download.progress_event_interval_ms`（默认 `500`，允许 `0-10000`）：同一 item 在同一状态内两条 `item_progress` 事件的最小间隔。只节流 download/decrypt 两个进度条的推进；状态变更、阶段完成标记以及 `item_completed`/`item_failed`/`item_skipped` 等一次性事件始终立即推送。被间隔压下的进度值会在取代它的事件之前补发，因此状态变更前的最后一个百分比不会丢失，用 `last_event_id` 续传的客户端与实时客户端看到的事件序列一致。它是叠加在“整数百分比取整”门限之上的时间下限——数十首曲目并行时，仅靠百分比门限会把每条进度条的约 101 次跨越压缩进几秒内同时发出。值 `<= 0` 关闭时间合并。该值在任务启动时读取一次，只影响此后启动的任务。
-
-### 后解密落盘微基准（当前实现）
-
-优化后的正常链路是“加密输入 → 逐片段解密 → ffmpeg stdin → 扁平化文件 → 完整性校验 → 标签 → 最终保存”。标签阶段对 ffmpeg 常见的尾部 `moov` 布局只重写较小的 `moov` 与封面数据，媒体区保持原位；无法安全原位更新的兼容布局自动退回原来的整轨重写。
-
-ROG（Ryzen 9 9900X、WSL Docker）使用约 70.1 MB、45 个分片、约 90 秒的 192 kHz/24-bit ALAC 离线 fixture 对优化前基线和当前实现做交错 A/B。两者运行在同一生产镜像与 ffmpeg 6.1.2 中；Windows 同盘布局预热后每种模式测 5 次，实际部署布局预热后每种模式测 3 次。下表临时空间为 `download.temp_dir` 与系统临时目录的同时峰值，不含最终下载目录：
-
-| 布局 | 模式 | 优化前 | 当前 | 提速 | 优化前临时空间 | 当前临时空间 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 临时与输出均在 Windows 挂载盘 | Low | 4774.6 ms | 2585.3 ms | 45.9% | 267.3 MiB | 133.7 MiB |
-| 临时与输出均在 Windows 挂载盘 | High | 2962.0 ms | 1341.0 ms | 54.7% | 133.6 MiB | 66.8 MiB |
-| WSL 本地临时盘 → Windows 输出盘 | Low | 1989.0 ms | 1911.5 ms | 3.9% | 267.3 MiB | 133.7 MiB |
-| WSL 本地临时盘 → Windows 输出盘 | High | 1947.0 ms | 1845.9 ms | 5.2% | 133.6 MiB | 66.8 MiB |
-
-全部运行均禁止外网且未产生意外 HTTP 请求，最终文件可完整解码，32-bit PCM SHA-256 与 golden 文件逐次一致。64 MiB 媒体加 1 MiB 封面的标签微基准在同机上从中位数 46.0 ms 降至 11.4 ms（约 4.0 倍）；收益主要来自避免复制整段媒体，不能直接等同于整条下载链路的提速。
-
-当前两种内存模式都已消除明文中间文件，因此 `high` 只比 `low` 少一份加密检查点。在接近实际部署的跨文件系统布局中，本单轨 fixture 的 High 总用时仅比 Low 少约 3.4%，而整轨加密数据会显著提高堆峰值；该结果不代表完整专辑在不同并发和文件系统布局下的差距，完整端到端结果见下一节。默认 `low` 因而仍是更稳妥的选择。若临时目录位于较慢的下载盘、内存充足且并发受控，`high` 仍可减少加密检查点 I/O。最终跨文件系统保存仍保留一次 `.part` 复制，以维持完整文件发布与失败清理语义；把 `download.temp_dir` 与下载目录放在同一文件系统可让这一步退化为原子 rename。
-
-### 内存模式端到端实测（当前实现）
-
-为排除 Apple CDN 速度波动，测试先缓存两张真实专辑的原始加密 ALAC 媒体，再以只读、禁止回源的响应重放；从 API 创建任务，到元数据解析、`wrapper-manager` 解密、ffmpeg 重封装、完整性解码、标签和最终保存，仍走完整生产链路。每个测试单元使用全新的 backend 容器、数据库、临时目录和输出目录，并在 `wrapper-manager` 恢复两个 Ready 实例后开始计时。
-
-- 正式矩阵基于 v1.3.2 / `59befc1`；测试期间合入的 v1.3.3 / `13c49a7` 仅重构了下载路径共用的媒体发现代码，下载所用的来源解析、variant 选择及传输逻辑等价，并通过同一缓存上的 Low/High 配对 smoke、单元测试和音频校验确认当前实现适用下表结论。
-- [月姫 -A piece of blue glass moon- THEME SONG E.P](https://music.apple.com/cn/album/1580904295)：8 首，原始媒体约 841 MiB；[Fate/stay night [Realta Nua] Soundtrack Reproduction](https://music.apple.com/cn/album/1576634760)：62 首，原始媒体约 1.14 GiB。
-- `download.max_parallel_downloads` 与 `download.max_parallel_decrypts` 同设为 1、2、4、8；每个“专辑 × 模式 × D/X”组合交错运行 3 轮，下表为三轮平均值。
-- D/X 是 backend 进程级、跨任务共享的下载/解密池容量，不是单任务“最多同时处理 p 首”。内部 in-flight 上限是 D+X；当 D=X=p 时，管线最多允许 2p 个已下载但尚未完成解密的媒体占位。
-- 内存是整个 backend 容器的 cgroup 峰值，包含进程内存和计入 cgroup 的文件页缓存；临时空间是 `download.temp_dir` 与系统临时目录的同时峰值，不含最终下载目录。
-- 正式 48 个测试单元全部完成，强制命中 ALAC，失败曲目和缓存回源均为 0；两种模式、所有并发下的逐轨音频 packet SHA-256 一致。
-
-月姫（长曲目、Hi-Res，较容易放大整轨内存与检查点成本）：
-
-| 全局并发 D/X | Low 用时 | High 用时 | High 提速 | Low cgroup 峰值 | High cgroup 峰值 | Low 临时峰值 | High 临时峰值 |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1/1 | 51.3 s | 44.6 s | 13.0% | 137 MiB | 772 MiB | 394 MiB | 135 MiB |
-| 2/2 | 32.1 s | 26.7 s | 16.9% | 150 MiB | 1,345 MiB | 714 MiB | 233 MiB |
-| 4/4 | 23.8 s | 19.3 s | 19.2% | 227 MiB | 1,931 MiB | 1,260 MiB | 446 MiB |
-| 8/8 | 22.1 s | 18.8 s | 14.8% | 344 MiB | 2,017 MiB | 1,550 MiB | 677 MiB |
-
-Fate（大量短曲目，固定的 session、ffmpeg 启动、校验和标签开销占比更高）：
-
-| 全局并发 D/X | Low 用时 | High 用时 | High 提速 | Low cgroup 峰值 | High cgroup 峰值 | Low 临时峰值 | High 临时峰值 |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1/1 | 157.1 s | 134.3 s | 14.5% | 210 MiB | 369 MiB | 144 MiB | 72 MiB |
-| 2/2 | 75.6 s | 69.4 s | 8.2% | 218 MiB | 485 MiB | 217 MiB | 72 MiB |
-| 4/4 | 63.1 s | 58.7 s | 6.9% | 214 MiB | 641 MiB | 245 MiB | 98 MiB |
-| 8/8 | 59.1 s | 56.0 s | 5.3% | 266 MiB | 960 MiB | 382 MiB | 106 MiB |
-
-Fate 1/1 High 的首轮为 160.2 s，后两轮为 121.6 s 和 121.0 s，墙钟变异系数为 16.7%；额外补测为 119.9 s。主表仍保留预先约定的正式三轮平均值，没有剔除冷态样本。其余组合的三轮墙钟变异系数为 0.2%-8.5%。
-
-High 并没有使用更快的解密算法：当前 Low 与 High 都逐片段解密并直接送入 ffmpeg。区别是 Low 会把可续传的加密 `raw-*` 检查点写入临时盘，并在解密时重读；High 用整轨内存代替这次写入和重读。因此 High 在本次排除 CDN 的测试中快约 5%-19%，容器 CPU 时间也少约 5%-9%；收益来自减少加密检查点的文件系统 I/O 和系统调用，Windows/WSL 挂载盘会放大这部分差距。公网下载较慢或临时目录位于本地快速盘时，I/O 会被网络或 CPU 工作掩盖，差距通常会缩小。
-
-对正在重封装的一首曲目，Low 的临时目录会同时存在大小相近的 `raw-*` 与 `flat-*`，所以看到约两倍单轨大小是正常结果，不是又生成了明文 `dec-*`。专辑并发运行时，峰值还取决于各阶段同时驻留的曲目组合，因此不一定严格等于两倍；High 主要只保留 `flat-*`。
-
-High 的内存代价也不能按一个 worker 或专辑平均曲目估算：每个已下载但尚未完成解密的轨道都会保留完整加密 `[]byte`，直到解密消费完毕才释放，再叠加 Go GC 的分配余量。D=X=p 时内部最多允许 D+X 个媒体 in-flight，所以高并发下峰值会迅速放大。内存预算不明确时保留默认 `low`；使用 `high` 时优先从 1/1 或 2/2 开始，只有确认临时盘 I/O 是瓶颈且峰值内存充足时再上调。本地重放表示后端处理能力上限，不代表普通 CDN 环境中的绝对下载时间。
-
-### 歌词
-
-- `download.embed_lyrics` 控制是否写入 MP4 歌词标签。
-- `download.save_lyrics_file` 控制是否保存 `.lrc` 或 `.ttml` 边车文件。
-- `download.lyrics_format` 支持 `lrc` 和 `ttml`；`ttml` 会保留 wrapper 返回的原始 TTML。
-- `download.lyrics_type` 支持 `lyrics` 和 `syllable-lyrics`；后者用于请求 Apple Music 逐词歌词。
-- `download.lyrics_extras` 可配置 `translation`、`pronunciation`，仅在 `lyrics_format: "lrc"` 时参与转换。
-- 歌词、逐词歌词、翻译和音译需要 `wrapper-manager` 具备有效 Apple Music 订阅登录态。
-- 歌词获取或转换失败不会中断音频下载；后端会继续保存无歌词音频并在任务项状态中说明原因。
-
-## 保存格式
-
-每种任务类型的完整保存路径由一行模板配置，相对 `download.downloads_dir` 解析，末段为文件名（自动追加 `.m4a` 扩展名）：
-
-- `download.song_path_format`，默认 `songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}`
-- `download.album_path_format`，默认 `albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}`
-- `download.artist_path_format`，默认 `artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}`（艺术家任务会展开为该艺术家的专辑/单曲列表）
-- `download.playlist_path_format`，默认 `playlists/{PlaylistName}/{SongNumber:02d}. {SongName}`（`{SongNumber}` 为歌曲在歌单中的序号）
-- `download.station_path_format`，默认 `stations/{StationName}/{SongNumber:02d}. {SongName}`（电台任务；`{StationName}`/`{StationId}` 为电台名/ID）
-
-以默认配置为例，专辑曲目会保存到：
+And when it finishes:
 
 ```text
-data/downloads/albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
+data/downloads/albums/<artist>/<album>/01. Song.m4a   ← ALAC, cover and lyrics embedded
+                                       cover.jpg      ← standalone artwork
 ```
 
-模板变量列表见 `configs/config.example.yaml` 注释。目录段中的 `{ArtistName}` 使用集合的归档艺术家（优先专辑艺术家），保证同一专辑的曲目落在同一目录；文件名段使用曲目自身的艺术家。
+Interactive API reference: <http://localhost:18080/docs>.
 
-可选择在音频文件外额外保存独立封面：
+## How it works
 
-- `download.save_album_cover: true`：在专辑目录保存 `cover.jpg` 或 `cover.png`。
-- `download.save_artist_cover: true`：在艺术家目录保存 `artist.jpg` 或 `artist.png`。
-- `download.save_playlist_cover: true`：在歌单目录保存 `cover.jpg` 或 `cover.png`。
+<p align="center">
+  <img src="./assets/readme/architecture.svg" width="100%"
+       alt="Web and iOS clients call the backend over REST, SSE and WebSocket; the backend keeps its job queue in SQLite, runs the download pipeline and writes files to disk; it requires wrapper-manager over gRPC and reads Apple Music from two different hosts">
+</p>
 
-封面目录按路径模板中的变量定位：专辑封面写入引用 `{AlbumName}`/`{AlbumId}` 的最深目录段（若无则写入音频文件所在目录）；艺术家封面写入引用艺术家变量（`{ArtistName}`、`{UrlArtistName}`、`{AlbumArtist}`、`{ArtistId}`）的最深目录段，若模板目录中没有艺术家段则跳过艺术家封面。文件扩展名跟随 `download.cover_format`。歌单与电台为平铺目录，可保存歌单/电台封面，但不会额外写入专辑或艺术家封面。
+**`wrapper-manager` is not optional.** It holds the Apple Music account session and
+serves the device manifest, Widevine licenses and lyrics over gRPC. The connection is
+lazy, so the backend starts without it — `GET /api/v1/wrapper/status` tells you whether
+it is actually reachable.
 
-对于带 `?i=<song_id>` 的专辑链接，可通过 `catalog.album_track_url_mode` 选择任务类型：
+**Apple is read from two hosts, and they are not interchangeable.**
+`api.music.apple.com` is the documented API and takes a self-signed developer token.
+`amp-api.music.apple.com` is Apple's internal web-player endpoint, answers only to a JWT
+scraped from `music.apple.com`, and is the **only** source of `enhancedHls` manifests and
+`editorialVideo` animated covers. Being undocumented, it can change without notice;
+anything read from it degrades to "this album doesn't have that" rather than failing a job.
 
-- `song`（默认）：视为单曲任务，使用 `i` 参数中的歌曲 ID。
-- `album`：忽略 `i` 参数，视为专辑任务并下载整张专辑。
+**There is no authentication here, on purpose.** Every endpoint is open, including
+`GET /api/v1/developer-token`. This is the download core — access control belongs to the
+reverse proxy, gateway or session layer you put in front of it.
 
-## 测试
+## How a track is downloaded
+
+Every track walks the same path. Each transition is published as an `item_progress`
+event whose `phase` carries the item status:
+
+```text
+queued → resolving → waiting_download → downloading → waiting_decrypt
+       → decrypting → remuxing → saving → tagging → completed
+```
+
+Alongside the status, each item carries a durable stage breakdown — `resolved`,
+`remuxed`, `verified`, `tagged`, `saved` — so a client that reconnects mid-job can
+redraw the exact same progress without replaying the stream.
+
+Media is decrypted fragment by fragment straight into `ffmpeg`; no plaintext whole track
+is ever written to disk. The flatten, integrity check and tag rewrite all happen in
+`download.temp_dir`, and only the finished file moves to `downloads_dir`.
+
+### Codec fallback
+
+<p align="center">
+  <img src="./assets/readme/codec-fallback.svg" width="100%"
+       alt="Codecs from download.quality_priority are tried in order; when one codec's attempts are exhausted the next is tried, with AAC-LC over WebPlayback always appended as the implicit final fallback">
+</p>
+
+`download.quality_priority` is an ordered list — `alac`, `aac`, `aac-binaural`,
+`aac-downmix`, `ec3`, `ac3`. Each codec gets `download.max_attempts` tries, with the
+download and decrypt phases counted separately, and retries use exponential backoff with
+jitter. AAC-LC never needs listing: it is appended automatically as the last-resort
+WebPlayback format. Set `codec_alternative: false` to stop after the first codec.
+
+### Concurrency
+
+Three process-wide pools, shared across all jobs and fixed at startup:
+`max_parallel_downloads` (16), `max_parallel_decrypts` (32) and
+`max_parallel_wrapper_requests` (24), plus `max_running_jobs` (3) worker slots. When a
+pool is full, permits go to the earliest-submitted unfinished job first, so jobs tend to
+finish one after another instead of all creeping forward together. Interactive API calls
+never queue behind jobs.
+
+`download.memory_mode` trades RAM for temp-disk I/O: `low` (default) checkpoints the
+encrypted track to disk and re-reads it; `high` keeps it in RAM instead. See
+[docs/download-pipeline.md](docs/download-pipeline.md) and the measured numbers in
+[docs/benchmarks.md](docs/benchmarks.md).
+
+## Where files land
+
+One template per task type, relative to `download.downloads_dir`. The last segment is
+the file name and gets `.m4a` appended.
+
+| Config key | Default |
+| --- | --- |
+| `download.song_path_format` | `songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}` |
+| `download.album_path_format` | `albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}` |
+| `download.artist_path_format` | `artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}` |
+| `download.playlist_path_format` | `playlists/{PlaylistName}/{SongNumber:02d}. {SongName}` |
+| `download.station_path_format` | `stations/{StationName}/{SongNumber:02d}. {SongName}` |
+
+Variables like `{AlbumArtist}`, `{ReleaseYear}`, `{UPC}`, `{DiscNumber}` and `{Codec}`
+are listed in [`configs/config.example.yaml`](configs/config.example.yaml); numeric ones
+take `:02d` padding. In directory segments `{ArtistName}` resolves to the collection's
+grouping artist so an album stays in one folder; in the file-name segment it is the
+track's own artist. Standalone `cover.jpg` / `artist.jpg` files and `.lrc` / `.ttml`
+lyrics sidecars are written next to the audio when enabled.
+
+## API
+
+`http://localhost:18080/docs` is a live Swagger UI over
+[`internal/api/openapi.yaml`](internal/api/openapi.yaml), which is the source of truth
+for every request and response shape.
+
+| | |
+| --- | --- |
+| **Downloads** | `POST /downloads` · `GET /downloads` · `GET/DELETE /downloads/{id}` · `POST /downloads/{id}/cancel` · `POST /downloads/{id}/retry` |
+| **Events** | `GET /downloads/{id}/events` (+ `/ws`) per job · `GET /downloads/events` (+ `/ws`) overview feed |
+| **Quality** | `POST /quality` — probe a URL's declared codecs and audio quality without creating a job |
+| **Wrapper** | `GET /wrapper/status` · `POST /wrapper/login` · `POST /wrapper/login/{login_id}/2fa` · `POST /wrapper/logout` |
+| **Config** | `GET /config` · `PUT /config` · `GET /hooks` |
+| **Library sync** | `GET /library-sync` · `POST /library-sync/reset` |
+| **System** | `GET /health` · `GET /developer-token` · `GET /logs` · `GET /logs/stream` (+ `/ws`) |
+
+Submissions take `url` or `urls`, and an `overrides` object that overlays the runtime
+config for that batch only — quality priority, memory mode, path templates, lyrics
+settings, `force_overwrite`, the hook allow-list, and the `media_user_token` that radio
+stations and private playlists need. Tokens are never echoed back in any response.
+
+Every response carries an `X-Request-ID`; send your own and
+`GET /logs?request_id=<id>` aggregates that request's access and job logs.
+
+Full walkthrough with curl examples: [docs/api.md](docs/api.md).
+
+## Configuration
+
+A single file, `configs/config.yaml`, bootstrapped from
+[`configs/config.example.yaml`](configs/config.example.yaml) on first start. The example
+is the documentation — every key's allowed values, units and defaults live in its comments.
+
+- **Runtime keys** (quality, paths, lyrics, covers, retries, simulate, library sync) apply
+  immediately via `PUT /api/v1/config`, which rewrites the whole file and drops comments.
+- **Startup keys** (listen address, database path, wrapper address, pool sizes, log
+  format) need a restart.
+- **Any key** can be overridden with `AMDL_<SECTION>_<KEY>`, e.g.
+  `AMDL_DOWNLOAD_QUALITY_PRIORITY=alac,aac`. Unknown `AMDL_*` variables fail startup
+  rather than being silently ignored, and env-pinned fields are rejected by `PUT` with 422.
+
+Details, upgrade notes and the Docker specifics: [docs/configuration.md](docs/configuration.md)
+and [docs/deployment.md](docs/deployment.md).
+
+## Automation
+
+**Job hooks** ([`configs/hooks.yaml`](configs/hooks.yaml)) fire a webhook or a local
+command when a job is queued or reaches a terminal state — refresh a media server, run a
+post-processing script. Disabled by default.
+
+**Library sync** polls your signed-in Apple Music library and submits the *album* behind
+any newly added song as a normal download job: favourite one track on your phone, get the
+album on your NAS. Disabled by default — it is the only feature that creates jobs on its
+own. Because Apple exposes no reliable "added at" timestamp for library songs, it anchors
+on the *order* of `sort=-dateAdded` instead of a clock.
+
+Both are covered in [docs/automation.md](docs/automation.md).
+
+## Limits
+
+- **Audio only.** Apple Music music videos will not be supported: under L3 the pipeline
+  can only reach low-resolution video, which does not meet this project's quality bar.
+- **One user, no accounts.** There is no concept of a user anywhere in this codebase, and
+  no auth. Put a gateway in front of it.
+- **Radio is a rolling list.** Stations resolve to Apple's current "next tracks", so a
+  download captures what is offered now, not a fixed tracklist. Live stations
+  (Apple Music 1 and friends) fail with an explicit error.
+- **Some catalog data is undocumented.** `enhancedHls` and animated covers come from
+  `amp-api.music.apple.com` and may disappear without warning.
+
+## Documentation
+
+| | |
+| --- | --- |
+| [docs/api.md](docs/api.md) | Every endpoint with curl examples, job overrides, SSE/WS semantics |
+| [docs/configuration.md](docs/configuration.md) | Config file, env overrides, runtime vs startup keys, upgrade notes |
+| [docs/deployment.md](docs/deployment.md) | Docker, mounts, `PUID`/`PGID`, seeding, releases and image tags |
+| [docs/download-pipeline.md](docs/download-pipeline.md) | Retries, codec fallback, concurrency pools, memory modes, lyrics |
+| [docs/automation.md](docs/automation.md) | Job hooks and library sync |
+| [docs/benchmarks.md](docs/benchmarks.md) | Measured post-decrypt and end-to-end results |
+
+## Development
 
 ```bash
 go test ./...
 ```
 
-如需强制绕过 Go 测试缓存：
+Add `-count=1` to bypass the Go test cache. CI runs `gofmt`, `go vet`, the full test suite,
+the race detector and `govulncheck` on every push to `main` and every pull request.
 
-```bash
-go test ./... -count=1
-```
+`ffmpeg` is the only external command the pipeline needs. Sample extraction, remuxing,
+metadata and cover art are all done in-process with `mp4ff` and `go-mp4tag`.
 
-## 发版
+Work lands on `dev`; `main` is release-only and requires a pull request. Every commit
+needs a DCO sign-off (`git commit -s`) — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Releases are cut by merging the `dev` → `main` PR with a version in its title, or by
+running the `Release` workflow manually; both create the GitHub Release and push the
+multi-arch image to GHCR.
 
-手动运行 `Release` workflow（`workflow_dispatch`，指定版本号）时，GitHub Actions 会先执行完整 Go 测试，再创建 GitHub Release；本仓库不通过推送 tag 触发发版。
+## License
 
-发版时会优先读取仓库内与版本号对应的版本说明：
-
-```text
-.github/release-notes/<版本号>.md
-```
-
-例如发布 `v1.4.0` 时使用 `.github/release-notes/v1.4.0.md`。该文件不存在或为空时，workflow 才会回退到现有的提交记录自动生成逻辑。自动生成的每条说明会在末尾包含提交作者，以及 commit message 中通过 `Co-authored-by` trailer 声明的协作者，并自动去重。自动生成逻辑位于：
-
-```text
-.github/scripts/generate-changelog.js
-```
-
-发版成功后 `Release` workflow 会调用 `Docker Publish` workflow，构建多架构镜像（linux/amd64 + linux/arm64）并推送到 `ghcr.io/amdl-web/apple-music-downloader-backend`，镜像 tag 为 `{version}`、`{major}.{minor}` 与 `latest`。`Docker Publish` 也可对已存在的版本标签手动触发（补发或重发镜像），在 GitHub 页面手工发布 Release 时同样会自动运行。手动触发默认不移动 `latest`（避免重发旧版本时把 `latest` 拉回去），仅在勾选 `latest` 选项时才更新；页面手工发布的预发布（prerelease）Release 也不会移动 `latest`。首次推送会在 GHCR 创建私有 package，如需公开拉取，请到仓库 Packages 设置里将其改为 public。
+[AGPL-3.0](LICENSE).
