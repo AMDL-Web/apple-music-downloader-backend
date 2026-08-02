@@ -1,6 +1,9 @@
 module amdl
 
-go 1.25.12
+// Keep this in step with the golang image in Dockerfile. CI resolves its Go
+// version from this line (go-version-file: go.mod), so letting the two drift
+// means the released binary is built by a toolchain CI never exercised.
+go 1.26.5
 
 require (
 	github.com/iyear/gowidevine v0.1.3
