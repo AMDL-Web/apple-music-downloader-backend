@@ -5,6 +5,10 @@ name: Claude Auto Review
 # - 设为 "false"：关闭
 # 修改方式：Settings → Secrets and variables → Actions → Variables，
 # 或命令行：gh variable set CLAUDE_AUTO_REVIEW --body false
+#
+# bot 开的 PR 不审：Renovate 的依赖升级 PR 内容是版本号，AI 审查读不出什么，
+# 白烧额度。它们的安全网是 ci.yml（build + test + race + govulncheck）和 CodeQL，
+# 那两个照常跑。人开的 PR 不受影响。
 
 on:
   pull_request:
@@ -12,7 +16,10 @@ on:
 
 jobs:
   auto-review:
-    if: vars.CLAUDE_AUTO_REVIEW != 'false' && !github.event.pull_request.draft
+    if: >-
+      vars.CLAUDE_AUTO_REVIEW != 'false'
+      && !github.event.pull_request.draft
+      && github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
     permissions:
       contents: read
