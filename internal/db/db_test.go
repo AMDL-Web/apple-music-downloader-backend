@@ -795,6 +795,17 @@ func TestListJobsFilterPaginationAndSort(t *testing.T) {
 	if listed[0].DoneItems != 1 || listed[0].FailedItems != 1 {
 		t.Fatalf("j3 progress done=%d failed=%d, want 1/1", listed[0].DoneItems, listed[0].FailedItems)
 	}
+	counts, err := store.CountJobsByStatus(ctx, JobListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for status, want := range map[domain.JobStatus]int{
+		domain.JobQueued: 1, domain.JobRunning: 1, domain.JobCompleted: 1, domain.JobFailed: 1, domain.JobCancelled: 0,
+	} {
+		if got := counts[status]; got != want {
+			t.Fatalf("status count %s = %d, want %d", status, got, want)
+		}
+	}
 
 	listed, total, err = store.ListJobs(ctx, JobListFilter{
 		Statuses: []domain.JobStatus{domain.JobFailed, domain.JobCancelled},
@@ -813,6 +824,13 @@ func TestListJobsFilterPaginationAndSort(t *testing.T) {
 	}
 	if total != 2 || len(listed) != 2 {
 		t.Fatalf("type+storefront = ids=%v total=%d, want 2 us song/artist", idsOf(listed), total)
+	}
+	counts, err = store.CountJobsByStatus(ctx, JobListFilter{Types: []string{"song", "artist"}, Storefront: "us"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts[domain.JobCompleted] != 1 || counts[domain.JobQueued] != 1 || len(counts) != 2 {
+		t.Fatalf("filtered status counts = %+v, want completed=1 queued=1", counts)
 	}
 
 	listed, total, err = store.ListJobs(ctx, JobListFilter{Query: "beta", Limit: 50})

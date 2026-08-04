@@ -28,6 +28,17 @@ func (s JobStatus) IsTerminal() bool {
 	}
 }
 
+// JobStatusCounts is the fixed-shape status summary returned by the downloads
+// overview snapshot and attached to every overview feed message.
+type JobStatusCounts struct {
+	Queued    int `json:"queued"`
+	Running   int `json:"running"`
+	Completed int `json:"completed"`
+	Failed    int `json:"failed"`
+	Cancelled int `json:"cancelled"`
+	Total     int `json:"total"`
+}
+
 type ItemStatus string
 
 const (
@@ -485,13 +496,14 @@ func IsOverviewMilestone(eventType string) bool {
 // DownloadFeedMessage is one push on the overview (GET /downloads) SSE/WS
 // feed. Type is download_upserted (Job carries the affected job's latest
 // snapshot, with live-derived progress counters) or download_deleted (only
-// JobID is set). EventID is the persisted-event cursor a client hands back to
-// resume.
+// JobID is set). StatusCounts is the current global summary after the change.
+// EventID is the persisted-event cursor a client hands back to resume.
 type DownloadFeedMessage struct {
-	Type    string `json:"type"`
-	Job     *Job   `json:"job,omitempty"`
-	JobID   string `json:"job_id,omitempty"`
-	EventID int64  `json:"event_id,omitempty"`
+	Type         string          `json:"type"`
+	Job          *Job            `json:"job,omitempty"`
+	JobID        string          `json:"job_id,omitempty"`
+	EventID      int64           `json:"event_id,omitempty"`
+	StatusCounts JobStatusCounts `json:"status_counts"`
 }
 
 type DownloadRequest struct {

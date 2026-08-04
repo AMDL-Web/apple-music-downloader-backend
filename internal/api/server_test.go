@@ -779,11 +779,12 @@ func TestListDownloadsDerivesProgressFromItems(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	var resp struct {
-		Downloads   []domain.Job `json:"downloads"`
-		LastEventID int64        `json:"last_event_id"`
-		Total       int          `json:"total"`
-		Limit       int          `json:"limit"`
-		Offset      int          `json:"offset"`
+		Downloads    []domain.Job           `json:"downloads"`
+		StatusCounts domain.JobStatusCounts `json:"status_counts"`
+		LastEventID  int64                  `json:"last_event_id"`
+		Total        int                    `json:"total"`
+		Limit        int                    `json:"limit"`
+		Offset       int                    `json:"offset"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
@@ -793,6 +794,9 @@ func TestListDownloadsDerivesProgressFromItems(t *testing.T) {
 	}
 	if resp.Total != 1 || resp.Limit != 50 || resp.Offset != 0 {
 		t.Fatalf("pagination meta total=%d limit=%d offset=%d, want 1/50/0", resp.Total, resp.Limit, resp.Offset)
+	}
+	if resp.StatusCounts != (domain.JobStatusCounts{Running: 1, Total: 1}) {
+		t.Fatalf("status_counts = %+v, want running=1 total=1 with other statuses zero", resp.StatusCounts)
 	}
 	// completed + skipped = 2 done, 1 failed — the persisted job row still has
 	// DoneItems=0 (never finalized), so the list must count from job_items.
@@ -824,16 +828,20 @@ func TestListDownloadsQueryFilters(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	var resp struct {
-		Downloads []domain.Job `json:"downloads"`
-		Total     int          `json:"total"`
-		Limit     int          `json:"limit"`
-		Offset    int          `json:"offset"`
+		Downloads    []domain.Job           `json:"downloads"`
+		StatusCounts domain.JobStatusCounts `json:"status_counts"`
+		Total        int                    `json:"total"`
+		Limit        int                    `json:"limit"`
+		Offset       int                    `json:"offset"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
 	if resp.Total != 1 || len(resp.Downloads) != 1 || resp.Downloads[0].ID != "b" || resp.Limit != 10 {
 		t.Fatalf("status filter resp = %+v", resp)
+	}
+	if resp.StatusCounts != (domain.JobStatusCounts{Failed: 1, Total: 1}) {
+		t.Fatalf("status filter counts = %+v, want failed=1 total=1", resp.StatusCounts)
 	}
 
 	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads?type=song&type=playlist&storefront=us&sort=created_at&order=asc", "")
@@ -845,6 +853,9 @@ func TestListDownloadsQueryFilters(t *testing.T) {
 	}
 	if resp.Total != 2 || len(resp.Downloads) != 2 || resp.Downloads[0].ID != "a" || resp.Downloads[1].ID != "c" {
 		t.Fatalf("type+storefront+sort resp = %+v", resp)
+	}
+	if resp.StatusCounts != (domain.JobStatusCounts{Completed: 1, Running: 1, Total: 2}) {
+		t.Fatalf("type+storefront counts = %+v, want completed=1 running=1 total=2", resp.StatusCounts)
 	}
 
 	recorder = requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/downloads?q=beta", "")
@@ -1131,6 +1142,9 @@ func TestDownloadsFeedPushesUpsertsAndDeletes(t *testing.T) {
 	if msg.EventID == 0 {
 		t.Fatal("upsert event_id = 0, want the milestone's cursor")
 	}
+	if msg.StatusCounts != (domain.JobStatusCounts{Completed: 1, Total: 1}) {
+		t.Fatalf("backlog status_counts = %+v, want completed=1 total=1", msg.StatusCounts)
+	}
 
 	// Live upsert: a new job's milestone wakes the feed.
 	job2 := domain.Job{ID: "job2", Input: "song|us|2", Type: "song", CanonicalKey: "song:2", Status: domain.JobRunning}
@@ -1144,6 +1158,9 @@ func TestDownloadsFeedPushesUpsertsAndDeletes(t *testing.T) {
 	if et != "download_upserted" || msg.Job == nil || msg.Job.ID != "job2" {
 		t.Fatalf("live message = %s %+v, want download_upserted for job2", et, msg)
 	}
+	if msg.StatusCounts != (domain.JobStatusCounts{Completed: 1, Running: 1, Total: 2}) {
+		t.Fatalf("live status_counts = %+v, want completed=1 running=1 total=2", msg.StatusCounts)
+	}
 
 	// Live delete: removing a terminal job pushes download_deleted with the
 	// persisted tombstone event_id.
@@ -1156,6 +1173,9 @@ func TestDownloadsFeedPushesUpsertsAndDeletes(t *testing.T) {
 	}
 	if msg.EventID == 0 {
 		t.Fatal("delete event_id = 0, want persisted tombstone cursor")
+	}
+	if msg.StatusCounts != (domain.JobStatusCounts{Running: 1, Total: 1}) {
+		t.Fatalf("delete status_counts = %+v, want running=1 total=1", msg.StatusCounts)
 	}
 }
 
@@ -1218,6 +1238,9 @@ func TestDownloadsFeedReplaysDeleteAfterSnapshotCursor(t *testing.T) {
 			if msg.EventID <= finished.ID || sseID != msg.EventID {
 				t.Fatalf("delete cursor = event_id %d / id: %d, want tombstone after %d", msg.EventID, sseID, finished.ID)
 			}
+			if msg.StatusCounts != (domain.JobStatusCounts{}) {
+				t.Fatalf("replayed delete status_counts = %+v, want all zero", msg.StatusCounts)
+			}
 			return
 		}
 	}
@@ -1273,6 +1296,9 @@ func TestDownloadsFeedWSResumesFromCursor(t *testing.T) {
 	// Only job2 is newer than the cursor; job1 must not be replayed.
 	if msg.Type != "download_upserted" || msg.Job == nil || msg.Job.ID != "job2" {
 		t.Fatalf("first WS message = %+v, want download_upserted for job2 only", msg)
+	}
+	if msg.StatusCounts != (domain.JobStatusCounts{Running: 2, Total: 2}) {
+		t.Fatalf("WS status_counts = %+v, want running=2 total=2", msg.StatusCounts)
 	}
 }
 

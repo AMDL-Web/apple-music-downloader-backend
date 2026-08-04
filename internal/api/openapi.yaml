@@ -639,6 +639,8 @@ paths:
           的进度、终态），data.job 为该任务的最新快照（done_items/failed_items
           按实时进度计算）；
         - download_deleted：某个任务被删除，data.job_id 为被删任务 id。
+        两类消息都带 status_counts，表示消息生成时全部任务的最新状态计数；删除消息
+        中已经扣除被删除的任务。
         只有影响列表展示的「里程碑」事件才会触发推送（新建/恢复/开始/解析完成/
         动态封面解析完成/单曲完成或跳过或失败/终态/删除），逐曲下载进度等高频细节
         不会推送。动态封面是任务进入终态之后仍可能到达的唯一一类变化：它在带外解析，
@@ -650,7 +652,7 @@ paths:
       parameters:
         - name: Last-Event-ID
           in: header
-          description: 已处理到的最新 event_id（取自 GET /downloads 的 last_event_id 或上一条 upsert 的 event_id）。
+          description: 已处理到的最新 event_id（取自 GET /downloads 的 last_event_id 或上一条推送的 event_id）。
           schema:
             type: integer
             format: int64
@@ -2012,7 +2014,7 @@ components:
         updated_at: {type: string, format: date-time}
     DownloadList:
       type: object
-      required: [downloads, total, limit, offset, last_event_id]
+      required: [downloads, status_counts, total, limit, offset, last_event_id]
       properties:
         downloads:
           type: array
@@ -2021,6 +2023,10 @@ components:
             的实时进度计算（而非仅在终态刷新的存储计数）。
           items:
             $ref: '#/components/schemas/Job'
+        status_counts:
+          allOf:
+            - $ref: '#/components/schemas/DownloadStatusCounts'
+          description: 满足当前查询筛选条件的任务状态计数，不受 limit/offset 影响。
         total:
           type: integer
           description: 满足当前筛选条件的任务总数（不受 limit/offset 影响）。
@@ -2037,10 +2043,24 @@ components:
             当前全局已持久化的最新事件 id（跨所有任务，尚无事件时为 0）。客户端可
             将此值作为总览事件流 GET /downloads/events(/ws) 的续接起点，只接收本
             快照之后的列表变化。
+    DownloadStatusCounts:
+      type: object
+      description: >-
+        固定返回全部五种任务状态；没有匹配任务的状态为 0，total 为五种状态之和。
+      required: [queued, running, completed, failed, cancelled, total]
+      properties:
+        queued: {type: integer, minimum: 0}
+        running: {type: integer, minimum: 0}
+        completed: {type: integer, minimum: 0}
+        failed: {type: integer, minimum: 0}
+        cancelled: {type: integer, minimum: 0}
+        total: {type: integer, minimum: 0}
     DownloadFeedMessage:
       type: object
-      required: [type]
-      description: 总览事件流（GET /downloads/events(/ws)）的一条推送。
+      required: [type, status_counts]
+      description: >-
+        总览事件流（GET /downloads/events(/ws)）的一条推送。每次任务新增、状态变化
+        或删除时都附带最新的全局任务状态计数。
       properties:
         type:
           type: string
@@ -2053,6 +2073,12 @@ components:
         job_id:
           type: string
           description: 仅 download_deleted 时存在，为被删除任务的 id。
+        status_counts:
+          allOf:
+            - $ref: '#/components/schemas/DownloadStatusCounts'
+          description: >-
+            当前全部任务的状态计数；实时推送端点没有列表筛选参数，因此这里始终是
+            全局计数。download_deleted 中已经扣除被删除的任务。
         event_id:
           type: integer
           format: int64
