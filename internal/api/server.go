@@ -477,9 +477,27 @@ func (s *Server) listDownloads(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	counts, err := s.store.CountJobsByStatus(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"downloads": jobs, "total": total, "limit": filter.Limit, "offset": filter.Offset, "last_event_id": lastEventID,
+		"downloads":     jobs,
+		"status_counts": makeJobStatusCounts(counts, total),
+		"total":         total, "limit": filter.Limit, "offset": filter.Offset, "last_event_id": lastEventID,
 	})
+}
+
+func makeJobStatusCounts(counts map[domain.JobStatus]int, total int) domain.JobStatusCounts {
+	return domain.JobStatusCounts{
+		Queued:    counts[domain.JobQueued],
+		Running:   counts[domain.JobRunning],
+		Completed: counts[domain.JobCompleted],
+		Failed:    counts[domain.JobFailed],
+		Cancelled: counts[domain.JobCancelled],
+		Total:     total,
+	}
 }
 
 var (
@@ -1081,6 +1099,18 @@ func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, ch <-chan d
 			if err != nil {
 				return nil // keep the connection; the next wake or tick retries
 			}
+			if len(events) == 0 {
+				return nil
+			}
+			counts, err := s.store.CountJobsByStatus(ctx, db.JobListFilter{})
+			if err != nil {
+				return nil // do not advance the cursor until counts can accompany the message
+			}
+			total := 0
+			for _, count := range counts {
+				total += count
+			}
+			statusCounts := makeJobStatusCounts(counts, total)
 			type pendingMessage struct {
 				eventID int64
 				deleted bool
@@ -1103,7 +1133,7 @@ func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, ch <-chan d
 			for _, jobID := range order {
 				pending := latest[jobID]
 				if pending.deleted {
-					if err := write(domain.DownloadFeedMessage{Type: "download_deleted", JobID: jobID, EventID: pending.eventID}); err != nil {
+					if err := write(domain.DownloadFeedMessage{Type: "download_deleted", JobID: jobID, EventID: pending.eventID, StatusCounts: statusCounts}); err != nil {
 						return err
 					}
 					lastID = pending.eventID
@@ -1122,7 +1152,7 @@ func (s *Server) runDownloadsFeed(ctx context.Context, lastID int64, ch <-chan d
 					// this round; the next wake or tick retries the same page.
 					return nil
 				}
-				if err := write(domain.DownloadFeedMessage{Type: "download_upserted", Job: snap, EventID: pending.eventID}); err != nil {
+				if err := write(domain.DownloadFeedMessage{Type: "download_upserted", Job: snap, EventID: pending.eventID, StatusCounts: statusCounts}); err != nil {
 					return err
 				}
 				lastID = pending.eventID

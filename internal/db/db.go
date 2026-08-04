@@ -629,6 +629,32 @@ func (s *Store) ListJobs(ctx context.Context, filter JobListFilter) ([]domain.Jo
 	return out, total, rows.Err()
 }
 
+// CountJobsByStatus returns the number of jobs in each persisted status after
+// applying the same non-pagination filters as ListJobs. Statuses with no
+// matching jobs are omitted from the map so callers can choose their own
+// stable zero-valued response shape.
+func (s *Store) CountJobsByStatus(ctx context.Context, filter JobListFilter) (map[domain.JobStatus]int, error) {
+	where, args := filter.whereClause()
+	rows, err := s.db.QueryContext(ctx, `SELECT j.status, COUNT(*) FROM jobs j`+where+` GROUP BY j.status`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[domain.JobStatus]int)
+	for rows.Next() {
+		var (
+			status domain.JobStatus
+			count  int
+		)
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		counts[status] = count
+	}
+	return counts, rows.Err()
+}
+
 // DeleteJob removes a terminal (completed/failed/cancelled) job together with
 // its items and old per-job events, then persists a job_deleted tombstone event
 // so overview feeds can replay the deletion from a snapshot cursor. Queued or
