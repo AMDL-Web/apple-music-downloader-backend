@@ -9,12 +9,18 @@ Four layers decide each key's effective value, highest first:
 | **database** | the `settings` table | `PUT /api/v1/config` |
 | **defaults** | compiled into the binary | nobody |
 
-The backend **never writes the config file**. It is an optional, hand-written override
-layer: only the keys actually spelled out in it override anything, and an install without
-one runs on stored settings and defaults alone.
-[`configs/config.yaml`](../configs/config.yaml) is also the documentation — allowed enum
-values, units, defaults and template variables live in its comments, key by key — and the
-shipped copy has every runtime-mutable key commented out so the API owns them.
+On first start the backend copies
+[`configs/config.example.yaml`](../configs/config.example.yaml) verbatim to `config.yaml`
+next to it, and never touches that copy again — **the backend never writes the config
+file**. `config.yaml` is not tracked in git, so an install's own settings cannot be
+committed by accident; the example is, and it is the documentation: allowed enum values,
+units, defaults and template variables live in its comments, key by key.
+
+The file is an optional, partial override layer: only the keys actually spelled out in it
+override anything, and an install without one (delete it, or start with no example beside
+it) runs on stored settings and defaults alone. The shipped example leaves every
+runtime-mutable key commented out, so the copy a fresh install gets pins nothing and the
+API owns them.
 
 ## Pinning
 
@@ -115,12 +121,12 @@ nothing else — no job or library state — so that is a safe thing to do.
 
 ## Upgrade notes
 
-**From 1.x.** Breaking, with no automatic migration. 1.x generated `configs/config.yaml`
-from `config.example.yaml` and rewrote it on every `PUT`; 2.0 removes the example file,
-never writes `config.yaml`, and keeps runtime settings in the database instead. A 1.x
-`config.yaml` is a full copy of every key, so leaving it in place pins every key and takes
-them all away from the API. Replace it with the 2.0 file (or delete it) and re-apply the
-settings you want through `PUT /api/v1/config`.
+**From 1.x.** Breaking, with no automatic migration. 1.x also seeded `config.yaml` from the
+example, but then rewrote it on every `PUT`; 2.0 never writes it and keeps runtime settings
+in the database instead. The 1.x example activated every key, so a 1.x `config.yaml` is a
+full copy of all of them — leaving it in place pins every key and takes them all away from
+the API. Replace it with the 2.0 example (or delete it and let the backend re-seed) and
+re-apply the settings you want through `PUT /api/v1/config`.
 
 **Removed in 2.0.** `AMDL_RUNTIME_CONFIG` and the one-time `runtime.yaml` merge it drove
 are gone, as is the deprecated `catalog.media_user_token_priority` key — a config file or

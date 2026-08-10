@@ -224,8 +224,9 @@ type SimulateConfig struct {
 
 // Default is the lowest configuration layer: the value every key takes when
 // neither the database, configs/config.yaml, nor an AMDL_* variable supplies
-// one. It is kept identical to the values documented in configs/config.yaml,
-// which config_test.go enforces by loading that file with every key active.
+// one. It is kept identical to the values documented in
+// configs/config.example.yaml, which config_test.go enforces by loading that
+// file with every key active.
 func Default() Config {
 	return Config{
 		Server:   ServerConfig{Listen: "127.0.0.1:18080"},

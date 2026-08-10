@@ -33,6 +33,14 @@ func main() {
 	if cfgPath == "" {
 		cfgPath = "configs/config.yaml"
 	}
+	created, err := config.EnsureFile(cfgPath)
+	if err != nil {
+		bootstrapLogger.Error("seed config from example", "error", err)
+		os.Exit(1)
+	}
+	if created {
+		bootstrapLogger.Info("created config from example", "path", cfgPath)
+	}
 	// The config file and the environment are the two layers above the
 	// database, and the database cannot supply the path of the database. So
 	// they are read first, resolved without the database layer to learn
@@ -48,7 +56,7 @@ func main() {
 		os.Exit(1)
 	}
 	if !resolver.FileFound() {
-		bootstrapLogger.Info("no config file; using stored settings, environment overrides, and defaults", "path", cfgPath)
+		bootstrapLogger.Info("no config file and no example to seed one from; using stored settings, environment overrides, and defaults", "path", cfgPath)
 	}
 	if err := os.MkdirAll(filepath.Dir(base.Database.Path), 0o755); err != nil {
 		bootstrapLogger.Error("create database dir", "error", err)

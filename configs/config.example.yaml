@@ -1,7 +1,11 @@
-# Backend configuration. This file is an override layer, never managed state:
-# the backend only reads it, and nothing it does — including PUT
-# /api/v1/config — ever writes it back. Deleting it is valid and leaves a
-# working install.
+# Backend configuration example. On first start the backend copies this file
+# verbatim to config.yaml next to it; that copy is yours to edit and nothing
+# overwrites it afterwards. This example is refreshed with each version, so it
+# is the field documentation — the live config.yaml is not tracked in git.
+#
+# config.yaml is an override layer, never managed state: the backend only reads
+# it, and nothing it does — including PUT /api/v1/config — ever writes it back.
+# Deleting it is valid and leaves a working install.
 #
 # Four layers decide each key's effective value, highest first:
 #

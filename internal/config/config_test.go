@@ -386,14 +386,14 @@ func TestLoadClampsResourceLimitsFromFile(t *testing.T) {
 	}
 }
 
-// committedConfig splits the shipped configs/config.yaml into the keys it
-// writes out and the keys it documents but leaves commented, and returns a
+// committedConfig splits the tracked configs/config.example.yaml into the keys
+// it writes out and the keys it documents but leaves commented, and returns a
 // copy with every commented key activated. A commented line counts as a key
 // only when the name before the colon is a real config key, which is what
 // separates "# level: info" from the prose above it.
 func committedConfig(t *testing.T) (active, commented map[string]bool, uncommented []byte) {
 	t.Helper()
-	raw, err := os.ReadFile("../../configs/config.yaml")
+	raw, err := os.ReadFile("../../configs/config.example.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func committedConfig(t *testing.T) (active, commented map[string]bool, uncomment
 		if m := activePattern.FindStringSubmatch(line); m != nil && section != "" {
 			if key := section + "." + m[1]; known[key] {
 				if active[key] {
-					t.Fatalf("configs/config.yaml sets %s twice", key)
+					t.Fatalf("configs/config.example.yaml sets %s twice", key)
 				}
 				active[key] = true
 			}
@@ -424,7 +424,7 @@ func committedConfig(t *testing.T) (active, commented map[string]bool, uncomment
 		if m := commentedPattern.FindStringSubmatch(line); m != nil && section != "" {
 			if key := section + "." + m[1]; known[key] {
 				if commented[key] {
-					t.Fatalf("configs/config.yaml documents %s twice", key)
+					t.Fatalf("configs/config.example.yaml documents %s twice", key)
 				}
 				commented[key] = true
 				out = append(out, "  "+strings.TrimPrefix(line[2:], "# "))
@@ -449,7 +449,7 @@ func TestCommittedConfigDocumentsEveryKey(t *testing.T) {
 	}
 	slices.Sort(missing)
 	if len(missing) > 0 {
-		t.Fatalf("configs/config.yaml documents neither an active nor a commented entry for: %v", missing)
+		t.Fatalf("configs/config.example.yaml documents neither an active nor a commented entry for: %v", missing)
 	}
 }
 
@@ -473,10 +473,10 @@ func TestCommittedConfigLeavesRuntimeKeysToTheAPI(t *testing.T) {
 	slices.Sort(pinned)
 	slices.Sort(orphaned)
 	if len(pinned) > 0 {
-		t.Fatalf("configs/config.yaml activates runtime-mutable keys, pinning them away from the API: %v", pinned)
+		t.Fatalf("configs/config.example.yaml activates runtime-mutable keys, pinning them away from the API: %v", pinned)
 	}
 	if len(orphaned) > 0 {
-		t.Fatalf("configs/config.yaml comments out startup-bound keys, which no other layer can set: %v", orphaned)
+		t.Fatalf("configs/config.example.yaml comments out startup-bound keys, which no other layer can set: %v", orphaned)
 	}
 }
 
@@ -488,10 +488,10 @@ func TestCommittedConfigMatchesDefaults(t *testing.T) {
 	_, _, uncommented := committedConfig(t)
 	cfg, err := loadConfig(t, string(uncommented))
 	if err != nil {
-		t.Fatalf("configs/config.yaml does not load with every key active: %v", err)
+		t.Fatalf("configs/config.example.yaml does not load with every key active: %v", err)
 	}
 	if diff := configDiff(cfg, Default()); len(diff) > 0 {
-		t.Fatalf("configs/config.yaml and Default() disagree on: %s", strings.Join(diff, ", "))
+		t.Fatalf("configs/config.example.yaml and Default() disagree on: %s", strings.Join(diff, ", "))
 	}
 }
 
@@ -511,21 +511,90 @@ func configDiff(got, want Config) []string {
 	return diff
 }
 
-// TestCommittedConfigLoadsAsShipped covers the file a fresh install actually
-// gets: it must load, and it must not pin anything the API is meant to own.
-func TestCommittedConfigLoadsAsShipped(t *testing.T) {
-	resolver, err := NewResolver("../../configs/config.yaml", nil)
+// TestSeededConfigLoadsAndPinsNothing covers the file a fresh install actually
+// gets. EnsureFile copies the example verbatim, so the copy is only safe
+// because the example pins nothing the API owns — that is what makes seeding a
+// config file compatible with the API owning the runtime keys.
+func TestSeededConfigLoadsAndPinsNothing(t *testing.T) {
+	raw, err := os.ReadFile("../../configs/config.example.yaml")
 	if err != nil {
-		t.Fatalf("configs/config.yaml does not read: %v", err)
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, configExampleFileName), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.yaml")
+	created, err := EnsureFile(path)
+	if err != nil || !created {
+		t.Fatalf("EnsureFile() = (%v, %v), want a created config", created, err)
+	}
+	seeded, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(seeded) != string(raw) {
+		t.Fatal("seeded config is not a verbatim copy of the example")
+	}
+	if info, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("seeded config mode = %v, want owner-only", info.Mode().Perm())
+	}
+
+	resolver, err := NewResolver(path, nil)
+	if err != nil {
+		t.Fatalf("seeded config does not read: %v", err)
 	}
 	cfg, sources, err := resolver.Resolve(nil)
 	if err != nil {
-		t.Fatalf("configs/config.yaml does not load: %v", err)
+		t.Fatalf("seeded config does not load: %v", err)
 	}
 	if diff := configDiff(cfg, Default()); len(diff) > 0 {
-		t.Fatalf("shipped config resolves away from the defaults: %s", strings.Join(diff, ", "))
+		t.Fatalf("seeded config resolves away from the defaults: %s", strings.Join(diff, ", "))
 	}
 	if locked := LockedView(sources); len(locked) > 0 {
-		t.Fatalf("shipped config pins runtime keys: %v", locked)
+		t.Fatalf("seeded config pins runtime keys, taking them away from the API on every fresh install: %v", locked)
+	}
+
+	// Seeding runs on every start and must never overwrite the operator's file.
+	if err := os.WriteFile(path, []byte("logging:\n  format: json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	created, err = EnsureFile(path)
+	if err != nil || created {
+		t.Fatalf("EnsureFile() over an existing config = (%v, %v), want a no-op", created, err)
+	}
+	if raw, err := os.ReadFile(path); err != nil || string(raw) != "logging:\n  format: json\n" {
+		t.Fatalf("EnsureFile() overwrote the existing config: %q (%v)", raw, err)
+	}
+}
+
+// TestEnsureFileWithoutExample: both files are optional, so an install with
+// neither starts on stored settings and defaults instead of refusing to boot.
+func TestEnsureFileWithoutExample(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	created, err := EnsureFile(path)
+	if err != nil || created {
+		t.Fatalf("EnsureFile() with no example = (%v, %v), want a quiet no-op", created, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("EnsureFile() created a config without an example to copy: %v", err)
+	}
+}
+
+// TestEnsureFileRejectsBrokenExample keeps a bad template from being planted as
+// the operator's own file.
+func TestEnsureFileRejectsBrokenExample(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, configExampleFileName), []byte("download:\n  nope: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.yaml")
+	if _, err := EnsureFile(path); err == nil || !strings.Contains(err.Error(), "download.nope") {
+		t.Fatalf("EnsureFile() with a broken example = %v, want an error naming the key", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("EnsureFile() planted a copy of a broken example")
 	}
 }

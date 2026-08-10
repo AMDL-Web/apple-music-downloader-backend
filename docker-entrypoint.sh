@@ -1,8 +1,8 @@
 #!/bin/sh
-# 容器入口:把镜像内置的配置模板播种到配置卷,然后以目标用户启动后端。
-# config.yaml 是手写的覆盖层——后端只读不写,PUT /api/v1/config 改的设置
-# 存进数据库。所以这里只在文件缺失时播种一份,已有文件绝不覆盖:覆盖会
-# 冲掉用户手动钉住的键。
+# 容器入口:把镜像内置的示例配置同步到配置卷,然后以目标用户启动后端。
+# config.yaml 是手写的覆盖层——后端只读不写(PUT /api/v1/config 改的设置
+# 存进数据库),首次启动时由后端从同目录的 config.example.yaml 原样复制
+# 生成,入口脚本不改写它。
 #
 # 运行用户:镜像默认以 root 启动本脚本,播种并修正卷属主后通过 su-exec
 # 降权到 PUID:PGID(默认 1000:1000)运行后端。用 docker run --user(或
@@ -27,11 +27,10 @@ export AMDL_WRAPPER_ADDRESS="${AMDL_WRAPPER_ADDRESS:-host.docker.internal:8080}"
 
 mkdir -p "$CONFIG_DIR"
 
-# config.yaml 缺失时后端用内置默认值加数据库设置照常启动,播种一份注释
-# 完整的模板只是方便编辑启动绑定的键。已存在则原样保留。
-if [ ! -f "$CONFIG_PATH" ]; then
-    cp "$DIST_DIR/config.yaml" "$CONFIG_PATH"
-fi
+# config.example.yaml 是随版本更新的字段文档,不是用户配置;每次启动都从
+# 镜像同步,保证字段说明跟着版本走。后端首次启动时以它为模板生成
+# config.yaml,之后只由用户手动编辑。
+cp "$DIST_DIR/config.example.yaml" "$CONFIG_DIR/config.example.yaml"
 
 # hooks.yaml 缺失时后端只是禁用 hooks,播种一份注释完整的模板方便编辑。
 if [ ! -f "$HOOKS_PATH" ]; then

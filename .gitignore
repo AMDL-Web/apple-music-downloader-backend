@@ -27,3 +27,7 @@ keys/
 coverage.txt
 
 *.local.yaml
+# Live config file: copied from the tracked example on first start and edited by
+# hand from there. Not tracked — it is the deployment's own, and committing it
+# would push one install's settings onto everyone else's.
+configs/config.yaml

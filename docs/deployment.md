@@ -48,15 +48,16 @@ The container health check hits `GET /api/v1/health`, deriving the port from
 
 ## Config seeding
 
-The entrypoint seeds the image's bundled templates into `/app/configs`, each **only when
-the file is missing** — an existing file is never overwritten:
+The entrypoint syncs the image's bundled files into `/app/configs`:
 
-- `config.yaml` — the hand-written override layer, with every field documented in its
-  comments. Startup keys are active; runtime keys are commented out and left to the API.
-  Missing it entirely is valid, so the seed is a convenience, not a requirement.
-- `hooks.yaml` — a fully commented template.
+- `config.example.yaml` — copied from the current image on **every** start, so the field
+  documentation tracks the version you are running. It is the template, not your config.
+- `hooks.yaml` — a fully commented template, copied only when the file is missing, and
+  never overwritten.
 
-Nothing in the container writes `config.yaml` — not the entrypoint, not the backend.
+`config.yaml` is created by the backend on first start as a verbatim copy of the example
+and never touched again — not by the entrypoint, not by the backend. Its startup keys are
+active and its runtime keys are commented out, so a fresh install pins nothing.
 `PUT /api/v1/config` stores runtime settings in the SQLite database, so they survive a
 container rebuild as long as `./data/db` is mounted.
 
@@ -104,14 +105,14 @@ To avoid running as root at all, use `docker run --user <uid>:<gid>` (or compose
 
 | Host | Container | Contents |
 | --- | --- | --- |
-| `./configs` | `/app/configs` | `config.yaml`, `hooks.yaml` |
+| `./configs` | `/app/configs` | `config.yaml`, `config.example.yaml`, `hooks.yaml` |
 | `./data/db` | `/app/data/db` | SQLite database (`database.path`, default `data/db/amdl.db`) |
 | `./data/logs` | `/app/data/logs` | Rotating logs — only written when `logging.file_enabled: true` |
 | `./data/downloads` | `/app/data/downloads` | Finished files. Change the host side to put them elsewhere, e.g. `/path/to/music:/app/data/downloads` |
 
 `data/tmp` stays inside the container and needs no mount. It is the staging area for the
 download, decrypt, remux, verify and tag steps (see `download.temp_dir` in
-[`configs/config.yaml`](../configs/config.yaml)). If your storage driver
+[`configs/config.example.yaml`](../configs/config.example.yaml)). If your storage driver
 is slow, mount it separately onto a fast host disk, kept apart from `data/downloads`.
 
 For developer-token signing, mount the `.p8` private key read-only (e.g.

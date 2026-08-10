@@ -30,7 +30,7 @@
 docker compose up -d
 ```
 
-这会从 GHCR 拉取多架构镜像（无需本地构建），在 `configs/config.yaml` 缺失时播种一份，
+这会从 GHCR 拉取多架构镜像（无需本地构建），首次启动以内置示例生成 `configs/config.yaml`，
 监听 `:18080`。在 `docker-compose.yml` 里用 `AMDL_WRAPPER_ADDRESS` 指向你的 wrapper。
 
 想从源码跑——Go 版本以 [`go.mod`](go.mod) 为准，另需 `PATH` 上的 `ffmpeg`：
@@ -135,7 +135,7 @@ queued → resolving → waiting_download → downloading → waiting_decrypt
 | `download.station_path_format` | `stations/{StationName}/{SongNumber:02d}. {SongName}` |
 
 `{AlbumArtist}`、`{ReleaseYear}`、`{UPC}`、`{DiscNumber}`、`{Codec}` 等变量的完整列表见
-[`configs/config.yaml`](configs/config.yaml)，数字类变量支持 `:02d` 补零。
+[`configs/config.example.yaml`](configs/config.example.yaml)，数字类变量支持 `:02d` 补零。
 目录段中的 `{ArtistName}` 取集合的归档艺人，保证同一专辑落在同一目录；文件名段用曲目自身的
 艺人。`{SongNumber}` 是曲目在所属集合内的序号——专辑与艺人任务取其在该专辑内的位置，跨碟连续
 递增；`{TrackNumber}` 则是 Apple 自己的编号，每张碟都从 1 重新开始，若要使用请搭配
@@ -169,12 +169,13 @@ queued → resolving → waiting_download → downloading → waiting_decrypt
 
 ## 配置
 
-四层，优先级从高到低：`AMDL_*` 环境变量 >
-[`configs/config.yaml`](configs/config.yaml) > 数据库 > 内置默认值。后端从不写配置文件——
-它是可选的、手写的覆盖层，同时也是文档：每个键的取值范围、单位和默认值都写在它的注释里。
+四层，优先级从高到低：`AMDL_*` 环境变量 > `configs/config.yaml` > 数据库 > 内置默认值。
+配置文件由后端首次启动时从 [`configs/config.example.yaml`](configs/config.example.yaml)
+原样复制生成，之后后端再也不写它——它归你手动编辑，且不纳入 git，不会被误提交。示例文件
+就是文档：每个键的取值范围、单位和默认值都写在它的注释里。
 
 - **运行期字段**（音质、路径、歌词、封面、重试、simulate、资料库同步）通过
-  `PUT /api/v1/config` 立即生效并存入数据库。随镜像分发的 `config.yaml` 把它们全部注释掉，
+  `PUT /api/v1/config` 立即生效并存入数据库。新生成的 `config.yaml` 把它们全部注释掉，
   交给 API。
 - **启动期字段**（监听地址、数据库路径、wrapper 地址、各种池大小、日志格式）在文件或环境
   变量里设置，需要重启。
@@ -221,7 +222,7 @@ webhook 或本地命令——刷新媒体服务器、跑后处理脚本。默认
 | [docs/automation.md](docs/automation.md) | 任务 hooks 与资料库同步 |
 | [docs/benchmarks.md](docs/benchmarks.md) | 后解密与端到端实测数据 |
 
-> `docs/` 正文为英文，与 `config.yaml` 的字段注释保持一致。
+> `docs/` 正文为英文，与 `config.example.yaml` 的字段注释保持一致。
 
 ## 开发
 

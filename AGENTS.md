@@ -25,19 +25,22 @@ database over `Default()`. `PUT /api/v1/config` writes the **database** layer an
 nothing else — no code writes the config file. `internal/config/resolve.go` is
 where the stack is merged and every key's winning layer is recorded.
 
-`configs/config.yaml` is hand-written, tracked, optional, and **partial**: only
-the keys actually spelled out in it override anything. That makes presence
-meaningful — a key written there is pinned, and `PUT` answers 422 rather than
-accepting a write that a higher layer would shadow. The shipped file keeps
-startup-bound keys active (nothing else can set them) and every runtime-mutable
-key commented out (the API owns them). Don't activate a runtime key in it.
+`configs/config.yaml` is optional and **partial**: only the keys actually
+spelled out in it override anything. That makes presence meaningful — a key
+written there is pinned, and `PUT` answers 422 rather than accepting a write
+that a higher layer would shadow. It is **untracked**; `EnsureFile` copies
+`config.example.yaml` verbatim on first start, and from there it belongs to the
+deployment. Copying is only safe because the example keeps startup-bound keys
+active (nothing else can set them) and every runtime-mutable key commented out
+(the API owns them) — so don't activate a runtime key in the example, or every
+fresh install ships with it pinned.
 
-It is also the documentation, so it has to carry the full comment for each key —
-allowed enum values, valid booleans, numeric units and default behavior, list
-item options, supported template variables. `internal/config/config_test.go`
-fails if its key set drifts from the struct, or if uncommenting every key stops
-resolving to exactly `Default()`; it can't check whether your comment is any
-good.
+`config.example.yaml` is tracked and is the documentation, so it has to carry
+the full comment for each key — allowed enum values, valid booleans, numeric
+units and default behavior, list item options, supported template variables.
+`internal/config/config_test.go` fails if its key set drifts from the struct, if
+uncommenting every key stops resolving to exactly `Default()`, or if a seeded
+copy would pin anything; it can't check whether your comment is any good.
 
 `isRuntimeKey` in `runtime.go` is the single authority on which keys the
 database layer may hold. Adding a key there also lets a stored row set it, so

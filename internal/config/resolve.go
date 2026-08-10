@@ -43,8 +43,9 @@ func (s Source) Locked() bool { return s == SourceFile || s == SourceEnv }
 //
 // The config file is optional and partial: only the keys it actually spells
 // out override anything. A key absent from it falls through to the database,
-// then to Default(). Nothing ever writes it back — it is an operator's
-// override file, not managed state.
+// then to Default(). Nothing ever writes it back — EnsureFile copies the
+// tracked example into place once, and from there it is an operator's own
+// file, not managed state.
 type Resolver struct {
 	path      string
 	fileRaw   []byte

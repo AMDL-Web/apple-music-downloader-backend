@@ -178,7 +178,7 @@ data/downloads/albums/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}.m4a
 ```
 
 The full variable list is in the `download` section of
-[`configs/config.yaml`](../configs/config.yaml). In directory segments
+[`configs/config.example.yaml`](../configs/config.example.yaml). In directory segments
 `{ArtistName}` resolves to the collection's grouping artist (album artist when available)
 so all of an album's tracks share one folder; in the file-name segment it is the track's
 own artist. Numeric variables — `{SongNumber}`, `{DiscNumber}`, `{DiscCount}`,

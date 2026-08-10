@@ -32,8 +32,8 @@ device manifests, licenses and lyrics from it and cannot download anything witho
 docker compose up -d
 ```
 
-That pulls the multi-arch image from GHCR (no local build), seeds `configs/config.yaml`
-if it is missing, and listens on `:18080`. Point it at your wrapper with
+That pulls the multi-arch image from GHCR (no local build), creates `configs/config.yaml`
+from the bundled example on first start, and listens on `:18080`. Point it at your wrapper with
 `AMDL_WRAPPER_ADDRESS` in `docker-compose.yml`.
 
 From source instead — Go per [`go.mod`](go.mod), plus `ffmpeg` on `PATH`:
@@ -147,7 +147,7 @@ the file name and gets `.m4a` appended.
 | `download.station_path_format` | `stations/{StationName}/{SongNumber:02d}. {SongName}` |
 
 Variables like `{AlbumArtist}`, `{ReleaseYear}`, `{UPC}`, `{DiscNumber}` and `{Codec}`
-are listed in [`configs/config.yaml`](configs/config.yaml); numeric ones
+are listed in [`configs/config.example.yaml`](configs/config.example.yaml); numeric ones
 take `:02d` padding. In directory segments `{ArtistName}` resolves to the collection's
 grouping artist so an album stays in one folder; in the file-name segment it is the
 track's own artist. `{SongNumber}` is the position within the collection — within the
@@ -184,14 +184,15 @@ Full walkthrough with curl examples: [docs/api.md](docs/api.md).
 
 ## Configuration
 
-Four layers, highest first: `AMDL_*` environment variables, then
-[`configs/config.yaml`](configs/config.yaml), then the database, then the built-in
-defaults. The backend never writes the config file — it is an optional, hand-written
-override layer, and it is also the documentation: every key's allowed values, units and
-defaults live in its comments.
+Four layers, highest first: `AMDL_*` environment variables, then `configs/config.yaml`,
+then the database, then the built-in defaults. The config file is copied from
+[`configs/config.example.yaml`](configs/config.example.yaml) on first start and never
+written by the backend again — it is yours to edit, and it is untracked so it cannot be
+committed by accident. The example is the documentation: every key's allowed values, units
+and defaults live in its comments.
 
 - **Runtime keys** (quality, paths, lyrics, covers, retries, simulate, library sync) apply
-  immediately via `PUT /api/v1/config` and are stored in the database. The shipped
+  immediately via `PUT /api/v1/config` and are stored in the database. A fresh
   `config.yaml` leaves them commented out so the API owns them.
 - **Startup keys** (listen address, database path, wrapper address, pool sizes, log
   format) are set in the file or the environment and need a restart.
