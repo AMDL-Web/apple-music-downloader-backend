@@ -342,7 +342,7 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 	}
 	metadata := newTrackMetadataResolver(d, parsed.Storefront)
 
-	indexes := collectionIndexes(parsed.Type, tracks)
+	indexes := collectionIndexes(d.cfg, parsed.Type, tracks)
 
 	return runTrackTasks(ctx, len(tracks), finished, func(trackCtx context.Context, i int) error {
 		err := d.processTrackWithMetadata(trackCtx, job, items[i], tracks[i], parsed.Storefront, parsed.Type, collectionName, collectionID, indexes[i], folderArtist, metadata, reporter)
@@ -683,21 +683,29 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 // albums, playlists and stations that is the track's position in the resolved
 // list — for an album, Apple orders the track relationship disc by disc, so the
 // numbering runs unbroken across discs instead of restarting like TrackNumber
-// does. An artist job concatenates every album's tracks while its output path
-// still groups by album, so there the counter restarts per album; otherwise the
-// second album's opening track would be numbered by the whole discography.
-func collectionIndexes(collectionType applemusic.URLType, tracks []applemusic.Song) []int {
+// does.
+//
+// An artist job concatenates every album's tracks into one list, so its counter
+// restarts per album — but only when the template groups the output per album.
+// A configured artist template naming neither the album nor its id drops the
+// whole discography into a single directory, where a per-album counter would
+// hand two albums the same {SongNumber} and collide on an identically titled
+// track at the same position; there the job-wide position is what keeps the
+// names apart. The counter restarts exactly when the directories do.
+func collectionIndexes(cfg config.Config, collectionType applemusic.URLType, tracks []applemusic.Song) []int {
 	indexes := make([]int, len(tracks))
-	if collectionType != applemusic.TypeArtist {
+	perAlbum := collectionType == applemusic.TypeArtist &&
+		segmentReferences(pathPattern(cfg, collectionType), "AlbumName", "AlbumId")
+	if !perAlbum {
 		for i := range tracks {
 			indexes[i] = i + 1
 		}
 		return indexes
 	}
-	perAlbum := make(map[string]int, len(tracks))
+	counts := make(map[string]int, len(tracks))
 	for i, track := range tracks {
-		perAlbum[track.AlbumID]++
-		indexes[i] = perAlbum[track.AlbumID]
+		counts[track.AlbumID]++
+		indexes[i] = counts[track.AlbumID]
 	}
 	return indexes
 }

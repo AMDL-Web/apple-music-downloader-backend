@@ -260,6 +260,11 @@ download:
   # string template: output path for single-song tasks. A single song is a collection of
   # one, so {SongNumber} is always 1 here; use {TrackNumber} to keep the album position.
   song_path_format: "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}"
+  # An install upgrading from a version whose album and artist templates used
+  # {TrackNumber} keeps that layout: its config.yaml already carries the old value,
+  # and a config omitting the key falls back to the old value too, so nothing that
+  # has already been downloaded is stranded under a name the backend no longer
+  # produces. Switch by editing the key (or via PUT /api/v1/config).
   # string template: output path for album tasks.
   album_path_format: "albums/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}"
   # string template: output path for artist tasks (expanded album/song lists). {SongNumber}

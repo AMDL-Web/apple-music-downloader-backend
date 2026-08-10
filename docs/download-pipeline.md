@@ -164,6 +164,13 @@ on across the disc boundary instead of restarting. `{TrackNumber}` is Apple's ow
 which does restart at 1 on every disc, and `{TrackCount}` matches it: the number of
 tracks on that track's disc, not the whole release.
 
+Those two defaults apply to a fresh install, whose `config.yaml` is a verbatim copy of
+`configs/config.example.yaml`. An install upgrading from a version that numbered album and
+artist paths by `{TrackNumber}` keeps that layout — its `config.yaml` already carries the
+old value, and a config omitting the key falls back to the old value as well, so nothing
+already downloaded is stranded under a name the backend no longer produces. Switch by
+editing the key or via `PUT /api/v1/config`.
+
 That is why the album and artist defaults number by `{SongNumber}`. A file-name segment
 built from `{TrackNumber}` alone repeats `01, 02, …` once per disc on a multi-disc album,
 and two identically titled tracks on different discs — a deluxe edition whose bonus disc

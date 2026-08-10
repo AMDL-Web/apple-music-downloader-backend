@@ -289,15 +289,16 @@ func TestQualityLabelFormatsSelectedMedia(t *testing.T) {
 	}
 }
 
-// TestDefaultAlbumPathKeepsIdenticallyTitledDiscTracksApart pins the reason the
-// default album template numbers by {SongNumber} rather than Apple's
-// {TrackNumber}: that one restarts at 1 on every disc, so a release like
-// "The Greatest Showman: Reimagined (Deluxe Edition)" — whose second disc
+// TestAlbumPathKeepsIdenticallyTitledDiscTracksApart pins the reason
+// config.example.yaml numbers the album template by {SongNumber} rather than
+// Apple's {TrackNumber}: that one restarts at 1 on every disc, so a release
+// like "The Greatest Showman: Reimagined (Deluxe Edition)" — whose second disc
 // repeats disc one's titles in order — would resolve both copies of a title to
 // one path, and the second would be skipped as already downloaded.
-func TestDefaultAlbumPathKeepsIdenticallyTitledDiscTracksApart(t *testing.T) {
+func TestAlbumPathKeepsIdenticallyTitledDiscTracksApart(t *testing.T) {
 	cfg := config.Default()
 	cfg.Download.DownloadsDir = "downloads"
+	cfg.Download.AlbumPathFormat = "albums/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}"
 
 	discOne := applemusic.Song{ArtistName: "Artist", AlbumName: "Album", Name: "The Greatest Show", DiscNumber: 1, TrackNumber: 1, DiscCount: 2}
 	discTwo := discOne

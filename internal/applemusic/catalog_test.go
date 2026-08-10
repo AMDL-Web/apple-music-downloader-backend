@@ -385,6 +385,35 @@ func TestAlbumCountsTracksPerDiscOnMultiDiscReleases(t *testing.T) {
 	}
 }
 
+// TestAlbumInfersDiscTotalsFromTrackNumbersWhenTracksAreWithheld covers the
+// storefront that omits a song from the relationship. Counting the returned
+// entries would report 2 for a disc whose numbering already reaches 3, so the
+// total comes from Apple's trackNumber instead.
+func TestAlbumInfersDiscTotalsFromTrackNumbersWhenTracksAreWithheld(t *testing.T) {
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client.token = "test-token"
+	client.tokenUntil = time.Now().Add(time.Hour)
+	client.http = &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		// Disc 1 track 2 and disc 2 track 1 are both missing from the payload.
+		body := `{"data":[{"id":"album-1","type":"albums","attributes":{"name":"Album","artistName":"Album Artist","trackCount":5},"relationships":{"tracks":{"data":[` +
+			`{"id":"song-1","type":"songs","attributes":{"name":"One","trackNumber":1,"discNumber":1}},` +
+			`{"id":"song-3","type":"songs","attributes":{"name":"Three","trackNumber":3,"discNumber":1}},` +
+			`{"id":"song-5","type":"songs","attributes":{"name":"Five","trackNumber":2,"discNumber":2}}]}}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+
+	album, err := client.Album(context.Background(), "cn", "album-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int{3, 3, 2}
+	for i, track := range album.Tracks {
+		if track.TrackCount != want[i] {
+			t.Fatalf("track %s TrackCount = %d, want %d", track.ID, track.TrackCount, want[i])
+		}
+	}
+}
+
 // TestAlbumKeepsAppleTrackCountOnSingleDiscReleases guards the other side: on a
 // one-disc album Apple's count stays authoritative, because it still reports
 // the full length when a storefront withholds individual tracks.

@@ -275,13 +275,14 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 	// Apple's album-level trackCount counts the whole release, so both discs of
 	// a 29+19 album report 48. "Track N of M" means M tracks on this disc to
 	// every tagger that reads it, so a multi-disc release gets its own disc's
-	// total instead. Single-disc albums keep Apple's count, which stays right
-	// even when a storefront withholds individual tracks from the relationship.
+	// total instead. Single-disc albums keep Apple's count: it is the one
+	// authoritative total, and unlike a per-disc figure it needs nothing
+	// inferred when the relationship omits a track.
 	if discCount > 1 {
-		perDisc := discTrackCounts(tracks)
+		perDisc := discTrackTotals(tracks)
 		for i := range tracks {
-			if count := perDisc[max(1, tracks[i].DiscNumber)]; count > 0 {
-				tracks[i].TrackCount = count
+			if total := perDisc[max(1, tracks[i].DiscNumber)]; total > 0 {
+				tracks[i].TrackCount = total
 			}
 		}
 	}
@@ -1180,26 +1181,39 @@ func mapAlbumSummary(raw catalogAlbumData) Collection {
 	}
 }
 
-// discTrackCounts counts an album's tracks per disc. A missing disc number
-// folds into disc 1, matching how DiscNumber is rendered everywhere else.
-func discTrackCounts(tracks []Song) map[int]int {
+// discTrackTotals derives each disc's track total from an album's track list.
+// Counting entries alone underreports, because a storefront can withhold
+// individual tracks from the relationship and music videos never become
+// tracks: a disc returning track numbers 1 and 3 has at least three tracks,
+// not two. Apple's own trackNumber is the better witness and can only fall
+// short when the withheld track is the disc's last, so take whichever of the
+// two is larger. A missing disc number folds into disc 1, matching how
+// DiscNumber is rendered everywhere else.
+func discTrackTotals(tracks []Song) map[int]int {
+	totals := make(map[int]int)
 	counts := make(map[int]int)
 	for _, track := range tracks {
-		counts[max(1, track.DiscNumber)]++
+		disc := max(1, track.DiscNumber)
+		counts[disc]++
+		totals[disc] = max(totals[disc], track.TrackNumber)
 	}
-	return counts
+	for disc, count := range counts {
+		totals[disc] = max(totals[disc], count)
+	}
+	return totals
 }
 
-// DiscTrackCount reports how many tracks share discNumber, for callers holding
-// an album track list but no per-track total. Single-disc albums answer with
-// the whole list, so a track whose disc number the catalog omitted still gets
-// the album's real length rather than a partial count.
+// DiscTrackCount reports the track total of the disc holding discNumber, for
+// callers with an album track list but no per-track total. Single-disc albums
+// answer for the whole list, so a track whose disc number the catalog omitted
+// still gets the album's length rather than a partial count.
 func DiscTrackCount(tracks []Song, discNumber int) int {
+	totals := discTrackTotals(tracks)
 	if maxDisc(tracks) <= 1 {
-		return len(tracks)
+		return max(totals[1], len(tracks))
 	}
-	if count := discTrackCounts(tracks)[max(1, discNumber)]; count > 0 {
-		return count
+	if total := totals[max(1, discNumber)]; total > 0 {
+		return total
 	}
 	return len(tracks)
 }
