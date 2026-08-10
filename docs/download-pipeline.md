@@ -150,18 +150,38 @@ independently, so a template value can never create extra directories.
 | Key | Default |
 | --- | --- |
 | `download.song_path_format` | `songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}` |
-| `download.album_path_format` | `albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}` |
-| `download.artist_path_format` | `artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}` |
+| `download.album_path_format` | `albums/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}` |
+| `download.artist_path_format` | `artists/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}` |
 | `download.playlist_path_format` | `playlists/{PlaylistName}/{SongNumber:02d}. {SongName}` |
 | `download.station_path_format` | `stations/{StationName}/{SongNumber:02d}. {SongName}` |
 
-Artist jobs expand into that artist's albums and songs. `{SongNumber}` is the 1-based
-position within a playlist or station.
+Artist jobs expand into that artist's albums and songs.
+
+`{SongNumber}` is the track's 1-based position within the collection it is downloaded as:
+its position in the playlist or station, and for album and artist jobs its position
+within that album — Apple orders an album's tracks disc by disc, so the numbering counts
+on across the disc boundary instead of restarting. `{TrackNumber}` is Apple's own number,
+which does restart at 1 on every disc, and `{TrackCount}` matches it: the number of
+tracks on that track's disc, not the whole release.
+
+Those two defaults apply to a fresh install, whose `config.yaml` is a verbatim copy of
+`configs/config.example.yaml`. An install upgrading from a version that numbered album and
+artist paths by `{TrackNumber}` keeps that layout — its `config.yaml` already carries the
+old value, and a config omitting the key falls back to the old value as well, so nothing
+already downloaded is stranded under a name the backend no longer produces. Switch by
+editing the key or via `PUT /api/v1/config`.
+
+That is why the album and artist defaults number by `{SongNumber}`. A file-name segment
+built from `{TrackNumber}` alone repeats `01, 02, …` once per disc on a multi-disc album,
+and two identically titled tracks on different discs — a deluxe edition whose bonus disc
+repeats the main disc's titles, say — then resolve to the same path, where the second is
+skipped as already downloaded. Pair it with `{DiscNumber}` (for example
+`{DiscNumber}-{TrackNumber:02d}. {SongName}`) to keep Apple's numbering instead.
 
 With defaults, an album track lands at:
 
 ```text
-data/downloads/albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}.m4a
+data/downloads/albums/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}.m4a
 ```
 
 The full variable list is in the `download` section of

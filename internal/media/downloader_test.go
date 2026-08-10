@@ -1860,3 +1860,56 @@ func TestMotionArtworkBackfillSkipsTheEventWhenTheJobIsGone(t *testing.T) {
 		}
 	}
 }
+
+// TestCollectionIndexesRestartPerAlbumOnlyForArtists pins {SongNumber} for the
+// two collection shapes that share an album-shaped output template. Apple
+// orders an album's track relationship disc by disc, so album numbering runs on
+// unbroken across the disc boundary. An artist job concatenates every album's
+// tracks into one list while still writing into per-album folders, so its
+// numbering has to restart with each album.
+func TestCollectionIndexesRestartPerAlbumOnlyForArtists(t *testing.T) {
+	albumTracks := []applemusic.Song{
+		{ID: "song-1", AlbumID: "album-1", DiscNumber: 1, TrackNumber: 1},
+		{ID: "song-2", AlbumID: "album-1", DiscNumber: 1, TrackNumber: 2},
+		{ID: "song-3", AlbumID: "album-1", DiscNumber: 2, TrackNumber: 1},
+	}
+	artistTracks := append(append([]applemusic.Song(nil), albumTracks...),
+		applemusic.Song{ID: "song-4", AlbumID: "album-2", DiscNumber: 1, TrackNumber: 1},
+		applemusic.Song{ID: "song-5", AlbumID: "album-2", DiscNumber: 1, TrackNumber: 2},
+	)
+
+	const groupedByAlbum = "artists/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}"
+	// A template naming neither the album nor its id drops the whole
+	// discography into one directory, where restarting the counter per album
+	// would give two albums the same name for an identically titled track.
+	const oneFlatFolder = "artists/{ArtistName}/{SongNumber:02d}. {SongName}"
+
+	tests := []struct {
+		name          string
+		kind          applemusic.URLType
+		artistPattern string
+		tracks        []applemusic.Song
+		want          []int
+	}{
+		{"album counts on across discs", applemusic.TypeAlbum, groupedByAlbum, albumTracks, []int{1, 2, 3}},
+		{"playlist counts positions", applemusic.TypePlaylist, groupedByAlbum, albumTracks, []int{1, 2, 3}},
+		{"artist restarts per album", applemusic.TypeArtist, groupedByAlbum, artistTracks, []int{1, 2, 3, 1, 2}},
+		{"artist stays job-wide in one folder", applemusic.TypeArtist, oneFlatFolder, artistTracks, []int{1, 2, 3, 4, 5}},
+		{"artist restarts on album id alone", applemusic.TypeArtist, "artists/{ArtistName}/{AlbumId}/{SongNumber:02d}", artistTracks, []int{1, 2, 3, 1, 2}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Download.ArtistPathFormat = tt.artistPattern
+			got := collectionIndexes(cfg, tt.kind, tt.tracks)
+			if len(got) != len(tt.want) {
+				t.Fatalf("collectionIndexes() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("collectionIndexes() = %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}

@@ -148,7 +148,11 @@ func TestValidateBoundsResourceAmplifyingDownloadSettings(t *testing.T) {
 func TestDefaultPathFormats(t *testing.T) {
 	defaults := Default().Download
 	want := map[string]string{
-		"song":     "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+		"song": "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+		// Album and artist deliberately lag config.example.yaml, which numbers
+		// both by {SongNumber}; see TestExampleNumbersAlbumPathsByCollectionPosition.
+		// A config omitting these keys predates that change, and renaming its
+		// files would strand everything it has already downloaded.
 		"album":    "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
 		"artist":   "artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
 		"playlist": "playlists/{PlaylistName}/{SongNumber:02d}. {SongName}",
@@ -422,5 +426,36 @@ func TestCommittedExampleDocumentsEveryConfigKey(t *testing.T) {
 	}
 	if _, err := load("../../configs/config.example.yaml", nil); err != nil {
 		t.Fatalf("config.example.yaml does not load: %v", err)
+	}
+}
+
+// TestExampleNumbersAlbumPathsByCollectionPosition pins the half of the
+// multi-disc fix that only a fresh install receives. A new config.yaml is a
+// verbatim copy of the example, so the example is where the corrected album and
+// artist templates live; Default() keeps the older {TrackNumber} layout for
+// configs that omit the keys, and the two are meant to disagree here.
+func TestExampleNumbersAlbumPathsByCollectionPosition(t *testing.T) {
+	cfg, err := load("../../configs/config.example.yaml", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"album":  "albums/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}",
+		"artist": "artists/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}",
+	}
+	got := map[string]string{
+		"album":  cfg.Download.AlbumPathFormat,
+		"artist": cfg.Download.ArtistPathFormat,
+	}
+	for kind, wantFormat := range want {
+		if got[kind] != wantFormat {
+			t.Fatalf("example %s path format = %q, want %q", kind, got[kind], wantFormat)
+		}
+		if defaultFormat := map[string]string{
+			"album":  Default().Download.AlbumPathFormat,
+			"artist": Default().Download.ArtistPathFormat,
+		}[kind]; defaultFormat == wantFormat {
+			t.Fatalf("default %s path format now matches the example; the fallback for configs omitting the key was meant to stay on {TrackNumber}", kind)
+		}
 	}
 }

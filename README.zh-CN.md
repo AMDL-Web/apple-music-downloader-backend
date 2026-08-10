@@ -129,16 +129,18 @@ queued → resolving → waiting_download → downloading → waiting_decrypt
 | 配置项 | 默认值 |
 | --- | --- |
 | `download.song_path_format` | `songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}` |
-| `download.album_path_format` | `albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}` |
-| `download.artist_path_format` | `artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}` |
+| `download.album_path_format` | `albums/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}` |
+| `download.artist_path_format` | `artists/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}` |
 | `download.playlist_path_format` | `playlists/{PlaylistName}/{SongNumber:02d}. {SongName}` |
 | `download.station_path_format` | `stations/{StationName}/{SongNumber:02d}. {SongName}` |
 
 `{AlbumArtist}`、`{ReleaseYear}`、`{UPC}`、`{DiscNumber}`、`{Codec}` 等变量的完整列表见
 [`configs/config.example.yaml`](configs/config.example.yaml)，数字类变量支持 `:02d` 补零。
 目录段中的 `{ArtistName}` 取集合的归档艺人，保证同一专辑落在同一目录；文件名段用曲目自身的
-艺人。启用后还会在旁边写出独立的 `cover.jpg` / `artist.jpg` 以及 `.lrc` / `.ttml` 歌词边车
-文件。
+艺人。`{SongNumber}` 是曲目在所属集合内的序号——专辑与艺人任务取其在该专辑内的位置，跨碟连续
+递增；`{TrackNumber}` 则是 Apple 自己的编号，每张碟都从 1 重新开始，若要使用请搭配
+`{DiscNumber}`。启用后还会在旁边写出独立的 `cover.jpg` / `artist.jpg` 以及 `.lrc` / `.ttml`
+歌词边车文件。
 
 ## API
 
