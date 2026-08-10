@@ -1,38 +1,59 @@
 # Configuration
 
-Everything lives in one file. `AMDL_CONFIG` picks its path; the default is:
+Four layers decide each key's effective value, highest first:
 
-```text
-configs/config.yaml
-```
+| Layer | Where | Who writes it |
+| --- | --- | --- |
+| **environment** | `AMDL_<SECTION>_<KEY>` | you |
+| **file** | `configs/config.yaml` (`AMDL_CONFIG` picks the path) | you |
+| **database** | the `settings` table | `PUT /api/v1/config` |
+| **defaults** | compiled into the binary | nobody |
 
-On first start the backend generates it from
-[`configs/config.example.yaml`](../configs/config.example.yaml), which must stay in the
-same directory. **The example file is the documentation** — allowed enum values, units,
-defaults and template variables are written into its comments, key by key. `config.yaml`
-itself is managed by the backend and its comments do not survive a write.
+The backend **never writes the config file**. It is an optional, hand-written override
+layer: only the keys actually spelled out in it override anything, and an install without
+one runs on stored settings and defaults alone.
+[`configs/config.yaml`](../configs/config.yaml) is also the documentation — allowed enum
+values, units, defaults and template variables live in its comments, key by key — and the
+shipped copy has every runtime-mutable key commented out so the API owns them.
+
+## Pinning
+
+Writing a key into the file (or setting its `AMDL_*` variable) **pins** it: both layers
+outrank the database, so a stored value would never take effect. `PUT /api/v1/config`
+therefore rejects a change to a pinned key with `422` rather than accepting a write that
+does nothing. Submitting a pinned key's *current* value is fine, so a client can echo the
+whole config back without special-casing anything.
+
+`GET /api/v1/config` reports this directly: `sources` gives the winning layer per key
+(`env`, `file`, `db`, `default`) and `locked` lists the pinned keys, which a UI should show
+read-only. Presence is what pins, not difference — writing a key at its default value still
+pins it. Remove the key from the file (or unset the variable) and restart to hand it back
+to the API; the stored value, if there was one, takes over again.
 
 ## Runtime vs startup keys
 
-`PUT /api/v1/config` may only change runtime-mutable keys, but it rewrites the whole file
-including startup keys, dropping all comments in the process.
+`PUT /api/v1/config` may only change runtime-mutable keys, and the database layer holds
+only those. Startup keys are consumed once while the process boots, so the file and the
+environment are the only places they can be set.
 
-Edit runtime keys by hand and the next `GET /api/v1/config` re-reads and applies them
-immediately. Startup keys still need a restart.
+Edit runtime keys in the file by hand and the next `GET /api/v1/config` re-reads and
+applies them immediately (which also pins them). Startup keys still need a restart.
 
 | | |
 | --- | --- |
 | **Startup** | `server.listen`, `database.path`, `wrapper.*`, `tools.ffmpeg`, most of `logging.*`, the developer-token signing keys, and every pool size (`download.max_running_jobs`, `max_parallel_downloads`, `max_parallel_decrypts`, `max_parallel_wrapper_requests`, `catalog.max_parallel_requests`, `catalog.requests_per_second`, `catalog.request_burst`) |
 | **Runtime** | `logging.level`, `logging.access_log`, `catalog.album_track_url_mode`, `catalog.media_user_token`, `catalog.signed_mode_hls_source`, `catalog.motion_artwork_enabled`, all remaining `download.*` keys, the whole `simulate` section and the whole `library_sync` section |
 
-Set these before first real use:
+Set these before first real use. The startup ones go in the file (or the environment); the
+runtime one is easiest through the API, and putting it in the file only pins it:
 
 - `server.listen` — API listen address.
 - `wrapper.address` — `wrapper-manager` gRPC address.
-- `database.path` — SQLite file (default `data/db/amdl.db`).
-- `download.downloads_dir` — where finished files go.
+- `database.path` — SQLite file (default `data/db/amdl.db`), which also holds the stored
+  settings, so it is the one key the database layer can never supply.
 - `logging.*` — format, in-memory retention, optional rotating file.
 - `tools.ffmpeg` — path or command name.
+- `download.downloads_dir` — where finished files go (runtime).
 
 ## Environment overrides
 
@@ -40,17 +61,14 @@ Any key can be overridden with `AMDL_<SECTION>_<KEY>` — the YAML path uppercas
 as the separator: `AMDL_SERVER_LISTEN`, `AMDL_WRAPPER_ADDRESS`, `AMDL_DATABASE_PATH`,
 `AMDL_LOGGING_LEVEL`, `AMDL_DOWNLOAD_QUALITY_PRIORITY`.
 
-- Overrides sit on top of the file on every start and every config reload. Loading alone
-  never writes them back.
+- Overrides sit on top of every other layer, on every start and every config reload.
+  Nothing is ever written back to the file or the database because of them.
 - Value syntax: strings verbatim; booleans `true`/`false`; integers as digits; string
   lists comma-separated (`alac,aac`), with an empty value meaning an empty list.
 - Unrecognised `AMDL_*` variables **fail startup**, so a typo can never be silently
   ignored. `AMDL_CONFIG` and `AMDL_HOOKS_CONFIG` are exempt.
 - A field pinned by an environment variable cannot be changed through
   `PUT /api/v1/config` — it returns `422`. Change the variable and restart.
-- A `PUT` persists the effective runtime snapshot, so an unchanged runtime field pinned by
-  an environment variable may be written into the file during an unrelated `PUT`.
-  Startup-field overrides are never baked in.
 
 ## Developer-token signing
 
@@ -86,11 +104,28 @@ job. Transfer speed is randomised between `min_speed_kbps` and `max_speed_kbps`.
 Note that with developer-token signing enabled, manifests normally come from the wrapper —
 without one, selection falls back to a faked AAC-LC.
 
+## Resetting a key
+
+`PUT /api/v1/config` with a key set to `null` drops its stored row, handing the key back to
+the config file or, failing that, the built-in default. Omitting a key leaves it alone;
+`null` is the only way to say "forget what I set".
+
+Wiping the whole `settings` table resets the backend to the shipped configuration. It holds
+nothing else — no job or library state — so that is a safe thing to do.
+
 ## Upgrade notes
 
-**From the two-file layout.** On first start the backend merges a legacy `runtime.yaml`
-into `config.yaml` and renames the old file to `runtime.yaml.pre-merge.bak` (a numeric
-suffix is appended if that name is taken). Delete the backup once you are satisfied.
+**From 1.x.** Breaking, with no automatic migration. 1.x generated `configs/config.yaml`
+from `config.example.yaml` and rewrote it on every `PUT`; 2.0 removes the example file,
+never writes `config.yaml`, and keeps runtime settings in the database instead. A 1.x
+`config.yaml` is a full copy of every key, so leaving it in place pins every key and takes
+them all away from the API. Replace it with the 2.0 file (or delete it) and re-apply the
+settings you want through `PUT /api/v1/config`.
+
+**Removed in 2.0.** `AMDL_RUNTIME_CONFIG` and the one-time `runtime.yaml` merge it drove
+are gone, as is the deprecated `catalog.media_user_token_priority` key — a config file or
+API payload still carrying it now fails as an unknown key. Use `overrides.media_user_token`
+per job.
 
 **Removed keys fail startup.** Old per-job concurrency keys such as
 `download.max_parallel_tracks` are rejected as unknown fields — remove them by hand before

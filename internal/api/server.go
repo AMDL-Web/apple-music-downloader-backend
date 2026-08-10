@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -11,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -278,36 +276,54 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 // Startup-bound fields are omitted: clients cannot change them through this
 // API, so they have no reason to see them here.
 //
-// The combined config file is re-read first. Runtime-field edits take effect
-// on the next GET; startup-field edits remain pending until restart. If the
-// file is currently unreadable or invalid (e.g. an edit in progress), the
-// last good snapshot is served and reload_error reports why.
+// Every layer is re-read first, so a hand edit to configs/config.yaml shows up
+// on the next GET. Alongside the values, sources names the layer each key
+// resolved from and locked lists the keys the config file or an AMDL_*
+// variable pins — a client should show those read-only, because PUT writes
+// only the database layer underneath them. If a layer is currently unreadable
+// or invalid (e.g. an edit in progress), the last good snapshot is served and
+// reload_error reports why.
 func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{"persisted": false}
 	if s.cfg != nil {
 		resp["persisted"] = s.cfg.Persistent()
-		if err := s.cfg.Reload(); err != nil {
+		if err := s.cfg.Reload(r.Context()); err != nil {
 			resp["reload_error"] = err.Error()
 		}
 	}
 	s.applyLoggingConfig()
+	s.writeConfig(w, http.StatusOK, resp)
+}
+
+// writeConfig renders the shared GET/PUT response body: the effective runtime
+// values plus the layer metadata clients need to decide what is editable.
+func (s *Server) writeConfig(w http.ResponseWriter, status int, resp map[string]any) {
 	resp["config"] = config.MutableView(s.currentConfig())
-	writeJSON(w, http.StatusOK, resp)
+	sources := map[string]config.Source{}
+	if s.cfg != nil {
+		sources = s.cfg.Sources()
+	}
+	resp["sources"] = config.SourcesView(sources)
+	resp["locked"] = config.LockedView(sources)
+	writeJSON(w, status, resp)
 }
 
 func (s *Server) listHooks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.manager.ListHooks())
 }
 
-// updateConfig merges the request body onto the current runtime config:
-// omitted fields keep their current values, present fields (including whole
-// sections) are replaced. The merged result must pass full config validation,
-// and fields consumed only at startup (server, database, logging outputs,
-// wrapper, tools, catalog client/signing/request limits, and process-wide
-// download worker/media pools) are rejected — changing them at runtime would
-// silently do nothing. Accepted
-// changes apply to new requests and newly started jobs immediately and are
-// written back to the combined config file, so they survive restarts.
+// updateConfig applies the request body to the database configuration layer:
+// keys the body omits keep their current values, keys it sets are stored, and
+// keys it sets to null are reset by dropping their stored row so the config
+// file — or failing that, the built-in default — supplies the value again.
+//
+// It writes nothing but the database. A key is refused with 422 when it is
+// consumed only at startup (server, database, logging outputs, wrapper, tools,
+// catalog client/signing/request limits, and the process-wide download worker
+// and media pools), when configs/config.yaml or an AMDL_* variable pins it —
+// both outrank the layer written here, so the write would not take effect —
+// or when the merged result fails validation. Accepted changes apply to new
+// requests and newly started jobs immediately and survive a restart.
 func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	if s.cfg == nil {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("runtime config store is not configured"))
@@ -317,48 +333,18 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBody(w, r, &body, false) {
 		return
 	}
-	// Decode, merge, and validate inside the store's atomic update, so two
-	// concurrent PUTs can never merge onto the same stale snapshot and
-	// silently drop each other's changes. rejectStatus/rejectErr carry the
-	// request-level failure out of the closure; any other error is a
-	// persistence failure.
-	var rejectStatus int
-	var rejectErr error
-	updated, err := s.cfg.UpdateAndSave(func(current config.Config) (config.Config, error) {
-		merged := current
-		decoder := json.NewDecoder(bytes.NewReader(body))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&merged); err != nil {
-			rejectStatus, rejectErr = http.StatusBadRequest, err
-			return config.Config{}, err
-		}
-		// v1.2 exposed catalog.media_user_token_priority. Keep accepting valid
-		// legacy payloads, but normalize the now-redundant field away so it is
-		// neither effective nor written back to the managed config.
-		if err := merged.NormalizeDeprecated(); err != nil {
-			rejectStatus, rejectErr = http.StatusUnprocessableEntity, err
-			return config.Config{}, err
-		}
-		if locked := config.RuntimeLockedChanges(current, merged); len(locked) > 0 {
-			rejectStatus, rejectErr = http.StatusUnprocessableEntity, fmt.Errorf("fields can only be changed in the config file and require a restart: %s", strings.Join(locked, ", "))
-			return config.Config{}, rejectErr
-		}
-		// A field pinned by an AMDL_* environment override would accept the
-		// write but revert to the environment value on the next reload, so
-		// reject it up front instead of pretending the change stuck.
-		if locked := config.EnvLockedChanges(current, merged, os.LookupEnv); len(locked) > 0 {
-			rejectStatus, rejectErr = http.StatusUnprocessableEntity, fmt.Errorf("fields are pinned by environment variables; unset the variable and restart to change them: %s", strings.Join(locked, ", "))
-			return config.Config{}, rejectErr
-		}
-		if err := merged.Validate(); err != nil {
-			rejectStatus, rejectErr = http.StatusUnprocessableEntity, err
-			return config.Config{}, err
-		}
-		return merged, nil
-	})
+	patch, err := config.ParsePatch(body)
 	if err != nil {
-		if rejectErr != nil {
-			writeError(w, rejectStatus, rejectErr)
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	// The store serializes the whole read-modify-write, so two concurrent PUTs
+	// cannot both derive from the same stale snapshot and silently drop each
+	// other's changes.
+	if _, err := s.cfg.Update(r.Context(), patch); err != nil {
+		var rejected *config.RejectedError
+		if errors.As(err, &rejected) {
+			writeError(w, http.StatusUnprocessableEntity, rejected)
 			return
 		}
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("persist config: %w", err))
@@ -368,7 +354,7 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	// apply the store's final snapshot so an older request cannot restore its
 	// logging level after a newer write.
 	s.applyLoggingConfig()
-	writeJSON(w, http.StatusOK, map[string]any{"config": config.MutableView(updated), "persisted": s.cfg.Persistent()})
+	s.writeConfig(w, http.StatusOK, map[string]any{"persisted": s.cfg.Persistent()})
 }
 
 func (s *Server) applyLoggingConfig() {

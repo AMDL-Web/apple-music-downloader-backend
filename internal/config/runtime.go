@@ -2,18 +2,22 @@ package config
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 // isRuntimeKey is the single authority on which fields PUT /api/v1/config may
-// change and which fields Store.Reload applies without a restart.
+// change, which fields the database layer may hold, and which fields
+// Store.Reload applies without a restart. Everything it does not claim is
+// startup-bound: consumed once while the process boots, so it can only come
+// from the config file, an AMDL_* variable, or the built-in default.
 func isRuntimeKey(key string) bool {
 	switch key {
 	case "logging.level", "logging.access_log",
 		"catalog.album_track_url_mode", "catalog.media_user_token",
-		"catalog.media_user_token_priority", "catalog.signed_mode_hls_source",
+		"catalog.signed_mode_hls_source",
 		// Read per job when the input resolves, so flipping it takes effect on
 		// newly started jobs without a restart.
 		"catalog.motion_artwork_enabled":
@@ -95,9 +99,8 @@ func copyRuntimeFields(target *Config, source Config) {
 // MutableView returns only the runtime-changeable part of cfg — the shape
 // GET/PUT /api/v1/config exchange with clients, which have no use for the
 // startup-bound fields the update endpoint refuses to change anyway. It is
-// derived from isRuntimeKey, so it always matches the hot-reloadable fields
-// in config.yaml; the deprecated catalog.media_user_token_priority is normalized
-// to empty before this runs and its omitempty tag keeps it out of the view.
+// derived from isRuntimeKey, so it always matches the set of keys the database
+// layer can hold.
 func MutableView(cfg Config) map[string]any {
 	raw, err := filterConfigYAML(cfg, isRuntimeKey)
 	if err != nil {
@@ -108,25 +111,35 @@ func MutableView(cfg Config) map[string]any {
 	return view
 }
 
-// RuntimeLockedChanges returns the dotted keys of fields that differ between
-// old and updated but are consumed only at process startup (listen address,
-// database path, logging outputs, wrapper connection, catalog client/token
-// signing and Apple request limits, worker/resource pool sizes, tool paths).
-// Changing them through the runtime config API would silently do nothing, so
-// PUT /api/v1/config rejects an update whenever this returns a non-empty
-// list. The startup-bound set is everything isRuntimeKey does not claim;
-// runtime-managed fields take effect immediately for new requests and newly
-// started jobs.
-func RuntimeLockedChanges(old, updated Config) []string {
-	var changed []string
-	oldValue, updatedValue := reflect.ValueOf(old), reflect.ValueOf(updated)
+// SourcesView reports, for every key MutableView exposes, which layer supplied
+// the effective value. Startup-bound keys are left out: their sources describe
+// the file as it is now rather than the values the running process was built
+// from, which would be misleading rather than useful.
+func SourcesView(sources map[string]Source) map[string]string {
+	view := map[string]string{}
 	for _, field := range envFields() {
-		if isRuntimeKey(field.key) {
+		if !isRuntimeKey(field.key) {
 			continue
 		}
-		if !reflect.DeepEqual(oldValue.FieldByIndex(field.index).Interface(), updatedValue.FieldByIndex(field.index).Interface()) {
-			changed = append(changed, field.key)
+		source := sources[field.key]
+		if source == "" {
+			source = SourceDefault
+		}
+		view[field.key] = string(source)
+	}
+	return view
+}
+
+// LockedView lists the runtime keys a client cannot change, sorted. A key is
+// locked when the config file or an AMDL_* variable supplies its value, since
+// both outrank the database layer PUT /api/v1/config writes.
+func LockedView(sources map[string]Source) []string {
+	locked := []string{}
+	for _, field := range envFields() {
+		if isRuntimeKey(field.key) && sources[field.key].Locked() {
+			locked = append(locked, field.key)
 		}
 	}
-	return changed
+	slices.Sort(locked)
+	return locked
 }

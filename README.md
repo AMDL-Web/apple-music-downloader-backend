@@ -33,7 +33,7 @@ docker compose up -d
 ```
 
 That pulls the multi-arch image from GHCR (no local build), seeds `configs/config.yaml`
-from the bundled example, and listens on `:18080`. Point it at your wrapper with
+if it is missing, and listens on `:18080`. Point it at your wrapper with
 `AMDL_WRAPPER_ADDRESS` in `docker-compose.yml`.
 
 From source instead — Go per [`go.mod`](go.mod), plus `ffmpeg` on `PATH`:
@@ -147,7 +147,7 @@ the file name and gets `.m4a` appended.
 | `download.station_path_format` | `stations/{StationName}/{SongNumber:02d}. {SongName}` |
 
 Variables like `{AlbumArtist}`, `{ReleaseYear}`, `{UPC}`, `{DiscNumber}` and `{Codec}`
-are listed in [`configs/config.example.yaml`](configs/config.example.yaml); numeric ones
+are listed in [`configs/config.yaml`](configs/config.yaml); numeric ones
 take `:02d` padding. In directory segments `{ArtistName}` resolves to the collection's
 grouping artist so an album stays in one folder; in the file-name segment it is the
 track's own artist. `{SongNumber}` is the position within the collection — within the
@@ -184,17 +184,24 @@ Full walkthrough with curl examples: [docs/api.md](docs/api.md).
 
 ## Configuration
 
-A single file, `configs/config.yaml`, bootstrapped from
-[`configs/config.example.yaml`](configs/config.example.yaml) on first start. The example
-is the documentation — every key's allowed values, units and defaults live in its comments.
+Four layers, highest first: `AMDL_*` environment variables, then
+[`configs/config.yaml`](configs/config.yaml), then the database, then the built-in
+defaults. The backend never writes the config file — it is an optional, hand-written
+override layer, and it is also the documentation: every key's allowed values, units and
+defaults live in its comments.
 
 - **Runtime keys** (quality, paths, lyrics, covers, retries, simulate, library sync) apply
-  immediately via `PUT /api/v1/config`, which rewrites the whole file and drops comments.
+  immediately via `PUT /api/v1/config` and are stored in the database. The shipped
+  `config.yaml` leaves them commented out so the API owns them.
 - **Startup keys** (listen address, database path, wrapper address, pool sizes, log
-  format) need a restart.
+  format) are set in the file or the environment and need a restart.
 - **Any key** can be overridden with `AMDL_<SECTION>_<KEY>`, e.g.
   `AMDL_DOWNLOAD_QUALITY_PRIORITY=alac,aac`. Unknown `AMDL_*` variables fail startup
-  rather than being silently ignored, and env-pinned fields are rejected by `PUT` with 422.
+  rather than being silently ignored.
+- **Writing a runtime key into the file (or its `AMDL_*` variable) pins it**: both layers
+  outrank the database, so `PUT` answers `422` instead of accepting a write that would
+  never take effect. `GET /api/v1/config` reports the winning layer per key and lists the
+  pinned ones.
 
 Details, upgrade notes and the Docker specifics: [docs/configuration.md](docs/configuration.md)
 and [docs/deployment.md](docs/deployment.md).

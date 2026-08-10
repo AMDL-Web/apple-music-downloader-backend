@@ -30,7 +30,7 @@
 docker compose up -d
 ```
 
-这会从 GHCR 拉取多架构镜像（无需本地构建），以内置示例为模板生成 `configs/config.yaml`，
+这会从 GHCR 拉取多架构镜像（无需本地构建），在 `configs/config.yaml` 缺失时播种一份，
 监听 `:18080`。在 `docker-compose.yml` 里用 `AMDL_WRAPPER_ADDRESS` 指向你的 wrapper。
 
 想从源码跑——Go 版本以 [`go.mod`](go.mod) 为准，另需 `PATH` 上的 `ffmpeg`：
@@ -135,7 +135,7 @@ queued → resolving → waiting_download → downloading → waiting_decrypt
 | `download.station_path_format` | `stations/{StationName}/{SongNumber:02d}. {SongName}` |
 
 `{AlbumArtist}`、`{ReleaseYear}`、`{UPC}`、`{DiscNumber}`、`{Codec}` 等变量的完整列表见
-[`configs/config.example.yaml`](configs/config.example.yaml)，数字类变量支持 `:02d` 补零。
+[`configs/config.yaml`](configs/config.yaml)，数字类变量支持 `:02d` 补零。
 目录段中的 `{ArtistName}` 取集合的归档艺人，保证同一专辑落在同一目录；文件名段用曲目自身的
 艺人。`{SongNumber}` 是曲目在所属集合内的序号——专辑与艺人任务取其在该专辑内的位置，跨碟连续
 递增；`{TrackNumber}` 则是 Apple 自己的编号，每张碟都从 1 重新开始，若要使用请搭配
@@ -169,16 +169,21 @@ queued → resolving → waiting_download → downloading → waiting_decrypt
 
 ## 配置
 
-只有一个文件 `configs/config.yaml`，首次启动时以
-[`configs/config.example.yaml`](configs/config.example.yaml) 为模板生成。示例文件就是文档
-——每个键的取值范围、单位和默认值都写在它的注释里。
+四层，优先级从高到低：`AMDL_*` 环境变量 >
+[`configs/config.yaml`](configs/config.yaml) > 数据库 > 内置默认值。后端从不写配置文件——
+它是可选的、手写的覆盖层，同时也是文档：每个键的取值范围、单位和默认值都写在它的注释里。
 
 - **运行期字段**（音质、路径、歌词、封面、重试、simulate、资料库同步）通过
-  `PUT /api/v1/config` 立即生效；该接口会整体重写文件并丢弃注释。
-- **启动期字段**（监听地址、数据库路径、wrapper 地址、各种池大小、日志格式）需要重启。
+  `PUT /api/v1/config` 立即生效并存入数据库。随镜像分发的 `config.yaml` 把它们全部注释掉，
+  交给 API。
+- **启动期字段**（监听地址、数据库路径、wrapper 地址、各种池大小、日志格式）在文件或环境
+  变量里设置，需要重启。
 - **任意字段**都可以用 `AMDL_<大写段名>_<大写键名>` 覆盖，例如
   `AMDL_DOWNLOAD_QUALITY_PRIORITY=alac,aac`。无法识别的 `AMDL_*` 变量会让启动失败，而不是被
-  静默忽略；被环境变量固定的字段在 `PUT` 时返回 422。
+  静默忽略。
+- **在文件里写出一个运行期字段（或设置它的 `AMDL_*` 变量）等于把它钉死**：这两层都高于数据
+  库，所以 `PUT` 会返回 422，而不是接受一个永远不会生效的写入。`GET /api/v1/config` 会给出
+  每个键最终由哪一层决定，并列出被钉住的键。
 
 细节、升级注意事项与 Docker 部分见 [docs/configuration.md](docs/configuration.md) 和
 [docs/deployment.md](docs/deployment.md)。
@@ -216,7 +221,7 @@ webhook 或本地命令——刷新媒体服务器、跑后处理脚本。默认
 | [docs/automation.md](docs/automation.md) | 任务 hooks 与资料库同步 |
 | [docs/benchmarks.md](docs/benchmarks.md) | 后解密与端到端实测数据 |
 
-> `docs/` 正文为英文，与 `config.example.yaml` 的字段注释保持一致。
+> `docs/` 正文为英文，与 `config.yaml` 的字段注释保持一致。
 
 ## 开发
 

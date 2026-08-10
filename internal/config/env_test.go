@@ -2,7 +2,6 @@ package config
 
 import (
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,7 +9,7 @@ import (
 
 func TestEnvOverrides(t *testing.T) {
 	path := writeConfig(t, "wrapper:\n  address: \"10.0.0.1:8080\"\n")
-	cfg, err := load(path, []string{
+	cfg, err := loadEnv(t, path, []string{
 		"AMDL_SERVER_LISTEN=:19090",
 		"AMDL_WRAPPER_ADDRESS=wrapper-manager:8080",
 		"AMDL_DATABASE_PATH=/srv/amdl/amdl.db",
@@ -25,7 +24,6 @@ func TestEnvOverrides(t *testing.T) {
 		"AMDL_CATALOG_REQUESTS_PER_SECOND=9",
 		"AMDL_CATALOG_REQUEST_BURST=14",
 		"AMDL_CATALOG_ALLOWED_ORIGINS=",
-		"AMDL_CATALOG_MEDIA_USER_TOKEN_PRIORITY=request",
 		"UNRELATED=1",
 	})
 	if err != nil {
@@ -66,14 +64,11 @@ func TestEnvOverrides(t *testing.T) {
 	if !reflect.DeepEqual(cfg.Catalog.AllowedOrigins, []string{}) {
 		t.Fatalf("allowed origins = %#v, want empty list", cfg.Catalog.AllowedOrigins)
 	}
-	if cfg.Catalog.LegacyMediaUserTokenPriority != "" {
-		t.Fatalf("legacy media-user-token priority was not normalized: %q", cfg.Catalog.LegacyMediaUserTokenPriority)
-	}
 }
 
 func TestEnvOverridesIgnoreNonConfigVariables(t *testing.T) {
 	path := writeConfig(t, "server:\n  listen: \":18080\"\n")
-	if _, err := load(path, []string{
+	if _, err := loadEnv(t, path, []string{
 		"AMDL_CONFIG=/etc/amdl/config.yaml",
 		"AMDL_HOOKS_CONFIG=/etc/amdl/hooks.yaml",
 	}); err != nil {
@@ -83,7 +78,7 @@ func TestEnvOverridesIgnoreNonConfigVariables(t *testing.T) {
 
 func TestEnvOverridesRejectUnknownVariables(t *testing.T) {
 	path := writeConfig(t, "server:\n  listen: \":18080\"\n")
-	_, err := load(path, []string{"AMDL_DOWNLOADS_DIR=/music", "AMDL_TYPO=1"})
+	_, err := loadEnv(t, path, []string{"AMDL_DOWNLOADS_DIR=/music", "AMDL_TYPO=1"})
 	if err == nil || !strings.Contains(err.Error(), "unknown configuration environment variable") {
 		t.Fatalf("load error = %v, want unknown variable error", err)
 	}
@@ -95,7 +90,7 @@ func TestEnvOverridesRejectUnknownVariables(t *testing.T) {
 	// AMDL_SERVER_LISTEN / AMDL_WRAPPER_ADDRESS.
 	for _, legacy := range []string{"AMDL_LISTEN=:18080", "AMDL_WRAPPER_ADDR=host:8080"} {
 		name, _, _ := strings.Cut(legacy, "=")
-		if _, err := load(path, []string{legacy}); err == nil || !strings.Contains(err.Error(), name) {
+		if _, err := loadEnv(t, path, []string{legacy}); err == nil || !strings.Contains(err.Error(), name) {
 			t.Fatalf("load with %s error = %v, want unknown variable error naming it", name, err)
 		}
 	}
@@ -104,22 +99,22 @@ func TestEnvOverridesRejectUnknownVariables(t *testing.T) {
 		"AMDL_DOWNLOAD_MAX_PARALLEL_METADATA_REQUESTS",
 		"AMDL_DOWNLOAD_MAX_PARALLEL_MEDIA_DOWNLOADS",
 	} {
-		if _, err := load(path, []string{name + "=5"}); err == nil || !strings.Contains(err.Error(), name) {
+		if _, err := loadEnv(t, path, []string{name + "=5"}); err == nil || !strings.Contains(err.Error(), name) {
 			t.Fatalf("removed concurrency environment variable %s error = %v", name, err)
 		}
 	}
-	if cfg, err := load(path, []string{"AMDL_DOWNLOAD_MAX_PARALLEL_WRAPPER_REQUESTS=7"}); err != nil || cfg.Download.MaxParallelWrapperRequests != 7 {
+	if cfg, err := loadEnv(t, path, []string{"AMDL_DOWNLOAD_MAX_PARALLEL_WRAPPER_REQUESTS=7"}); err != nil || cfg.Download.MaxParallelWrapperRequests != 7 {
 		t.Fatalf("wrapper request limit env override = (%+v, %v), want 7", cfg.Download.MaxParallelWrapperRequests, err)
 	}
 }
 
 func TestEnvOverridesRejectInvalidValues(t *testing.T) {
 	path := writeConfig(t, "server:\n  listen: \":18080\"\n")
-	if _, err := load(path, []string{"AMDL_SIMULATE_ENABLED=maybe"}); err == nil ||
+	if _, err := loadEnv(t, path, []string{"AMDL_SIMULATE_ENABLED=maybe"}); err == nil ||
 		!strings.Contains(err.Error(), "AMDL_SIMULATE_ENABLED") || !strings.Contains(err.Error(), "boolean") {
 		t.Fatalf("load error = %v, want boolean parse error naming the variable", err)
 	}
-	if _, err := load(path, []string{"AMDL_DOWNLOAD_MAX_ATTEMPTS=lots"}); err == nil ||
+	if _, err := loadEnv(t, path, []string{"AMDL_DOWNLOAD_MAX_ATTEMPTS=lots"}); err == nil ||
 		!strings.Contains(err.Error(), "AMDL_DOWNLOAD_MAX_ATTEMPTS") || !strings.Contains(err.Error(), "integer") {
 		t.Fatalf("load error = %v, want integer parse error naming the variable", err)
 	}
@@ -127,11 +122,11 @@ func TestEnvOverridesRejectInvalidValues(t *testing.T) {
 
 func TestEnvOverridesGoThroughValidation(t *testing.T) {
 	path := writeConfig(t, "server:\n  listen: \":18080\"\n")
-	if _, err := load(path, []string{"AMDL_DOWNLOAD_COVER_FORMAT=webp"}); err == nil ||
+	if _, err := loadEnv(t, path, []string{"AMDL_DOWNLOAD_COVER_FORMAT=webp"}); err == nil ||
 		!strings.Contains(err.Error(), "cover_format") {
 		t.Fatalf("load error = %v, want cover_format validation error", err)
 	}
-	if _, err := load(path, []string{"AMDL_DOWNLOAD_MEMORY_MODE=auto"}); err == nil ||
+	if _, err := loadEnv(t, path, []string{"AMDL_DOWNLOAD_MEMORY_MODE=auto"}); err == nil ||
 		!strings.Contains(err.Error(), "memory_mode") {
 		t.Fatalf("load error = %v, want memory_mode validation error", err)
 	}
@@ -140,13 +135,32 @@ func TestEnvOverridesGoThroughValidation(t *testing.T) {
 func TestLoadAppliesProcessEnvironment(t *testing.T) {
 	t.Setenv("AMDL_DOWNLOAD_DOWNLOADS_DIR", "/music/from-env")
 	path := writeConfig(t, "download:\n  downloads_dir: \"data/downloads\"\n")
-	cfg, err := Load(path)
+	resolver, err := NewResolver(path, os.Environ())
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("NewResolver() error = %v", err)
+	}
+	cfg, sources, err := resolver.Resolve(nil)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
 	}
 	if cfg.Download.DownloadsDir != "/music/from-env" {
 		t.Fatalf("downloads dir = %q, want process env override", cfg.Download.DownloadsDir)
 	}
+	if sources["download.downloads_dir"] != SourceEnv {
+		t.Fatalf("downloads_dir source = %q, want env", sources["download.downloads_dir"])
+	}
+}
+
+// loadEnv resolves a config file with an explicit environment and no database
+// layer, so tests can exercise the overlay without touching the process env.
+func loadEnv(t *testing.T, path string, environ []string) (Config, error) {
+	t.Helper()
+	resolver, err := NewResolver(path, environ)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg, _, err := resolver.Resolve(nil)
+	return cfg, err
 }
 
 // Every leaf of Config must map to a unique variable name and a kind
@@ -174,68 +188,5 @@ func TestEnvFieldsCoverConfig(t *testing.T) {
 		if _, ok := envIgnored[field.name]; ok {
 			t.Errorf("%s collides with an ignored non-config variable", field.name)
 		}
-	}
-}
-
-func TestEnvLockedChanges(t *testing.T) {
-	lookup := func(name string) (string, bool) {
-		if name == "AMDL_DOWNLOAD_COVER_FORMAT" || name == "AMDL_WRAPPER_ADDRESS" {
-			return "x", true
-		}
-		return "", false
-	}
-	current := Default()
-	merged := Default()
-	if locked := EnvLockedChanges(current, merged, lookup); len(locked) != 0 {
-		t.Fatalf("no changes must yield no locked fields, got %v", locked)
-	}
-	merged.Download.CoverFormat = "png"
-	merged.Download.EmbedCover = false // changed but not pinned
-	locked := EnvLockedChanges(current, merged, lookup)
-	want := []string{"download.cover_format (AMDL_DOWNLOAD_COVER_FORMAT)"}
-	if !reflect.DeepEqual(locked, want) {
-		t.Fatalf("locked = %v, want %v", locked, want)
-	}
-}
-
-// Bootstrapping must write the example's values, not the environment overlay:
-// the overlay is re-applied on every load, and baking it into the file would
-// keep the value pinned even after the variable is unset.
-func TestBootstrapDoesNotBakeEnvOverrides(t *testing.T) {
-	t.Setenv("AMDL_WRAPPER_ADDRESS", "wrapper-manager:8080")
-	t.Setenv("AMDL_DOWNLOAD_COVER_FORMAT", "png")
-	dir := t.TempDir()
-	example := "wrapper:\n  address: \"127.0.0.1:8080\"\ndownload:\n  cover_format: \"jpg\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "config.example.yaml"), []byte(example), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(dir, "config.yaml")
-	runtime := filepath.Join(dir, "runtime.yaml")
-	if err := os.WriteFile(runtime, []byte("download:\n  embed_cover: false\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if result, err := EnsureFile(configPath, runtime); err != nil || !result.CreatedConfig || !result.MergedRuntime {
-		t.Fatalf("bootstrap = (%+v, %v), want config created and legacy runtime merged", result, err)
-	}
-	raw, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "wrapper-manager:8080") || strings.Contains(string(raw), "cover_format: png") {
-		t.Fatalf("env override leaked into bootstrapped config:\n%s", raw)
-	}
-	disk, err := load(configPath, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if disk.Wrapper.Address != "127.0.0.1:8080" || disk.Download.CoverFormat != "jpg" || disk.Download.EmbedCover {
-		t.Fatalf("disk config = wrapper %q cover %q embed_cover %v", disk.Wrapper.Address, disk.Download.CoverFormat, disk.Download.EmbedCover)
-	}
-	cfg, err := Load(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Wrapper.Address != "wrapper-manager:8080" || cfg.Download.CoverFormat != "png" {
-		t.Fatalf("loaded config = wrapper %q cover %q, want env overlay on top of the files", cfg.Wrapper.Address, cfg.Download.CoverFormat)
 	}
 }

@@ -246,44 +246,41 @@ func TestHooksOverrideIsDispatchOnlyAndSurvivesTokenRemoval(t *testing.T) {
 	}
 }
 
-func TestRuntimeLockedChanges(t *testing.T) {
-	base := Default()
-
-	if got := RuntimeLockedChanges(base, base); len(got) != 0 {
-		t.Fatalf("no-op change reported locked fields: %v", got)
+// TestRuntimeKeySplit pins which keys the database layer may hold. Everything
+// isRuntimeKey does not claim is consumed once at startup, so PUT
+// /api/v1/config refuses it outright and the resolver refuses to read it from
+// a stored row.
+func TestRuntimeKeySplit(t *testing.T) {
+	runtime := []string{
+		"logging.level", "logging.access_log",
+		"catalog.album_track_url_mode", "catalog.media_user_token",
+		"catalog.signed_mode_hls_source", "catalog.motion_artwork_enabled",
+		"download.quality_priority", "download.embed_lyrics", "download.max_attempts",
+		"simulate.enabled", "simulate.min_speed_kbps",
+		"library_sync.enabled", "library_sync.interval_minutes",
 	}
-
-	updated := base
-	updated.Download.QualityPriority = []string{"aac"}
-	updated.Download.EmbedLyrics = false
-	updated.Simulate.Enabled = true
-	updated.Simulate.MinSpeedKBps = 10
-	updated.Catalog.AlbumTrackURLMode = "album"
-	updated.Catalog.SignedModeHLSSource = "web_token"
-	updated.Logging.Level = "debug"
-	updated.Logging.AccessLog = false
-	if got := RuntimeLockedChanges(base, updated); len(got) != 0 {
-		t.Fatalf("runtime-updatable changes reported as locked: %v", got)
+	for _, key := range runtime {
+		if !isRuntimeKey(key) {
+			t.Errorf("%s must be runtime-mutable", key)
+		}
 	}
-
-	updated = base
-	updated.Server.Listen = "0.0.0.0:9999"
-	updated.Logging.Format = "json"
-	updated.Download.MaxRunningJobs = base.Download.MaxRunningJobs + 1
-	updated.Download.MaxParallelDownloads = base.Download.MaxParallelDownloads + 1
-	updated.Download.MaxParallelDecrypts = base.Download.MaxParallelDecrypts + 1
-	updated.Download.MaxParallelWrapperRequests = base.Download.MaxParallelWrapperRequests + 1
-	updated.Wrapper.Address = "10.0.0.1:8080"
-	updated.Catalog.AllowedOrigins = []string{"https://example.com"}
-	updated.Catalog.MaxParallelRequests = base.Catalog.MaxParallelRequests + 1
-	updated.Catalog.RequestsPerSecond = base.Catalog.RequestsPerSecond + 1
-	updated.Catalog.RequestBurst = base.Catalog.RequestBurst + 1
-	got := RuntimeLockedChanges(base, updated)
-	// Keys surface in Config struct-field order because the locked set is
-	// derived from envFields.
-	want := []string{"server.listen", "logging.format", "wrapper.address", "catalog.max_parallel_requests", "catalog.requests_per_second", "catalog.request_burst", "catalog.allowed_origins", "download.max_running_jobs", "download.max_parallel_downloads", "download.max_parallel_decrypts", "download.max_parallel_wrapper_requests"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("locked changes = %v, want %v", got, want)
+	startupBound := []string{
+		"server.listen", "database.path", "logging.format", "logging.buffer_size",
+		"wrapper.address", "tools.ffmpeg",
+		"catalog.max_parallel_requests", "catalog.requests_per_second",
+		"catalog.request_burst", "catalog.allowed_origins",
+		"download.max_running_jobs", "download.max_parallel_downloads",
+		"download.max_parallel_decrypts", "download.max_parallel_wrapper_requests",
+	}
+	for _, key := range startupBound {
+		if isRuntimeKey(key) {
+			t.Errorf("%s must stay startup-bound", key)
+		}
+	}
+	// The removed v1.2 compatibility key must not linger in the runtime set,
+	// where it would let a stored row name a field that no longer exists.
+	if isRuntimeKey("catalog.media_user_token_priority") {
+		t.Error("catalog.media_user_token_priority was removed and must not be a runtime key")
 	}
 }
 

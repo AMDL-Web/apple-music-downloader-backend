@@ -5,13 +5,15 @@
 # 默认拉取 GHCR 上的多架构预构建镜像,无需本地构建。想从源码构建见下方
 # amdl-backend.image 附近的说明。
 #
-# 首次启动会在 ./configs 里生成 config.yaml(后端从 config.example.yaml
-# 引导,带注释的字段文档见同目录示例文件),之后修改配置:
-#   - 运行期字段:PUT /api/v1/config,立即生效并整体重写 config.yaml;
-#   - 任意字段:用 AMDL_<大写段名>_<大写键名> 环境变量覆盖(优先于
-#     config.yaml,加载时不写回文件),改完 docker compose up -d;
-#   - 或直接编辑 ./configs/config.yaml 后 docker compose restart
-#     (启动期字段需重启,且被环境变量覆盖的字段以环境变量为准)。
+# 配置优先级从高到低:环境变量 > ./configs/config.yaml > 数据库 > 内置默认值。
+# 首次启动入口脚本会在 ./configs 里播种一份 config.yaml 模板(已存在则不动),
+# 里面启动期字段是激活的,运行期字段全部注释掉、留给 API。之后改配置:
+#   - 运行期字段:PUT /api/v1/config,立即生效,存进数据库,不写文件;
+#   - 启动期字段:编辑 ./configs/config.yaml 后 docker compose restart;
+#   - 任意字段:用 AMDL_<大写段名>_<大写键名> 环境变量覆盖,改完
+#     docker compose up -d。
+# 在文件里写出(取消注释)一个运行期字段等于把它钉死,API 将拒绝修改它;
+# 被环境变量覆盖的字段同理。
 services:
   amdl-backend:
     # 默认拉取 GHCR 上的预构建镜像(多架构 linux/amd64 + linux/arm64)。
@@ -50,8 +52,8 @@ services:
       # 让 Linux 上的容器也能通过 host.docker.internal 访问宿主机。
       - "host.docker.internal:host-gateway"
     volumes:
-      # 配置目录:config.yaml(后端管理、PUT 时整体重写)、
-      # config.example.yaml(完整字段文档)、hooks.yaml。
+      # 配置目录:config.yaml(手写覆盖层,后端只读不写,注释即完整字段
+      # 文档)、hooks.yaml。运行期设置存在数据库里,不在这里。
       - ./configs:/app/configs
       # SQLite 数据库目录(database.path 默认 data/db/amdl.db)。
       - ./data/db:/app/data/db

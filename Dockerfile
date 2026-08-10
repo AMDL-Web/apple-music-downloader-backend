@@ -31,8 +31,8 @@ RUN apk add --no-cache ca-certificates ffmpeg tzdata su-exec \
 
 WORKDIR /app
 
-# 示例配置内置到 /opt/amdl,入口脚本首次启动时播种到配置目录 /app/configs。
-COPY configs/config.example.yaml configs/hooks.yaml /opt/amdl/
+# 配置模板内置到 /opt/amdl,入口脚本在 /app/configs 里缺失时播种一份。
+COPY configs/config.yaml configs/hooks.yaml /opt/amdl/
 COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY --from=build /out/amdl-api /app/amdl-api
 

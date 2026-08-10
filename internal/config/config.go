@@ -1,13 +1,9 @@
 package config
 
 import (
-	"bytes"
 	"fmt"
-	"os"
 	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
@@ -112,12 +108,7 @@ type CatalogConfig struct {
 	TokenCacheTTLHours       int      `yaml:"token_cache_ttl_hours" json:"token_cache_ttl_hours"`
 	AlbumTrackURLMode        string   `yaml:"album_track_url_mode" json:"album_track_url_mode"`
 	MediaUserToken           string   `yaml:"media_user_token" json:"media_user_token"`
-	// LegacyMediaUserTokenPriority keeps v1.2 config files, environment
-	// variables, and config API payloads readable during migration. Request
-	// tokens now use the ordinary per-job override semantics, so this value is
-	// validated and discarded by Config.NormalizeDeprecated.
-	LegacyMediaUserTokenPriority string `yaml:"media_user_token_priority,omitempty" json:"media_user_token_priority,omitempty"`
-	SignedModeHLSSource          string `yaml:"signed_mode_hls_source" json:"signed_mode_hls_source"`
+	SignedModeHLSSource      string   `yaml:"signed_mode_hls_source" json:"signed_mode_hls_source"`
 	// MotionArtworkEnabled controls the out-of-band animated-cover lookup. It
 	// is the only feature that talks to amp-api purely for decoration, and it
 	// costs one undocumented-endpoint request plus a scraped web-player token
@@ -231,6 +222,10 @@ type SimulateConfig struct {
 	MaxSpeedKBps int  `yaml:"max_speed_kbps" json:"max_speed_kbps"`
 }
 
+// Default is the lowest configuration layer: the value every key takes when
+// neither the database, configs/config.yaml, nor an AMDL_* variable supplies
+// one. It is kept identical to the values documented in configs/config.yaml,
+// which config_test.go enforces by loading that file with every key active.
 func Default() Config {
 	return Config{
 		Server:   ServerConfig{Listen: "127.0.0.1:18080"},
@@ -244,29 +239,30 @@ func Default() Config {
 			Address: "127.0.0.1:8080", Insecure: true, TimeoutSeconds: 30, LoginTimeoutSeconds: 120,
 		},
 		Catalog: CatalogConfig{
-			DefaultStorefront: "us", Language: "en-US",
+			DefaultStorefront: "cn", Language: "zh-Hans_CN",
 			MaxParallelRequests: 16, RequestsPerSecond: 10, RequestBurst: 16,
-			DeveloperTokenTTLHours: 1, TokenCacheTTLHours: 12, AlbumTrackURLMode: "song", SignedModeHLSSource: "wrapper",
+			DeveloperTokenTTLHours: 1, AllowedOrigins: []string{},
+			TokenCacheTTLHours: 12, AlbumTrackURLMode: "song", SignedModeHLSSource: "wrapper",
 			MotionArtworkEnabled: true,
 		},
 		Download: DownloadConfig{
-			QualityPriority: []string{"alac", "aac"}, CodecAlternative: true, MemoryMode: MemoryModeLow,
-			MaxRunningJobs: 2, MaxParallelDownloads: 16, MaxParallelDecrypts: 32, MaxParallelWrapperRequests: 24, MaxAttempts: 4,
+			QualityPriority: []string{"alac"}, CodecAlternative: true, MemoryMode: MemoryModeLow,
+			MaxRunningJobs: 3, MaxParallelDownloads: 16, MaxParallelDecrypts: 32, MaxParallelWrapperRequests: 24, MaxAttempts: 3,
 			ProgressEventIntervalMS: 500,
 			DownloadsDir:            "data/downloads",
-			SongPathFormat:          "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
-			// config.example.yaml numbers these two by {SongNumber}, which is
-			// what a fresh install gets, because {TrackNumber} restarts at 1 on
-			// every disc and collides on a multi-disc album. These fall back to
-			// the older {TrackNumber} layout on purpose: a config that omits
-			// the key belongs to an install that predates the change, and
-			// renaming its files would strand everything already downloaded.
-			AlbumPathFormat:    "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
-			ArtistPathFormat:   "artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+			// A single song is a collection of one, so {SongNumber} would always
+			// be 1 there; the song template keeps Apple's own track number.
+			SongPathFormat: "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+			// The collection templates number by {SongNumber} because
+			// {TrackNumber} restarts at 1 on every disc, so a multi-disc album
+			// resolves two tracks to the same path and silently skips the second.
+			AlbumPathFormat:    "albums/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}",
+			ArtistPathFormat:   "artists/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}",
 			PlaylistPathFormat: "playlists/{PlaylistName}/{SongNumber:02d}. {SongName}",
 			StationPathFormat:  "stations/{StationName}/{SongNumber:02d}. {SongName}",
 			TempDir:            "data/tmp", CoverSize: "5000x5000", CoverFormat: "jpg",
-			EmbedCover: true, EmbedLyrics: true, LyricsFormat: "lrc", LyricsType: "lyrics", LyricsExtras: []string{},
+			EmbedCover: true, SaveAlbumCover: true, SaveArtistCover: true, SavePlaylistCover: true,
+			EmbedLyrics: true, LyricsFormat: "lrc", LyricsType: "lyrics", LyricsExtras: []string{},
 			ALACMaxSampleRate: 192000, ALACMaxBitDepth: 24, CheckIntegrity: true,
 		},
 		Tools:    ToolsConfig{FFmpeg: "ffmpeg"},
@@ -277,40 +273,14 @@ func Default() Config {
 	}
 }
 
-// Load reads the combined config file, overlays AMDL_* environment variable
-// overrides, normalizes legacy fields, and validates the result.
-func Load(path string) (Config, error) {
-	return load(path, os.Environ())
-}
-
-// load is Load with an explicit environment, so tests and bootstrapping can
-// read files without baking process overrides into them.
-func load(path string, environ []string) (Config, error) {
-	cfg := Default()
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return cfg, err
-	}
-	decoder := yaml.NewDecoder(bytes.NewReader(raw))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&cfg); err != nil {
-		return cfg, err
-	}
-	if err := applyEnvOverrides(&cfg, environ); err != nil {
-		return cfg, err
-	}
-	if err := cfg.NormalizeDeprecated(); err != nil {
-		return cfg, err
-	}
-	// Config files written before the limits existed may hold larger values;
-	// clamp them instead of refusing to boot. New values submitted through the
-	// runtime config API still fail Validate with an explicit error.
+// clampLimits lowers bounded values to their hard process-wide limits. It runs
+// after every layer is applied: a hand-written config file or an AMDL_*
+// variable may carry an oversized value, and clamping keeps the process
+// bootable. Values submitted through PUT /api/v1/config are rejected by
+// Validate with an explicit error instead.
+func clampLimits(cfg *Config) {
 	clampCatalogLimits(&cfg.Catalog)
 	clampDownloadLimits(&cfg.Download)
-	if err := cfg.Validate(); err != nil {
-		return cfg, err
-	}
-	return cfg, nil
 }
 
 // clampCatalogLimits lowers startup-bound Apple request controls loaded from
@@ -351,23 +321,6 @@ func clampDownloadLimits(d *DownloadConfig) {
 	}
 }
 
-// NormalizeDeprecated accepts compatibility-only fields from older config
-// files, environment variables, and API payloads, then removes them from the
-// effective snapshot so the next managed-file rewrite completes the migration.
-// media_user_token_priority became redundant when request tokens joined the
-// ordinary per-job override layer: a present override always wins, while an
-// absent one inherits catalog.media_user_token.
-func (c *Config) NormalizeDeprecated() error {
-	if c == nil {
-		return nil
-	}
-	if p := c.Catalog.LegacyMediaUserTokenPriority; p != "" && p != "request" && p != "config" {
-		return fmt.Errorf("catalog.media_user_token_priority must be request or config")
-	}
-	c.Catalog.LegacyMediaUserTokenPriority = ""
-	return nil
-}
-
 // Validate checks the semantic rules every Config must satisfy, whether it
 // was loaded from YAML at startup or assembled at runtime (config update API,
 // per-request job overrides applied to a base config).
@@ -402,9 +355,6 @@ func (c Config) Validate() error {
 	}
 	if c.Catalog.AlbumTrackURLMode != "song" && c.Catalog.AlbumTrackURLMode != "album" {
 		return fmt.Errorf("catalog.album_track_url_mode must be song or album")
-	}
-	if p := c.Catalog.LegacyMediaUserTokenPriority; p != "" && p != "request" && p != "config" {
-		return fmt.Errorf("catalog.media_user_token_priority must be request or config")
 	}
 	if c.Catalog.SignedModeHLSSource != "wrapper" && c.Catalog.SignedModeHLSSource != "web_token" {
 		return fmt.Errorf("catalog.signed_mode_hls_source must be wrapper or web_token")

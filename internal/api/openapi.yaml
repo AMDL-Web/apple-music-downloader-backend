@@ -140,14 +140,18 @@ paths:
         library_sync 段、
         catalog.album_track_url_mode/media_user_token/signed_mode_hls_source/motion_artwork_enabled。
         仅启动时生效的字段（server、database、logging 其它字段、wrapper、tools、catalog 其它字段）不返回——
-        它们无法通过本 API 修改，请编辑启动配置 configs/config.yaml 并重启。
+        它们无法通过本 API 修改，请编辑 configs/config.yaml 或环境变量并重启。
 
-        所有字段统一存放在 configs/config.yaml。每次 GET 会先重读该文件的
-        运行时字段再返回，因此运行期间手工编辑的可修改字段在下一次 GET 后
-        即生效、无需重启；仅启动时生效的字段仍需重启。
-        AMDL_<大写段名>_<大写键名> 环境变量覆盖在每次重读时同样生效并
-        优先于文件值。文件当前不可读或校验失败时（例如正编辑到一半），
-        继续返回上一份有效配置，并附 reload_error 字段说明原因。
+        配置由四层合并而成，优先级从高到低：AMDL_<大写段名>_<大写键名>
+        环境变量 > configs/config.yaml（只有文件里实际写出的键参与覆盖）>
+        数据库（PUT 写入的层）> 内置默认值。每次 GET 会重读全部层再返回，
+        因此运行期间手工编辑文件在下一次 GET 后即生效、无需重启；仅启动时
+        生效的字段仍需重启。
+
+        sources 给出每个键最终由哪一层决定，locked 列出被文件或环境变量钉住
+        的键——这些键 PUT 改不动，客户端应置为只读。某一层当前不可读或合并
+        结果校验失败时（例如文件正编辑到一半），继续返回上一份有效配置，并附
+        reload_error 字段说明原因。
       operationId: getConfig
       responses:
         '200':
@@ -160,29 +164,31 @@ paths:
       tags: [System]
       summary: 更新运行时配置
       description: >-
-        请求体按合并语义覆盖当前运行时配置：省略的字段保持现值，出现的字段
-        （含整段）被替换。合并结果必须通过与配置文件相同的完整校验。
+        请求体按键合并：省略的键保持现值；出现的键被写入数据库层；显式传
+        null 的键重置——删掉它在数据库里的行，让 configs/config.yaml 或内置
+        默认值重新接管。合并结果必须通过与配置文件相同的完整校验。
 
-        仅 GET 返回的字段可以修改：download 段（max_running_jobs、max_parallel_downloads、
-        max_parallel_decrypts、max_parallel_wrapper_requests 除外）、
-        logging.level/access_log、simulate 段、library_sync 段、catalog.album_track_url_mode/media_user_token/signed_mode_hls_source/motion_artwork_enabled。其余字段只在进程启动时
-        被消费，修改请求会被 422 拒绝——请改启动配置 configs/config.yaml 并重启。
-        作为唯一例外，旧客户端提交的 catalog.media_user_token_priority 仍会被
-        接受，但该字段已弃用且值会被忽略，不再参与令牌选择。
-        被 AMDL_<大写段名>_<大写键名> 环境变量覆盖的字段同样返回 422：
-        写入会在下一次配置重载时被环境变量的值重新遮盖，请改环境变量并
-        重启。
+        只写数据库，不写任何文件。仅 GET 返回的字段可以修改：download 段
+        （max_running_jobs、max_parallel_downloads、max_parallel_decrypts、
+        max_parallel_wrapper_requests 除外）、logging.level/access_log、
+        simulate 段、library_sync 段、
+        catalog.album_track_url_mode/media_user_token/signed_mode_hls_source/motion_artwork_enabled。
+        其余字段只在进程启动时被消费，修改请求会被 422 拒绝——请改
+        configs/config.yaml 或环境变量并重启。
 
-        修改立即对新请求和新开始的任务生效（运行中的任务继续使用其启动时的
-        配置快照），并将包含启动字段在内的完整配置写回
-        configs/config.yaml，重启后依然生效。该文件由后端管理（每次 PUT
-        整体重写，注释不保留）；带完整注释的字段文档在
-        configs/config.example.yaml，首次启动时会以它为模板生成 config.yaml。
+        被 configs/config.yaml 写出、或被 AMDL_<大写段名>_<大写键名> 环境变量
+        覆盖的字段（即 GET 的 locked 列表）同样返回 422：这两层都高于本接口
+        写入的数据库层，写进去也不会生效。取消文件里的该键或环境变量并重启
+        才能交回给 API。只有真正改变取值才会被拒——原样回传当前值不会。
+
+        请求整体成功或整体失败：任何一个键被拒，整个请求都不写入。成功后立即
+        对新请求和新开始的任务生效（运行中的任务继续使用其启动时的配置快照），
+        并在重启后依然生效。
 
         前端注意：确认写入前请先 GET 一次并基于其返回值构造请求体。PUT 的
-        合并基准是后端内存中的当前配置，而 GET 会先重读配置文件、把运行
-        期间的手工文件编辑同步进内存——跳过 GET 直接 PUT，可能基于过期
-        视图覆盖掉别处（其它页面或手工编辑）刚改过的值。
+        合并基准是后端内存中的当前快照，而 GET 会重读全部层、把运行期间的
+        手工文件编辑同步进内存——跳过 GET 直接 PUT，可能基于过期视图覆盖掉
+        别处（其它页面或手工编辑）刚改过的值。
       operationId: updateConfig
       requestBody:
         required: true
@@ -207,8 +213,8 @@ paths:
           $ref: '#/components/responses/JSONBodyTooLarge'
         '422':
           description: >-
-            合并结果未通过配置校验，或试图修改仅启动时生效的字段，
-            或试图修改被 AMDL_* 环境变量覆盖的字段。
+            合并结果未通过配置校验，或试图修改仅启动时生效的字段，或试图修改
+            被 configs/config.yaml、AMDL_* 环境变量钉住的字段。
           content:
             application/json:
               schema:
@@ -1313,8 +1319,8 @@ components:
       type: object
       description: >-
         可运行时修改的配置子集（字段含义、枚举值和默认行为见
-        configs/config.example.yaml 内注释）。GET 返回此形状；PUT 时可只
-        提交需要修改的字段，省略的字段保持现值。
+        configs/config.yaml 内注释）。GET 返回此形状；PUT 时可只提交需要修改
+        的字段，省略的字段保持现值，显式传 null 的字段重置为下层的值。
       properties:
         catalog:
           type: object
@@ -1329,16 +1335,8 @@ components:
               type: string
               description: >-
                 电台下载和私人歌单封面获取使用的全局 media-user-token fallback。
-                可通过 PUT 修改并写回配置文件；GET 会返回当前值。请求中的
+                可通过 PUT 修改并存入数据库；GET 会返回当前值。请求中的
                 overrides.media_user_token 可以按任务覆盖或显式清空它。
-            media_user_token_priority:
-              type: string
-              enum: [request, config]
-              deprecated: true
-              writeOnly: true
-              description: >-
-                已弃用、仅为旧客户端兼容而接受的输入字段；值会被忽略，不再
-                参与令牌选择。新客户端必须使用 overrides.media_user_token。
             signed_mode_hls_source:
               type: string
               enum: [wrapper, web_token]
@@ -1520,20 +1518,40 @@ components:
           $ref: '#/components/schemas/LibrarySyncStatus'
     ConfigResponse:
       type: object
-      required: [config, persisted]
+      required: [config, sources, locked, persisted]
       properties:
         config:
           $ref: '#/components/schemas/RuntimeConfig'
+        sources:
+          type: object
+          description: >-
+            config 里每个键（点号路径，如 download.max_attempts）最终由哪一层
+            决定。键集合与 config 完全对应。
+          additionalProperties:
+            type: string
+            enum: [env, file, db, default]
+          example:
+            logging.level: db
+            download.max_attempts: file
+        locked:
+          type: array
+          description: >-
+            不可通过 PUT 修改的键（点号路径），已排序。即 sources 为 file 或
+            env 的那些键：这两层都高于 PUT 写入的数据库层。客户端应把它们
+            显示为只读；照常提交原值不会报错，改动它们会得到 422。
+            没有被钉住的键时为空数组。
+          items:
+            type: string
         persisted:
           type: boolean
           description: >-
-            配置存储是否有持久化文件。正常部署下恒为 true：PUT 的修改写回
-            configs/config.yaml，重启后依然生效。
+            修改是否持久化。正常部署下恒为 true：PUT 的修改写入数据库，
+            重启后依然生效。
         reload_error:
           type: string
           description: >-
-            仅 GET 且重读配置文件失败时出现：说明文件为何不可用（不可读或
-            校验失败），此时 config 为最后一份有效配置。
+            仅 GET 且重读配置层失败时出现：说明为何不可用（文件不可读、
+            数据库读取失败或合并结果校验失败），此时 config 为最后一份有效配置。
     SubmitResult:
       type: object
       required: [url, status]

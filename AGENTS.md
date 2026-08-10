@@ -18,17 +18,30 @@ service (reverse proxy, gateway, or frontend session), not this codebase.
 Don't add auth middleware here, and don't report missing auth as a finding in a
 review — it's a deliberate architecture boundary, not an oversight.
 
-## Config
+## Config: four layers, and the backend writes only one
 
-`configs/config.yaml` is **generated**: bootstrapped from `config.example.yaml`
-on first start, then rewritten by `PUT /api/v1/config`, which drops all comments.
-Hand-edits to it survive only until the next runtime config write.
+Effective value = environment (`AMDL_*`) over `configs/config.yaml` over the
+database over `Default()`. `PUT /api/v1/config` writes the **database** layer and
+nothing else — no code writes the config file. `internal/config/resolve.go` is
+where the stack is merged and every key's winning layer is recorded.
 
-So `config.example.yaml` is the documentation, and it has to carry the full
-comment for each key — allowed enum values, valid booleans, numeric units and
-default behavior, list item options, supported template variables.
-`internal/config/config_test.go` fails if the example's key set drifts from the
-struct, but it can't check whether your comment is any good.
+`configs/config.yaml` is hand-written, tracked, optional, and **partial**: only
+the keys actually spelled out in it override anything. That makes presence
+meaningful — a key written there is pinned, and `PUT` answers 422 rather than
+accepting a write that a higher layer would shadow. The shipped file keeps
+startup-bound keys active (nothing else can set them) and every runtime-mutable
+key commented out (the API owns them). Don't activate a runtime key in it.
+
+It is also the documentation, so it has to carry the full comment for each key —
+allowed enum values, valid booleans, numeric units and default behavior, list
+item options, supported template variables. `internal/config/config_test.go`
+fails if its key set drifts from the struct, or if uncommenting every key stops
+resolving to exactly `Default()`; it can't check whether your comment is any
+good.
+
+`isRuntimeKey` in `runtime.go` is the single authority on which keys the
+database layer may hold. Adding a key there also lets a stored row set it, so
+it must be something the running process actually re-reads.
 
 ## Two Apple hosts, not one
 

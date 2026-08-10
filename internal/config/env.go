@@ -12,12 +12,13 @@ import (
 // Every config key can be overridden with an environment variable named
 // AMDL_<SECTION>_<KEY> — the yaml path uppercased with "_" as the separator,
 // for example AMDL_SERVER_LISTEN, AMDL_WRAPPER_ADDRESS, or
-// AMDL_DOWNLOAD_QUALITY_PRIORITY. Overrides sit on top of the config file:
-// they are applied on every Load (startup and Store.Reload alike) and never
-// written back by the loader. A PUT /api/v1/config rewrite persists effective
-// runtime values but retains startup values from disk. Value syntax: strings
-// verbatim, booleans per strconv.ParseBool, integers as digits, string lists
-// as comma-separated items (an empty value is an empty list).
+// AMDL_DOWNLOAD_QUALITY_PRIORITY. The environment is the highest layer: it
+// beats configs/config.yaml, which beats the database, which beats the
+// built-in defaults. Nothing is ever written back to the environment, and a
+// key an AMDL_* variable pins cannot be changed through PUT /api/v1/config.
+// Value syntax: strings verbatim, booleans per strconv.ParseBool, integers as
+// digits, string lists as comma-separated items (an empty value is an empty
+// list).
 
 // envPrefix is the shared prefix of every backend environment variable.
 const envPrefix = "AMDL_"
@@ -25,11 +26,8 @@ const envPrefix = "AMDL_"
 // envIgnored are AMDL_-prefixed variables that are not config-key overrides:
 // the file-path variables read in main.
 var envIgnored = map[string]struct{}{
-	"AMDL_CONFIG": {},
-	// Accepted by main only to locate and consume a legacy split runtime
-	// file during upgrade. It no longer selects a live configuration file.
-	"AMDL_RUNTIME_CONFIG": {},
-	"AMDL_HOOKS_CONFIG":   {},
+	"AMDL_CONFIG":       {},
+	"AMDL_HOOKS_CONFIG": {},
 }
 
 // envField ties one leaf field of Config to the environment variable that
@@ -66,13 +64,12 @@ func yamlTagName(field reflect.StructField) string {
 	return name
 }
 
-// applyEnvOverrides overlays every AMDL_* variable in environ onto cfg. An
-// AMDL_-prefixed variable that is neither a config key nor in envIgnored is
-// an error, so a typo fails startup loudly instead of being skipped. Values
-// are only parsed here; semantic checks stay in Validate, which callers run
-// after the overlay.
-func applyEnvOverrides(cfg *Config, environ []string) error {
-	overrides := map[string]string{}
+// envOverrides resolves the AMDL_* variables in environ to dotted config keys
+// and their raw values. An AMDL_-prefixed variable that is neither a config
+// key nor in envIgnored is an error, so a typo fails startup loudly instead of
+// being skipped silently.
+func envOverrides(environ []string) (map[string]string, error) {
+	present := map[string]string{}
 	for _, kv := range environ {
 		name, value, _ := strings.Cut(kv, "=")
 		if !strings.HasPrefix(name, envPrefix) {
@@ -81,26 +78,49 @@ func applyEnvOverrides(cfg *Config, environ []string) error {
 		if _, ok := envIgnored[name]; ok {
 			continue
 		}
-		overrides[name] = value
+		present[name] = value
 	}
+	overrides := map[string]string{}
+	for _, field := range envFields() {
+		if raw, ok := present[field.name]; ok {
+			overrides[field.key] = raw
+			delete(present, field.name)
+		}
+	}
+	if len(present) > 0 {
+		return nil, fmt.Errorf("unknown configuration environment variable(s): %s", strings.Join(slices.Sorted(maps.Keys(present)), ", "))
+	}
+	return overrides, nil
+}
+
+// applyEnvOverrides sets every key in overrides on cfg. Values are only parsed
+// here; semantic checks stay in Validate, which Resolve runs afterwards.
+func applyEnvOverrides(cfg *Config, overrides map[string]string) error {
 	if len(overrides) == 0 {
 		return nil
 	}
 	cfgValue := reflect.ValueOf(cfg).Elem()
 	for _, field := range envFields() {
-		raw, ok := overrides[field.name]
+		raw, ok := overrides[field.key]
 		if !ok {
 			continue
 		}
 		if err := setFromEnv(cfgValue.FieldByIndex(field.index), raw); err != nil {
 			return fmt.Errorf("environment variable %s (%s): %w", field.name, field.key, err)
 		}
-		delete(overrides, field.name)
-	}
-	if len(overrides) > 0 {
-		return fmt.Errorf("unknown configuration environment variable(s): %s", strings.Join(slices.Sorted(maps.Keys(overrides)), ", "))
 	}
 	return nil
+}
+
+// EnvVarName returns the AMDL_* variable that pins a dotted config key, so
+// error messages can name the variable an operator has to unset.
+func EnvVarName(key string) string {
+	for _, field := range envFields() {
+		if field.key == key {
+			return field.name
+		}
+	}
+	return ""
 }
 
 func setFromEnv(target reflect.Value, raw string) error {
@@ -138,24 +158,4 @@ func splitEnvList(raw string) []string {
 		}
 	}
 	return items
-}
-
-// EnvLockedChanges returns a "key (VARIABLE)" entry for every field that
-// differs between current and merged while its override variable is set in
-// lookup. PUT /api/v1/config rejects such updates: the write itself would
-// succeed, but the next Load would overlay the environment value again and
-// silently shadow it.
-func EnvLockedChanges(current, merged Config, lookup func(string) (string, bool)) []string {
-	var locked []string
-	currentValue := reflect.ValueOf(current)
-	mergedValue := reflect.ValueOf(merged)
-	for _, field := range envFields() {
-		if _, ok := lookup(field.name); !ok {
-			continue
-		}
-		if !reflect.DeepEqual(currentValue.FieldByIndex(field.index).Interface(), mergedValue.FieldByIndex(field.index).Interface()) {
-			locked = append(locked, fmt.Sprintf("%s (%s)", field.key, field.name))
-		}
-	}
-	return locked
 }

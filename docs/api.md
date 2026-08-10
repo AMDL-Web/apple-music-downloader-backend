@@ -142,11 +142,11 @@ The token is persisted only onto the jobs that actually need it — stations and
 playlists (`pl.u-xxx`). Songs, albums, artists and other playlists in the same batch do
 not store it. It is cleared when a job completes or is cancelled, and retained on failure
 so a retry can still resolve. It is never echoed back in create, list, detail, SSE or
-WebSocket responses. The global fallback in `catalog.media_user_token` does persist to the
-config file and may be returned by `GET /api/v1/config`.
+WebSocket responses. The global fallback in `catalog.media_user_token` is stored in the
+database and may be returned by `GET /api/v1/config`.
 
-`catalog.media_user_token_priority` is kept only for old configs; it is deprecated and no
-longer takes part in selection.
+`catalog.media_user_token_priority` was removed in 2.0; a payload still carrying it is
+rejected as an unknown key.
 
 ### Radio stations
 
@@ -272,9 +272,14 @@ Apple Music's original order and duplicate track occurrences. Stations use the r
 curl http://localhost:18080/api/v1/config
 ```
 
-`PUT /api/v1/config` changes runtime-mutable keys only, but rewrites the entire file
-including startup keys — comments and custom formatting are not preserved. See
-[configuration.md](configuration.md).
+The response carries the effective runtime values plus `sources` (the winning layer per
+key: `env`, `file`, `db` or `default`) and `locked` (the keys `configs/config.yaml` or an
+`AMDL_*` variable pins, which a UI should show read-only).
+
+`PUT /api/v1/config` changes runtime-mutable keys only and writes them to the database —
+it never touches the config file. Omitted keys keep their value, a key set to `null` is
+reset by dropping its stored row, and a change to a locked or startup-bound key is
+rejected with `422` for the whole request. See [configuration.md](configuration.md).
 
 `GET /api/v1/hooks` returns the master switch plus each entry's name, enabled state, type,
 events and job types — never URLs, headers, commands or working directories.

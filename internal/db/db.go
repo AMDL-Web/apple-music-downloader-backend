@@ -188,6 +188,17 @@ func (s *Store) initSchema(ctx context.Context) error {
 			song_name TEXT NOT NULL DEFAULT '',
 			album_name TEXT NOT NULL DEFAULT ''
 		);`,
+		// The configuration layer PUT /api/v1/config writes: one row per key
+		// an operator actually changed, holding the JSON encoding of that
+		// key's value. Keys nobody touched have no row and fall through to
+		// configs/config.yaml and then the built-in defaults, so wiping this
+		// table resets the backend to its shipped configuration rather than
+		// leaving it unconfigured.
+		`CREATE TABLE IF NOT EXISTS settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {

@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -104,21 +106,49 @@ func TestUpdateConfigMergesAndTakesEffect(t *testing.T) {
 	}
 }
 
-func TestUpdateConfigAcceptsAndDropsLegacyMediaUserTokenPriority(t *testing.T) {
+// TestUpdateConfigRejectsRemovedMediaUserTokenPriority pins the 2.0 removal of
+// the v1.2 compatibility field: it is no longer a config key, so a client still
+// sending it is told so instead of having the value silently dropped.
+func TestUpdateConfigRejectsRemovedMediaUserTokenPriority(t *testing.T) {
 	store := config.NewStore(config.Default())
 	server := &Server{cfg: store}
 	recorder := requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config",
 		`{"catalog":{"media_user_token":"configured-token","media_user_token_priority":"request"}}`)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %s)", recorder.Code, recorder.Body.String())
 	}
-	if strings.Contains(recorder.Body.String(), "media_user_token_priority") {
-		t.Fatalf("deprecated priority was echoed in runtime config: %s", recorder.Body.String())
+	if !strings.Contains(recorder.Body.String(), "catalog.media_user_token_priority") {
+		t.Fatalf("error body must name the removed key: %s", recorder.Body.String())
 	}
-	got := store.Get()
-	if got.Catalog.MediaUserToken != "configured-token" || got.Catalog.LegacyMediaUserTokenPriority != "" {
-		t.Fatalf("normalized catalog config = %+v", got.Catalog)
+	if got := store.Get().Catalog; got.MediaUserToken != "" {
+		t.Fatalf("rejected update leaked into the store: %+v", got)
 	}
+}
+
+// layeredConfigStore builds the production-shaped store: a config file
+// override layer, an environment layer, and the SQLite settings layer that
+// PUT /api/v1/config writes.
+func layeredConfigStore(t *testing.T, fileBody string, environ []string) (*config.Store, string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(fileBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.Open(filepath.Join(dir, "amdl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	resolver, err := config.NewResolver(path, environ)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgStore, err := config.NewLayeredStore(context.Background(), resolver, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfgStore, path
 }
 
 func TestUpdateConfigAppliesLoggingLevel(t *testing.T) {
@@ -148,18 +178,12 @@ func TestUpdateConfigAppliesLoggingLevel(t *testing.T) {
 }
 
 func TestGetConfigReloadsManualFileEdits(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	base := config.Default()
-	if err := config.Save(path, base); err != nil {
-		t.Fatal(err)
-	}
-	server := &Server{cfg: config.NewFileStore(base, path)}
+	cfgStore, path := layeredConfigStore(t, "logging:\n  format: text\n", nil)
+	server := &Server{cfg: cfgStore}
 
 	// Edit the file behind the running store, as a user would with an editor.
-	edited := base
-	edited.Download.CoverFormat = "png"
-	edited.Catalog.SignedModeHLSSource = "web_token"
-	if err := config.Save(path, edited); err != nil {
+	// Writing a runtime key there pins it away from the API.
+	if err := os.WriteFile(path, []byte("logging:\n  format: text\ndownload:\n  cover_format: png\ncatalog:\n  signed_mode_hls_source: web_token\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	recorder := requestJSON(t, server.Routes(), http.MethodGet, "/api/v1/config", "")
@@ -177,6 +201,22 @@ func TestGetConfigReloadsManualFileEdits(t *testing.T) {
 	}
 	if got := server.cfg.Get(); got.Download.CoverFormat != "png" || got.Catalog.SignedModeHLSSource != "web_token" {
 		t.Fatalf("store snapshot not refreshed: %+v", got.Catalog)
+	}
+	var meta struct {
+		Sources map[string]string `json:"sources"`
+		Locked  []string          `json:"locked"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta.Sources["download.cover_format"] != "file" || meta.Sources["download.embed_cover"] != "default" {
+		t.Fatalf("sources = %v, want cover_format from the file and embed_cover from the defaults", meta.Sources)
+	}
+	if !slices.Contains(meta.Locked, "download.cover_format") || !slices.Contains(meta.Locked, "catalog.signed_mode_hls_source") {
+		t.Fatalf("locked = %v, want both file-pinned keys", meta.Locked)
+	}
+	if slices.Contains(meta.Locked, "logging.format") {
+		t.Fatalf("locked = %v, must not list startup-bound keys the view never exposes", meta.Locked)
 	}
 
 	// A broken file (edit in progress) must not break GET: the last good
@@ -196,9 +236,12 @@ func TestGetConfigReloadsManualFileEdits(t *testing.T) {
 	}
 }
 
-func TestUpdateConfigPersistsToBackingFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	server := &Server{cfg: config.NewFileStore(config.Default(), path)}
+// TestUpdateConfigPersistsToDatabase covers the whole point of the change: a
+// PUT lands in the database and nothing touches the config file.
+func TestUpdateConfigPersistsToDatabase(t *testing.T) {
+	body := "server:\n  listen: \"127.0.0.1:18080\"\n"
+	cfgStore, path := layeredConfigStore(t, body, nil)
+	server := &Server{cfg: cfgStore}
 
 	recorder := requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config", `{"download":{"cover_format":"png"}}`)
 	if recorder.Code != http.StatusOK {
@@ -207,13 +250,57 @@ func TestUpdateConfigPersistsToBackingFile(t *testing.T) {
 	if !strings.Contains(recorder.Body.String(), `"persisted":true`) {
 		t.Fatalf("response does not report persisted=true: %s", recorder.Body.String())
 	}
-	// The change must survive a restart: reloading the file yields it back.
-	loaded, err := config.Load(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("reload persisted config: %v", err)
+		t.Fatal(err)
 	}
-	if loaded.Download.CoverFormat != "png" {
-		t.Fatalf("persisted cover_format = %q, want png", loaded.Download.CoverFormat)
+	if string(raw) != body {
+		t.Fatalf("config file was rewritten:\n%s", raw)
+	}
+	// The change must survive a restart: a reload re-reads every layer.
+	if err := cfgStore.Reload(context.Background()); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := cfgStore.Get().Download.CoverFormat; got != "png" {
+		t.Fatalf("persisted cover_format = %q, want png", got)
+	}
+	if got := cfgStore.Sources()["download.cover_format"]; got != config.SourceDatabase {
+		t.Fatalf("cover_format source = %q, want db", got)
+	}
+}
+
+// TestUpdateConfigResetsWithNull covers the reset path: an explicit null drops
+// the stored row so the layer below takes over again.
+func TestUpdateConfigResetsWithNull(t *testing.T) {
+	cfgStore, _ := layeredConfigStore(t, "download:\n  memory_mode: high\n", nil)
+	server := &Server{cfg: cfgStore}
+
+	recorder := requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config", `{"download":{"cover_format":"png","max_attempts":9}}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	recorder = requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config", `{"download":{"cover_format":null}}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("reset status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	got := cfgStore.Get().Download
+	if got.CoverFormat != config.Default().Download.CoverFormat {
+		t.Fatalf("cover_format = %q, want the default back", got.CoverFormat)
+	}
+	if got.MaxAttempts != 9 {
+		t.Fatalf("max_attempts = %d, want the untouched stored value", got.MaxAttempts)
+	}
+	if source := cfgStore.Sources()["download.cover_format"]; source != config.SourceDefault {
+		t.Fatalf("cover_format source = %q, want default", source)
+	}
+	// Resetting a key the file supplies hands it back to the file, not to the
+	// built-in default.
+	recorder = requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config", `{"download":{"memory_mode":null}}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("reset of a file-backed key status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if got := cfgStore.Get().Download.MemoryMode; got != config.MemoryModeHigh {
+		t.Fatalf("memory_mode = %q, want the config file value", got)
 	}
 }
 
@@ -224,7 +311,7 @@ func TestUpdateConfigRejectsBadInput(t *testing.T) {
 		status int
 		want   string
 	}{
-		{name: "unknown field", body: `{"download":{"nope":true}}`, status: http.StatusBadRequest, want: "unknown field"},
+		{name: "unknown field", body: `{"download":{"nope":true}}`, status: http.StatusBadRequest, want: "download.nope"},
 		{name: "malformed json", body: `{`, status: http.StatusBadRequest, want: ""},
 		{name: "validation failure", body: `{"download":{"cover_format":"gif"}}`, status: http.StatusUnprocessableEntity, want: "cover_format"},
 		{name: "removed tracks limit", body: `{"download":{"max_parallel_tracks":5}}`, status: http.StatusBadRequest, want: "max_parallel_tracks"},
@@ -261,13 +348,13 @@ func TestUpdateConfigRejectsBadInput(t *testing.T) {
 
 func TestUpdateConfigRejectsEnvPinnedFields(t *testing.T) {
 	t.Setenv("AMDL_DOWNLOAD_COVER_FORMAT", "jpg")
-	store := config.NewStore(config.Default())
+	store, _ := layeredConfigStore(t, "", os.Environ())
 	server := &Server{cfg: store}
 	recorder := requestJSON(t, server.Routes(), http.MethodPut, "/api/v1/config", `{"download":{"cover_format":"png"}}`)
 	if recorder.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422 (body %s)", recorder.Code, recorder.Body.String())
 	}
-	if body := recorder.Body.String(); !strings.Contains(body, "AMDL_DOWNLOAD_COVER_FORMAT") || !strings.Contains(body, "pinned by environment") {
+	if body := recorder.Body.String(); !strings.Contains(body, "AMDL_DOWNLOAD_COVER_FORMAT") || !strings.Contains(body, "pinned by") {
 		t.Fatalf("error body %q must name the pinning variable", body)
 	}
 	if store.Get().Download.CoverFormat != "jpg" {

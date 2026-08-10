@@ -1,14 +1,15 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 func TestWrapperLoginTimeout(t *testing.T) {
@@ -49,24 +50,24 @@ func TestMemoryModeDefaultLoadAndValidate(t *testing.T) {
 
 	// Configs written before memory_mode existed inherit the low-memory
 	// default, preserving the current production behavior.
-	cfg, err := Load(writeConfig(t, "download:\n  cover_format: jpg\n"))
+	cfg, err := loadConfig(t, "download:\n  cover_format: jpg\n")
 	if err != nil {
-		t.Fatalf("Load() legacy config: %v", err)
+		t.Fatalf("load legacy config: %v", err)
 	}
 	if cfg.Download.MemoryMode != MemoryModeLow {
 		t.Fatalf("legacy config memory mode = %q, want %q", cfg.Download.MemoryMode, MemoryModeLow)
 	}
 
-	cfg, err = Load(writeConfig(t, "download:\n  memory_mode: high\n"))
+	cfg, err = loadConfig(t, "download:\n  memory_mode: high\n")
 	if err != nil {
-		t.Fatalf("Load() high memory mode: %v", err)
+		t.Fatalf("load high memory mode: %v", err)
 	}
 	if cfg.Download.MemoryMode != MemoryModeHigh {
 		t.Fatalf("loaded memory mode = %q, want %q", cfg.Download.MemoryMode, MemoryModeHigh)
 	}
 
-	if _, err := Load(writeConfig(t, "download:\n  memory_mode: auto\n")); err == nil || !strings.Contains(err.Error(), "memory_mode") {
-		t.Fatalf("Load() invalid memory mode error = %v, want memory_mode validation error", err)
+	if _, err := loadConfig(t, "download:\n  memory_mode: auto\n"); err == nil || !strings.Contains(err.Error(), "memory_mode") {
+		t.Fatalf("load invalid memory mode error = %v, want memory_mode validation error", err)
 	}
 }
 
@@ -100,8 +101,8 @@ func TestLoadValidatesLogging(t *testing.T) {
 		"all disabled": "logging:\n  console: false\n  file_enabled: false\n  buffer_size: 0\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := Load(writeConfig(t, body)); err == nil || !strings.Contains(err.Error(), "logging") {
-				t.Fatalf("Load() error = %v, want logging validation error", err)
+			if _, err := loadConfig(t, body); err == nil || !strings.Contains(err.Error(), "logging") {
+				t.Fatalf("load error = %v, want logging validation error", err)
 			}
 		})
 	}
@@ -148,13 +149,12 @@ func TestValidateBoundsResourceAmplifyingDownloadSettings(t *testing.T) {
 func TestDefaultPathFormats(t *testing.T) {
 	defaults := Default().Download
 	want := map[string]string{
-		"song": "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
-		// Album and artist deliberately lag config.example.yaml, which numbers
-		// both by {SongNumber}; see TestExampleNumbersAlbumPathsByCollectionPosition.
-		// A config omitting these keys predates that change, and renaming its
-		// files would strand everything it has already downloaded.
-		"album":    "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
-		"artist":   "artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+		// A single song is a collection of one, so only the song template keeps
+		// Apple's own track number; the collection templates number by
+		// {SongNumber}, which does not restart on every disc.
+		"song":     "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+		"album":    "albums/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}",
+		"artist":   "artists/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}",
 		"playlist": "playlists/{PlaylistName}/{SongNumber:02d}. {SongName}",
 	}
 	got := map[string]string{
@@ -179,10 +179,28 @@ func writeConfig(t *testing.T, body string) string {
 	return path
 }
 
+// loadConfig resolves a config file body with no database layer and no
+// environment overrides — the layer stack startup sees before the database it
+// names is open.
+func loadConfig(t *testing.T, body string) (Config, error) {
+	t.Helper()
+	return loadPath(t, writeConfig(t, body))
+}
+
+func loadPath(t *testing.T, path string) (Config, error) {
+	t.Helper()
+	resolver, err := NewResolver(path, nil)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg, _, err := resolver.Resolve(nil)
+	return cfg, err
+}
+
 func TestLoadRejectsUnknownFields(t *testing.T) {
 	path := writeConfig(t, "download:\n  codec: alac\n")
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "field codec not found") {
-		t.Fatalf("Load() error = %v, want unknown field error", err)
+	if _, err := loadPath(t, path); err == nil || !strings.Contains(err.Error(), `unknown configuration key "download.codec"`) {
+		t.Fatalf("load error = %v, want unknown field error", err)
 	}
 }
 
@@ -190,8 +208,8 @@ func TestLoadRejectsRemovedConcurrencyKeys(t *testing.T) {
 	for _, key := range []string{"max_parallel_tracks", "max_parallel_metadata_requests", "max_parallel_media_downloads"} {
 		t.Run(key, func(t *testing.T) {
 			path := writeConfig(t, "download:\n  "+key+": 5\n")
-			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "field "+key+" not found") {
-				t.Fatalf("Load() error = %v, want removed-field error for %s", err, key)
+			if _, err := loadPath(t, path); err == nil || !strings.Contains(err.Error(), `unknown configuration key "download.`+key+`"`) {
+				t.Fatalf("load error = %v, want removed-field error for %s", err, key)
 			}
 		})
 	}
@@ -199,9 +217,9 @@ func TestLoadRejectsRemovedConcurrencyKeys(t *testing.T) {
 
 func TestLoadClampsWrapperRequestLimit(t *testing.T) {
 	path := writeConfig(t, "download:\n  max_parallel_wrapper_requests: 999\n")
-	cfg, err := Load(path)
+	cfg, err := loadPath(t, path)
 	if err != nil {
-		t.Fatalf("Load() oversized wrapper limit: %v", err)
+		t.Fatalf("load oversized wrapper limit: %v", err)
 	}
 	if cfg.Download.MaxParallelWrapperRequests != maxGlobalPoolLimit {
 		t.Fatalf("max_parallel_wrapper_requests = %d, want clamped %d", cfg.Download.MaxParallelWrapperRequests, maxGlobalPoolLimit)
@@ -210,15 +228,15 @@ func TestLoadClampsWrapperRequestLimit(t *testing.T) {
 
 func TestLoadRejectsExplicitEmptyValues(t *testing.T) {
 	path := writeConfig(t, "catalog:\n  album_track_url_mode: \"\"\n")
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "album_track_url_mode") {
-		t.Fatalf("Load() error = %v, want album_track_url_mode validation error", err)
+	if _, err := loadPath(t, path); err == nil || !strings.Contains(err.Error(), "album_track_url_mode") {
+		t.Fatalf("load error = %v, want album_track_url_mode validation error", err)
 	}
 }
 
 func TestLoadRejectsPartialDeveloperTokenConfig(t *testing.T) {
 	path := writeConfig(t, "catalog:\n  apple_music_key_id: \"88KBJL3CKU\"\n")
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "apple_music_") {
-		t.Fatalf("Load() error = %v, want partial signing config error", err)
+	if _, err := loadPath(t, path); err == nil || !strings.Contains(err.Error(), "apple_music_") {
+		t.Fatalf("load error = %v, want partial signing config error", err)
 	}
 }
 
@@ -236,34 +254,13 @@ func TestDeveloperTokenSigningEnabled(t *testing.T) {
 	}
 }
 
-func TestLoadMigratesLegacyMediaUserTokenPriority(t *testing.T) {
-	path := writeConfig(t, "catalog:\n  media_user_token: configured-token\n  media_user_token_priority: request\n")
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load() legacy priority: %v", err)
-	}
-	if cfg.Catalog.MediaUserToken != "configured-token" {
-		t.Fatalf("media_user_token = %q, want configured-token", cfg.Catalog.MediaUserToken)
-	}
-	if cfg.Catalog.LegacyMediaUserTokenPriority != "" {
-		t.Fatalf("legacy priority survived normalization: %q", cfg.Catalog.LegacyMediaUserTokenPriority)
-	}
-	if err := Save(path, cfg); err != nil {
-		t.Fatalf("Save() normalized config: %v", err)
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "media_user_token_priority") {
-		t.Fatalf("managed-file rewrite kept deprecated priority:\n%s", raw)
-	}
-}
-
-func TestLoadRejectsUnknownMediaUserTokenPriority(t *testing.T) {
-	path := writeConfig(t, "catalog:\n  media_user_token_priority: always\n")
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "media_user_token_priority") {
-		t.Fatalf("Load() error = %v, want media_user_token_priority validation error", err)
+// TestLoadRejectsRemovedMediaUserTokenPriority pins the 2.0 removal of the
+// v1.2 compatibility field: it is gone from the struct, so a config file still
+// carrying it fails as an unknown key rather than being quietly accepted.
+func TestLoadRejectsRemovedMediaUserTokenPriority(t *testing.T) {
+	_, err := loadConfig(t, "catalog:\n  media_user_token_priority: request\n")
+	if err == nil || !strings.Contains(err.Error(), `unknown configuration key "catalog.media_user_token_priority"`) {
+		t.Fatalf("load error = %v, want unknown-key error", err)
 	}
 }
 
@@ -279,13 +276,13 @@ func TestSignedModeHLSSourceDefaultAndValidate(t *testing.T) {
 		t.Fatal("web_token should enable EnhancedHLSFromWebToken")
 	}
 	path := writeConfig(t, "catalog:\n  signed_mode_hls_source: device\n")
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "signed_mode_hls_source") {
-		t.Fatalf("Load() error = %v, want signed_mode_hls_source validation error", err)
+	if _, err := loadPath(t, path); err == nil || !strings.Contains(err.Error(), "signed_mode_hls_source") {
+		t.Fatalf("load error = %v, want signed_mode_hls_source validation error", err)
 	}
 	path = writeConfig(t, "catalog:\n  signed_mode_hls_source: web_token\n")
-	cfg, err := Load(path)
+	cfg, err := loadPath(t, path)
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("load error = %v", err)
 	}
 	if cfg.Catalog.SignedModeHLSSource != "web_token" {
 		t.Fatalf("signed_mode_hls_source = %q, want web_token", cfg.Catalog.SignedModeHLSSource)
@@ -306,16 +303,16 @@ func TestDeveloperTokenTTL(t *testing.T) {
 
 func TestLoadRejectsBlankAllowedOrigin(t *testing.T) {
 	path := writeConfig(t, "catalog:\n  allowed_origins: [\"https://example.com\", \"  \"]\n")
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "allowed_origins") {
-		t.Fatalf("Load() error = %v, want allowed_origins validation error", err)
+	if _, err := loadPath(t, path); err == nil || !strings.Contains(err.Error(), "allowed_origins") {
+		t.Fatalf("load error = %v, want allowed_origins validation error", err)
 	}
 }
 
 func TestLoadAcceptsAllowedOrigins(t *testing.T) {
 	path := writeConfig(t, "catalog:\n  allowed_origins: [\"https://example.com\"]\n  developer_token_ttl_hours: 2\n")
-	cfg, err := Load(path)
+	cfg, err := loadPath(t, path)
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("load error = %v", err)
 	}
 	if len(cfg.Catalog.AllowedOrigins) != 1 || cfg.Catalog.AllowedOrigins[0] != "https://example.com" {
 		t.Fatalf("allowed origins = %#v", cfg.Catalog.AllowedOrigins)
@@ -327,36 +324,36 @@ func TestLoadAcceptsAllowedOrigins(t *testing.T) {
 
 func TestLoadRejectsUnknownCoverFormat(t *testing.T) {
 	path := writeConfig(t, "download:\n  cover_format: webp\n")
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "cover_format") {
-		t.Fatalf("Load() error = %v, want cover_format validation error", err)
+	if _, err := loadPath(t, path); err == nil || !strings.Contains(err.Error(), "cover_format") {
+		t.Fatalf("load error = %v, want cover_format validation error", err)
 	}
 }
 
 func TestLoadRejectsUnknownLyricsFormat(t *testing.T) {
 	path := writeConfig(t, "download:\n  lyrics_format: json\n")
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "lyrics_format") {
-		t.Fatalf("Load() error = %v, want lyrics_format validation error", err)
+	if _, err := loadPath(t, path); err == nil || !strings.Contains(err.Error(), "lyrics_format") {
+		t.Fatalf("load error = %v, want lyrics_format validation error", err)
 	}
 }
 
 func TestLoadRejectsUnknownLyricsType(t *testing.T) {
 	path := writeConfig(t, "download:\n  lyrics_type: word-by-word\n")
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "lyrics_type") {
-		t.Fatalf("Load() error = %v, want lyrics_type validation error", err)
+	if _, err := loadPath(t, path); err == nil || !strings.Contains(err.Error(), "lyrics_type") {
+		t.Fatalf("load error = %v, want lyrics_type validation error", err)
 	}
 }
 
 func TestLoadRejectsUnknownLyricsExtra(t *testing.T) {
 	path := writeConfig(t, "download:\n  lyrics_extras: [translation, romanization]\n")
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "lyrics_extras") {
-		t.Fatalf("Load() error = %v, want lyrics_extras validation error", err)
+	if _, err := loadPath(t, path); err == nil || !strings.Contains(err.Error(), "lyrics_extras") {
+		t.Fatalf("load error = %v, want lyrics_extras validation error", err)
 	}
 }
 
 func TestLoadRejectsExplicitAACLCInPriority(t *testing.T) {
 	path := writeConfig(t, "download:\n  quality_priority: [alac, aac-lc]\n")
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "aac-lc") {
-		t.Fatalf("Load() error = %v, want implicit AAC-LC validation error", err)
+	if _, err := loadPath(t, path); err == nil || !strings.Contains(err.Error(), "aac-lc") {
+		t.Fatalf("load error = %v, want implicit AAC-LC validation error", err)
 	}
 }
 
@@ -368,8 +365,8 @@ func TestDefaultConfigPassesValidation(t *testing.T) {
 
 func TestLoadRejectsEmptyPathFormat(t *testing.T) {
 	path := writeConfig(t, "download:\n  artist_path_format: \"\"\n")
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "artist_path_format") {
-		t.Fatalf("Load() error = %v, want artist_path_format validation error", err)
+	if _, err := loadPath(t, path); err == nil || !strings.Contains(err.Error(), "artist_path_format") {
+		t.Fatalf("load error = %v, want artist_path_format validation error", err)
 	}
 }
 
@@ -377,85 +374,158 @@ func TestLoadRejectsEmptyPathFormat(t *testing.T) {
 // that may hold values above limits introduced by a newer backend.
 func TestLoadClampsResourceLimitsFromFile(t *testing.T) {
 	path := writeConfig(t, "catalog:\n  max_parallel_requests: 200\n  requests_per_second: 200\n  request_burst: 200\ndownload:\n  max_running_jobs: 100\n  max_parallel_downloads: 200\n  max_parallel_decrypts: 200\n  max_attempts: 50\n")
-	cfg, err := Load(path)
+	cfg, err := loadPath(t, path)
 	if err != nil {
-		t.Fatalf("Load() with over-limit values failed: %v", err)
+		t.Fatalf("load with over-limit values failed: %v", err)
 	}
 	if cfg.Catalog.MaxParallelRequests != maxGlobalPoolLimit || cfg.Catalog.RequestsPerSecond != maxGlobalPoolLimit || cfg.Catalog.RequestBurst != maxGlobalPoolLimit {
-		t.Fatalf("Load() did not clamp catalog values: %+v", cfg.Catalog)
+		t.Fatalf("load did not clamp catalog values: %+v", cfg.Catalog)
 	}
 	if cfg.Download.MaxRunningJobs != maxRunningJobsLimit || cfg.Download.MaxParallelDownloads != maxGlobalPoolLimit || cfg.Download.MaxParallelDecrypts != maxGlobalPoolLimit || cfg.Download.MaxAttempts != maxAttemptsLimit {
-		t.Fatalf("Load() did not clamp download values: %+v", cfg.Download)
+		t.Fatalf("load did not clamp download values: %+v", cfg.Download)
 	}
 }
 
-func TestCommittedExampleDocumentsEveryConfigKey(t *testing.T) {
-	raw, err := os.ReadFile("../../configs/config.example.yaml")
+// committedConfig splits the shipped configs/config.yaml into the keys it
+// writes out and the keys it documents but leaves commented, and returns a
+// copy with every commented key activated. A commented line counts as a key
+// only when the name before the colon is a real config key, which is what
+// separates "# level: info" from the prose above it.
+func committedConfig(t *testing.T) (active, commented map[string]bool, uncommented []byte) {
+	t.Helper()
+	raw, err := os.ReadFile("../../configs/config.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var doc map[string]map[string]any
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		t.Fatal(err)
-	}
-	want := knownKeys()
-	// Accepted only to read old v1.2 files; it is normalized away and should
-	// not be advertised as a current setting.
-	delete(want, "catalog.media_user_token_priority")
-	got := map[string]bool{}
-	for section, fields := range doc {
-		for field := range fields {
-			got[section+"."+field] = true
+	known := knownKeys()
+	sectionPattern := regexp.MustCompile(`^([a-z_]+):\s*$`)
+	activePattern := regexp.MustCompile(`^  ([a-z_0-9]+):`)
+	commentedPattern := regexp.MustCompile(`^  # ([a-z_0-9]+):`)
+
+	active, commented = map[string]bool{}, map[string]bool{}
+	var section string
+	var out []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if m := sectionPattern.FindStringSubmatch(line); m != nil {
+			section = m[1]
+			out = append(out, line)
+			continue
 		}
+		if m := activePattern.FindStringSubmatch(line); m != nil && section != "" {
+			if key := section + "." + m[1]; known[key] {
+				if active[key] {
+					t.Fatalf("configs/config.yaml sets %s twice", key)
+				}
+				active[key] = true
+			}
+			out = append(out, line)
+			continue
+		}
+		if m := commentedPattern.FindStringSubmatch(line); m != nil && section != "" {
+			if key := section + "." + m[1]; known[key] {
+				if commented[key] {
+					t.Fatalf("configs/config.yaml documents %s twice", key)
+				}
+				commented[key] = true
+				out = append(out, "  "+strings.TrimPrefix(line[2:], "# "))
+				continue
+			}
+		}
+		out = append(out, line)
 	}
-	var missing, extra []string
-	for key := range want {
-		if !got[key] {
+	return active, commented, []byte(strings.Join(out, "\n"))
+}
+
+// TestCommittedConfigDocumentsEveryKey keeps the shipped file in step with the
+// struct: every key appears exactly once, active or commented, and nothing
+// appears that is not a key.
+func TestCommittedConfigDocumentsEveryKey(t *testing.T) {
+	active, commented, _ := committedConfig(t)
+	var missing []string
+	for key := range knownKeys() {
+		if !active[key] && !commented[key] {
 			missing = append(missing, key)
 		}
 	}
-	for key := range got {
-		if !want[key] {
-			extra = append(extra, key)
-		}
-	}
 	slices.Sort(missing)
-	slices.Sort(extra)
-	if len(missing) > 0 || len(extra) > 0 {
-		t.Fatalf("config.example.yaml keys: missing=%v extra=%v", missing, extra)
-	}
-	if _, err := load("../../configs/config.example.yaml", nil); err != nil {
-		t.Fatalf("config.example.yaml does not load: %v", err)
+	if len(missing) > 0 {
+		t.Fatalf("configs/config.yaml documents neither an active nor a commented entry for: %v", missing)
 	}
 }
 
-// TestExampleNumbersAlbumPathsByCollectionPosition pins the half of the
-// multi-disc fix that only a fresh install receives. A new config.yaml is a
-// verbatim copy of the example, so the example is where the corrected album and
-// artist templates live; Default() keeps the older {TrackNumber} layout for
-// configs that omit the keys, and the two are meant to disagree here.
-func TestExampleNumbersAlbumPathsByCollectionPosition(t *testing.T) {
-	cfg, err := load("../../configs/config.example.yaml", nil)
+// TestCommittedConfigLeavesRuntimeKeysToTheAPI pins the split a fresh install
+// ships with: startup-bound keys are written out, because the file and the
+// environment are the only layers that can set them, while every
+// runtime-mutable key stays commented so the database layer owns it. An active
+// runtime key would pin itself and take the setting away from the API on every
+// new install.
+func TestCommittedConfigLeavesRuntimeKeysToTheAPI(t *testing.T) {
+	active, commented, _ := committedConfig(t)
+	var pinned, orphaned []string
+	for key := range knownKeys() {
+		if isRuntimeKey(key) && active[key] {
+			pinned = append(pinned, key)
+		}
+		if !isRuntimeKey(key) && commented[key] {
+			orphaned = append(orphaned, key)
+		}
+	}
+	slices.Sort(pinned)
+	slices.Sort(orphaned)
+	if len(pinned) > 0 {
+		t.Fatalf("configs/config.yaml activates runtime-mutable keys, pinning them away from the API: %v", pinned)
+	}
+	if len(orphaned) > 0 {
+		t.Fatalf("configs/config.yaml comments out startup-bound keys, which no other layer can set: %v", orphaned)
+	}
+}
+
+// TestCommittedConfigMatchesDefaults is the single check that keeps the Go
+// defaults and the shipped file from drifting: activating every documented key
+// must resolve to exactly Default(), so what the file shows is what a config
+// omitting it gets.
+func TestCommittedConfigMatchesDefaults(t *testing.T) {
+	_, _, uncommented := committedConfig(t)
+	cfg, err := loadConfig(t, string(uncommented))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("configs/config.yaml does not load with every key active: %v", err)
 	}
-	want := map[string]string{
-		"album":  "albums/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}",
-		"artist": "artists/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}",
+	if diff := configDiff(cfg, Default()); len(diff) > 0 {
+		t.Fatalf("configs/config.yaml and Default() disagree on: %s", strings.Join(diff, ", "))
 	}
-	got := map[string]string{
-		"album":  cfg.Download.AlbumPathFormat,
-		"artist": cfg.Download.ArtistPathFormat,
-	}
-	for kind, wantFormat := range want {
-		if got[kind] != wantFormat {
-			t.Fatalf("example %s path format = %q, want %q", kind, got[kind], wantFormat)
+}
+
+// configDiff names the keys whose values differ, which reads far better than
+// dumping two whole structs.
+func configDiff(got, want Config) []string {
+	var diff []string
+	gotValue, wantValue := reflect.ValueOf(got), reflect.ValueOf(want)
+	for _, field := range envFields() {
+		g := gotValue.FieldByIndex(field.index).Interface()
+		w := wantValue.FieldByIndex(field.index).Interface()
+		if !reflect.DeepEqual(g, w) {
+			diff = append(diff, fmt.Sprintf("%s (file %#v, default %#v)", field.key, g, w))
 		}
-		if defaultFormat := map[string]string{
-			"album":  Default().Download.AlbumPathFormat,
-			"artist": Default().Download.ArtistPathFormat,
-		}[kind]; defaultFormat == wantFormat {
-			t.Fatalf("default %s path format now matches the example; the fallback for configs omitting the key was meant to stay on {TrackNumber}", kind)
-		}
+	}
+	slices.Sort(diff)
+	return diff
+}
+
+// TestCommittedConfigLoadsAsShipped covers the file a fresh install actually
+// gets: it must load, and it must not pin anything the API is meant to own.
+func TestCommittedConfigLoadsAsShipped(t *testing.T) {
+	resolver, err := NewResolver("../../configs/config.yaml", nil)
+	if err != nil {
+		t.Fatalf("configs/config.yaml does not read: %v", err)
+	}
+	cfg, sources, err := resolver.Resolve(nil)
+	if err != nil {
+		t.Fatalf("configs/config.yaml does not load: %v", err)
+	}
+	if diff := configDiff(cfg, Default()); len(diff) > 0 {
+		t.Fatalf("shipped config resolves away from the defaults: %s", strings.Join(diff, ", "))
+	}
+	if locked := LockedView(sources); len(locked) > 0 {
+		t.Fatalf("shipped config pins runtime keys: %v", locked)
 	}
 }

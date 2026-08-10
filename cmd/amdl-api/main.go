@@ -33,30 +33,44 @@ func main() {
 	if cfgPath == "" {
 		cfgPath = "configs/config.yaml"
 	}
-	// AMDL_RUNTIME_CONFIG is retained only as an upgrade aid: deployments from
-	// the former split-file format may have placed runtime.yaml elsewhere. Once
-	// merged, config.yaml is the only live configuration file.
-	legacyRuntimePath := os.Getenv("AMDL_RUNTIME_CONFIG")
-	if legacyRuntimePath == "" {
-		legacyRuntimePath = filepath.Join(filepath.Dir(cfgPath), "runtime.yaml")
-	}
-	bootstrap, err := config.EnsureFile(cfgPath, legacyRuntimePath)
+	// The config file and the environment are the two layers above the
+	// database, and the database cannot supply the path of the database. So
+	// they are read first, resolved without the database layer to learn
+	// database.path, and resolved again below once that database is open.
+	resolver, err := config.NewResolver(cfgPath, os.Environ())
 	if err != nil {
-		bootstrapLogger.Error("bootstrap config", "error", err)
+		bootstrapLogger.Error("read config layers", "error", err)
 		os.Exit(1)
 	}
-	if bootstrap.CreatedConfig {
-		bootstrapLogger.Info("created config from example", "path", cfgPath)
-	}
-	if bootstrap.MergedRuntime {
-		bootstrapLogger.Info("merged legacy runtime config into config",
-			"config", cfgPath, "backup", bootstrap.RuntimeBackupPath)
-	}
-	cfg, err := config.Load(cfgPath)
+	base, _, err := resolver.Resolve(nil)
 	if err != nil {
 		bootstrapLogger.Error("load config", "error", err)
 		os.Exit(1)
 	}
+	if !resolver.FileFound() {
+		bootstrapLogger.Info("no config file; using stored settings, environment overrides, and defaults", "path", cfgPath)
+	}
+	if err := os.MkdirAll(filepath.Dir(base.Database.Path), 0o755); err != nil {
+		bootstrapLogger.Error("create database dir", "error", err)
+		os.Exit(1)
+	}
+	store, err := db.Open(base.Database.Path)
+	if err != nil {
+		bootstrapLogger.Error("open database", "error", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
+	// cfgStore is the live config shared by the API layer and the download
+	// pipeline. Process-wide concurrency pools are sized once from this startup
+	// snapshot; runtime-mutable fields are read when each job starts.
+	cfgStore, err := config.NewLayeredStore(context.Background(), resolver, store)
+	if err != nil {
+		bootstrapLogger.Error("load config", "error", err)
+		os.Exit(1)
+	}
+	cfg := cfgStore.Get()
+
 	logSystem, err := logging.New(cfg.Logging)
 	if err != nil {
 		bootstrapLogger.Error("initialize logging", "error", err)
@@ -88,23 +102,8 @@ func main() {
 	// continue their HLS transfer. Safe before any job has started because the
 	// temp dir is single-writer.
 	media.CleanupStaleTemp(cfg.Download.TempDir, logSystem.Logger.With("component", "media"))
-	if err := os.MkdirAll(filepath.Dir(cfg.Database.Path), 0o755); err != nil {
-		logger.Error("create database dir", "error", err)
-		os.Exit(1)
-	}
-
-	store, err := db.Open(cfg.Database.Path)
-	if err != nil {
-		logger.Error("open database", "error", err)
-		os.Exit(1)
-	}
-	defer store.Close()
 
 	hub := events.NewHub()
-	// cfgStore is the live runtime config shared by the API layer and download
-	// pipeline. Process-wide concurrency pools are sized once from this startup
-	// snapshot; runtime-mutable fields are read when each job starts.
-	cfgStore := config.NewFileStore(cfg, cfgPath)
 	wrapperClient, err := wrapper.NewClient(cfg.Wrapper, wrapper.WithDataConcurrencyLimit(cfg.Download.MaxParallelWrapperRequests))
 	if err != nil {
 		logger.Error("connect wrapper-manager", "error", err)
