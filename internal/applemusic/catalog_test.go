@@ -351,6 +351,65 @@ func TestAlbumFetchesAllTrackPages(t *testing.T) {
 	}
 }
 
+// TestAlbumCountsTracksPerDiscOnMultiDiscReleases pins the "track N of M"
+// denominator to the track's own disc. Apple's album trackCount is the whole
+// release — a real 29+19 two-disc album reports 48 — which would tag every
+// track of both discs as N of 48.
+func TestAlbumCountsTracksPerDiscOnMultiDiscReleases(t *testing.T) {
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client.token = "test-token"
+	client.tokenUntil = time.Now().Add(time.Hour)
+	client.http = &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		body := `{"data":[{"id":"album-1","type":"albums","attributes":{"name":"Album","artistName":"Album Artist","trackCount":3},"relationships":{"tracks":{"data":[` +
+			`{"id":"song-1","type":"songs","attributes":{"name":"One","trackNumber":1,"discNumber":1}},` +
+			`{"id":"song-2","type":"songs","attributes":{"name":"Two","trackNumber":2,"discNumber":1}},` +
+			`{"id":"video-1","type":"music-videos","attributes":{"name":"Video","trackNumber":3,"discNumber":1}},` +
+			`{"id":"song-3","type":"songs","attributes":{"name":"Three","trackNumber":1,"discNumber":2}}]}}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+
+	album, err := client.Album(context.Background(), "cn", "album-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The music video is not downloadable and never becomes a track, so it is
+	// excluded from disc 1's total as well.
+	want := []int{2, 2, 1}
+	for i, track := range album.Tracks {
+		if track.TrackCount != want[i] {
+			t.Fatalf("track %s TrackCount = %d, want %d", track.ID, track.TrackCount, want[i])
+		}
+		if track.DiscCount != 2 {
+			t.Fatalf("track %s DiscCount = %d, want 2", track.ID, track.DiscCount)
+		}
+	}
+}
+
+// TestAlbumKeepsAppleTrackCountOnSingleDiscReleases guards the other side: on a
+// one-disc album Apple's count stays authoritative, because it still reports
+// the full length when a storefront withholds individual tracks.
+func TestAlbumKeepsAppleTrackCountOnSingleDiscReleases(t *testing.T) {
+	client := newTestCatalogClient(config.CatalogConfig{Language: "en-US"}, slog.Default())
+	client.token = "test-token"
+	client.tokenUntil = time.Now().Add(time.Hour)
+	client.http = &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		body := `{"data":[{"id":"album-1","type":"albums","attributes":{"name":"Album","artistName":"Album Artist","trackCount":12},"relationships":{"tracks":{"data":[` +
+			`{"id":"song-1","type":"songs","attributes":{"name":"One","trackNumber":1,"discNumber":1}},` +
+			`{"id":"song-2","type":"songs","attributes":{"name":"Two","trackNumber":2,"discNumber":1}}]}}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+
+	album, err := client.Album(context.Background(), "cn", "album-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, track := range album.Tracks {
+		if track.TrackCount != 12 {
+			t.Fatalf("track %s TrackCount = %d, want 12", track.ID, track.TrackCount)
+		}
+	}
+}
+
 // TestAlbumDecodesArtworkColors pins the wire keys of the artwork palette
 // (bgColor/textColor1..4) so a mistyped JSON tag cannot silently drop the
 // colors from every collection.

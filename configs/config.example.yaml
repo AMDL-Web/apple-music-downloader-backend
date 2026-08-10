@@ -247,12 +247,24 @@ download:
   # In directory segments, {ArtistName} resolves to the collection's grouping artist
   # (album artist when available) so all tracks of a collection share one folder; in the
   # file-name segment it resolves to the track's own artist.
-  # string template: output path for single-song tasks.
+  # {SongNumber} is the track's 1-based position within the collection it is downloaded
+  # as: the position in the playlist or station, and for album and artist tasks the
+  # position within that album, counting on across discs. {TrackNumber} is instead
+  # Apple's own number, which restarts at 1 on every disc — on a multi-disc album a
+  # file-name segment built from {TrackNumber} alone repeats 01, 02, ... once per disc,
+  # and two identically titled tracks on different discs then resolve to the same path,
+  # where the second is skipped as already downloaded. Pair it with {DiscNumber} (for
+  # example "{DiscNumber}-{TrackNumber:02d}. {SongName}") if you want Apple's numbering.
+  # {TrackCount} matches {TrackNumber}: it is the number of tracks on the track's own
+  # disc, not the whole release.
+  # string template: output path for single-song tasks. A single song is a collection of
+  # one, so {SongNumber} is always 1 here; use {TrackNumber} to keep the album position.
   song_path_format: "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}"
   # string template: output path for album tasks.
-  album_path_format: "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}"
-  # string template: output path for artist tasks (expanded album/song lists).
-  artist_path_format: "artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}"
+  album_path_format: "albums/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}"
+  # string template: output path for artist tasks (expanded album/song lists). {SongNumber}
+  # restarts at 1 for each of the artist's albums, matching the {AlbumName} folder.
+  artist_path_format: "artists/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}"
   # string template: output path for playlist tasks. {SongNumber} is the 1-based position in the playlist.
   playlist_path_format: "playlists/{PlaylistName}/{SongNumber:02d}. {SongName}"
   # string template: output path for radio station (station/ra.xxxx) tasks. A station resolves to a

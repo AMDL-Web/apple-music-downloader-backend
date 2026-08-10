@@ -141,8 +141,8 @@ the file name and gets `.m4a` appended.
 | Config key | Default |
 | --- | --- |
 | `download.song_path_format` | `songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}` |
-| `download.album_path_format` | `albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}` |
-| `download.artist_path_format` | `artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}` |
+| `download.album_path_format` | `albums/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}` |
+| `download.artist_path_format` | `artists/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}` |
 | `download.playlist_path_format` | `playlists/{PlaylistName}/{SongNumber:02d}. {SongName}` |
 | `download.station_path_format` | `stations/{StationName}/{SongNumber:02d}. {SongName}` |
 
@@ -150,7 +150,10 @@ Variables like `{AlbumArtist}`, `{ReleaseYear}`, `{UPC}`, `{DiscNumber}` and `{C
 are listed in [`configs/config.example.yaml`](configs/config.example.yaml); numeric ones
 take `:02d` padding. In directory segments `{ArtistName}` resolves to the collection's
 grouping artist so an album stays in one folder; in the file-name segment it is the
-track's own artist. Standalone `cover.jpg` / `artist.jpg` files and `.lrc` / `.ttml`
+track's own artist. `{SongNumber}` is the position within the collection — within the
+album for album and artist jobs, counting on across discs — while `{TrackNumber}` is
+Apple's own number, which restarts at 1 on every disc; pair that one with `{DiscNumber}`
+if you use it. Standalone `cover.jpg` / `artist.jpg` files and `.lrc` / `.ttml`
 lyrics sidecars are written next to the audio when enabled.
 
 ## API

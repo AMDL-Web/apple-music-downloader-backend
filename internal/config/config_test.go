@@ -148,9 +148,13 @@ func TestValidateBoundsResourceAmplifyingDownloadSettings(t *testing.T) {
 func TestDefaultPathFormats(t *testing.T) {
 	defaults := Default().Download
 	want := map[string]string{
-		"song":     "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
-		"album":    "albums/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
-		"artist":   "artists/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+		"song": "songs/{ArtistName}/{AlbumName}/{TrackNumber:02d}. {SongName}",
+		// Album and artist file names number by collection position, not by
+		// Apple's TrackNumber: that one restarts at 1 on every disc, so a
+		// multi-disc album would repeat 01, 02, ... once per disc and collide
+		// outright on two identically titled tracks.
+		"album":    "albums/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}",
+		"artist":   "artists/{ArtistName}/{AlbumName}/{SongNumber:02d}. {SongName}",
 		"playlist": "playlists/{PlaylistName}/{SongNumber:02d}. {SongName}",
 	}
 	got := map[string]string{

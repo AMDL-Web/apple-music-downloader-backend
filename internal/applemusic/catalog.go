@@ -204,7 +204,7 @@ func enrichSongWithAlbum(song Song, album Collection) Song {
 		}
 	}
 	if song.TrackCount == 0 {
-		song.TrackCount = len(album.Tracks)
+		song.TrackCount = DiscTrackCount(album.Tracks, song.DiscNumber)
 	}
 	if song.DiscCount == 0 {
 		song.DiscCount = maxDisc(album.Tracks)
@@ -270,6 +270,19 @@ func (c *CatalogClient) Album(ctx context.Context, storefront, id string) (Colle
 	for i := range tracks {
 		if discCount > 0 {
 			tracks[i].DiscCount = discCount
+		}
+	}
+	// Apple's album-level trackCount counts the whole release, so both discs of
+	// a 29+19 album report 48. "Track N of M" means M tracks on this disc to
+	// every tagger that reads it, so a multi-disc release gets its own disc's
+	// total instead. Single-disc albums keep Apple's count, which stays right
+	// even when a storefront withholds individual tracks from the relationship.
+	if discCount > 1 {
+		perDisc := discTrackCounts(tracks)
+		for i := range tracks {
+			if count := perDisc[max(1, tracks[i].DiscNumber)]; count > 0 {
+				tracks[i].TrackCount = count
+			}
 		}
 	}
 	return Collection{
@@ -1165,6 +1178,30 @@ func mapAlbumSummary(raw catalogAlbumData) Collection {
 		ArtistID: artistID, ArtistArtworkURL: artistArtworkURL, ArtistURL: artistURL,
 		ReleaseDate: raw.Attributes.ReleaseDate, GenreNames: raw.Attributes.GenreNames,
 	}
+}
+
+// discTrackCounts counts an album's tracks per disc. A missing disc number
+// folds into disc 1, matching how DiscNumber is rendered everywhere else.
+func discTrackCounts(tracks []Song) map[int]int {
+	counts := make(map[int]int)
+	for _, track := range tracks {
+		counts[max(1, track.DiscNumber)]++
+	}
+	return counts
+}
+
+// DiscTrackCount reports how many tracks share discNumber, for callers holding
+// an album track list but no per-track total. Single-disc albums answer with
+// the whole list, so a track whose disc number the catalog omitted still gets
+// the album's real length rather than a partial count.
+func DiscTrackCount(tracks []Song, discNumber int) int {
+	if maxDisc(tracks) <= 1 {
+		return len(tracks)
+	}
+	if count := discTrackCounts(tracks)[max(1, discNumber)]; count > 0 {
+		return count
+	}
+	return len(tracks)
 }
 
 func maxDisc(tracks []Song) int {

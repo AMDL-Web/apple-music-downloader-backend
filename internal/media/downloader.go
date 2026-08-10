@@ -342,8 +342,10 @@ func (d *Downloader) processJob(ctx context.Context, job domain.Job, reporter jo
 	}
 	metadata := newTrackMetadataResolver(d, parsed.Storefront)
 
+	indexes := collectionIndexes(parsed.Type, tracks)
+
 	return runTrackTasks(ctx, len(tracks), finished, func(trackCtx context.Context, i int) error {
-		err := d.processTrackWithMetadata(trackCtx, job, items[i], tracks[i], parsed.Storefront, parsed.Type, collectionName, collectionID, i+1, folderArtist, metadata, reporter)
+		err := d.processTrackWithMetadata(trackCtx, job, items[i], tracks[i], parsed.Storefront, parsed.Type, collectionName, collectionID, indexes[i], folderArtist, metadata, reporter)
 		if err != nil {
 			logging.FromContext(trackCtx, d.logger).Error("track failed", "item_id", items[i].ID, "adam_id", tracks[i].ID, "error", err)
 		}
@@ -677,6 +679,29 @@ func (d *Downloader) resolveCollection(ctx context.Context, parsed applemusic.Pa
 	}
 }
 
+// collectionIndexes numbers each resolved track for {SongNumber}. For songs,
+// albums, playlists and stations that is the track's position in the resolved
+// list — for an album, Apple orders the track relationship disc by disc, so the
+// numbering runs unbroken across discs instead of restarting like TrackNumber
+// does. An artist job concatenates every album's tracks while its output path
+// still groups by album, so there the counter restarts per album; otherwise the
+// second album's opening track would be numbered by the whole discography.
+func collectionIndexes(collectionType applemusic.URLType, tracks []applemusic.Song) []int {
+	indexes := make([]int, len(tracks))
+	if collectionType != applemusic.TypeArtist {
+		for i := range tracks {
+			indexes[i] = i + 1
+		}
+		return indexes
+	}
+	perAlbum := make(map[string]int, len(tracks))
+	for i, track := range tracks {
+		perAlbum[track.AlbumID]++
+		indexes[i] = perAlbum[track.AlbumID]
+	}
+	return indexes
+}
+
 func (d *Downloader) artistTracks(ctx context.Context, storefront string, albums []applemusic.Collection) ([]applemusic.Song, error) {
 	tracks := make([]applemusic.Song, 0)
 	for _, summary := range albums {
@@ -865,7 +890,7 @@ func enrichTrackWithAlbum(song applemusic.Song, album applemusic.Collection) app
 		}
 	}
 	if song.TrackCount == 0 {
-		song.TrackCount = len(album.Tracks)
+		song.TrackCount = applemusic.DiscTrackCount(album.Tracks, song.DiscNumber)
 	}
 	if song.DiscCount == 0 {
 		song.DiscCount = maxTrackDisc(album.Tracks)
@@ -887,8 +912,8 @@ func maxTrackDisc(tracks []applemusic.Song) int {
 	return maximum
 }
 
-func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item domain.JobItem, initial applemusic.Song, storefront string, collectionType applemusic.URLType, collectionName, collectionID string, playlistIndex int, folderArtist string, reporter jobs.Reporter) error {
-	return d.processTrackWithMetadata(ctx, job, item, initial, storefront, collectionType, collectionName, collectionID, playlistIndex, folderArtist, newTrackMetadataResolver(d, storefront), reporter)
+func (d *Downloader) processTrack(ctx context.Context, job domain.Job, item domain.JobItem, initial applemusic.Song, storefront string, collectionType applemusic.URLType, collectionName, collectionID string, collectionIndex int, folderArtist string, reporter jobs.Reporter) error {
+	return d.processTrackWithMetadata(ctx, job, item, initial, storefront, collectionType, collectionName, collectionID, collectionIndex, folderArtist, newTrackMetadataResolver(d, storefront), reporter)
 }
 
 // publishStage publishes one item state change: the status/message transition,
@@ -956,7 +981,7 @@ func metersChanged(prev, next domain.ItemProgress) bool {
 		math.Round(prev.Decrypt*100) != math.Round(next.Decrypt*100)
 }
 
-func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Job, item domain.JobItem, initial applemusic.Song, storefront string, collectionType applemusic.URLType, collectionName, collectionID string, playlistIndex int, folderArtist string, metadata *trackMetadataResolver, reporter jobs.Reporter) error {
+func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Job, item domain.JobItem, initial applemusic.Song, storefront string, collectionType applemusic.URLType, collectionName, collectionID string, collectionIndex int, folderArtist string, metadata *trackMetadataResolver, reporter jobs.Reporter) error {
 	// Once a codec's concrete output path is known, keep its process-wide lock
 	// through the existence/force check, retries, sidecar writes, and final
 	// commit. This prevents one job's force/cleanup path from deleting another
@@ -1085,10 +1110,10 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 		// Test mode: real catalog metadata was resolved above, but everything
 		// from here on (covers, lyrics, media selection, transfer, decrypt,
 		// disk writes) is simulated with an identical status/event lifecycle.
-		return d.simulateTrack(ctx, job, &item, song, collectionType, collectionName, collectionID, playlistIndex, folderArtist, reporter, set)
+		return d.simulateTrack(ctx, job, &item, song, collectionType, collectionName, collectionID, collectionIndex, folderArtist, reporter, set)
 	}
 
-	albumCoverDir, artistCoverDir := standaloneCoverDirs(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID)
+	albumCoverDir, artistCoverDir := standaloneCoverDirs(d.cfg, song, collectionType, collectionIndex, folderArtist, collectionName, collectionID)
 	if d.cfg.Download.SaveAlbumCover || d.cfg.Download.SaveArtistCover {
 		if coverErr := d.saveStandaloneCovers(ctx, song, collectionType, storefront, albumCoverDir, artistCoverDir); coverErr != nil {
 			item.StatusMessage = "Standalone cover save failed; continuing download: " + coverErr.Error()
@@ -1212,7 +1237,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 		_, fetchAttempts, fetchErr := retryValue(ctx, codecMaxAttempts, retryBackoff, func(attempt int) (struct{}, error) {
 			if codec == "aac-lc" {
 				d.setItemAttempt(ctx, reporter, &item, "download", attempt, clampAttempts(codecMaxAttempts), fmt.Sprintf("Downloading %s (%d/%d)", strings.ToUpper(codec), attempt, clampAttempts(codecMaxAttempts)))
-				attemptOutPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, "256Kbps")
+				attemptOutPath = outputPath(d.cfg, song, collectionType, collectionIndex, folderArtist, collectionName, collectionID, codec, "256Kbps")
 				if err := acquireOutput(attemptOutPath); err != nil {
 					return struct{}{}, err
 				}
@@ -1236,7 +1261,7 @@ func (d *Downloader) processTrackWithMetadata(ctx context.Context, job domain.Jo
 			if selectErr != nil {
 				return struct{}{}, selectErr
 			}
-			attemptOutPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, qualityLabel(selected.info))
+			attemptOutPath = outputPath(d.cfg, song, collectionType, collectionIndex, folderArtist, collectionName, collectionID, codec, qualityLabel(selected.info))
 			if err := acquireOutput(attemptOutPath); err != nil {
 				return struct{}{}, err
 			}

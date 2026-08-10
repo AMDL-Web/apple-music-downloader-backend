@@ -22,7 +22,7 @@ import (
 // encrypted transfer, decryption, remux, and disk writes are simulated. The
 // transfer phases are paced by a random speed drawn from the configured
 // simulate speed range.
-func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, collectionType applemusic.URLType, collectionName, collectionID string, playlistIndex int, folderArtist string, reporter jobs.Reporter, set publishStage) error {
+func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *domain.JobItem, song applemusic.Song, collectionType applemusic.URLType, collectionName, collectionID string, collectionIndex int, folderArtist string, reporter jobs.Reporter, set publishStage) error {
 	d.ensureMediaLimits()
 	maxAttempts := clampAttempts(d.cfg.Download.MaxAttempts)
 	if d.cfg.Download.EmbedCover {
@@ -97,7 +97,7 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 			// itself comes from wrapper.WebPlayback, which test mode must not
 			// depend on, so the selection is faked with the same event.
 			d.setItemAttempt(ctx, reporter, item, "download", 1, maxAttempts, fmt.Sprintf("Downloading %s (1/%d)", codecName, maxAttempts))
-			outPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, "256Kbps")
+			outPath = outputPath(d.cfg, song, collectionType, collectionIndex, folderArtist, collectionName, collectionID, codec, "256Kbps")
 			if existingSkip(outPath) {
 				return nil
 			}
@@ -139,7 +139,7 @@ func (d *Downloader) simulateTrack(ctx context.Context, job domain.Job, item *do
 				d.emitRecoveredEvent(ctx, reporter, job.ID, item, "download", codec, attempts)
 			}
 			info = selected.info
-			outPath = outputPath(d.cfg, song, collectionType, playlistIndex, folderArtist, collectionName, collectionID, codec, qualityLabel(info))
+			outPath = outputPath(d.cfg, song, collectionType, collectionIndex, folderArtist, collectionName, collectionID, codec, qualityLabel(info))
 			if existingSkip(outPath) {
 				return nil
 			}

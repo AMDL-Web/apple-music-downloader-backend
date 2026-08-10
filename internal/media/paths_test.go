@@ -155,7 +155,7 @@ func TestOutputPathSanitizesEachSegmentIndependently(t *testing.T) {
 	cfg.Download.DownloadsDir = "downloads"
 
 	song := applemusic.Song{ArtistName: "AC/DC", AlbumName: "Back in Black", Name: "Hells: Bells?", TrackNumber: 4}
-	got := outputPath(cfg, song, applemusic.TypeAlbum, 1, "", "", "", "", "")
+	got := outputPath(cfg, song, applemusic.TypeAlbum, 4, "", "", "", "", "")
 	want := filepath.Join("downloads", "albums", "AC_DC", "Back in Black", "04. Hells_ Bells_.m4a")
 	if got != want {
 		t.Fatalf("outputPath() = %q, want %q", got, want)
@@ -286,5 +286,35 @@ func TestQualityLabelFormatsSelectedMedia(t *testing.T) {
 				t.Fatalf("qualityLabel() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestDefaultAlbumPathKeepsIdenticallyTitledDiscTracksApart pins the reason the
+// default album template numbers by {SongNumber} rather than Apple's
+// {TrackNumber}: that one restarts at 1 on every disc, so a release like
+// "The Greatest Showman: Reimagined (Deluxe Edition)" — whose second disc
+// repeats disc one's titles in order — would resolve both copies of a title to
+// one path, and the second would be skipped as already downloaded.
+func TestDefaultAlbumPathKeepsIdenticallyTitledDiscTracksApart(t *testing.T) {
+	cfg := config.Default()
+	cfg.Download.DownloadsDir = "downloads"
+
+	discOne := applemusic.Song{ArtistName: "Artist", AlbumName: "Album", Name: "The Greatest Show", DiscNumber: 1, TrackNumber: 1, DiscCount: 2}
+	discTwo := discOne
+	discTwo.DiscNumber = 2
+
+	// Apple orders the album's tracks disc by disc, so the reprise opening
+	// disc two is the 15th resolved track of a 14-track first disc.
+	first := outputPath(cfg, discOne, applemusic.TypeAlbum, 1, "", "", "", "", "")
+	second := outputPath(cfg, discTwo, applemusic.TypeAlbum, 15, "", "", "", "", "")
+
+	if first == second {
+		t.Fatalf("both discs resolved to %q", first)
+	}
+	if want := filepath.Join("downloads", "albums", "Artist", "Album", "01. The Greatest Show.m4a"); first != want {
+		t.Fatalf("disc one path = %q, want %q", first, want)
+	}
+	if want := filepath.Join("downloads", "albums", "Artist", "Album", "15. The Greatest Show.m4a"); second != want {
+		t.Fatalf("disc two path = %q, want %q", second, want)
 	}
 }

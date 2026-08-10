@@ -15,12 +15,12 @@ var invalidPathChars = regexp.MustCompile(`[\/\\<>:"|?*]`)
 var templateVariablePattern = regexp.MustCompile(`\{([A-Za-z]+)(?::(02d))?\}`)
 
 type pathTemplateContext struct {
-	song          applemusic.Song
-	playlistIndex int
-	playlistName  string
-	playlistID    string
-	codec         string
-	quality       string
+	song            applemusic.Song
+	collectionIndex int
+	playlistName    string
+	playlistID      string
+	codec           string
+	quality         string
 }
 
 type selectedMediaInfo struct {
@@ -48,14 +48,14 @@ func safeName(v string) string {
 // Directory segments use folderArtist (the collection's grouping artist) for
 // {ArtistName} so all tracks of a collection land in one folder; the filename
 // segment always uses the track's own metadata.
-func outputPath(cfg config.Config, song applemusic.Song, collectionType applemusic.URLType, playlistIndex int, folderArtist, playlistName, playlistID, codec, quality string) string {
+func outputPath(cfg config.Config, song applemusic.Song, collectionType applemusic.URLType, collectionIndex int, folderArtist, playlistName, playlistID, codec, quality string) string {
 	ctx := pathTemplateContext{
-		song:          song,
-		playlistIndex: playlistIndex,
-		playlistName:  playlistName,
-		playlistID:    playlistID,
-		codec:         codec,
-		quality:       quality,
+		song:            song,
+		collectionIndex: collectionIndex,
+		playlistName:    playlistName,
+		playlistID:      playlistID,
+		codec:           codec,
+		quality:         quality,
 	}
 	folderCtx := ctx
 	if folderArtist != "" {
@@ -97,12 +97,12 @@ func collectionFolderPath(cfg config.Config, song applemusic.Song, collectionTyp
 // Segments expand with the same context as outputPath's directory segments so
 // covers land next to the audio files; codec and quality stay empty because
 // covers are saved once per collection, before any codec attempt.
-func standaloneCoverDirs(cfg config.Config, song applemusic.Song, collectionType applemusic.URLType, playlistIndex int, folderArtist, playlistName, playlistID string) (albumDir, artistDir string) {
+func standaloneCoverDirs(cfg config.Config, song applemusic.Song, collectionType applemusic.URLType, collectionIndex int, folderArtist, playlistName, playlistID string) (albumDir, artistDir string) {
 	ctx := pathTemplateContext{
-		song:          song,
-		playlistIndex: playlistIndex,
-		playlistName:  playlistName,
-		playlistID:    playlistID,
+		song:            song,
+		collectionIndex: collectionIndex,
+		playlistName:    playlistName,
+		playlistID:      playlistID,
 	}
 	if folderArtist != "" {
 		folderSong := song
@@ -183,7 +183,7 @@ func templateValue(key string, ctx pathTemplateContext) (string, bool) {
 	case "SongId":
 		return song.ID, true
 	case "SongNumber":
-		return strconv.Itoa(max(1, ctx.playlistIndex)), true
+		return strconv.Itoa(max(1, ctx.collectionIndex)), true
 	case "SongName":
 		return song.Name, true
 	case "ArtistName", "UrlArtistName":
