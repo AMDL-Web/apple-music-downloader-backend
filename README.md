@@ -230,6 +230,7 @@ Both are covered in [docs/automation.md](docs/automation.md).
 | | |
 | --- | --- |
 | [docs/api.md](docs/api.md) | Every endpoint with curl examples, job overrides, SSE/WS semantics |
+| [docs/architecture.md](docs/architecture.md) | Backend boundaries, API organization, event replay and progress reads |
 | [docs/configuration.md](docs/configuration.md) | Config file, env overrides, runtime vs startup keys, upgrade notes |
 | [docs/deployment.md](docs/deployment.md) | Docker, mounts, `PUID`/`PGID`, seeding, releases and image tags |
 | [docs/download-pipeline.md](docs/download-pipeline.md) | Retries, codec fallback, concurrency pools, memory modes, lyrics |

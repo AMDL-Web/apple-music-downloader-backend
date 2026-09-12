@@ -210,6 +210,7 @@ webhook 或本地命令——刷新媒体服务器、跑后处理脚本。默认
 | | |
 | --- | --- |
 | [docs/api.md](docs/api.md) | 全部端点、curl 示例、任务 overrides、SSE/WS 语义 |
+| [docs/architecture.md](docs/architecture.md) | 后端职责边界、API 组织、事件回放与进度查询 |
 | [docs/configuration.md](docs/configuration.md) | 配置文件、环境变量覆盖、运行期与启动期字段、升级说明 |
 | [docs/deployment.md](docs/deployment.md) | Docker、挂载、`PUID`/`PGID`、配置播种、发版与镜像 tag |
 | [docs/download-pipeline.md](docs/download-pipeline.md) | 重试、编码回退、并发池、内存模式、歌词 |

@@ -46,9 +46,9 @@ func (h *Hub) Subscribe(jobID string) (<-chan domain.Event, func()) {
 // SubscribeAll registers an overview subscriber that receives every milestone
 // event across all jobs (see domain.IsOverviewMilestone). Like Subscribe, the
 // channel is a best-effort wake signal — a full buffer drops events, and the
-// overview handler re-derives state from the store, so nothing is lost as long
-// as the milestone was persisted (job_deleted, which isn't, is the one type a
-// dropped wake can miss; clients recover it on reconnect via GET /downloads).
+// overview handler re-derives state from persisted milestones, including
+// job_deleted tombstones. Dropped wakes are recovered by the feed's periodic
+// store drain or by replaying from a reconnect cursor.
 func (h *Hub) SubscribeAll() (<-chan domain.Event, func()) {
 	ch := make(chan domain.Event, 64)
 	h.mu.Lock()
