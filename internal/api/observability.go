@@ -120,10 +120,14 @@ func (w *trackingResponseWriter) Write(data []byte) (int, error) {
 func (w *trackingResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *trackingResponseWriter) Flush() {
+	_ = w.FlushError()
+}
+
+func (w *trackingResponseWriter) FlushError() error {
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
 	}
-	_ = http.NewResponseController(w.ResponseWriter).Flush()
+	return http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 func (w *trackingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
