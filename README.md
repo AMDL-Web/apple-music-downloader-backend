@@ -39,7 +39,8 @@ served at `/console/`. It uses only the public API. Its design contract is
 result is JSON on stdout, errors are JSON on stderr with an exit status per kind of
 failure, and `amdl cli search "<task>"` finds the command for a task. `amdl mcp` serves the same
 capabilities as MCP tools, and `amdl` alone in a terminal opens an interactive interface
-for people. Without a server of its own, `amdl service install` runs the backend on this
+for people, which `make tui-web` also builds for browsers over the desktop demo's made-up
+backend. Without a server of its own, `amdl service install` runs the backend on this
 machine as a background service that starts at login, and `amdl wrapper install` gives it
 a wrapper of its own: upstream's wrapper-lite in a QEMU guest that the backend runs
 ([docs/install.md](docs/install.md#a-wrapper-amdl-runs)). [docs/cli.md](docs/cli.md)

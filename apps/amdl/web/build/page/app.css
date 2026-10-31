@@ -1,0 +1,5 @@
+html, body { height: 100%; margin: 0; background: #141413; }
+[data-theme=light] body { background: #faf9f5; }
+#term { position: absolute; inset: 12px 14px; }
+#term .xterm { height: 100%; }
+#term .xterm-viewport { background: transparent !important; }

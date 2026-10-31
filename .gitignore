@@ -11,6 +11,8 @@ data/
 /dist/
 # make desktop and make desktop-web output.
 /apps/desktop/build/
+# make tui-web output.
+/apps/amdl/build/
 # node apps/site/build.mjs output, and the terminal frame make site renders.
 /apps/site/dist/
 /apps/site/build/

@@ -1,9 +1,9 @@
-// Package demo is an amdl backend held in memory, for the desktop app's demo
-// that the browser build runs: a made-up catalog, jobs whose tracks move,
-// and writes that change only memory. It answers the API routes the app
-// calls (internal/api/openapi.yaml) with the client and domain types,
-// through an http.RoundTripper, so no port opens and nothing leaves the
-// process.
+// Package demo is an amdl backend held in memory, for the browser demos of
+// the desktop app and the terminal interface: a made-up catalog, jobs whose
+// tracks move, and writes that change only memory. It answers the API routes
+// those clients call (internal/api/openapi.yaml) with the client and domain
+// types, through an http.RoundTripper, so no port opens and nothing leaves
+// the process.
 package demo
 
 import (

@@ -263,6 +263,10 @@ screen is redrawn.
 - **Leaving** takes `ctrl+c` twice, or `ctrl+d` on an empty prompt. Downloads keep
   running on the server.
 
+`make tui-web` builds the same interface for browsers (`apps/amdl/web`): it runs in
+xterm.js over the made-up backend of `internal/demo`, which the desktop app's demo runs
+on too.
+
 ## Running the backend in amdl
 
 `--server embedded` runs a command against a backend inside the amdl process, the way

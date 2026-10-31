@@ -1,0 +1,14 @@
+//go:build js
+
+// Added by apps/amdl/web/build: the package has a readAll and writeAll per OS
+// and none for js; a browser page reaches no system clipboard from here.
+
+package clipboard
+
+import "errors"
+
+var errNoClipboard = errors.New("clipboard: not available in the browser")
+
+func readAll() (string, error) { return "", errNoClipboard }
+
+func writeAll(string) error { return errNoClipboard }

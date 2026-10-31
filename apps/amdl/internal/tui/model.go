@@ -37,8 +37,16 @@ type Options struct {
 func Run(ctx context.Context, opts Options) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	_, err := New(ctx, opts).Run()
+	return err
+}
+
+// New builds the TUI as a program and starts following the server's jobs,
+// for the caller to run. A host that is not a terminal, such as the browser
+// demo, passes its own input, output and window size as options.
+func New(ctx context.Context, opts Options, popts ...tea.ProgramOption) *tea.Program {
+	ctx, cancel := context.WithCancel(ctx)
 	m := newModel(ctx, cancel, opts)
-	var popts []tea.ProgramOption
 	if os.Getenv("NO_COLOR") != "" {
 		// no-color.org: any non-empty value. colorprofile only honors values
 		// that parse as true.
@@ -48,8 +56,7 @@ func Run(ctx context.Context, opts Options) error {
 	p := tea.NewProgram(m, popts...)
 	m.bus.p = p
 	go followFeed(ctx, opts.Client, m.bus)
-	_, err := p.Run()
-	return err
+	return p
 }
 
 // maxFollowed bounds the jobs whose tracks the TUI streams at once; the

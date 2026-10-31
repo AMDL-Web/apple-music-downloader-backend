@@ -48,6 +48,12 @@ jobs:
       - name: Vet
         run: make vet
 
+      # apps/amdl/web compiles only with the js files apps/amdl/web/build adds
+      # to bubbletea and atotto/clipboard; red after a bump of either means a
+      # shim no longer fits the new release.
+      - name: Terminal interface browser build
+        run: make tui-web
+
       - name: Test
         run: make test
 

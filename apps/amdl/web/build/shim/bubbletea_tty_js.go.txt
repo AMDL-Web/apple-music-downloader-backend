@@ -1,0 +1,19 @@
+//go:build js
+
+// Added by apps/amdl/web/build: bubbletea has these per OS (tty_unix.go,
+// signals_unix.go) and none for js. In a browser there is no tty to put in
+// raw mode, no process to suspend and no SIGWINCH; the host sends
+// tea.WindowSizeMsg itself.
+
+package tea
+
+func (p *Program) initInput() error { return nil }
+
+const suspendSupported = false
+
+func suspendProcess() {}
+
+func (p *Program) listenForResize(done chan struct{}) {
+	<-p.ctx.Done()
+	close(done)
+}

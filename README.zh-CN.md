@@ -34,7 +34,7 @@ Server-Sent Events 接口，以及同一端口上的网页控制台。它以容�
 
 `apps/amdl` 构建出 `amdl`，一个面向 agent 和脚本的 API 客户端：每个结果都是 stdout 上的
 JSON，错误以 JSON 写到 stderr，退出码区分失败类别，`amdl cli search "<任务>"` 能找到对应
-的命令。`amdl mcp` 把同样的能力作为 MCP 工具提供；在终端里直接运行 `amdl` 会打开给人用的交互界面。没有单独部署服务器时，`amdl service install`
+的命令。`amdl mcp` 把同样的能力作为 MCP 工具提供；在终端里直接运行 `amdl` 会打开给人用的交互界面，`make tui-web` 把它编译给浏览器，数据来自桌面演示版同一个虚构后端。没有单独部署服务器时，`amdl service install`
 会把后端作为登录即启动的后台服务跑在本机，`amdl wrapper install` 再给它配一个自己的 wrapper：
 由后端在 QEMU 虚拟机里运行的上游 wrapper-lite（[docs/install.md](docs/install.md#a-wrapper-amdl-runs)）。
 详见 [docs/cli.md](docs/cli.md)。

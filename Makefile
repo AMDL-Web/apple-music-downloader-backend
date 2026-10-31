@@ -24,7 +24,7 @@ DEV_DIR := data/dev
 DEV_LISTEN := 127.0.0.1:18080
 DOCKER_IMAGE ?= amdl-backend:dev
 
-.PHONY: help build run dev fmt fmt-check vet test race vuln node-test check temaridiff docker dist dist-check desktop desktop-web site
+.PHONY: help build run dev fmt fmt-check vet tui-web test race vuln node-test check temaridiff docker dist dist-check desktop desktop-web site
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{ printf "  %-10s %s\n", $$1, $$2 }'
@@ -64,6 +64,9 @@ vet: ## go vet every package, and the desktop app's browser build
 	$(GO) vet ./...
 	GOOS=js GOARCH=wasm $(GO) vet ./apps/desktop/...
 
+tui-web: ## Build the terminal interface's browser demo into apps/amdl/build/web/
+	$(GO) run ./apps/amdl/web/build -out apps/amdl/build/web -ldflags "-s -w $(LDFLAGS)"
+
 test: ## Run the test suite
 	$(GO) test ./...
 
@@ -78,7 +81,7 @@ node-test: ## Run the Node tests for release tooling, the guard hook, console JS
 	@if [ -z "$(strip $(NODE_TESTS))" ]; then echo "node-test: no *.test.mjs files found"; exit 1; fi
 	node --test $(NODE_TESTS)
 
-check: fmt-check build vet test race vuln node-test ## The CI gate: everything above, in CI's order
+check: fmt-check build vet tui-web test race vuln node-test ## The CI gate: everything above, in CI's order
 
 temaridiff: ## Compare internal/fairplay with upstream Temari (own CI job; downloads Temari's cdylib)
 	cd tools/temaridiff && $(GO) test -count=1 ./...
