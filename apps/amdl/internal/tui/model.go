@@ -402,11 +402,18 @@ func (m *model) println(e entry) tea.Cmd {
 	return tea.Sequence(cmds...)
 }
 
-// printLines is e as it goes to the scrollback: in the terminal's colors, and
-// wrapped here to the content width rather than by the terminal.
+// printLines is e as it goes to the scrollback: in the terminal's colors,
+// wrapped here to the content width rather than by the terminal, and with a
+// space for a blank line, since bubbletea prints nothing for an empty one.
 func (m *model) printLines(e entry) []string {
 	w := m.contentWidth()
-	return strings.Split(ansi.Wrap(m.downsample(e(w)), w, ""), "\n")
+	lines := strings.Split(ansi.Wrap(m.downsample(e(w)), w, ""), "\n")
+	for i, l := range lines {
+		if l == "" {
+			lines[i] = " "
+		}
+	}
+	return lines
 }
 
 // downsample fits printed text to the terminal's colors, as the renderer

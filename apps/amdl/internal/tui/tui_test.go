@@ -213,6 +213,9 @@ func TestPrintedLinesFitTheTerminal(t *testing.T) {
 	if len(lines) < 4 {
 		t.Errorf("%d lines, want the two long ones wrapped", len(lines))
 	}
+	if blank := m.printLines(func(int) string { return "banner\n\n2 saved" }); len(blank) != 3 || blank[1] == "" {
+		t.Errorf("a blank line prints as nothing, so the banner loses its gap: %q", blank)
+	}
 	for _, l := range lines {
 		if w := ansi.StringWidth(l); w > 46 {
 			t.Errorf("%d columns in a 46-column terminal: %q", w, l)
