@@ -81,7 +81,7 @@ func TestAlbumOpensFromSearchAndBackReturnsThere(t *testing.T) {
 		{ID: "t2", DiscNumber: 2, TrackNumber: 1, Name: "Second Song", ArtistName: "Yorushika & suis", DurationMS: 61_000, ContentRating: "explicit"},
 	}}
 	tt.Frame()
-	for _, want := range []string{"Album 0", "In your library", "Download again", "DISC 1", "DISC 2", "First Song", "Second Song", "Yorushika & suis", "3:20", "1:01", "2 tracks"} {
+	for _, want := range []string{"Album 0", "In your library", "Download again", "DISC 1", "DISC 2", "First Song", "Second Song", "Yorushika & suis", "3:20", "1:01", "ALBUM · 2 TRACKS"} {
 		if !tt.HasText(want) {
 			t.Errorf("no %q on the album page: %q", want, tt.Texts())
 		}
@@ -182,12 +182,7 @@ func TestReturnOpensAnAlbum(t *testing.T) {
 	}
 }
 
-func TestAlbumLength(t *testing.T) {
-	for ms, want := range map[int]string{20_000: "1 min", 52*60_000 + 20_000: "52 min", 72 * 60_000: "1 hr 12 min"} {
-		if got := albumLength(time.Duration(ms) * time.Millisecond); got != want {
-			t.Errorf("%d ms: %q, want %q", ms, got, want)
-		}
-	}
+func TestAlbumKindAndClip(t *testing.T) {
 	if k, n := albumKind("Halo - EP"); k != "EP" || n != "Halo" {
 		t.Errorf("Halo - EP: %q %q", k, n)
 	}

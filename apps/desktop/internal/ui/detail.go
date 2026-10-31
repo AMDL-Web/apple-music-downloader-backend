@@ -30,38 +30,31 @@ func (a *App) detail(c *ui.Context, k *Tokens) {
 // detailJob builds the detail screen of j.
 func (a *App) detailJob(c *ui.Context, k *Tokens, j *store.Job) {
 	page := a.pageWidth(c)
-	_, height := c.Size()
-	// A narrow or short window keeps room for the tracks under a smaller
-	// head.
-	coverSize, titleSize, padTop, gap := float32(248), float32(52), float32(26), float32(32)
-	if page < 960 || height < 700 {
-		coverSize, titleSize, padTop, gap = 148, 34, 12, 24
-	}
-	video := a.motionPlayer(c, j.MotionArtworkURL, coverSize)
+	l := pageHero(c, page)
+	video := a.motionPlayer(c, j.MotionArtworkURL, l.cover)
 	pal := jobPalette(j, video != nil)
 	hc := heroColorsFor(pal, k)
-	ui.Row(c).Padding(padTop, 32, 22, 32).Gap(gap).AlignItems(ui.End).Children(func() {
-		cover := widgets.Cover{Image: a.Art.Get(j.ArtworkURL, 512), Placeholder: pal.Bg, Size: coverSize, Radius: radiusCover, Color: 1, Shadow: true, Video: video}.Show(c)
-		if j.MotionArtworkURL != "" {
-			cover.Children(func() { motionBadge(c, "MOTION") })
-		}
-		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(12).Children(func() {
-			kind := strings.ToUpper(j.Type[:min(1, len(j.Type))]) + j.Type[min(1, len(j.Type)):]
-			if j.TotalItems > 0 {
-				kind += " · " + plural(j.TotalItems, "track")
+	kind := strings.ToUpper(j.Type[:min(1, len(j.Type))]) + j.Type[min(1, len(j.Type)):]
+	if j.TotalItems > 0 {
+		kind += " · " + plural(j.TotalItems, "track")
+	}
+	a.collectionHero(c, k, l, heroSpec{kicker: kind, title: j.Name(), artist: j.By(), colors: hc,
+		cover: func(size float32) {
+			cover := widgets.Cover{Image: a.Art.Get(j.ArtworkURL, 512), Placeholder: pal.Bg, Size: size, Radius: radiusCover, Color: 1, Shadow: true, Video: video}.Show(c)
+			if j.MotionArtworkURL != "" {
+				cover.Children(func() { motionBadge(c, "MOTION") })
 			}
-			label(c, k, kind).TextColor(hc.label)
-			display(c, j.Name(), titleSize).TextColor(hc.title).MaxLines(2).Ellipsis("…")
-			ui.Row(c).Gap(10).AlignItems(ui.Center).Wrap().Children(func() {
-				ui.Text(c, j.By()).FontSize(17).TextColor(hc.title.Mix(hc.meta, 0.4)).SingleLine()
-				if it := firstWithCodec(j); it != nil {
-					q := format.LongQuality(it.Codec, it.BitDepth, it.SampleRate)
-					tag(c, k, q, isHiRes(format.Quality(it.Codec, it.BitDepth, it.SampleRate, 0)), hc.meta)
-				}
-				if b := j.Bytes(); b > 0 {
-					tag(c, k, plural(j.TotalItems, "track")+" · "+format.Bytes(b), false, hc.meta)
-				}
-			})
+		},
+		tags: func() {
+			if it := firstWithCodec(j); it != nil {
+				q := format.LongQuality(it.Codec, it.BitDepth, it.SampleRate)
+				tag(c, k, q, isHiRes(format.Quality(it.Codec, it.BitDepth, it.SampleRate, 0)), hc.meta)
+			}
+			if b := j.Bytes(); b > 0 {
+				tag(c, k, plural(j.TotalItems, "track")+" · "+format.Bytes(b), false, hc.meta)
+			}
+		},
+		band: func() {
 			ui.Row(c).Gap(12).MaxWidth(620).Margin(8, 0, 0, 0).Children(func() {
 				stat := func(name, value, unit string) {
 					ui.Column(c).Grow(1).Basis(0).Gap(2).Children(func() {
@@ -97,8 +90,8 @@ func (a *App) detailJob(c *ui.Context, k *Tokens, j *store.Job) {
 			ui.Column(c).FillWidth().MaxWidth(620).Margin(6, 0, 0, 0).Children(func() {
 				albumProgress(c, k, j, "album", 8, hc.title, hc.title.Alpha(0.16), hc.accent, hc.meta, 12)
 			})
-		})
-		ui.Column(c).Gap(8).Children(func() {
+		},
+		actions: func() {
 			if dir := a.revealDir(j); dir != "" && button(c, k, buttonOnArt, revealLabel, nil).Clicked() {
 				a.Act.Reveal(dir)
 			}
@@ -115,7 +108,7 @@ func (a *App) detailJob(c *ui.Context, k *Tokens, j *store.Job) {
 			if j.Status.IsTerminal() && button(c, k, buttonOnArt, "Delete", nil).Label("Delete this download").Clicked() {
 				a.askDelete(j)
 			}
-		})
+		},
 	})
 	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Background(k.Ink.Alpha(detailInk)).BorderWidth(1, 0, 0, 0).BorderColor(k.Line).Children(func() {
 		activity := float32(280)

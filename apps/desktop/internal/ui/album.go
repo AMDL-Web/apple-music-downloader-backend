@@ -15,21 +15,20 @@ import (
 	"amdl/internal/format"
 )
 
-// The album screen, in DIPs.
+// The album screen's track list, in DIPs. Its rows take the download
+// page's metrics (trackInset, trackPadY, trackStateWidth) so the two lists
+// of one album line up.
 const (
-	// albumCover is the hero's cover, and albumCoverCompact the one of a
-	// narrow page.
-	albumCover        = 232
-	albumCoverCompact = 156
-	// trackHeight is a track's row.
+	// trackHeight is a skeleton row while the songs load.
 	trackHeight = 48
 	// trackControl is the round control at a row's end.
 	trackControl = 28
-	// trackLead is a row's room before its title: its padding, number and
-	// gap.
-	trackLead = 12 + 24 + 14
-	// albumFade is how far the page scrolls before its light is gone.
-	albumFade = 360
+	// trackNumber is the number's column, and trackLead a row's room before
+	// its title: its padding, number and gap.
+	trackNumber = 28
+	trackLead   = 4 + trackNumber + 16
+	// trackLength is the length's column.
+	trackLength = 44
 )
 
 // OpenAlbum shows an album hit's page, which reads its songs; Back returns
@@ -139,130 +138,93 @@ func albumKind(title string) (kind, name string) {
 	return "Album", title
 }
 
-// titleSize is the hero title's size: smaller as a title runs longer, so
-// most fit two lines.
-func titleSize(title string, compact bool) float32 {
-	n := utf8.RuneCountInString(title)
-	size := float32(44)
-	switch {
-	case n > 48:
-		size = 30
-	case n > 26:
-		size = 36
-	}
-	if compact {
-		size *= 0.72
-	}
-	return size
-}
-
-// albumLength is an album's playing time in minutes, hours past the first.
-func albumLength(d time.Duration) string {
-	m := int(d.Round(time.Minute) / time.Minute)
-	if m < 60 {
-		return fmt.Sprintf("%d min", max(m, 1))
-	}
-	return fmt.Sprintf("%d hr %d min", m/60, m%60)
-}
-
-// albumBackdrop lights the album screen with the album's palette.
+// albumBackdrop lights the album screen with the album's palette, as the
+// download page is lit with its job's.
 func (a *App) albumBackdrop(c *ui.Context, k *Tokens) {
-	pal := albumOf(&a.Store.Search.Album).pal
-	if !pal.OK {
-		return
-	}
-	strength := float32(0.55)
-	if !k.Dark {
-		strength = 0.28
-	}
-	// The light fades as the songs scroll up over it.
-	if st := a.scrolls["album"]; st != nil {
-		strength *= max(0, 1-st.Y/albumFade)
-	}
-	widgets.Backdrop{Light: pal.Bg, Deep: pal.Bg.Mix(ui.Hex("#05081f"), 0.65), Strength: strength, Height: 480}.Show(c)
+	paletteBackdrop(c, k, albumOf(&a.Store.Search.Album).pal)
 }
 
-// albumScreen is an album: its cover and title over its palette, the one
-// action that fits its state, and its songs, those on disk checked.
+// albumScreen is an album in the download page's layout: its cover and
+// title over its palette, what it is and the one action its state takes,
+// then its songs in the lower panel, those on disk or on their way with the
+// state the download page gives them.
 func (a *App) albumScreen(c *ui.Context, k *Tokens, page float32) {
-	p := &a.Store.Search.Album
+	s := a.Store
+	p := &s.Search.Album
 	if p.ID == "" {
 		a.Back()
 		return
 	}
-	a.Store.WatchConfig()
-	padX := float32(32)
-	if a.compact {
-		padX = 20
-	}
-	width := max(min(page-2*padX, homeMaxWidth), 280)
-	a.scrollArea(c, "album", k.Ground, 0, func() {
-		ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(16, 0, 40, 0).Children(func() {
-			ui.Column(c).Width(width).Gap(30).Children(func() {
-				a.albumHero(c, k)
-				a.albumTracks(c, k)
-			})
-		})
-	}).Grow(1).FillWidth()
-}
-
-func (a *App) albumHero(c *ui.Context, k *Tokens) {
-	s := a.Store
-	p := &s.Search.Album
+	s.WatchConfig()
 	f := albumOf(p)
 	hc := heroColorsFor(f.pal, k)
 	kind, name := albumKind(f.title)
-	size := float32(albumCover)
-	hero := ui.Row(c).Gap(28).AlignItems(ui.End)
-	if a.compact {
-		// The text runs taller than a small cover: both start at the top.
-		size = albumCoverCompact
-		hero.AlignItems(ui.Start)
+	if f.tracks > 0 {
+		kind += " · " + plural(f.tracks, "track")
 	}
-	hero.Children(func() {
-		// A shadow that stays below the cover: the scroll clips at the top of
-		// the page, and the hero cover's own shadow rises past it.
-		widgets.Cover{Image: a.Art.Get(f.artwork, int(2*size)), Placeholder: f.pal.Bg, Size: size, Radius: radiusCover, Color: 1}.Show(c).
-			Shadow(0, 20, 44, -12, ui.RGBA(0, 0, 0, 0.42))
-		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(10).Children(func() {
-			if f.genre != "" {
-				kind += " · " + f.genre
+	a.collectionHero(c, k, pageHero(c, page), heroSpec{kicker: kind, title: name, artist: f.artist, colors: hc,
+		cover: func(size float32) {
+			widgets.Cover{Image: a.Art.Get(f.artwork, 512), Placeholder: f.pal.Bg, Size: size, Radius: radiusCover, Color: 1, Shadow: true}.Show(c)
+		},
+		tags: func() {
+			for _, q := range qualityHints(f.traits) {
+				tag(c, k, q, q == "Hi-Res Lossless", hc.meta)
 			}
-			label(c, k, kind).TextColor(hc.label)
-			display(c, name, titleSize(name, a.compact)).TextColor(hc.title).MaxLines(2).Ellipsis("…")
-			if f.artist != "" {
-				ui.Text(c, f.artist).FontSize(17).FontWeight(500).TextColor(hc.title.Mix(hc.meta, 0.4)).SingleLine().Ellipsis("…")
+			if f.explicit {
+				explicitBadge(c, k)
 			}
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Wrap().Children(func() {
-				var facts []string
-				if f.year != "" {
-					facts = append(facts, f.year)
-				}
-				if f.tracks > 0 {
-					facts = append(facts, plural(f.tracks, "track"))
-				}
-				if f.length > 0 {
-					facts = append(facts, albumLength(f.length))
-				}
-				if len(facts) > 0 {
-					ui.Text(c, strings.Join(facts, " · ")).FontSize(13).TextColor(hc.meta).SingleLine().Margin(0, 4, 0, 0)
-				}
-				for _, q := range qualityHints(f.traits) {
-					tag(c, k, q, q == "Hi-Res Lossless", hc.meta)
-				}
-				if f.explicit {
-					explicitBadge(c, k)
-				}
-			})
-			ui.Box(c).Margin(10, 0, 0, 0).Children(func() { a.albumActions(c, k, hc) })
+			if mark, _ := s.HitMark(p.Hit); mark == store.MarkDone {
+				pill(c, k, pillOK, icCheck, "In your library")
+			}
+		},
+		band:    func() { a.albumBand(c, k, f, hc) },
+		actions: func() { a.albumActions(c, k, hc) },
+	})
+	ui.Column(c).Grow(1).MinHeight(0).Background(k.Ink.Alpha(detailInk)).BorderWidth(1, 0, 0, 0).BorderColor(k.Line).Children(func() {
+		a.albumTracks(c, k)
+	})
+}
+
+// albumBand is what the album is under its title, in the download
+// page's figures: when it came out, its genre and length; and its job's
+// bar once a job holds it, as the download page draws it, so the two
+// pages of one album differ in their figures alone.
+func (a *App) albumBand(c *ui.Context, k *Tokens, f albumFacts, hc heroColors) {
+	s := a.Store
+	ui.Row(c).Gap(12).MaxWidth(620).Margin(8, 0, 0, 0).Children(func() {
+		heroStat(c, k, hc, "Released", firstNonEmptyStr(f.year, "—"), "")
+		heroStat(c, k, hc, "Genre", firstNonEmptyStr(f.genre, "—"), "")
+		if m := int(f.length.Round(time.Minute) / time.Minute); m > 0 {
+			heroStat(c, k, hc, "Length", fmt.Sprint(m), " min")
+		} else {
+			heroStat(c, k, hc, "Length", "—", "")
+		}
+	})
+	if _, job := s.HitMark(s.Search.Album.Hit); s.Job(job) != nil {
+		ui.Column(c).FillWidth().MaxWidth(620).Margin(6, 0, 0, 0).Children(func() {
+			albumProgress(c, k, s.Job(job), "album-progress", 8, hc.title, hc.title.Alpha(0.16), hc.accent, hc.meta, 12)
+		})
+	}
+}
+
+// heroStat is one figure of the head's band: its name over its value, as
+// the download page's figures.
+func heroStat(c *ui.Context, k *Tokens, hc heroColors, name, value, unit string) {
+	ui.Column(c).Grow(1).Basis(0).MinWidth(0).Gap(2).Children(func() {
+		label(c, k, name).TextColor(hc.meta.Alpha(0.8))
+		ui.Row(c).AlignItems(ui.Baseline).Children(func() {
+			mono(c, value, 22).FontWeight(600).TextColor(hc.title).SingleLine().Ellipsis("…").Shrink(1)
+			if unit != "" {
+				mono(c, unit, 14).TextColor(hc.meta.Alpha(0.8))
+			}
 		})
 	})
 }
 
-// albumActions are the album's state and what can be done with it: a
-// download, or the queue's progress, or the library's check with a
-// download of what is missing; the job behind a mark opens as a second
-// choice.
+// albumActions are what the album's state lets be done, at the head's
+// end as the download page's buttons: a download; or, once a job holds it,
+// that job's page, and a download again of what is missing once it is in
+// the library.
 func (a *App) albumActions(c *ui.Context, k *Tokens, hc heroColors) {
 	s := a.Store
 	h := s.Search.Album.Hit
@@ -270,154 +232,172 @@ func (a *App) albumActions(c *ui.Context, k *Tokens, hc heroColors) {
 	// A start that answers within a frame keeps the buttons as they were.
 	since, starting := s.Search.Starting[store.HitKey(h)]
 	wait := waited(c, starting, since)
-	// The detail shows only a job the feed holds.
-	showJob := func() {
-		if s.Job(job) == nil {
-			return
+	if mark == store.MarkNone {
+		if wait {
+			pill(c, k, pillWait, nil, "Starting…")
+		} else if artButton(c, "Download", hc.title, hc.ink).Label("Download "+h.Name).Clicked() && !starting {
+			a.download(h)
 		}
-		if button(c, k, buttonGhost, "Show download", nil).Height(34).Label("Show the download of " + h.Name).Clicked() {
-			a.OpenJob(job)
-		}
+		return
 	}
-	switch mark {
-	case store.MarkActive:
-		ui.Column(c).Width(420).Gap(12).Children(func() {
-			if j := s.Job(job); j != nil {
-				albumProgress(c, k, j, "album-progress", 6, hc.title, hc.title.Alpha(0.16), hc.accent, hc.meta, 12)
-			}
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				pill(c, k, pillRun, icDown, "In the queue")
-				showJob()
-			})
-		})
-	case store.MarkDone:
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Wrap().Children(func() {
-			ui.Row(c).Height(34).PaddingX(12).Gap(6).Radius(radiusControl).AlignItems(ui.Center).Background(k.OKSoft).Children(func() {
-				ui.Icon(c, icCheck).FontSize(14).TextColor(k.OK)
-				ui.Text(c, "In your library").FontSize(12.5).FontWeight(600).TextColor(k.OK).SingleLine()
-			})
-			if buttonOff(c, k, buttonPlain, "Download again", icDown, wait).Height(34).Label("Download "+h.Name+" again").Clicked() && !starting {
-				a.download(h)
-			}
-			showJob()
-		})
-	default:
-		ui.Row(c).Gap(10).AlignItems(ui.Center).Wrap().Children(func() {
-			if buttonOff(c, k, buttonPrimary, "Download", icDown, wait).Height(34).PaddingX(16).
-				Label("Download "+h.Name).Clicked() && !starting {
-				a.download(h)
-			}
-		})
+	if mark == store.MarkDone && buttonOff(c, k, buttonOnArt, "Download again", nil, wait).Label("Download "+h.Name+" again").Clicked() && !starting {
+		a.download(h)
+	}
+	// The download page shows only a job the feed holds.
+	if s.Job(job) != nil && button(c, k, buttonOnArt, "Show download", nil).Label("Show the download of "+h.Name).Clicked() {
+		a.OpenJob(job)
 	}
 }
 
-// albumTracks lists the album's songs by disc, or stands for them while
-// they load or after the read failed.
+// albumTracks lists the album's songs by disc in the lower panel, in the
+// download page's columns, or stands for them while they load or after
+// the read failed.
 func (a *App) albumTracks(c *ui.Context, k *Tokens) {
 	s := a.Store
 	p := &s.Search.Album
-	switch p.Status {
-	case store.SearchFailed:
-		searchFailed(c, k, p.Err, s.RetryAlbum)
-		return
-	case store.SearchReady:
-	default:
-		n := min(max(p.Hit.TrackCount, 6), 14)
-		ui.Column(c).Children(func() {
+	ui.Column(c).Grow(1).MinHeight(0).Padding(10, 24, 0, 32).Children(func() {
+		ui.Row(c).Gap(16).Padding(11, 4, 4, 4).Margin(0, scrollGutter, 0, 0).AlignItems(ui.Center).Children(func() {
+			ui.Box(c).Width(trackNumber)
+			label(c, k, "Track").Grow(1)
+			ui.Row(c).Width(trackLength).Justify(ui.End).Children(func() { ui.Icon(c, icClock).FontSize(13).TextColor(k.Faint) })
+			label(c, k, "State").Width(trackStateWidth).TextAlign(ui.End)
+		})
+		switch p.Status {
+		case store.SearchFailed:
+			searchFailed(c, k, p.Err, s.RetryAlbum)
+			return
+		case store.SearchReady:
+		default:
+			n := min(max(p.Hit.TrackCount, 6), 14)
 			for i := range n {
-				ui.Row(c.Key(i)).Height(trackHeight).PaddingX(12).Gap(14).AlignItems(ui.Center).Children(func() {
-					skeleton(c, k, 18, 10)
+				ui.Row(c.Key(i)).Height(trackHeight).PaddingX(4).Gap(16).AlignItems(ui.Center).Children(func() {
+					ui.Row(c).Width(trackNumber).Justify(ui.End).Children(func() { skeleton(c, k, 18, 10) })
 					ui.Column(c).Grow(1).Children(func() { skeleton(c, k, float32(140+(i*53)%160), 10) })
 					skeleton(c, k, 32, 10)
 				})
 			}
-		})
-		return
-	}
-	al := &p.Album
-	mark, job := s.HitMark(p.Hit)
-	var items []domain.JobItem
-	if mark != store.MarkNone {
-		items = s.JobItems(job)
-	}
-	discs := al.DiscCount > 1
-	ui.Column(c).Children(func() {
-		ui.Row(c).Height(30).PaddingX(12).Gap(14).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(k.Line).Margin(0, 0, 6, 0).Children(func() {
-			label(c, k, "#").Width(24).TextAlign(ui.End)
-			label(c, k, "Title").Grow(1)
-			ui.Row(c).Width(44).Justify(ui.End).Children(func() { ui.Icon(c, icClock).FontSize(13).TextColor(k.Faint) })
-			ui.Box(c).Width(trackControl)
-		})
-		for i, t := range al.Tracks {
-			if discs && (i == 0 || t.DiscNumber != al.Tracks[i-1].DiscNumber) {
-				top := float32(4)
-				if i > 0 {
-					top = 18
-				}
-				ui.Row(c.Key(fmt.Sprint("disc", t.DiscNumber))).Height(28).PaddingStart(trackLead).Margin(top, 0, 2, 0).AlignItems(ui.Center).Children(func() {
-					label(c, k, fmt.Sprintf("Disc %d", t.DiscNumber))
-				})
-			}
-			a.trackLine(c, k, t, al.ArtistName, mark, items)
+			return
 		}
+		al := &p.Album
+		mark, job := s.HitMark(p.Hit)
+		var items []domain.JobItem
+		if mark != store.MarkNone {
+			items = s.JobItems(job)
+		}
+		lines := make([]trackMark, len(al.Tracks))
+		for i, t := range al.Tracks {
+			lines[i].mark, lines[i].item = s.TrackMark(t, mark, items)
+		}
+		discs := al.DiscCount > 1
+		a.scrollArea(c, "album", detailGround(k), scrollGutter, func() {
+			for i, t := range al.Tracks {
+				if discs && (i == 0 || t.DiscNumber != al.Tracks[i-1].DiscNumber) {
+					top := float32(4)
+					if i > 0 {
+						top = 18
+					}
+					ui.Row(c.Key(fmt.Sprint("disc", t.DiscNumber))).Height(28).PaddingStart(trackLead).Margin(top, 0, 2, 0).AlignItems(ui.Center).Children(func() {
+						label(c, k, fmt.Sprintf("Disc %d", t.DiscNumber))
+					})
+				}
+				nextLit := i+1 < len(lines) && lines[i+1].lit()
+				a.trackLine(c, k, t, al.ArtistName, mark, lines[i], nextLit)
+			}
+		}).Grow(1)
 	})
 }
 
-// trackLine is one song of the album: its number, title, artists when they
-// are not the album's, length, and at its end its control: a check while
-// it is on disk, the queue's mark while it is on its way, else a download
-// of the song alone while the row is pointed at.
-func (a *App) trackLine(c *ui.Context, k *Tokens, t client.AlbumTrack, albumArtist string, albumMark store.MarkState, items []domain.JobItem) {
+// trackMark is a song's mark and, while a job of its album holds it, the
+// job's track.
+type trackMark struct {
+	mark store.MarkState
+	item *domain.JobItem
+}
+
+// lit reports whether the song's row is highlighted, as a track's on the
+// download page: its job works on it now.
+func (m trackMark) lit() bool { return m.item != nil && trackLit(m.item) }
+
+// trackLine is one song of the album, in the download page's row: its
+// number, title, and under it the artists when they are not the album's or
+// what its job made of it, its length, and its state: the job's for a song
+// its album's job holds, else a check for one on disk, the queue's mark for
+// one on its way, else a download of the song alone while the row is
+// pointed at.
+func (a *App) trackLine(c *ui.Context, k *Tokens, t client.AlbumTrack, albumArtist string, albumMark store.MarkState, m trackMark, nextLit bool) {
 	s := a.Store
-	mark, item := s.TrackMark(t, albumMark, items)
 	// A job just started has not listed its tracks yet: they wait with it.
-	queued := albumMark == store.MarkActive && item == nil && mark == store.MarkNone
+	queued := albumMark == store.MarkActive && m.item == nil && m.mark == store.MarkNone
 	th := store.TrackHit(t)
 	since, starting := s.Search.Starting[store.HitKey(th)]
 	wait := waited(c, starting, since)
-	row := ui.Row(c.Key(t.ID)).Height(trackHeight).PaddingX(12).Gap(14).Radius(radiusControl).AlignItems(ui.Center)
-	// Only a row that downloads lights under the pointer.
-	pointed := row.Hovered()
-	if pointed && mark == store.MarkNone && !wait && !queued {
-		row.Background(k.Fg.Alpha(0.055))
+	lit := m.lit()
+	line := k.Line
+	if lit || nextLit {
+		line = ui.Transparent
 	}
-	row.Children(func() {
-		num := k.Faint
-		if mark == store.MarkDone {
-			num = k.Muted
+	ui.Column(c.Key(t.ID)).PaddingY(trackInset).BorderWidth(0, 0, 1, 0).BorderColor(line).Children(func() {
+		row := ui.Row(c).Gap(16).Padding(trackPadY, 4).AlignItems(ui.Center).Radius(radiusControl)
+		// Only a row that downloads lights under the pointer.
+		pointed := row.Hovered()
+		switch {
+		case lit:
+			row.Background(k.AccentSoft.Alpha(0.45))
+		case pointed && m.mark == store.MarkNone && !wait && !queued:
+			row.Background(k.Fg.Alpha(0.055))
 		}
-		mono(c, fmt.Sprint(t.TrackNumber), 12).TextColor(num).Width(24).TextAlign(ui.End)
-		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(2).Children(func() {
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, t.Name).FontSize(13.5).FontWeight(600).SingleLine().Ellipsis("…").Shrink(1)
-				if t.ContentRating == "explicit" {
-					explicitBadge(c, k)
+		row.Children(func() {
+			num := k.Faint
+			if m.mark == store.MarkDone {
+				num = k.Muted
+			}
+			mono(c, fmt.Sprint(t.TrackNumber), 12).TextColor(num).Width(trackNumber).TextAlign(ui.End)
+			ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(2).Children(func() {
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, t.Name).FontWeight(600).SingleLine().Ellipsis("…").Shrink(1)
+					if t.ContentRating == "explicit" {
+						explicitBadge(c, k)
+					}
+				})
+				sub := " "
+				switch {
+				case t.ArtistName != "" && t.ArtistName != albumArtist:
+					sub = t.ArtistName
+				case m.item != nil && trackSub(m.item) != "":
+					sub = trackSub(m.item)
+				}
+				mono(c, sub, 11).TextColor(k.Muted).Ellipsis("…")
+			})
+			length := ""
+			if t.DurationMS > 0 {
+				length = format.Duration(time.Duration(t.DurationMS) * time.Millisecond)
+			}
+			mono(c, length, 12).TextColor(k.Muted).Width(trackLength).TextAlign(ui.End)
+			ui.Row(c).Width(trackStateWidth).Height(trackControl).Gap(6).Justify(ui.End).AlignItems(ui.Center).Children(func() {
+				switch {
+				case m.item != nil:
+					trackState(c, k, m.item)
+				case m.mark == store.MarkDone:
+					stateWord(c, icCheck, "On disk", k.OK)
+				case queued || m.mark == store.MarkActive && waiting(m.item):
+					stateWord(c, icClock, "Waiting", k.Muted)
+				case m.mark == store.MarkActive:
+					stateWord(c, icDown, "In the queue", k.Accent)
+				case wait:
+					ui.Text(c, "…").FontSize(13).FontWeight(700).TextColor(k.Muted)
+				default:
+					a.trackDownload(c, k, th, pointed)
 				}
 			})
-			if t.ArtistName != "" && t.ArtistName != albumArtist {
-				ui.Text(c, t.ArtistName).FontSize(12).TextColor(k.Muted).SingleLine().Ellipsis("…")
-			}
-		})
-		length := ""
-		if t.DurationMS > 0 {
-			length = format.Duration(time.Duration(t.DurationMS) * time.Millisecond)
-		}
-		mono(c, length, 12).TextColor(k.Muted).Width(44).TextAlign(ui.End)
-		ui.Box(c).Size(trackControl, trackControl).Center().Children(func() {
-			switch {
-			case mark == store.MarkDone:
-				ui.Icon(c, icCheck).FontSize(15).TextColor(k.OK).Tooltip("On disk")
-			case queued || mark == store.MarkActive && waiting(item):
-				ui.Icon(c, icClock).FontSize(15).TextColor(k.Faint).Tooltip("Waiting")
-			case mark == store.MarkActive:
-				ui.Icon(c, icDown).FontSize(15).TextColor(k.Accent).Tooltip("Downloading")
-			case wait:
-				ui.Text(c, "…").FontSize(13).FontWeight(700).TextColor(k.Muted)
-			default:
-				a.trackDownload(c, k, th, pointed)
-			}
 		})
 	})
+}
+
+// stateWord is a state in the track lists' state column: its icon and word
+// in col, as trackState draws a job's.
+func stateWord(c *ui.Context, ic *ui.SVG, text string, col ui.Color) {
+	ui.Icon(c, ic).FontSize(13).TextColor(col)
+	ui.Text(c, text).FontSize(12).FontWeight(600).TextColor(col).SingleLine()
 }
 
 // waiting reports a track of a running job that has not started yet; nil
