@@ -28,6 +28,8 @@ const QUALITY_TIMEOUT_MS = 180000;
 // The server bounds a lookup at 15 s and a search at 10 s and answers 504;
 // wait a little longer.
 const LOOKUP_TIMEOUT_MS = 20000;
+// The server cuts a hook test off after 30 s and then answers.
+const HOOK_TEST_TIMEOUT_MS = 40000;
 
 /** Resolves an "/api/..." path against the server root above /console/. */
 export function resolveUrl(path, query, base = globalThis.document ? globalThis.document.baseURI : 'http://localhost/console/') {
@@ -107,6 +109,22 @@ export const getStats = (days = 14) => request('GET', '/api/v1/stats', { days })
 export const getConfig = () => request('GET', '/api/v1/config');
 export const reloadConfig = () => request('POST', '/api/v1/config/reload');
 export const getHooks = () => request('GET', '/api/v1/hooks');
+/** The services a webhook can be made from: {presets: [{id, name, kind, events, fields}]}; the backend builds each one's request. */
+export const getHookPresets = () => request('GET', '/api/v1/hooks/presets');
+/** Sets hooks.yaml's master switch; resolves to the HooksResponse after it. */
+export const setHooksEnabled = (enabled) => request('PUT', '/api/v1/hooks', undefined, { body: { enabled } });
+/**
+ * Writes the webhook entry `name` (WebhookWrite: an omitted field keeps its
+ * value; {preset, values} in place of the request makes the backend build
+ * it) and resolves to the HookEntry as written; 409 hook_read_only for a
+ * command entry, 422 invalid_hook or invalid_hooks_file, 503 when the server
+ * has no hooks.yaml path.
+ */
+export const putHook = (name, body) => request('PUT', `/api/v1/hooks/${encodeURIComponent(name)}`, undefined, { body });
+/** Sends the webhook `name` once with a sample payload; resolves to {succeeded, error?}. */
+export const testHook = (name) => request('POST', `/api/v1/hooks/${encodeURIComponent(name)}/test`, undefined, { timeoutMs: HOOK_TEST_TIMEOUT_MS });
+/** Removes the webhook entry `name` from hooks.yaml. */
+export const deleteHook = (name) => request('DELETE', `/api/v1/hooks/${encodeURIComponent(name)}`);
 export const getLibrarySync = () => request('GET', '/api/v1/library-sync');
 export const getWrapperStatus = () => request('GET', '/api/v1/wrapper/status');
 export const listDownloads = (query) => request('GET', '/api/v1/downloads', query);

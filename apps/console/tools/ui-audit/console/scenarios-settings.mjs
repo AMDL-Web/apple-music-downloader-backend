@@ -34,6 +34,71 @@ export const SETTINGS_SCENARIOS = [
     faults: Object.fromEntries(['GET /api/v1/stats', 'GET /api/v1/hooks', 'GET /api/v1/library-sync'].map((k) => [k, { status: 404, code: 'not_found', message: 'not found' }])),
   },
   ...['account', 'quality', 'files', 'lyrics_artwork', 'jobs', 'library_sync', 'hooks', 'logging', 'server'].map((s) => ({ id: `settings/${s}`, world: 'active', path: `#/settings?section=${s}` })),
+  // Hooks: the world's webhooks and command (fixtures-hooks.mjs), none, the
+  // add sheet, a test's result in place of the line under a name, a refused
+  // save, and presets the server does not serve.
+  { id: 'settings/hooks-empty', world: 'active', path: '#/settings?section=hooks', mutate: (w) => (w.hooks = { enabled: false, entries: [] }) },
+  {
+    id: 'settings/hooks-presets-missing',
+    world: 'active',
+    path: '#/settings?section=hooks',
+    mutate: (w) => (w.hooks = { enabled: false, entries: [] }),
+    faults: { 'GET /api/v1/hooks/presets': { status: 404, code: 'not_found', message: 'not found' } },
+  },
+  {
+    id: 'settings/hooks-sheet',
+    world: 'active',
+    path: '#/settings?section=hooks',
+    setup: async (ctx) => {
+      await ctx.page.locator('.hooks-add').click();
+      await ctx.page.locator('[data-dialog=hook] .hook-preset').first().waitFor();
+    },
+    transitions: [{ id: 'pick', title: 'pick ntfy', expectContent: true, run: (ctx) => ctx.page.locator('[data-dialog=hook] .hook-preset[data-preset=ntfy]').click() }],
+  },
+  {
+    id: 'settings/hooks-edit',
+    world: 'active',
+    path: '#/settings?section=hooks',
+    setup: async (ctx) => {
+      await ctx.page.locator('.settings-hook[data-type=webhook] .hook-more').first().click();
+      await ctx.page.locator('.menu-item[data-item=edit]').click();
+      await ctx.page.locator('[data-dialog=hook] .hook-target').waitFor();
+    },
+  },
+  {
+    id: 'settings/hooks-test',
+    world: 'active',
+    path: '#/settings?section=hooks',
+    noStates: true,
+    latencies: { 'POST /api/v1/hooks/{name}/test': 600 },
+    transitions: [
+      { id: 'test-sent', title: 'a test that succeeds', hold: 1200, run: (ctx) => ctx.page.locator('.settings-hook[data-type=webhook] .hook-test').first().click() },
+      { id: 'test-failed', title: 'a test that fails', hold: 1200, run: (ctx) => ctx.page.locator('.settings-hook[data-type=webhook] .hook-test').nth(2).click() },
+    ],
+  },
+  {
+    id: 'settings/hooks-save-error',
+    world: 'active',
+    path: '#/settings?section=hooks',
+    setup: async (ctx) => {
+      await ctx.page.locator('.hooks-add').click();
+      await ctx.page.locator('[data-dialog=hook] .hook-preset[data-preset=custom]').click();
+      await ctx.page.locator('#hook-custom-url').fill('https://hooks.example.com/amdl');
+      await ctx.page.locator('#hook-custom-header').fill('no colon');
+      await ctx.page.locator('[data-dialog=hook] .hook-save').click();
+      await ctx.page.locator('.hook-sheet-error:not(:empty)').waitFor();
+    },
+  },
+  {
+    id: 'settings/hooks-delete',
+    world: 'active',
+    path: '#/settings?section=hooks',
+    setup: async (ctx) => {
+      await ctx.page.locator('.settings-hook[data-type=webhook] .hook-more').first().click();
+      await ctx.page.locator('.menu-item[data-item=delete]').click();
+      await ctx.page.locator('[data-dialog=confirm]').waitFor();
+    },
+  },
   { id: 'settings/account-down', world: 'active', path: '#/settings?section=account', faults: { 'GET /api/v1/wrapper/status': { status: 503, code: 'wrapper_unavailable', message: 'dial tcp 127.0.0.1:1: connect: connection refused' } } },
   { id: 'settings/list', world: 'active', path: '#/settings', widths: [375, 320] },
   { id: 'settings/section-phone', world: 'active', path: '#/settings?section=library_sync', widths: [375, 320] },

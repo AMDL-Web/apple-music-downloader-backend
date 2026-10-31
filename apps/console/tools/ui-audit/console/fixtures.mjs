@@ -6,6 +6,7 @@
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { seedHooks } from './fixtures-hooks.mjs';
 
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 export const CATALOG = JSON.parse(readFileSync(here('./fixtures/catalog.json'), 'utf8'));
@@ -477,6 +478,7 @@ function buildActive(w) {
     stages: (i) => (i === 3 ? 'skipped_existing' : 'completed'),
   });
   makeJob(w, { key: JOB_KEYS.long, album: { ...album(60), name: 'Beethoven: Symphonies Nos. 1–9 · Overtures · Missa solemnis (Remastered 2026, Deluxe Edition with Rehearsal Excerpts)' }, status: 'completed', tracks: 9, createdAgo: 30 * HOUR, longTitles: true });
+  seedHooks(w);
 }
 
 export { stageFields, CODECS, ERRORS, DAY, HOUR, MIN, iso };

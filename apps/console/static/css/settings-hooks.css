@@ -1,7 +1,55 @@
-/* Settings › Hooks (views/settings-hooks.js): the list of hooks.yaml's
-   entries. */
+/* Settings › Hooks (views/settings-hooks.js, settings-hook-sheet.js): the
+   master switch, the list of hooks.yaml's entries, the presets, the row
+   menu and the add/edit sheet. Every row ends in one column of controls as
+   wide as a webhook's (Test, switch, menu), so the switches line up with
+   the master switch and a command's "hooks.yaml" ends on the same edge. A
+   test result replaces the line under the name, so nothing moves. */
 
-/* ---- Hooks -------------------------------------------------------- */
+.hooks-panel {
+  --hook-more-w: var(--control-h-sm);
+  --hook-controls-w: calc(var(--hook-more-w) * 4.5 + var(--s-1) * 2);
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+}
+
+/* ---- Master switch ------------------------------------------------- */
+
+.hooks-master {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--hook-controls-w);
+  align-items: center;
+  column-gap: var(--s-3);
+  min-height: var(--control-h);
+  padding-bottom: var(--s-3);
+}
+
+.hooks-master-switch {
+  display: contents;
+  cursor: pointer;
+}
+
+/* The words take the row's height, so all of it toggles. */
+.hooks-master-switch > span {
+  grid-row: 1;
+  grid-column: 1;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  font-size: var(--fs-15);
+  line-height: var(--lh-15);
+  font-weight: var(--w-medium);
+}
+
+/* The switch sits where the rows' switches do: left of the menu's room. */
+.hooks-master-switch > .field-switch {
+  grid-row: 1;
+  grid-column: 2;
+  justify-self: end;
+  margin-inline-end: calc(var(--hook-more-w) + var(--s-1));
+}
+
+/* ---- Rows ---------------------------------------------------------- */
 
 .settings-hooks {
   display: flex;
@@ -12,23 +60,30 @@
 }
 
 .settings-hook {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-1_5);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto var(--hook-controls-w);
+  grid-template-areas:
+    "head runs controls"
+    "sub sub controls"
+    "scope scope controls";
+  align-items: center;
+  gap: var(--s-1) var(--s-3);
   padding: var(--s-3) 0;
   border-top: var(--row-divider);
 }
 
-.settings-hook:first-child {
-  border-top: 0;
-  padding-top: 0;
+.settings-hook[data-type="exec"] {
+  grid-template-areas:
+    "head runs controls"
+    "scope scope controls";
 }
 
 .settings-hook[data-off] .settings-hook-name {
   color: var(--text-secondary);
 }
 
-.settings-hook-line {
+.settings-hook-head {
+  grid-area: head;
   display: flex;
   align-items: center;
   gap: var(--s-2);
@@ -45,16 +100,47 @@
   white-space: nowrap;
 }
 
-.settings-hook-runs {
+.settings-hook-sub {
+  grid-area: sub;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+  line-height: var(--lh-12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-hook-sub[data-role] {
+  color: var(--role-text, var(--role));
+}
+
+.settings-hook-scope {
+  grid-area: scope;
   display: flex;
-  flex: none;
+  flex-wrap: wrap;
   align-items: center;
+  gap: var(--s-1_5) var(--s-2);
+  min-width: 0;
+}
+
+.settings-hook-types {
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+  line-height: var(--lh-12);
+}
+
+.settings-hook-runs {
+  grid-area: runs;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: var(--s-2);
-  margin-left: auto;
   color: var(--text-secondary);
   font-size: var(--fs-13);
   line-height: var(--lh-13);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .settings-hook-split {
@@ -62,12 +148,246 @@
   width: 48px;
 }
 
-.settings-hook-scope {
-  flex-wrap: wrap;
+.settings-hook-controls {
+  grid-area: controls;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s-1);
 }
 
-.settings-hook-types {
+.hook-switch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.settings-hook-file {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
   color: var(--text-secondary);
   font-size: var(--fs-12);
   line-height: var(--lh-12);
+}
+
+/* A narrow card: the controls stay beside the name, the line under it
+   takes the row's width (a failed test's reason is long) and the runs move
+   to the end of the scope line. */
+@container (max-width: 519px) {
+  .settings-hook {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "head controls"
+      "sub sub"
+      "scope runs";
+  }
+
+  .settings-hook[data-type="exec"] {
+    grid-template-areas:
+      "head controls"
+      "scope runs";
+  }
+
+  .settings-hook-runs {
+    align-self: start;
+  }
+
+  .settings-hook-split {
+    display: none;
+  }
+
+  .hooks-master {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+}
+
+/* ---- Add hook and the presets -------------------------------------- */
+
+.hooks-add-row {
+  padding-top: var(--s-2);
+}
+
+.hook-presets {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.hook-preset-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.hook-preset-label {
+  color: var(--text-secondary);
+  font-size: var(--fs-13);
+  line-height: var(--lh-13);
+  font-weight: var(--w-medium);
+}
+
+/* Three a row at one width, so the groups line up. */
+.hook-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-2);
+}
+
+.hook-preset {
+  width: 100%;
+}
+
+.hooks-panel > .hook-presets {
+  padding-top: var(--s-3);
+  border-top: var(--row-divider);
+}
+
+/* ---- Sheet --------------------------------------------------------- */
+
+.sheet-hook {
+  width: min(480px, 100%);
+  max-height: calc(94vh - var(--s-2));
+  overflow: hidden;
+}
+
+.sheet-hook > * {
+  flex-shrink: 0;
+}
+
+.sheet-hook > .hook-sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+/* A long form opens nearer the top than the usual 20vh, as Qualities does,
+   so the sheet fits the window; every step starts there. */
+.overlay-host:has(> .sheet-hook)[data-placement="center"] {
+  padding-top: 6vh;
+}
+
+/* On a phone the sheet takes the screen above the tab bar. */
+.overlay-host[data-placement="bottom"] > .sheet-hook {
+  height: 100%;
+}
+
+.hook-sheet-head {
+  gap: var(--s-1);
+}
+
+.hook-sheet-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hook-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.hook-body {
+  height: auto;
+  min-height: calc(var(--lh-13) * 4 + var(--s-2) * 2);
+  padding: var(--s-2);
+  resize: vertical;
+}
+
+.hook-target {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: var(--control-h);
+  padding: 0 var(--s-1) 0 var(--s-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-control);
+}
+
+.hook-target-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-13);
+  line-height: var(--lh-13);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The reason a save failed sits beside the buttons, so it grows nothing.
+   Four classes: a skin may lay .dialog-actions out as equal columns. */
+.overlay-host > .sheet.sheet-hook > .dialog-actions.hook-sheet-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.overlay-host > .sheet.sheet-hook > .dialog-actions.hook-sheet-actions > .btn {
+  flex: none;
+  min-width: 96px;
+}
+
+.hook-sheet-error {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--danger);
+  font-size: var(--fs-13);
+  line-height: var(--lh-13);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* ---- Touch --------------------------------------------------------- */
+
+@media (max-width: 639px), (pointer: coarse) {
+  .hooks-panel {
+    --hook-more-w: var(--touch);
+    --hook-controls-w: calc(var(--touch) * 3 + var(--s-1) * 2 + var(--s-3));
+  }
+
+  .hook-switch {
+    min-width: var(--touch);
+    min-height: var(--touch);
+  }
+
+  .hooks-master {
+    min-height: var(--touch);
+  }
+
+  .hook-sheet-error:empty {
+    display: none;
+  }
+
+  .hook-sheet-error {
+    flex-basis: 100%;
+  }
+}
+
+/* A phone sheet's buttons stack full width, the primary first, as a
+   confirm's do. */
+.overlay-host[data-placement="bottom"] > .sheet.sheet-hook > .dialog-actions.hook-sheet-actions {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.overlay-host[data-placement="bottom"] > .sheet.sheet-hook > .dialog-actions.hook-sheet-actions > .btn {
+  width: 100%;
+  margin: 0;
+}
+
+[data-placement="bottom"] > .sheet-hook > .hook-sheet-actions > .hook-save {
+  order: 1;
+}
+
+[data-placement="bottom"] > .sheet-hook > .hook-sheet-actions > .hook-cancel {
+  order: 2;
 }

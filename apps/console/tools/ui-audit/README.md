@@ -53,6 +53,10 @@ look by hand:
 node apps/console/tools/ui-audit/console/mock-server.mjs --port 18571 --world many
 ```
 
+Its hooks routes answer from the same in-memory hooks.yaml as the website's demo
+(`apps/site/demo/fake-hooks.js`), and `GET /__mock/hook-writes` lists every hooks write
+it received, to compare request bodies.
+
 WebKit runs on a Linux host with Playwright's WebKit installed: copy the
 repository there and run the same command with `--engine webkit`.
 

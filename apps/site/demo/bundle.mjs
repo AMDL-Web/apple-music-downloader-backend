@@ -12,7 +12,7 @@ import { createFakeApi } from './fake-api.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const CONSOLE_STATIC = path.join(here, '..', '..', 'console', 'static');
-const MODULES = ['boot.js', 'fake-api.js', 'catalog.js'];
+const MODULES = ['boot.js', 'fake-api.js', 'fake-hooks.js', 'catalog.js'];
 
 // The console views the products section shows: the demo opened at a route
 // and drawn at its own viewport size, `width` x `height`; `x` and `view` show

@@ -16,7 +16,7 @@ import { SettingsField } from './settings-fields.js';
 import { AccountPanel } from './settings-account.js';
 import { SyncResetAction, ConfigFilePanel } from './settings-panels.js';
 import { FactRows } from './settings-facts.js';
-import { HooksList } from './settings-hooks.js';
+import { HooksPanel } from './settings-hooks.js';
 import { SkipExistingField } from '../ui/skip-pref.js';
 
 /** The DOM id of a sub-group's block. */
@@ -150,10 +150,8 @@ export function SectionBody({ section, cfg, form, dirty, onRetry, onReloaded, st
     case 'library_sync':
       return html`${fieldRows(fields)}<${SyncResetAction} sync=${st.librarySync && st.librarySync.data} disabled=${offline} />`;
     case 'hooks': {
-      const h = st.hooks && st.hooks.data;
-      const entries = h && Array.isArray(h.entries) ? h.entries : [];
       return html`<${FactRows} section="hooks" system=${sys} pending=${sysPending} showKeys=${form.showKeys} />
-        <${HooksList} entries=${entries} outcomes=${st.stats && st.stats.data ? st.stats.data.hooks : []} now=${now} />`;
+        <${HooksPanel} hooks=${st.hooks && st.hooks.data} outcomes=${st.stats && st.stats.data ? st.stats.data.hooks : []} now=${now} offline=${offline} />`;
     }
     case 'logging':
       return html`<${FactRows} section="logging" system=${sys} pending=${sysPending} showKeys=${form.showKeys} />${fieldRows(fields)}`;

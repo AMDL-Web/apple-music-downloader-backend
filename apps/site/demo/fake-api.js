@@ -6,6 +6,7 @@
 // injected album progress and timers, so node:test drives it.
 
 import { albums, songs, artists, playlists, find, albumNamed, playlistNamed, albumFor, STOREFRONT } from './catalog.js';
+import { createHookStore } from './fake-hooks.js';
 
 const MIN = 60000;
 const HOUR = 60 * MIN;
@@ -161,6 +162,13 @@ export function createFakeApi({ progress, now = Date.now(), timers = globalThis 
   const logStreams = new Set();
   const config = structuredClone(CONFIG);
   const librarySync = { enabled: false, interval_minutes: 15, anchor_size: 0, last_submitted: 0, total_submitted: 0 };
+  const hooks = createHookStore({
+    enabled: true,
+    entries: [
+      { name: 'ntfy', type: 'webhook', enabled: true, events: ['job_finished', 'job_failed'], job_types: [], method: 'POST', url: 'https://ntfy.sh/amdl-demo', headers: { Title: 'AMDL', Tags: 'musical_note' }, preset: 'ntfy' },
+      { name: 'tag-library', type: 'exec', enabled: true, events: ['job_finished'], job_types: ['album'] },
+    ],
+  });
   const random = rng(20261031);
   // The codec each track will download in, decided when its job is made.
   const planned = new Map();
@@ -686,6 +694,7 @@ export function createFakeApi({ progress, now = Date.now(), timers = globalThis 
         duration_ms: tracks * 236000,
       },
       daily,
+      hooks: [],
       codecs: [
         { codec: 'alac', bit_depth: 16, sample_rate: 44100, tracks: Math.round(tracks * 0.52) },
         { codec: 'alac', bit_depth: 24, sample_rate: 48000, tracks: Math.round(tracks * 0.24) },
@@ -757,6 +766,10 @@ export function createFakeApi({ progress, now = Date.now(), timers = globalThis 
     if (/^\/api\/v1\/wrapper\/(login|logout|login\/[^/]+\/2fa)$/.test(path) && method === 'POST') {
       return apiError(501, 'login_unsupported', 'this wrapper is wrapper-lite, which has no login API');
     }
+    if (path === '/api/v1/hooks' || path.startsWith('/api/v1/hooks/')) {
+      const out = hooks.handle(method, path, method === 'PUT' ? await readBody(req) : null);
+      return json(out.status, out.body);
+    }
     switch (`${method} ${path}`) {
       case 'GET /api/v1/health':
         return json(200, { status: 'ok' });
@@ -773,8 +786,6 @@ export function createFakeApi({ progress, now = Date.now(), timers = globalThis 
       }
       case 'POST /api/v1/config/reload':
         return json(200, { config, persisted: true });
-      case 'GET /api/v1/hooks':
-        return json(200, { enabled: false, entries: [] });
       case 'GET /api/v1/library-sync':
         return json(200, librarySync);
       case 'POST /api/v1/library-sync/reset':

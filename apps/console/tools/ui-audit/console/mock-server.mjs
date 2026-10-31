@@ -9,7 +9,8 @@
 //
 // opens it for a look by hand; POST /__mock/{world,tick,fault} steer it. A
 // fault or latency keyed `GET /api/v1/search?offset` hits only the later
-// pages of a search group shown alone.
+// pages of a search group shown alone. GET /__mock/hook-writes lists the
+// hooks writes it received.
 
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -21,6 +22,7 @@ import { WORLDS, CATALOG, PLAYLISTS, CODECS, STAGE_ORDER, stageFields, downloadB
 import { stats, system } from './fixtures-status.mjs';
 import { json, apiError, readBody, parseLink } from './mock-http.mjs';
 import { lookup, quality } from './mock-links.mjs';
+import { createHookStore } from '../../../../site/demo/fake-hooks.js';
 
 const STATIC_DIR = fileURLToPath(new URL('../../../static/', import.meta.url));
 const CONSOLE_GO = fileURLToPath(new URL('../../../console.go', import.meta.url));
@@ -242,12 +244,12 @@ export async function startMockServer({ port = 0, host = '127.0.0.1', world = 'a
     const w = state.world;
     const path = url.pathname;
     const q = url.searchParams;
-    const key = `${req.method} ${path.replace(/job_[0-9a-f]{32}/, '{id}')}`;
+    const key = `${req.method} ${path.replace(/job_[0-9a-f]{32}/, '{id}').replace(/^\/api\/v1\/hooks\/(?!presets$)[^/]+/, '/api/v1/hooks/{name}')}`;
     // `GET /api/v1/search?offset` names a later page of a search alone.
     const paged = q.get('offset') ? `${key}?offset` : '';
     const fault = (paged && state.faults[paged]) || state.faults[key] || state.faults[`${req.method} ${path}`];
     // A scenario's latency, capped so that no request can hold the server.
-    const wait = Math.min(Number((paged && state.latencies[paged]) ?? state.latencies[key] ?? state.latency) || 0, 60_000);
+    const wait = Math.min(Number((paged ? state.latencies[paged] : undefined) ?? state.latencies[key] ?? state.latency) || 0, 60_000);
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     if (fault) {
       if (fault.hang) return;
@@ -255,6 +257,13 @@ export async function startMockServer({ port = 0, host = '127.0.0.1', world = 'a
     }
     const m = path.match(/^\/api\/v1\/downloads\/(job_[0-9a-f]+)(\/(cancel|retry|events))?$/);
     if (m) return jobRoute(req, res, m[1], m[3], q);
+    if (path === '/api/v1/hooks' || path.startsWith('/api/v1/hooks/')) {
+      // hooks.yaml as the server keeps it (fake-hooks.js); the world's
+      // `hooks` seeds it, and every write is kept for /__mock/hook-writes.
+      w.hookStore ||= createHookStore(w.hooks);
+      const out = w.hookStore.handle(req.method, path, req.method === 'PUT' ? await readBody(req) : null);
+      return json(res, out.status, out.body);
+    }
     const am = path.match(/^\/api\/v1\/artists\/([^/]+)\/albums$/);
     if (am) return artistAlbums(res, am[1], q);
     switch (`${req.method} ${path}`) {
@@ -273,8 +282,6 @@ export async function startMockServer({ port = 0, host = '127.0.0.1', world = 'a
       }
       case 'POST /api/v1/config/reload':
         return json(res, 200, { config: w.config, persisted: true, ...(w.reloadError ? { reload_error: w.reloadError } : {}) });
-      case 'GET /api/v1/hooks':
-        return json(res, 200, w.hooks);
       case 'GET /api/v1/library-sync':
         return json(res, 200, w.librarySync);
       case 'POST /api/v1/library-sync/reset':
@@ -461,6 +468,7 @@ export async function startMockServer({ port = 0, host = '127.0.0.1', world = 'a
       setWorld(body.name || 'active', body.opts || {});
       return json(res, 200, { ok: true, cursor: state.world.cursor });
     }
+    if (url.pathname === '/__mock/hook-writes') return json(res, 200, state.world.hookStore ? state.world.hookStore.writes : []);
     if (url.pathname === '/__mock/tick') return json(res, 200, { moved: tick(body.steps || 1) });
     if (url.pathname === '/__mock/fault') {
       state.faults = body.faults || {};

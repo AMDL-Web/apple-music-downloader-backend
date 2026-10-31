@@ -39,9 +39,9 @@ function placeBy(button, items) {
  * The button and its menu. `items` are {id, label} or {separator: true};
  * choosing one closes the menu, puts focus back on the button and calls
  * onChoose(id). `label` names the button and the menu; `heading` titles the
- * sheet on a phone.
+ * sheet on a phone; `size` ('sm') and `disabled` style the button as Button's.
  */
-export function MenuButton({ label, title, heading, items, onChoose, className = '' }) {
+export function MenuButton({ label, title, heading, items, onChoose, className = '', size = '', disabled = false }) {
   const [open, setOpen] = useState(null);
   const [headId] = useState(() => `menu-${++seq}-head`);
   const btn = useRef(null);
@@ -127,7 +127,8 @@ export function MenuButton({ label, title, heading, items, onChoose, className =
     html`<button
       key="button"
       type="button"
-      class=${`btn btn-ghost btn-icon menu-btn ${className}`.trim()}
+      class=${`btn btn-ghost${size ? ` btn-${size}` : ''} btn-icon menu-btn ${className}`.trim()}
+      disabled=${disabled}
       aria-label=${label}
       title=${title}
       aria-haspopup="menu"

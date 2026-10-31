@@ -23,6 +23,7 @@ export function stats(world, days = 14) {
     days,
     totals: { jobs: daily.reduce((s, x) => s + x.jobs_completed, 0), tracks_completed: tracks, tracks_skipped: 5, tracks_failed: 3, bytes_written: bytes, duration_ms: tracks * 210000 },
     daily,
+    hooks: world.hookStats || [],
   };
   if (tracks) out.codecs = [
     { codec: 'alac', bit_depth: 24, sample_rate: 48000, tracks: Math.round(tracks * 0.55) },

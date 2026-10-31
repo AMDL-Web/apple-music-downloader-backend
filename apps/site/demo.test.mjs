@@ -54,12 +54,13 @@ describe('fake API', () => {
 
     const api = fresh();
     const done = [...api.jobs.values()].find((j) => j.status === 'completed');
-    const ids = { downloads: done.id, artists: artists[0].id, login: 'login_1' };
+    const ids = { downloads: done.id, artists: artists[0].id, login: 'login_1', hooks: 'ntfy' };
     const bodies = {
       'POST /api/v1/downloads': { urls: [albums[3].url] },
       'POST /api/v1/lookup': { url: albums[0].url },
       'POST /api/v1/quality': { url: albums[0].url },
       'PUT /api/v1/config': { logging: { level: 'debug' } },
+      'PUT /api/v1/hooks': { enabled: true },
     };
     for (const [method, raw] of calls) {
       const route = raw.replace(/\/(\w+)\/\$\{[^}]+\}/g, (_, seg) => `/${seg}/${ids[seg]}`);
@@ -71,6 +72,31 @@ describe('fake API', () => {
       assert.ok([200, 202, 204, 409, 501].includes(res.status), `${label}: HTTP ${res.status}`);
       if (res.status === 501) assert.match(raw, /\/wrapper\/login|\/wrapper\/logout/, `${label} answered 501`);
     }
+  });
+
+  test('webhooks are written, tested and deleted; a command hook is read-only', async () => {
+    const api = fresh();
+    const put = (name, body) => call(api, 'PUT', `../api/v1/hooks/${encodeURIComponent(name)}`, body);
+    const { presets } = await (await call(api, 'GET', '../api/v1/hooks/presets')).json();
+    assert.deepEqual(
+      presets.map((p) => p.id),
+      ['ntfy', 'bark', 'telegram', 'plex', 'jellyfin', 'emby', 'custom'],
+    );
+    const missing = await put('plex', { events: ['job_finished'], job_types: [], preset: 'plex', values: { server: 'http://plex.example:32400' } });
+    assert.equal(missing.status, 422);
+    assert.match((await missing.json()).error.message, /Plex token is needed/);
+    const added = await put('plex', { events: ['job_finished'], job_types: [], preset: 'plex', values: { server: 'http://plex.example:32400', token: 't' }, enabled: true });
+    assert.equal(added.status, 200);
+    assert.deepEqual(await added.json(), { name: 'plex', enabled: true, type: 'webhook', events: ['job_finished'], job_types: [], method: 'GET', origin: 'http://plex.example:32400', header_names: ['X-Plex-Token'], max_attempts: 3, preset: 'plex' });
+    const edited = await (await put('plex', { events: ['job_finished', 'job_failed'], job_types: ['album'] })).json();
+    assert.deepEqual([edited.events, edited.job_types, edited.origin], [['job_finished', 'job_failed'], ['album'], 'http://plex.example:32400']);
+    assert.equal((await put('plex', { events: ['job_queued', 'job_failed'] })).status, 422);
+    assert.equal((await put('x', { events: ['job_finished'] })).status, 422);
+    assert.deepEqual(await (await call(api, 'POST', '../api/v1/hooks/plex/test')).json(), { succeeded: true });
+    assert.equal((await put('tag-library', { enabled: false })).status, 409);
+    assert.equal((await call(api, 'DELETE', '../api/v1/hooks/tag-library')).status, 409);
+    assert.equal((await call(api, 'DELETE', '../api/v1/hooks/plex')).status, 200);
+    assert.deepEqual((await (await call(api, 'GET', '../api/v1/hooks')).json()).entries.map((e) => e.name), ['ntfy', 'tag-library']);
   });
 
   test('running and queued jobs finish, and the feed reports each one', async () => {
@@ -207,7 +233,7 @@ describe('made-up catalog', () => {
   });
 
   test('the demo world names no other host and has no motion artwork', async () => {
-    for (const file of ['catalog.js', 'fake-api.js', 'boot.js']) {
+    for (const file of ['catalog.js', 'fake-api.js', 'fake-hooks.js', 'boot.js']) {
       assert.doesNotMatch(fs.readFileSync(path.join(here, 'demo', file), 'utf8'), /mzstatic|itunes\.apple\.com/, file);
     }
     const body = await (await call(fresh(), 'GET', '../api/v1/downloads?limit=200')).text();

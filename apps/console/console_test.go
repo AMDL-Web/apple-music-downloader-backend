@@ -543,6 +543,7 @@ var (
 		"--w": true, "--f": true, "--v": true, "--n": true, "--swatch": true,
 		"--role": true, "--role-tint": true, "--new-bar-h": true, "--job-prog": true, "--job-trail": true, "--cols": true,
 		"--save-x": true, "--save-w": true, "--domain-title-h": true,
+		"--hook-more-w": true, "--hook-controls-w": true,
 	}
 )
 

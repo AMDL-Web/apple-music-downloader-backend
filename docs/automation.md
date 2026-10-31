@@ -12,8 +12,9 @@ summary. The file is loaded independently of `config.yaml`, so hooks can be adde
 or toggled without touching the main configuration. A missing file is not an error; hooks
 are simply disabled. **The file is read at startup, so a hand edit needs a restart.** The
 master switch and webhook entries can also be changed through the API
-([api.md](api.md#config-and-hooks)) and the desktop app's Hooks settings: those writes edit
-the file in place, keep its comments and other entries, and apply to the next job event.
+([api.md](api.md#config-and-hooks)) and the Hooks settings of the web console and the
+desktop app: those writes edit the file in place, keep its comments and other entries, and
+apply to the next job event.
 Command (`exec`) entries are never written or run that way; they change only in the file.
 
 The one top-level key is `enabled` (default `false`), the master switch: when off, no entry
