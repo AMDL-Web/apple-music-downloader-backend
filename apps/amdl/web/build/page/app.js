@@ -24,6 +24,19 @@
   });
   term.open(el);
   term.write('\x1b[2mloading amdl…\x1b[0m');
+  term.focus();
+  // A click anywhere on the page, the margin round the terminal included,
+  // keeps the keyboard in the terminal.
+  document.addEventListener('mousedown', function (e) {
+    if (term.element.contains(e.target)) return;
+    e.preventDefault();
+    term.focus();
+  });
+
+  // What is typed while amdl.wasm loads waits here, up to a few lines, and
+  // goes to the TUI once it runs.
+  var early = '';
+  var typed = term.onData(function (d) { early = (early + d).slice(-512); });
 
   // size is how many cells fit the box, from the cell xterm.js measured.
   function size() {
@@ -53,7 +66,9 @@
     var s = size();
     term.reset();
     term.resize(s.cols, s.rows);
+    typed.dispose();
     term.onData(function (d) { window.amdlInput(d); });
+    if (early) window.amdlInput(early);
     window.amdlStart(s.cols, s.rows);
     var t;
     new ResizeObserver(function () {
