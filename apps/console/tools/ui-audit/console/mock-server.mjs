@@ -506,10 +506,18 @@ export async function startMockServer({ port = 0, host = '127.0.0.1', world = 'a
             playlists: own.length ? [...own, ...PLAYLISTS.filter((p) => !own.includes(p))] : [],
             artists,
           };
+    // prior_job as the server sets it: the newest active job of the hit's
+    // type and id, else the newest completed one.
+    const jobs = [...state.world.jobs.values()].sort((x, y) => y.created_at.localeCompare(x.created_at));
+    const withPrior = (h) => {
+      const mine = jobs.filter((j) => j.type === h.type && j.input.endsWith(`/${h.id}`));
+      const j = mine.find((x) => x.status === 'queued' || x.status === 'running') || mine.find((x) => x.status === 'completed');
+      return j ? { ...h, prior_job: { id: j.id, status: j.status, ...(j.finished_at ? { finished_at: j.finished_at } : {}) } } : h;
+    };
     const out = { term: q.get('term'), storefront: 'cn' };
     for (const [g, arr] of Object.entries(groups)) {
       if (types.length && !types.includes(g)) continue;
-      out[g] = { items: arr.slice(offset, offset + limit), ...(offset + limit < arr.length ? { next_offset: offset + limit } : {}) };
+      out[g] = { items: arr.slice(offset, offset + limit).map(withPrior), ...(offset + limit < arr.length ? { next_offset: offset + limit } : {}) };
     }
     return json(res, 200, out);
   }

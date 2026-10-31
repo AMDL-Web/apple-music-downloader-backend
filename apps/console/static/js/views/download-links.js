@@ -37,8 +37,7 @@ const LINK_ART = artWidths(48);
  * (an earlier job, lib/lookup.js priorJob), picked(url) (the checkbox),
  * skipped (links past the lookup limit that would otherwise be looked up),
  * and row: {jobHref(id), onRemove(url), onRetry(url),
- * onQuality(entry, data), onPick(url, checked), overwrite (whether the
- * submit overwrites existing files), storefront (the server's default),
+ * onQuality(entry, data), onPick(url, checked), storefront (the server's default),
  * probed(url) ({text, warning} once the link's qualities were read, else
  * null)}.
  */
@@ -161,9 +160,6 @@ function LinkRow({ entry, status, issue, prior, picked, row }) {
         ? html`<span class="new-link-note" data-note="storefront">No storefront in the link: read as ${link.storefront.toUpperCase()}, like the other links</span>`
         : null}
       ${prior && !blocked ? html`<${PriorNote} prior=${prior} href=${row.jobHref(prior.job.id)} />` : null}
-      ${prior && !blocked && prior.state === 'done' && picked && !row.overwrite
-        ? html`<span class="new-link-note" data-note="overwrite">Tracks already on disk are skipped unless Overwrite is on</span>`
-        : null}
       ${probed
         ? html`<span class="new-link-will">
             <span>Will download: ${keepSpec(probed.text)}</span>

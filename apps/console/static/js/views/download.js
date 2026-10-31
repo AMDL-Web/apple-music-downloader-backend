@@ -34,6 +34,9 @@ import { useSearch, useHitActions, toResults } from './download-search-state.js'
 import { useAddressSync, useDraft } from './download-address.js';
 import { Compose, Options, clearBox } from './download-hero.js';
 import { ArtistConfirm } from './download-confirm.js';
+import { AskDialog } from './download-ask.js';
+import { downloadAsks, hasAsks, answerOverrides } from '../lib/download-ask.js';
+import { loadSkipExisting } from '../ui/skip-pref.js';
 
 // The quality choice lasts for the tab too, so the next album can follow
 // with the same one: a PRESETS id or 'custom' with its values.
@@ -94,19 +97,15 @@ export function DownloadPage({ route }) {
   const trackMode = cfg.data && cfg.data.config && cfg.data.config.catalog ? cfg.data.config.catalog.album_track_url_mode || '' : null;
   const defaults = useMemo(() => (download ? optionDefaults(download) : null), [JSON.stringify(download)]);
 
-  // The quality preset and the Overwrite switch (null: as Settings has it).
+  // The quality preset.
   const [choice, setChoiceState] = useState(chosen);
   const setChoice = (next) => {
     chosen = next;
     setChoiceState(next);
     setRefusal('');
   };
-  const [overwrite, setOverwrite] = useState(null);
   const [customOpen, setCustomOpen] = useState(false);
-  const overrides = useMemo(
-    () => (defaults ? presetOverrides(defaults, choice.preset, choice.custom, overwrite) : {}),
-    [defaults, choice, overwrite],
-  );
+  const overrides = useMemo(() => (defaults ? presetOverrides(defaults, choice.preset, choice.custom) : {}), [defaults, choice]);
   const qualitySelect = () => document.getElementById('new-quality');
   const closeCustom = () => {
     setCustomOpen(false);
@@ -139,8 +138,7 @@ export function DownloadPage({ route }) {
   // library or the queue starts unchecked unless the person checks it.
   const [picks, setPicks] = useState(() => new Map());
   const onPick = (url, on) => setPicks((m) => new Map(m).set(url, on));
-  const overwriteOn = overwrite === null ? Boolean(defaults && defaults.force_overwrite) : overwrite;
-  const sendable = allowed.filter((u) => isPicked(u, priorOf(u), picks, overwriteOn));
+  const sendable = allowed.filter((u) => isPicked(u, priorOf(u), picks));
   // What the chosen preset resolves to, for the Will download lines.
   const chosenValues = defaults ? presetValues(defaults, choice.preset, choice.custom) : null;
   const previewOf = (url) => {
@@ -157,7 +155,21 @@ export function DownloadPage({ route }) {
   // Bumped when the quality sheet has read a link's qualities (PROBES).
   const [, setProbed] = useState(0);
   const [confirm, setConfirm] = useState(null);
+  const [asking, setAsking] = useState(null);
 
+  /**
+   * Runs a download, after the questions it asks (lib/download-ask.js):
+   * the quality, while the preset follows Settings, and what to do with
+   * files on disk, for a release in the library. run(overrides) sends it
+   * with the page's overrides and the answer's.
+   */
+  const askFirst = ({ title, traits, inLibrary, run }) => {
+    const priority = defaults ? defaults.quality_priority : [];
+    const asks = downloadAsks({ traits, priority, follow: choice.preset === 'follow', inLibrary, alwaysSkip: loadSkipExisting() });
+    const go = (answer) => run({ ...overrides, ...answerOverrides({ ...answer, priority, inLibrary }) });
+    if (!hasAsks(asks)) go({});
+    else setAsking({ title, asks, go });
+  };
 
   // An artist link queues the whole discography as one job: ask first.
   const artists = sendable.filter((u) => {
@@ -167,9 +179,10 @@ export function DownloadPage({ route }) {
   /**
    * Shows what a submit did: its failure under the bar, its rows in the
    * results (after the rows already there when `keep`, a search hit's
-   * download), a toast; returns false when nothing was submitted.
+   * download), a toast; returns false when nothing was submitted. `used`
+   * are the overrides sent, which a retry sends again.
    */
-  const report = (pairs, fail, previewFor, keep = false) => {
+  const report = (pairs, fail, previewFor, keep = false, used = overrides) => {
     if (fail) {
       if (fail.kind === 'overrides') setRefusal(fail.message);
       else setFailure(fail.message);
@@ -179,7 +192,7 @@ export function DownloadPage({ route }) {
       return false;
     }
     const rows = resultRows(pairs, previewFor);
-    setResults((r) => ({ rows: keep ? [...rows, ...r.rows.filter((x) => !rows.some((n) => n.url === x.url))] : rows, overrides }));
+    setResults((r) => ({ rows: keep ? [...rows, ...r.rows.filter((x) => !rows.some((n) => n.url === x.url))] : rows, overrides: used }));
     const ids = rows.filter((r) => r.job).map((r) => r.job.id);
     app.toast({
       message: submitSummary(rows),
@@ -211,12 +224,23 @@ export function DownloadPage({ route }) {
       return;
     }
     setConfirm(null);
+    const urls = sendable;
+    const one = urls.length === 1 ? previewOf(urls[0]) : null;
+    askFirst({
+      title: one && one.title ? `Download “${one.title}”` : label,
+      traits: [],
+      inLibrary: urls.some((u) => (priorOf(u) || {}).state === 'done'),
+      run: (used) => sendLinks(urls, used),
+    });
+  };
+
+  const sendLinks = async (urls, used) => {
     setBusy(true);
     setFailure('');
     setRefusal('');
-    const { pairs, fail } = await sendUrls(sendable, overrides);
+    const { pairs, fail } = await sendUrls(urls, used);
     setBusy(false);
-    if (!report(pairs, fail, previewOf)) return;
+    if (!report(pairs, fail, previewOf, false, used)) return;
     forgetPrior(pairs.map((p) => p.url));
     // Keep what was not handled: links not sent (flagged, or after a failed
     // chunk), links the server did not take, and anything typed meanwhile.
@@ -230,7 +254,9 @@ export function DownloadPage({ route }) {
     });
   };
 
-  const hits = useHitActions({ app, route, term, artistId, search, send: sendUrls, report, overrides, setConfirm, clearNotes: () => (setFailure(''), setRefusal('')) });
+  const askHit = (hit, run) =>
+    askFirst({ title: `Download “${hit.name}”`, traits: hit.audio_traits, inLibrary: (search.priorOf(hit) || {}).state === 'done', run });
+  const hits = useHitActions({ app, route, term, artistId, search, send: sendUrls, report, ask: askHit, setConfirm, clearNotes: () => (setFailure(''), setRefusal('')) });
 
   const retry = async (urls) => {
     setRetrying((s) => new Set([...s, ...urls]));
@@ -338,8 +364,6 @@ export function DownloadPage({ route }) {
           asks=${asks}
           onPreset=${(preset) => setChoice({ ...choice, preset })}
           onCustom=${() => setCustomOpen(true)}
-          overwrite=${overwriteOn}
-          onOverwrite=${(v) => setOverwrite(defaults && v === defaults.force_overwrite ? null : v)}
         />`}
         cfgError=${Boolean(cfg.error && !defaults)}
         onRetryCfg=${() => setCfgRun((n) => n + 1)}
@@ -368,7 +392,7 @@ export function DownloadPage({ route }) {
           statusOf=${statusOf}
           issueOf=${issueOf}
           priorOf=${priorOf}
-          picked=${(url) => isPicked(url, priorOf(url), picks, overwriteOn)}
+          picked=${(url) => isPicked(url, priorOf(url), picks)}
           skipped=${skipped}
           row=${{
             jobHref,
@@ -376,7 +400,6 @@ export function DownloadPage({ route }) {
             onRetry: (url) => queue.current.retry(url),
             onQuality: (entry, data) => setQuality({ url: entry.url, title: data.title || entry.url, tracks: data.track_count }),
             onPick,
-            overwrite: overwriteOn,
             storefront,
             probed: probedOf,
           }}
@@ -433,5 +456,16 @@ export function DownloadPage({ route }) {
         />`
       : null}
     ${confirm ? html`<${ArtistConfirm} confirm=${confirm} onClose=${() => setConfirm(null)} />` : null}
+    ${asking
+      ? html`<${AskDialog}
+          title=${asking.title}
+          asks=${asking.asks}
+          onDone=${(answer) => {
+            setAsking(null);
+            asking.go(answer);
+          }}
+          onCancel=${() => setAsking(null)}
+        />`
+      : null}
   </div>`;
 }

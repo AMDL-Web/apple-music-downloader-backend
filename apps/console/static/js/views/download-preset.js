@@ -1,8 +1,9 @@
 // New download: the quality controls under the text box. A preset menu
-// (lib/overrides.js PRESETS, the custom values once set, and Custom…), the
-// Overwrite switch, and the Custom… sheet that edits the codec order, the
-// fallback and the ALAC limits for this download only. The page owns the
-// choice and turns it into overrides (lib/overrides.js presetOverrides).
+// (lib/overrides.js PRESETS, the custom values once set, and Custom…) and
+// the Custom… sheet that edits the codec order, the fallback and the ALAC
+// limits for this download only. The page owns the choice and turns it into
+// overrides (lib/overrides.js presetOverrides). Files already on disk are
+// asked about when a download needs it (views/download-ask.js).
 
 import { html, useState } from '../ui/preact.js';
 import { PRESETS, QUALITY_KEYS, SAMPLE_RATES, BIT_DEPTHS, choices, rateLabel, customLabel } from '../lib/overrides.js';
@@ -20,12 +21,11 @@ const EDIT = 'custom-edit';
  * Props: defaults (lib/overrides.js optionDefaults, null until GET config
  * answers), preset (a PRESETS id or 'custom'), custom (the custom values),
  * asks (what the choice asks for in words, the menu's tooltip; the dock
- * prints it), onPreset(id), onCustom() (opens the sheet), overwrite
- * (the switch's state), onOverwrite(bool). The closed menu shows only the
- * preset's name, so it fits a phone. Until the config loads only Follow
- * Settings can be chosen and the switch waits.
+ * prints it), onPreset(id), onCustom() (opens the sheet). The closed menu
+ * shows only the preset's name, so it fits a phone. Until the config loads
+ * only Follow Settings can be chosen.
  */
-export function QualityControls({ defaults, preset, custom, asks, onPreset, onCustom, overwrite, onOverwrite }) {
+export function QualityControls({ defaults, preset, custom, asks, onPreset, onCustom }) {
   const ready = Boolean(defaults);
   const wait = ready ? undefined : 'Loading Settings…';
   const onChange = (e) => {
@@ -48,18 +48,6 @@ export function QualityControls({ defaults, preset, custom, asks, onPreset, onCu
         <option key=${EDIT} value=${EDIT} disabled=${!ready} title=${wait}>Custom…</option>
       </select>
     </span>
-    <label class="new-overwrite" title=${wait || 'Off: tracks already on disk are skipped'}>
-      <input
-        type="checkbox"
-        role="switch"
-        class="field-switch"
-        aria-label="Overwrite existing files"
-        checked=${overwrite}
-        disabled=${!ready}
-        onChange=${(e) => onOverwrite(e.currentTarget.checked)}
-      />
-      <span aria-hidden="true">Overwrite</span>
-    </label>
   </div>`;
 }
 

@@ -79,8 +79,9 @@ export function useSearch({ term, debounced, artistId, epoch, subscribeFeed }) {
 /**
  * The page's side of the hits. download(hit) sends a song's, album's or playlist's url
  * alone through the page's `send` and `report` (its result joins the
- * results), and asks first through `setConfirm` for an artist, whose url
- * queues every album as an artist link does. openArtist(hit) opens the
+ * results), after the page's questions (`ask(hit, run)`, which calls
+ * run(overrides)), and asks first through `setConfirm` for an artist, whose
+ * url queues every album as an artist link does. openArtist(hit) opens the
  * artist over the results as a history entry (#/new?artist=), so Back, the
  * browser's or the card's (closeArtist), returns to them. Returns {busy
  * (urls being sent), download, openArtist, closeArtist, openedHit (the hit
@@ -91,21 +92,23 @@ export function useSearch({ term, debounced, artistId, epoch, subscribeFeed }) {
  * entry, so Back, the browser's or the card's (closeGroup), returns to
  * every group.
  */
-export function useHitActions({ app, route, term, artistId, search, send, report, overrides, setConfirm, clearNotes }) {
+export function useHitActions({ app, route, term, artistId, search, send, report, ask, setConfirm, clearNotes }) {
   const [busy, setBusy] = useState(() => new Set());
-  const sendHit = async (hit) => {
+  const sendHit = async (hit, overrides) => {
     if (busy.has(hit.url)) return;
-    setConfirm(null);
     clearNotes();
     setBusy((b) => new Set(b).add(hit.url));
     const { pairs, fail } = await send([hit.url], overrides);
     setBusy((b) => new Set([...b].filter((u) => u !== hit.url)));
     const job = pairs.length ? sentJob(pairs[0].result) : null;
     if (job) search.recordSent(hit, job);
-    report(pairs, fail, () => hitPreview(hit), true);
+    report(pairs, fail, () => hitPreview(hit), true, overrides);
   };
-  const download = (hit) =>
-    hit.type === 'artist' ? setConfirm({ names: [hit.name], label: 'Download all', run: () => sendHit(hit) }) : sendHit(hit);
+  const start = (hit) => {
+    setConfirm(null);
+    if (!busy.has(hit.url)) ask(hit, (overrides) => sendHit(hit, overrides));
+  };
+  const download = (hit) => (hit.type === 'artist' ? setConfirm({ names: [hit.name], label: 'Download all', run: () => start(hit) }) : start(hit));
 
   const opened = useRef(null);
   const pushed = useRef(false);

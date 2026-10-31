@@ -101,7 +101,8 @@ let confirmSeq = 0;
 /**
  * Asks before a destructive or irreversible action: role=alertdialog, the
  * title, an optional body (children), Cancel (focused, the safe choice) and
- * the confirm button (`danger` styles it as destructive). While `busy` both
+ * the confirm button (`danger` styles it as destructive; `confirmFocus`
+ * focuses it instead, for a choice that is not destructive). While `busy` both
  * buttons are aria-disabled, the confirm button reads busyLabel (the `altLabel`
  * button does when there is one: it is the choice that runs), and Escape
  * and the scrim do nothing; the caller closes the dialog when its request
@@ -113,7 +114,7 @@ let confirmSeq = 0;
  * buttons read primary, destructive, Cancel. The DOM follows the order drawn,
  * so Tab and a screen reader meet the buttons as they are seen.
  */
-export function ConfirmDialog({ title, children, confirmLabel = 'Confirm', cancelLabel = 'Cancel', busyLabel = 'Working…', altLabel = '', danger = false, busy = false, onConfirm, onCancel, onAlt }) {
+export function ConfirmDialog({ title, children, confirmLabel = 'Confirm', cancelLabel = 'Cancel', busyLabel = 'Working…', altLabel = '', danger = false, confirmFocus = false, busy = false, onConfirm, onCancel, onAlt }) {
   const [id] = useState(() => `confirm-${++confirmSeq}`);
   const phone = useMedia('(max-width: 639px)');
   const cancel = busy ? undefined : onCancel;
@@ -125,8 +126,9 @@ export function ConfirmDialog({ title, children, confirmLabel = 'Confirm', cance
     aria-disabled=${off}
     aria-busy=${altLabel ? undefined : off}
     onClick=${busy ? undefined : onConfirm}
+    data-autofocus=${confirmFocus || undefined}
   >${busy && !altLabel ? busyLabel : confirmLabel}</${Button}>`;
-  const dismiss = html`<${Button} key="cancel" variant="secondary" className="dialog-cancel" aria-disabled=${off} onClick=${cancel} data-autofocus>${cancelLabel}</${Button}>`;
+  const dismiss = html`<${Button} key="cancel" variant="secondary" className="dialog-cancel" aria-disabled=${off} onClick=${cancel} data-autofocus=${confirmFocus ? undefined : true}>${cancelLabel}</${Button}>`;
   const alt = altLabel
     ? html`<${Button} key="alt" variant="primary" className="dialog-alt-btn" aria-disabled=${off} aria-busy=${off} onClick=${busy ? undefined : onAlt}>${busy ? busyLabel : altLabel}</${Button}>`
     : null;

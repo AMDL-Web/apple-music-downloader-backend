@@ -258,6 +258,32 @@
   color: var(--text-secondary);
 }
 
+/* New download's questions (views/download-ask.js): a label over each choice. */
+.ask {
+  display: grid;
+  gap: var(--s-4);
+}
+
+.ask-row {
+  display: grid;
+  gap: var(--s-2);
+}
+
+/* Each choice spans the dialog, as the buttons under it do. */
+.ask .seg {
+  display: flex;
+}
+
+.ask .seg-btn {
+  flex: 1 1 0;
+  justify-content: center;
+}
+
+.ask-label {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
 .dialog-actions {
   display: flex;
   flex-wrap: wrap;

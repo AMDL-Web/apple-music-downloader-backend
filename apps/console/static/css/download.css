@@ -546,11 +546,6 @@
     max-width: none;
   }
 
-  .new-overwrite {
-    flex: none;
-    min-height: var(--touch);
-  }
-
   .new-shortcut,
   .new-results-card {
     margin-top: 0;

@@ -196,20 +196,6 @@
   text-overflow: ellipsis;
 }
 
-.new-overwrite {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-2);
-  font-size: var(--fs-14);
-  line-height: var(--lh-14);
-  cursor: pointer;
-}
-
-.new-overwrite:has(:disabled) {
-  color: var(--text-secondary);
-  cursor: not-allowed;
-}
-
 /* The glyph carries the warning; the label stays ink for its contrast. */
 .new-cfg-retry .icon {
   color: var(--warning-text);

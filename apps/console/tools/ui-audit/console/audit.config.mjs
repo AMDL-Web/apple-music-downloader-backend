@@ -211,12 +211,14 @@ const SCENARIOS = [
   },
   { id: 'new/many-links', world: 'active', path: `#/new?url=${encodeURIComponent(Array.from({ length: 30 }, (_, i) => albumUrl(i + 20)).join('\n'))}` },
   {
-    id: 'new/overwrite-on',
+    id: 'new/ask',
     world: 'active',
     path: `#/new?url=${encodeURIComponent(albumUrl(7))}`,
     setup: async (ctx) => {
       await ctx.settle();
-      await ctx.page.locator('.new-overwrite input:not([disabled])').first().check({ timeout: 4000 });
+      await ctx.page.locator('.new-link-pick input:not([disabled])').first().check({ timeout: 4000 });
+      await ctx.page.locator('.new-dock-go').first().click();
+      await ctx.page.waitForSelector('.ask', { timeout: 4000 });
     },
   },
   { id: 'new/config-error', world: 'active', path: '#/new', faults: { 'GET /api/v1/config': { status: 500, code: 'internal_error', message: 'config unreadable' } } },
