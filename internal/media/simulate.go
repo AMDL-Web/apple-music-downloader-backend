@@ -66,16 +66,16 @@ func (simulatedMedia) stage(media encryptedMedia) (stagedFile, func(), error) {
 	return stagedFile{size: media.size}, func() {}, nil
 }
 
-// prefetchKeys and prepareKeys have no wrapper to ask; the simulated decrypt
-// pauses for its key instead.
+// prefetchKeys has no wrapper to ask.
 func (simulatedMedia) prefetchKeys(context.Context, string, []string) error { return nil }
 
-func (simulatedMedia) prepareKeys(context.Context, string, []string) error { return nil }
+// prepareKeys pauses for the key, so a simulated track waits for it in
+// waiting_decrypt as a real one does before it decrypts.
+func (simulatedMedia) prepareKeys(ctx context.Context, _ string, _ []string) error {
+	return simulatePause(ctx, simulatedKeyPause)
+}
 
 func (m simulatedMedia) decrypt(ctx context.Context, req decryptRequest, hooks decryptHooks) error {
-	if err := simulatePause(ctx, simulatedKeyPause); err != nil {
-		return err
-	}
 	hooks.ready()
 	if req.codec == "aac-lc" {
 		if err := simulatePause(ctx, simulatedAACLCPause); err != nil {

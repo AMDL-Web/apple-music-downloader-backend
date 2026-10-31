@@ -262,3 +262,34 @@ func TestSimulateModeSkipsWrapperStorefrontCheck(t *testing.T) {
 		t.Fatalf("simulate mode must not require a running wrapper, got: %v", err)
 	}
 }
+
+// A simulated track waits for its key where a real one does, in the decrypt
+// phase's key wait, which shows as waiting_decrypt, and starts decrypting as
+// soon as it holds a decrypt slot instead of sitting in decrypting first.
+func TestSimulatedKeyWaitIsBeforeDecrypting(t *testing.T) {
+	cfg := config.Default()
+	cfg.Simulate = config.SimulateConfig{Enabled: true, MinSpeedKBps: 1_000_000, MaxSpeedKBps: 1_000_000}
+	m := simulatedMedia{cfg: cfg}
+
+	start := time.Now()
+	if err := m.prepareKeys(context.Background(), "song", []string{"skd://k"}); err != nil {
+		t.Fatal(err)
+	}
+	if waited := time.Since(start); waited < simulatedKeyPause {
+		t.Fatalf("simulated key wait = %v, want the %v key pause", waited, simulatedKeyPause)
+	}
+
+	start = time.Now()
+	var ready time.Duration
+	err := m.decrypt(context.Background(), decryptRequest{codec: "alac", size: 3}, decryptHooks{
+		ready:      func() { ready = time.Since(start) },
+		progress:   func(float64) {},
+		afterInput: func() {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready >= simulatedKeyPause/2 {
+		t.Fatalf("simulated decrypt was ready after %v, want it to stop pausing for the key", ready)
+	}
+}

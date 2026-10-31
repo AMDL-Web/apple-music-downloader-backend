@@ -272,13 +272,16 @@ func (b *Backend) advance(j *job, dt time.Duration, now time.Time) {
 }
 
 // length is how long track i takes in all: a download of 7 to 13 seconds,
-// then the decryption and the writing.
+// then the wait for its key, the decryption and the writing.
 func (j *job) length(i int) time.Duration {
-	return downloadTime(j.items[i].AdamID) + decryptTime + writeTime
+	return downloadTime(j.items[i].AdamID) + keyTime + decryptTime + writeTime
 }
 
+// keyTime is the wait for the track's key from the wrapper, which answers one
+// key at a time; the decryption itself is short.
 const (
-	decryptTime = 2 * time.Second
+	keyTime     = 1500 * time.Millisecond
+	decryptTime = 500 * time.Millisecond
 	writeTime   = 1200 * time.Millisecond
 )
 
@@ -297,12 +300,14 @@ func (j *job) place(i int, now time.Time) {
 	case t < dl:
 		it.Status, p.Download = domain.ItemDownloading, float64(t)/float64(dl)
 		p.DownloadBytes = int64(p.Download * float64(size))
-	case t < dl+decryptTime:
-		it.Status, p.Download, p.DownloadBytes, p.Decrypt = domain.ItemDecrypting, 1, size, float64(t-dl)/float64(decryptTime)
-	case t < dl+decryptTime+writeTime:
+	case t < dl+keyTime:
+		it.Status, p.Download, p.DownloadBytes = domain.ItemWaitingDecrypt, 1, size
+	case t < dl+keyTime+decryptTime:
+		it.Status, p.Download, p.DownloadBytes, p.Decrypt = domain.ItemDecrypting, 1, size, float64(t-dl-keyTime)/float64(decryptTime)
+	case t < dl+keyTime+decryptTime+writeTime:
 		p.CompleteTransfers()
 		p.DownloadBytes = size
-		w := t - dl - decryptTime
+		w := t - dl - keyTime - decryptTime
 		// The pipeline's order: remux, then saving (the integrity check),
 		// then tagging.
 		switch {
