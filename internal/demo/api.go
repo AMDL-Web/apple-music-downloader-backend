@@ -379,46 +379,57 @@ func (b *Backend) search(w http.ResponseWriter, r *http.Request) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	g := b.hits(match)
+	if len(g.artists)+len(g.albums)+len(g.playlists)+len(g.songs) == 0 {
+		// Visitors search for real artists, which the made-up catalog lacks:
+		// a term that matches nothing answers with the whole catalog, as the
+		// website's console demo does (apps/site/demo/fake-api.js).
+		g = b.hits(func(...string) bool { return true })
+	}
 	res := client.SearchResult{Term: q.Get("term"), Storefront: "us"}
 	if types["artists"] {
-		var hits []client.SearchHit
-		for _, a := range artists {
-			if match(a.name, a.genre) {
-				hits = append(hits, a.hit())
-			}
-		}
-		res.Artists = page(hits, limit, offset)
+		res.Artists = page(g.artists, limit, offset)
 	}
 	if types["albums"] {
-		var hits []client.SearchHit
-		for _, a := range albums {
-			if match(a.title, a.artist.name, a.artist.genre) {
-				hits = append(hits, b.marked(a.hit()))
-			}
-		}
-		res.Albums = page(hits, limit, offset)
+		res.Albums = page(g.albums, limit, offset)
 	}
 	if types["playlists"] {
-		var hits []client.SearchHit
-		for _, p := range playlists {
-			if match(p.name, p.curator) {
-				hits = append(hits, b.marked(p.hit()))
-			}
-		}
-		res.Playlists = page(hits, limit, offset)
+		res.Playlists = page(g.playlists, limit, offset)
 	}
 	if types["songs"] {
-		var hits []client.SearchHit
-		for _, a := range albums {
-			for i, name := range a.tracks {
-				if match(name, a.title, a.artist.name) {
-					hits = append(hits, b.marked(song{id: songID(a, i), album: a, index: i}.hit()))
-				}
-			}
-		}
-		res.Songs = page(hits, limit, offset)
+		res.Songs = page(g.songs, limit, offset)
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+type searchHits struct{ artists, albums, playlists, songs []client.SearchHit }
+
+// hits is the catalog that match keeps, by type. The caller holds b.mu.
+func (b *Backend) hits(match func(...string) bool) searchHits {
+	var g searchHits
+	for _, a := range artists {
+		if match(a.name, a.genre) {
+			g.artists = append(g.artists, a.hit())
+		}
+	}
+	for _, a := range albums {
+		if match(a.title, a.artist.name, a.artist.genre) {
+			g.albums = append(g.albums, b.marked(a.hit()))
+		}
+	}
+	for _, p := range playlists {
+		if match(p.name, p.curator) {
+			g.playlists = append(g.playlists, b.marked(p.hit()))
+		}
+	}
+	for _, a := range albums {
+		for i, name := range a.tracks {
+			if match(name, a.title, a.artist.name) {
+				g.songs = append(g.songs, b.marked(song{id: songID(a, i), album: a, index: i}.hit()))
+			}
+		}
+	}
+	return g
 }
 
 // marked gives a hit the job that holds it, as the library and queue marks

@@ -241,6 +241,28 @@ func TestSearchAlbumAndArtist(t *testing.T) {
 	}
 }
 
+func TestASearchWithoutAMatchShowsTheCatalog(t *testing.T) {
+	_, c, _ := newDemo(t)
+	ctx := context.Background()
+	r, err := c.Search(ctx, client.SearchQuery{Term: "yorushika"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, g := range map[string]*client.HitGroup{"artists": r.Artists, "albums": r.Albums, "playlists": r.Playlists, "songs": r.Songs} {
+		if g == nil || len(g.Items) == 0 {
+			t.Errorf("%s: no hits", name)
+		}
+	}
+	if r.Artists != nil && len(r.Artists.Items) != len(artists) {
+		t.Errorf("artists: %d hits, want the catalog's %d", len(r.Artists.Items), len(artists))
+	}
+	// A term that matches something keeps to its matches.
+	r, err = c.Search(ctx, client.SearchQuery{Term: "tidal"})
+	if err != nil || r.Albums == nil || len(r.Albums.Items) != 1 || r.Albums.Items[0].Name != "Tidal Rooms" || (r.Artists != nil && len(r.Artists.Items) != 0) {
+		t.Errorf("tidal: %+v, %v", r, err)
+	}
+}
+
 func TestCoversAreImagesOfTheSizeAsked(t *testing.T) {
 	b, _, _ := newDemo(t)
 	req, _ := http.NewRequest(http.MethodGet, Address+"/art/920001/300x300bb.jpg", nil)
