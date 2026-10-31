@@ -699,8 +699,9 @@ a reload or Back, stays) and the page writes its links back (replace), so a
   `javascript:location.href='<this page>#/new?url='+encodeURIComponent(location.href)`
   as copyable text, never as a link.
   **Search**: words without a link search the catalog
-  (`views/download-search.js`, `views/download-search-state.js`, logic in
-  `lib/search.js`): `GET /search` once typing pauses 300 ms (Return searches
+  (`views/download-search.js`, `views/download-search-state.js`,
+  `views/download-songs.js`, logic in `lib/search.js` and
+  `lib/search-jobs.js`): `GET /search` once typing pauses 300 ms (Return searches
   at once), six hits per group (six fill one, two, three or six columns),
   in three titled sections, Albums, Songs, Artists (groups without hits left
   out), each with Show more in its head, which adds 25 of that group; one

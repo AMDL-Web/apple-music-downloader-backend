@@ -8,20 +8,16 @@ import {
   createArtistPages,
   qualityHints,
   hitView,
-  hitKey,
-  hitPrior,
-  trackJobs,
-  hitPreview,
   shownHits,
   nextStop,
   searchCountLine,
-  sentJob,
   SEARCH_FIRST,
   SEARCH_MORE,
   SEARCH_MAX_TERM,
   SEARCH_CACHE_MAX,
   ARTIST_PAGE,
 } from '../static/js/lib/search.js';
+import { hitKey, hitPrior, trackJobs, hitPreview, sentJob } from '../static/js/lib/search-jobs.js';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const settle = async () => {

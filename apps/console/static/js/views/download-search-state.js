@@ -7,7 +7,8 @@
 import { useState, useEffect, useRef } from '../ui/preact.js';
 import { searchCatalog, getArtistAlbums } from '../api.js';
 import { buildHash } from '../lib/route.js';
-import { createSearcher, createArtistPages, hitKey, hitPrior, trackJobs, shownHits, sentJob, hitPreview } from '../lib/search.js';
+import { createSearcher, createArtistPages, shownHits } from '../lib/search.js';
+import { hitKey, hitPrior, trackJobs, sentJob, hitPreview } from '../lib/search-jobs.js';
 
 // Answers outlive the page for the life of the tab, like link previews.
 const SEARCHES = new Map();
