@@ -144,6 +144,9 @@ type App struct {
 	// deleteOpen keeps the dialog up.
 	deleting   *store.Job
 	deleteOpen bool
+	// nowShown is the job the sidebar's now card shows, kept while the
+	// card closes after it.
+	nowShown *store.Job
 	// panelH is the height the tray panel was last fitted to.
 	panelH float32
 }

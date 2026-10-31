@@ -7,15 +7,16 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"amdl/apps/desktop/internal/mode"
+	"amdl/apps/desktop/internal/store"
 	"amdl/apps/desktop/internal/widgets"
 	"amdl/internal/client"
 	"amdl/internal/format"
 )
 
 // sidebar is the window's left column (Pulse, MyGo 云音乐): the traffic
-// lights and the sidebar button over its top, the connection, the sections
-// with colored tiles and live readings, and the job downloading now at its
-// foot. It is w wide as it slides open or closed; its content keeps its
+// lights and the sidebar button over its top, the sections with colored
+// tiles and live readings, and at its foot the connection over the job
+// downloading now. It is w wide as it slides open or closed; its content keeps its
 // width meanwhile, clipped, so nothing in it reflows.
 //
 // Where the window shows its material (vib), the sidebar paints no ground
@@ -37,7 +38,6 @@ func (a *App) sidebar(c *ui.Context, k *Tokens, vib bool, w float32) {
 			// The band of the traffic lights and the sidebar button
 			// (sidebarToggle), which drags the window.
 			ui.Box(c).Height(controlsBand(c.TitleBar())).Margin(0, -10, -6, -10).DragWindow()
-			a.modeCard(c, k)
 			ui.Column(c).Gap(2).Children(func() {
 				a.navItem(c, k, ScreenHome, icHome, k.TileHome, "Home", "", ui.Color{})
 				a.navItem(c, k, ScreenQueue, icQueue, k.TileQueue, "Queue", countText(a.Store.Count(0)), ui.Color{})
@@ -46,7 +46,10 @@ func (a *App) sidebar(c *ui.Context, k *Tokens, vib bool, w float32) {
 				a.navItem(c, k, ScreenSettings, icSettings, k.TileSettings, "Settings", reading, col)
 			})
 			ui.Spacer(c)
-			a.nowCard(c, k)
+			ui.Column(c).Children(func() {
+				a.serverCard(c, k)
+				a.nowSlot(c, k)
+			})
 		})
 	})
 }
@@ -102,7 +105,19 @@ func (a *App) sidebarToggle(c *ui.Context, k *Tokens) {
 	if b.Clicked() {
 		a.ToggleSidebar()
 	}
-	b.Cursor(ui.CursorPointer).Children(func() { ui.Icon(c, icSidebar).FontSize(18).TextColor(k.Muted) })
+	// With the sidebar closed its button carries the connection's dot,
+	// while the connection is not live.
+	st := a.serverState(k)
+	trouble := !a.SidebarShown() && st.tone != toneOK
+	if trouble {
+		b.Tooltip(st.host + ": " + st.word)
+	}
+	b.Cursor(ui.CursorPointer).Children(func() {
+		ui.Icon(c, icSidebar).FontSize(18).TextColor(k.Muted)
+		if trouble {
+			ui.Box(c).Size(7, 7).Radius(radiusFull).Background(st.fg).Border(1.5, k.Ground).Absolute().Top(3).Right(2)
+		}
+	})
 }
 
 // followWidth keeps the window's width, and lets the sidebar close by
@@ -151,18 +166,14 @@ func (a *App) serverHeading() string {
 	return "Server"
 }
 
-// systemReading is the Settings item's live value: OK, or what is wrong.
+// systemReading is the Settings item's live value: Check while the
+// server's health check fails, else nothing; the connection card below
+// says whether it answers.
 func (a *App) systemReading(k *Tokens) (string, ui.Color) {
-	switch a.Store.Conn.Phase {
-	case client.Offline:
-		return "Offline", k.Bad
-	case client.Connecting:
-		return "…", k.Muted
-	}
-	if h := a.Store.Server.Health; h != nil && h.Status != "ok" {
+	if h := a.Store.Server.Health; a.Store.Conn.Phase == client.Live && h != nil && h.Status != "ok" {
 		return "Check", k.Warn
 	}
-	return "OK", ui.Color{}
+	return "", ui.Color{}
 }
 
 func (a *App) navItem(c *ui.Context, k *Tokens, s Screen, ic *ui.SVG, tile ui.Color, name, reading string, readingColor ui.Color) {
@@ -194,42 +205,82 @@ func (a *App) navItem(c *ui.Context, k *Tokens, s Screen, ic *ui.SVG, tile ui.Co
 	})
 }
 
-// modeCard says where downloads run and whether that place answers.
-func (a *App) modeCard(c *ui.Context, k *Tokens) {
-	title, sub := a.modeText()
-	dot, ring := k.OK, k.OKSoft
-	switch {
-	case a.Act.StartErr() != "" || a.Store.Conn.Phase == client.Offline:
-		dot, ring = k.Bad, k.BadSoft
-	case a.Act.Starting() || a.Store.Conn.Phase == client.Connecting:
-		dot, ring = k.Warn, k.WarnSoft
+// connTone is how the connection stands.
+type connTone int
+
+const (
+	toneOK connTone = iota
+	toneWait
+	toneBad
+)
+
+// serverStatus is what the sidebar's connection card shows: where
+// downloads run and whether that place answers. The account's state is
+// left to Settings, which reads it while it shows.
+type serverStatus struct {
+	icon       *ui.SVG
+	host, word string
+	tone       connTone
+	fg, soft   ui.Color
+}
+
+func (a *App) serverState(k *Tokens) serverStatus {
+	st := serverStatus{icon: icServer, word: "Live", tone: toneOK}
+	switch a.Settings.Mode {
+	case mode.Remote:
+		st.host = hostOf(a.Settings.RemoteURL)
+	case mode.Standalone:
+		st.icon, st.host = icLaptop, "This computer"
+		if a.Act.Shared() != "" {
+			st.word = "Shared"
+		}
+	default:
+		st.host, st.word, st.tone = "Not connected", "Set up", toneBad
 	}
-	card := ui.ButtonBase(c.Key("mode")).Padding(8, 10).Gap(10).Radius(radiusControl).AlignItems(ui.Center).Justify(ui.Start).
+	switch {
+	case st.tone == toneBad:
+	case a.Act.StartErr() != "":
+		st.word, st.tone = "Did not start", toneBad
+	case a.Act.Starting():
+		st.word, st.tone = "Starting…", toneWait
+	case a.Store.Conn.Phase == client.Offline:
+		st.word, st.tone = "Offline", toneBad
+	case a.Store.Conn.Phase == client.Connecting:
+		st.word, st.tone = "Connecting…", toneWait
+	}
+	st.fg, st.soft = k.OK, k.OKSoft
+	switch st.tone {
+	case toneWait:
+		st.fg, st.soft = k.Warn, k.WarnSoft
+	case toneBad:
+		st.fg, st.soft = k.Bad, k.BadSoft
+	}
+	return st
+}
+
+// serverCard says where downloads run and whether that place answers; it
+// opens the connection's settings.
+func (a *App) serverCard(c *ui.Context, k *Tokens) {
+	st := a.serverState(k)
+	card := ui.ButtonBase(c.Key("server")).Padding(9, 10).Gap(10).Radius(radiusControl).AlignItems(ui.Center).Justify(ui.Start).
 		Label("Connection settings")
 	card.Background(sideFill(card, k, k.Wash, k.Track))
 	if card.Clicked() {
-		a.Go(ScreenSettings)
+		a.GoSettings("connection")
 	}
 	card.Cursor(ui.CursorPointer).Children(func() {
-		ui.Box(c).Size(8, 8).Radius(radiusFull).Background(dot).Shadow(0, 0, 0, 3, ring)
-		ui.Column(c).Gap(1).Shrink(1).MinWidth(0).Children(func() {
-			ui.Text(c, title).FontSize(12.5).FontWeight(600).SingleLine()
-			mono(c, sub, 11).TextColor(k.Muted).Ellipsis("…")
+		ui.Box(c).Size(30, 30).Radius(radiusInner).Background(st.soft).Center().Children(func() {
+			ui.Icon(c, st.icon).FontSize(15).TextColor(st.fg)
+		})
+		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(2).Children(func() {
+			ui.Text(c, st.host).FontSize(12.5).FontWeight(600).SingleLine().Ellipsis("…")
+			word := k.Muted
+			if st.tone != toneOK {
+				word = st.fg
+			}
+			mono(c, st.word, 10.5).TextColor(word).SingleLine()
 		})
 	})
-}
-
-func (a *App) modeText() (title, sub string) {
-	switch a.Settings.Mode {
-	case mode.Remote:
-		return "Server · remote", hostOf(a.Settings.RemoteURL)
-	case mode.Standalone:
-		if shared := a.Act.Shared(); shared != "" {
-			return "This computer · shared", shared
-		}
-		return "This computer", "wrapper " + hostOf(a.Settings.WrapperAddress)
-	}
-	return "Not connected", "choose where downloads run"
 }
 
 func hostOf(u string) string {
@@ -240,16 +291,38 @@ func hostOf(u string) string {
 	return strings.TrimSuffix(u, "/")
 }
 
-// nowCard is the small card of the job downloading now, at the sidebar's
-// foot (MyGo 云音乐's now-playing card).
-func (a *App) nowCard(c *ui.Context, k *Tokens) {
+// nowHeight is the height of the card of the job downloading now, and
+// nowGap the room above it: its slot opens and closes over both, so the
+// connection card above slides rather than jumps.
+const nowHeight, nowGap = 56, 8
+
+// nowSlot holds the small card of the job downloading now, at the
+// sidebar's foot (MyGo 云音乐's now-playing card). It opens as a download
+// starts and closes after the last one, showing the job it last showed
+// while it closes.
+func (a *App) nowSlot(c *ui.Context, k *Tokens) {
 	j := a.Store.Now()
-	if j == nil {
+	if j != nil {
+		a.nowShown = j
+	}
+	open := float32(0)
+	if j != nil {
+		open = 1
+	}
+	slot := ui.Column(c.Key("now-slot")).Clip().Justify(ui.End)
+	shown := slot.AnimateWith("open", open, sidebarSlide, ui.EaseOut)
+	slot.Height((nowHeight + nowGap) * shown)
+	if shown < 0.01 {
+		a.nowShown = nil
 		return
 	}
+	slot.Opacity(shown).Children(func() { a.nowCard(c, k, a.nowShown) })
+}
+
+func (a *App) nowCard(c *ui.Context, k *Tokens, j *store.Job) {
 	pal := jobPalette(j, false)
 	accent := AccentFor(pal, k)
-	card := ui.ButtonBase(c.Key("now")).Padding(8).Gap(10).Radius(radiusControl).AlignItems(ui.Center).Justify(ui.Start).Label("Downloading now")
+	card := ui.ButtonBase(c.Key("now")).Height(nowHeight).Padding(8).Gap(10).Radius(radiusControl).AlignItems(ui.Center).Justify(ui.Start).Label("Downloading now")
 	card.Background(sideFill(card, k, k.Wash, k.Track))
 	if card.Clicked() {
 		a.OpenJob(j.ID)
