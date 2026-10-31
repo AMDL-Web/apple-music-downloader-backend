@@ -76,6 +76,7 @@ type downloaderWrapper interface {
 	Lyrics(context.Context, string, wrapper.LyricsRequestOptions) (string, error)
 	WebPlayback(context.Context, string) (string, error)
 	NewDecryptSession(context.Context, string) (wrapper.DecryptSession, error)
+	PrefetchKeys(context.Context, string, []string) error
 	PrepareKeys(context.Context, string, []string) error
 	License(context.Context, string, string, string) (string, error)
 }

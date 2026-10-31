@@ -77,8 +77,9 @@ type fakeDownloaderWrapper struct {
 	// webPlaybackErr fails WebPlayback, which stops an AAC-LC attempt right
 	// after it claimed its output path and fetched the cover and lyrics.
 	webPlaybackErr error
-	// prepareKeys, when set, answers PrepareKeys.
-	prepareKeys func(ctx context.Context, songID string, keys []string) error
+	// keys, when set, answers PrefetchKeys (needed false) and PrepareKeys
+	// (needed true).
+	keys func(ctx context.Context, songID string, keys []string, needed bool) error
 }
 
 func (f fakeDownloaderWrapper) Status(context.Context) (wrapper.Status, error) {
@@ -104,9 +105,16 @@ func (f fakeDownloaderWrapper) NewDecryptSession(context.Context, string) (wrapp
 	return identityDecryptSession{}, nil
 }
 
+func (f fakeDownloaderWrapper) PrefetchKeys(ctx context.Context, songID string, keys []string) error {
+	if f.keys != nil {
+		return f.keys(ctx, songID, keys, false)
+	}
+	return nil
+}
+
 func (f fakeDownloaderWrapper) PrepareKeys(ctx context.Context, songID string, keys []string) error {
-	if f.prepareKeys != nil {
-		return f.prepareKeys(ctx, songID, keys)
+	if f.keys != nil {
+		return f.keys(ctx, songID, keys, true)
 	}
 	return nil
 }

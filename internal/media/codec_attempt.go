@@ -16,11 +16,15 @@ type codecAttempt struct {
 	skipped  bool
 	enhanced selectedDownloadMedia
 	aacLC    aacLCDownload
+	// keys fetches the enhanced stream's keys across the fetch phase's
+	// attempts until the codec is done.
+	keys keyPrefetch
 }
 
 func (a *codecAttempt) releaseInFlight() {
 	a.enhanced.release()
 	a.aacLC.release()
+	a.keys.end()
 }
 
 // runCodec runs one codec's fetch phase and decrypt phase, each with its own
@@ -191,7 +195,7 @@ func (r *trackRun) fetch(ctx context.Context, attempt *codecAttempt, n int, set 
 	}); err != nil {
 		return err
 	}
-	selected, err = d.downloadSelectedEnhancedMedia(ctx, selected, attempt.codec, r.job.ID, attempt.outPath, set)
+	selected, err = d.downloadSelectedEnhancedMedia(ctx, selected, attempt.codec, r.job.ID, attempt.outPath, &attempt.keys, set)
 	if err != nil {
 		return err
 	}

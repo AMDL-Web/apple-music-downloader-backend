@@ -59,9 +59,10 @@ const maxReplyBytes = 16 << 20
 // the HTTP worker threads /status and /lyrics need.
 const playbackRequestLimit = 2
 
-// manifestRequestLimit bounds /m3u8 requests holding or waiting for a playback
-// permit. With one of the two permits out of their reach, a batch of quality
-// probes cannot hold both while a /key waits behind them, and since
+// manifestRequestLimit bounds /m3u8 requests, and /key requests for keys
+// nobody needs yet (withKeyPermits), holding or waiting for a playback permit.
+// With one of the two permits out of their reach, a batch of quality probes
+// cannot hold both while a needed /key waits behind them, and since
 // wrapper-lite answers /m3u8 one at a time anyway they lose no throughput.
 const manifestRequestLimit = 1
 
@@ -364,14 +365,20 @@ func (c *Client) withPlaybackPermits(ctx context.Context, endpoint string, sems 
 	for _, sem := range sems {
 		release, err := sem.Acquire(waitCtx)
 		if err != nil {
-			if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
-				return fmt.Errorf("wrapper %s: %w within %s", endpoint, errPlaybackWait, wait)
-			}
-			return err
+			return playbackWaitError(ctx, endpoint, wait, err)
 		}
 		defer release()
 	}
 	return run()
+}
+
+// playbackWaitError is the error of a wait for playback permits that ended
+// with err: errPlaybackWait once the wait's own bound ran out, else err.
+func playbackWaitError(ctx context.Context, endpoint string, wait time.Duration, err error) error {
+	if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("wrapper %s: %w within %s", endpoint, errPlaybackWait, wait)
+	}
+	return err
 }
 
 func withPermit(ctx context.Context, limit *limits.Semaphore, run func() error) error {
@@ -425,8 +432,10 @@ func nonNil(values []string) []string {
 
 // M3U8 returns the device master playlist for adamID. It takes the manifest
 // permit before the playback permit, so the /m3u8 requests queued behind it
-// wait outside the playback queue and a /key never waits behind more than one.
-// The wait for both is bounded as withPlaybackPermits describes.
+// wait outside the playback queue and a needed /key never waits behind more
+// than one. Keys fetched ahead of need queue in the same manifest lane, after
+// the /m3u8 requests of their job (withKeyPermits). The wait for both permits
+// is bounded as withPlaybackPermits describes.
 func (c *Client) M3U8(ctx context.Context, adamID string) (string, error) {
 	var body struct {
 		M3U8 string `json:"m3u8"`

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"amdl/internal/applemusic"
@@ -129,14 +130,13 @@ func (d *Downloader) resolveEnhancedHLS(ctx context.Context, storefront string, 
 	return master, false, nil
 }
 
-// downloadSelectedEnhancedMedia is the enhanced codec's fetch phase: it starts
-// fetching the stream's keys, waits for the in-flight and download permits and
-// transfers the still-encrypted media. The in-flight permit is returned held,
-// in selected.releaseInFlight, until decryption has consumed the bytes, and
-// the key fetch keeps running until selected.release.
-func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected selectedDownloadMedia, codec, jobID, outPath string, set publishStage) (selectedDownloadMedia, error) {
+// downloadSelectedEnhancedMedia is the enhanced codec's fetch phase: it waits
+// for the in-flight and download permits and transfers the still-encrypted
+// media, fetching the stream's keys in the background through keys once it
+// holds the in-flight permit. The in-flight permit is returned held, in
+// selected.releaseInFlight, until decryption has consumed the bytes.
+func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected selectedDownloadMedia, codec, jobID, outPath string, keys *keyPrefetch, set publishStage) (selectedDownloadMedia, error) {
 	codecName := strings.ToUpper(codec)
-	stopKeys := d.prefetchKeys(ctx, selected)
 	onProgress := func(done, total int64) {
 		if total <= 0 {
 			return // Content-Length unknown; the meter stays at 0
@@ -147,13 +147,12 @@ func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected
 	set(domain.ItemWaitingDownload, "waiting for download slot", nil)
 	releaseInFlight, err := d.inFlightLimit.Acquire(ctx)
 	if err != nil {
-		stopKeys()
 		return selectedDownloadMedia{}, err
 	}
+	keys.start(ctx, d, selected.songID, selected.info.Keys)
 	releaseDownload, err := d.downloadLimit.Acquire(ctx)
 	if err != nil {
 		releaseInFlight()
-		stopKeys()
 		return selectedDownloadMedia{}, err
 	}
 	set(domain.ItemDownloading, fmt.Sprintf("Downloading %s encrypted media", codecName), startDownload)
@@ -166,26 +165,51 @@ func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected
 	}()
 	if err != nil {
 		releaseInFlight()
-		stopKeys()
 		return selectedDownloadMedia{}, fmt.Errorf("download encrypted media: %w", err)
 	}
 	media.releaseInFlight = releaseInFlight
-	media.stopKeys = stopKeys
 	selected.encryptedMedia = media
 	return selected, nil
 }
 
-// prefetchKeys fetches the stream's keys in the background and returns what
-// stops it. wrapper-lite answers /key one at a time, about two seconds each, so
-// fetching them after the download would line an album's tracks up behind one
+// keyPrefetch is one codec attempt's background fetch of its stream's keys.
+// wrapper-lite answers /key one at a time, about two seconds each, so fetching
+// them only after the download would line an album's tracks up behind one
 // another at the decrypt stage; fetched during it, the wait overlaps the
-// transfers. The playback permits hand the keys out in job and track order.
-// A failure is left to the decrypt phase, which asks again.
-func (d *Downloader) prefetchKeys(ctx context.Context, selected selectedDownloadMedia) func() {
+// transfers. It belongs to the codec attempt, not to one transfer: a failed
+// transfer leaves the fetch running for the retry, which needs the same keys
+// and would otherwise queue again at the back. It starts only once the track
+// holds an in-flight permit, so at most that many tracks prefetch at a time.
+// A failure is logged and left to the decrypt phase, which asks again. It is
+// used from the track's own goroutine only.
+type keyPrefetch struct {
+	keys []string
+	stop context.CancelFunc
+}
+
+// start fetches keys for songID in the background unless that fetch already
+// runs. A retry that chose a stream with other keys ends the old fetch.
+func (p *keyPrefetch) start(ctx context.Context, d *Downloader, songID string, keys []string) {
+	if len(keys) == 0 || (p.stop != nil && slices.Equal(p.keys, keys)) {
+		return
+	}
+	p.end()
 	ctx, cancel := context.WithCancel(ctx)
-	backend := d.backend()
-	go func() { _ = backend.prepareKeys(ctx, selected.songID, selected.info.Keys) }()
-	return cancel
+	p.keys, p.stop = keys, cancel
+	backend, log := d.backend(), logging.FromContext(ctx, d.logger)
+	go func() {
+		if err := backend.prefetchKeys(ctx, songID, keys); err != nil && ctx.Err() == nil {
+			log.Warn("key prefetch failed; the decrypt stage asks again", "song_id", songID, "error", err)
+		}
+	}()
+}
+
+// end stops the fetch if it still runs. Keys already fetched stay cached.
+func (p *keyPrefetch) end() {
+	if p.stop != nil {
+		p.stop()
+		p.stop = nil
+	}
 }
 
 // downloadEnhancedCodec is the enhanced codec's decrypt phase: it decrypts the

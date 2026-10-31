@@ -129,7 +129,7 @@ which leaves a thread for another client, and closes an idle one after a few sec
 | Decrypts | CPUs (`GOMAXPROCS`) | Tracks in the decrypt stage, and the goroutines decrypting their samples |
 | Wrapper requests | 4 | Wrapper lyrics, web playback and license requests |
 | Wrapper playback requests | 2 | Wrapper `/key` and `/m3u8`, which wrapper-lite answers one at a time |
-| Wrapper manifest requests | 1 | Wrapper `/m3u8` holding or waiting for a playback permit, so `/m3u8` never holds both |
+| Wrapper manifest requests | 1 | Wrapper `/m3u8`, and `/key` fetched ahead of need, holding or waiting for a playback permit, so they never hold both |
 | `catalog.max_parallel_requests` | 16 (default) | Apple control-plane HTTP: Catalog API, web token, HLS manifests, artwork |
 | Catalog rate | 10 per second | Sustained authenticated Catalog / amp-api rate |
 | Catalog burst | 16 | Token-bucket burst for the same traffic |
@@ -137,13 +137,20 @@ which leaves a thread for another client, and closes an idle one after a few sec
 Decryption runs in the backend: wrapper-lite's `/key` returns a white-box template per
 key URI, which is cached across jobs (`templateCacheSize` entries; the prefetch key's
 template is kept for the life of the process), so each key costs one `/key` request.
-wrapper-lite answers `/key` one at a time, a couple of seconds each, while decrypting a
-track with its template takes a fraction of a second. So a track's keys are fetched as
-soon as its stream is chosen, while its media downloads
-(`internal/media#Downloader.prefetchKeys`), and a downloaded track whose keys are not in
-yet stays `waiting_decrypt`, without a decrypt permit, until they are. An album's
-tracks then queue for their keys during the transfers instead of one after another at
-the decrypt stage.
+wrapper-lite answers `/key` and `/m3u8` one at a time, a couple of seconds each, while
+decrypting a track with its template takes a fraction of a second. So once a track holds
+its in-flight permit, its keys are fetched in the background while its media downloads
+(`internal/media#keyPrefetch`, `internal/wrapper#Client.PrefetchKeys`), and a downloaded
+track whose keys are not in yet stays `waiting_decrypt`, without a decrypt permit, until
+they are. The fetch belongs to the codec attempt, so a transfer retry does not ask
+again. A key fetched ahead of need waits in the manifest lane behind every queued
+`/m3u8` of its job and older jobs (`internal/wrapper#Client.withKeyPermits`): a track
+cannot start its download before its stream is chosen, and its key is only needed once
+that download ends. When the track's download ends first, the decrypt stage's wait takes
+the key out of that lane to compete at the track's own rank. An album's tracks then
+queue for their keys during the transfers instead of one after another at the decrypt
+stage, but the wrapper still answers one key at a time, so on a fast link the tracks of
+an album finish about one key apart.
 Media already downloaded but not yet decrypted is additionally held back by internal
 in-flight backpressure — with `D` download and `X` decrypt permits the internal in-flight
 ceiling is `D+X`.

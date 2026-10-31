@@ -182,7 +182,7 @@ func TestPostDecryptFixturePipeline(t *testing.T) {
 	probe := startPostDecryptProbe(tempDir, systemTempDir, outputDir)
 	started := time.Now()
 	selected, downloadErr := downloader.downloadSelectedEnhancedMedia(
-		context.Background(), selected, "alac", job.ID, outputPath, phases.set,
+		context.Background(), selected, "alac", job.ID, outputPath, &keyPrefetch{}, phases.set,
 	)
 	if selected.rawPath != "" {
 		defer cleanupResumableDownload(selected.rawPath)
@@ -345,6 +345,8 @@ func (postDecryptFixtureWrapper) WebPlayback(context.Context, string) (string, e
 }
 
 func (postDecryptFixtureWrapper) PrepareKeys(context.Context, string, []string) error { return nil }
+
+func (postDecryptFixtureWrapper) PrefetchKeys(context.Context, string, []string) error { return nil }
 
 func (w postDecryptFixtureWrapper) NewDecryptSession(context.Context, string) (wrapper.DecryptSession, error) {
 	if w.fixture == nil {

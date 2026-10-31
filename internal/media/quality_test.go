@@ -187,6 +187,8 @@ func (c countingQualityWrapper) WebPlayback(context.Context, string) (string, er
 
 func (countingQualityWrapper) PrepareKeys(context.Context, string, []string) error { return nil }
 
+func (countingQualityWrapper) PrefetchKeys(context.Context, string, []string) error { return nil }
+
 func (c countingQualityWrapper) NewDecryptSession(context.Context, string) (wrapper.DecryptSession, error) {
 	return identityDecryptSession{}, nil
 }

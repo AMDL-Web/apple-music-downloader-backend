@@ -1,12 +1,15 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -63,6 +66,7 @@ func TestDownloadPublishesWaitingUntilGlobalPermitIsGranted(t *testing.T) {
 			"alac",
 			"job-waiting",
 			"out.m4a",
+			&keyPrefetch{},
 			func(status domain.ItemStatus, _ string, _ func(*domain.ItemProgress)) {
 				statuses <- status
 			},
@@ -140,7 +144,7 @@ func TestMediaDownloadLimitSharedAcrossJobClones(t *testing.T) {
 			// Distinct output paths: the resume checkpoint is keyed by output
 			// path, and in production the output lock keeps same-output
 			// downloads from running concurrently.
-			got, err := d.downloadSelectedEnhancedMedia(context.Background(), selectedDownloadMedia{info: selectedMediaInfo{MediaURI: server.URL}}, "alac", "job-pool", fmt.Sprintf("out-%d.m4a", i), func(domain.ItemStatus, string, func(*domain.ItemProgress)) {})
+			got, err := d.downloadSelectedEnhancedMedia(context.Background(), selectedDownloadMedia{info: selectedMediaInfo{MediaURI: server.URL}}, "alac", "job-pool", fmt.Sprintf("out-%d.m4a", i), &keyPrefetch{}, func(domain.ItemStatus, string, func(*domain.ItemProgress)) {})
 			if err != nil {
 				t.Errorf("download: %v", err)
 			}
@@ -196,7 +200,7 @@ func TestMediaInFlightBackpressureAndDownloadFailureRelease(t *testing.T) {
 		downloadLimit: limits.NewSemaphore(2), decryptLimit: limits.NewSemaphore(1), inFlightLimit: limits.NewSemaphore(3),
 	})
 	input := selectedDownloadMedia{info: selectedMediaInfo{MediaURI: server.URL}}
-	if _, err := d.downloadSelectedEnhancedMedia(context.Background(), input, "alac", "job-backpressure", "out-first.m4a", func(domain.ItemStatus, string, func(*domain.ItemProgress)) {}); err == nil {
+	if _, err := d.downloadSelectedEnhancedMedia(context.Background(), input, "alac", "job-backpressure", "out-first.m4a", &keyPrefetch{}, func(domain.ItemStatus, string, func(*domain.ItemProgress)) {}); err == nil {
 		t.Fatal("first failed media response unexpectedly succeeded")
 	}
 
@@ -206,7 +210,7 @@ func TestMediaInFlightBackpressureAndDownloadFailureRelease(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			got, err := d.downloadSelectedEnhancedMedia(context.Background(), input, "alac", "job-backpressure", fmt.Sprintf("out-%d.m4a", i), func(domain.ItemStatus, string, func(*domain.ItemProgress)) {})
+			got, err := d.downloadSelectedEnhancedMedia(context.Background(), input, "alac", "job-backpressure", fmt.Sprintf("out-%d.m4a", i), &keyPrefetch{}, func(domain.ItemStatus, string, func(*domain.ItemProgress)) {})
 			if err != nil {
 				t.Errorf("download after failure: %v", err)
 				return
@@ -305,8 +309,8 @@ func TestKeysAreFetchedDuringTheDownloadAndAwaitedBeforeDecrypting(t *testing.T)
 
 	asked := make(chan []string, 4)
 	keysReady := make(chan struct{})
-	w := fakeDownloaderWrapper{prepareKeys: func(ctx context.Context, songID string, keys []string) error {
-		asked <- append([]string{songID}, keys...)
+	w := fakeDownloaderWrapper{keys: func(ctx context.Context, songID string, keys []string, needed bool) error {
+		asked <- append([]string{songID, fmt.Sprint("needed=", needed)}, keys...)
 		select {
 		case <-keysReady:
 			return nil
@@ -327,13 +331,13 @@ func TestKeysAreFetchedDuringTheDownloadAndAwaitedBeforeDecrypting(t *testing.T)
 	go func() {
 		media, err := d.downloadSelectedEnhancedMedia(context.Background(),
 			selectedDownloadMedia{info: selectedMediaInfo{MediaURI: server.URL, Keys: []string{"skd://k"}}, songID: "song"},
-			"alac", "job-keys", "out.m4a", func(domain.ItemStatus, string, func(*domain.ItemProgress)) {})
+			"alac", "job-keys", "out.m4a", &keyPrefetch{}, func(domain.ItemStatus, string, func(*domain.ItemProgress)) {})
 		downloaded <- result{media, err}
 	}()
 	select {
 	case got := <-asked:
-		if fmt.Sprint(got) != "[song skd://k]" {
-			t.Fatalf("PrepareKeys(%v), want song and skd://k", got)
+		if fmt.Sprint(got) != "[song needed=false skd://k]" {
+			t.Fatalf("keys asked for as %v, want a prefetch of song's skd://k", got)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the keys were not asked for while the media downloaded")
@@ -363,7 +367,10 @@ func TestKeysAreFetchedDuringTheDownloadAndAwaitedBeforeDecrypting(t *testing.T)
 			})
 	}()
 	select {
-	case <-asked:
+	case got := <-asked:
+		if fmt.Sprint(got) != "[song needed=true skd://k]" {
+			t.Fatalf("keys asked for as %v, want the decrypt phase to need song's skd://k", got)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("the decrypt phase did not wait for the keys")
 	}
@@ -391,4 +398,183 @@ func TestKeysAreFetchedDuringTheDownloadAndAwaitedBeforeDecrypting(t *testing.T)
 	if !slices.Contains(seen, "decrypting: opening decrypt session") {
 		t.Fatalf("statuses = %v, want decrypting once the keys arrived", seen)
 	}
+}
+
+// prefetchRecorder answers PrefetchKeys by recording the call and blocking
+// until its context ends, the way a prefetch waiting for the wrapper does.
+type prefetchRecorder struct {
+	mu    sync.Mutex
+	calls []context.Context
+	fail  error
+}
+
+func (p *prefetchRecorder) wrapper() fakeDownloaderWrapper {
+	return fakeDownloaderWrapper{keys: func(ctx context.Context, _ string, _ []string, needed bool) error {
+		if needed {
+			return nil
+		}
+		p.mu.Lock()
+		p.calls = append(p.calls, ctx)
+		fail := p.fail
+		p.mu.Unlock()
+		if fail != nil {
+			return fail
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+}
+
+func (p *prefetchRecorder) started() []context.Context {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.calls)
+}
+
+func keyedMedia(uri string) selectedDownloadMedia {
+	return selectedDownloadMedia{info: selectedMediaInfo{MediaURI: uri, Keys: []string{"skd://k"}}, songID: "song"}
+}
+
+func noStage(domain.ItemStatus, string, func(*domain.ItemProgress)) {}
+
+// A track prefetches its keys only once it holds an in-flight permit, so a
+// long playlist does not queue a prefetch for every track at once, where the
+// late ones would run out their wait for a playback permit.
+func TestKeyPrefetchWaitsForAnInFlightPermit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("media"))
+	}))
+	defer server.Close()
+	rec := &prefetchRecorder{}
+	cfg := config.Default()
+	cfg.Download.TempDir = t.TempDir()
+	d := newTestDownloader(&Downloader{cfg: cfg, wrapper: rec.wrapper(), http: server.Client()}).withConfig(cfg)
+	d.inFlightLimit = limits.NewSemaphore(1)
+	held, err := d.inFlightLimit.Acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	keys := &keyPrefetch{}
+	defer keys.end()
+	done := make(chan error, 1)
+	go func() {
+		media, err := d.downloadSelectedEnhancedMedia(context.Background(), keyedMedia(server.URL), "alac", "job-window", "out.m4a", keys, noStage)
+		if err == nil {
+			media.release()
+			cleanupResumableDownload(media.rawPath)
+		}
+		done <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	if n := len(rec.started()); n != 0 {
+		t.Fatalf("%d key prefetches started without an in-flight permit, want none", n)
+	}
+	held()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("download did not finish once the permit was free")
+	}
+	waitForPrefetches(t, rec, 1)
+	if n := len(rec.started()); n != 1 {
+		t.Fatalf("key prefetches after the permit = %d, want 1", n)
+	}
+}
+
+// A failed transfer leaves the codec's key prefetch running, and the retry
+// that needs the same keys does not ask again: asking again would put the key
+// at the back of the wrapper's queue.
+func TestKeyPrefetchOutlivesAFailedTransfer(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			http.Error(w, "try again", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte("media"))
+	}))
+	defer server.Close()
+	rec := &prefetchRecorder{}
+	cfg := config.Default()
+	cfg.Download.TempDir = t.TempDir()
+	d := newTestDownloader(&Downloader{cfg: cfg, wrapper: rec.wrapper(), http: server.Client()}).withConfig(cfg)
+
+	keys := &keyPrefetch{}
+	if _, err := d.downloadSelectedEnhancedMedia(context.Background(), keyedMedia(server.URL), "alac", "job-retry", "out.m4a", keys, noStage); err == nil {
+		t.Fatal("first transfer succeeded, want the server's failure")
+	}
+	media, err := d.downloadSelectedEnhancedMedia(context.Background(), keyedMedia(server.URL), "alac", "job-retry", "out.m4a", keys, noStage)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	media.release()
+	cleanupResumableDownload(media.rawPath)
+	waitForPrefetches(t, rec, 1)
+	started := rec.started()
+	if len(started) != 1 {
+		t.Fatalf("key prefetches over a failed transfer and its retry = %d, want 1", len(started))
+	}
+	if err := started[0].Err(); err != nil {
+		t.Fatalf("the prefetch ended with the failed transfer: %v", err)
+	}
+	keys.end()
+	if started[0].Err() == nil {
+		t.Fatal("the prefetch still runs after the codec attempt ended")
+	}
+}
+
+// A prefetch that fails is logged, so a key the wrapper keeps refusing shows
+// up before the decrypt stage asks for it again.
+func TestFailedKeyPrefetchIsLogged(t *testing.T) {
+	rec := &prefetchRecorder{fail: fmt.Errorf("wrapper refused the key")}
+	var logs syncBuffer
+	d := newTestDownloader(&Downloader{cfg: config.Default(), wrapper: rec.wrapper(), logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	keys := &keyPrefetch{}
+	keys.start(context.Background(), d, "song", []string{"skd://k"})
+	defer keys.end()
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(logs.String(), "key prefetch failed") {
+		if time.Now().After(deadline) {
+			t.Fatalf("log = %q, want the failed prefetch", logs.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := logs.String(); !strings.Contains(got, "song_id=song") || !strings.Contains(got, "wrapper refused the key") {
+		t.Fatalf("log = %q, want the song and the error", got)
+	}
+}
+
+// waitForPrefetches waits until rec has seen at least n prefetches; one starts
+// in its own goroutine.
+func waitForPrefetches(t *testing.T, rec *prefetchRecorder, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(rec.started()) < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("key prefetches = %d, want %d", len(rec.started()), n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for a logger and a test reading it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

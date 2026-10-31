@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -204,6 +205,124 @@ func TestAbandonedTemplateFetchStops(t *testing.T) {
 	}
 	if n := calls.Load(); n != 1 {
 		t.Fatalf("/key calls = %d, want the next caller's own fetch", n)
+	}
+}
+
+// serialWrapper stands in for wrapper-lite, which answers /key and /m3u8 one
+// at a time: it serves one request at a time, records the order it served
+// them in, and holds the first one until hold is closed.
+type serialWrapper struct {
+	hold  chan struct{}
+	serve sync.Mutex
+	mu    sync.Mutex
+	order []string
+}
+
+func newSerialWrapper() *serialWrapper { return &serialWrapper{hold: make(chan struct{})} }
+
+func (s *serialWrapper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.serve.Lock()
+	defer s.serve.Unlock()
+	s.mu.Lock()
+	s.order = append(s.order, r.URL.Path+" "+r.URL.Query().Get("adamId"))
+	first := len(s.order) == 1
+	s.mu.Unlock()
+	if first {
+		<-s.hold
+	}
+	writeReply(w, 0, "SUCCESS", map[string]any{"xor": 1, "m3u8": "#EXTM3U"})
+}
+
+func (s *serialWrapper) served() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.order)
+}
+
+// trackCtx is the context a job's track i runs under.
+func trackCtx(i int) context.Context {
+	return limits.WithSubpriority(limits.WithPriority(context.Background(), 1), int64(i))
+}
+
+// A key fetched ahead of need reaches the wrapper only after the /m3u8
+// requests queued for the same job: a track cannot start its download before
+// its stream is chosen, while a prefetched key is only needed once the download
+// of its own track ends. Sharing the playback permits by track order instead
+// made the wrapper alternate between the two, so with every track of a
+// Hi-Res album prefetching, the last stream was chosen about twice as late.
+func TestPrefetchedKeysWaitForQueuedManifests(t *testing.T) {
+	wl := newSerialWrapper()
+	c := newTestClient(t, wl)
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	wg.Go(func() {
+		if _, err := c.M3U8(trackCtx(0), "100"); err != nil {
+			t.Error(err)
+		}
+	})
+	waitFor(t, func() bool { return len(wl.served()) == 1 })
+	wg.Go(func() {
+		if err := c.PrefetchKeys(trackCtx(0), "100", []string{"skd://k0"}); err != nil {
+			t.Error(err)
+		}
+	})
+	time.Sleep(50 * time.Millisecond) // the prefetch queues before the next track's manifest
+	for i := 1; i <= 2; i++ {
+		wg.Go(func() {
+			if _, err := c.M3U8(trackCtx(i), fmt.Sprint(100+i)); err != nil {
+				t.Error(err)
+			}
+		})
+		time.Sleep(50 * time.Millisecond)
+	}
+	close(wl.hold)
+	wg.Wait()
+	want := []string{"/m3u8 100", "/m3u8 101", "/m3u8 102", "/key 100"}
+	if got := wl.served(); !slices.Equal(got, want) {
+		t.Fatalf("wrapper served %v, want %v", got, want)
+	}
+}
+
+// A prefetched key still waiting behind manifests goes out at its track's own
+// rank once a caller needs it now, as a key asked for only at decrypt time
+// would: tracks whose downloads have finished must not wait for every stream
+// still to be chosen in a long playlist.
+func TestNeededKeyStopsWaitingForManifests(t *testing.T) {
+	wl := newSerialWrapper()
+	c := newTestClient(t, wl)
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	wg.Go(func() {
+		if _, err := c.M3U8(trackCtx(0), "100"); err != nil {
+			t.Error(err)
+		}
+	})
+	waitFor(t, func() bool { return len(wl.served()) == 1 })
+	wg.Go(func() {
+		if err := c.PrefetchKeys(trackCtx(0), "100", []string{"skd://k0"}); err != nil {
+			t.Error(err)
+		}
+	})
+	time.Sleep(50 * time.Millisecond)
+	for i := 1; i <= 2; i++ {
+		wg.Go(func() {
+			if _, err := c.M3U8(trackCtx(i), fmt.Sprint(100+i)); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	time.Sleep(50 * time.Millisecond)
+	wg.Go(func() {
+		if err := c.PrepareKeys(trackCtx(0), "100", []string{"skd://k0"}); err != nil {
+			t.Error(err)
+		}
+	})
+	time.Sleep(50 * time.Millisecond)
+	close(wl.hold)
+	wg.Wait()
+	want := []string{"/m3u8 100", "/key 100", "/m3u8 101", "/m3u8 102"}
+	if got := wl.served(); !slices.Equal(got, want) {
+		t.Fatalf("wrapper served %v, want %v", got, want)
 	}
 }
 
