@@ -86,7 +86,8 @@ func TestQueueShowsTheLatestDownloadUntilOneRuns(t *testing.T) {
 	}
 	a.Tab = int(store.TabActive)
 	tt.Frame()
-	if got := strings.Count(strings.Join(tt.Texts(), "\n"), "Newest Album"); got != 1 {
+	// Counted as whole texts: the hero cover's label names the album too.
+	if got := strings.Count("\n"+strings.Join(tt.Texts(), "\n")+"\n", "\nNewest Album\n"); got != 1 {
 		t.Errorf("Newest Album shows %d times, want once, in the hero: %q", got, tt.Texts())
 	}
 
@@ -147,6 +148,39 @@ func TestQueueRowOpensOnAClickAndKeepsItsMenuForTheRightButton(t *testing.T) {
 	}
 	if !tt.HasText("Broken Album") {
 		t.Errorf("the detail shows %q", tt.Texts())
+	}
+}
+
+func TestQueueOpensOnAllAndTheHeroCoverOpensTheJob(t *testing.T) {
+	for _, status := range []domain.JobStatus{domain.JobRunning, domain.JobCompleted} {
+		a, _ := newTestApp(remoteSettings())
+		a.Screen = ScreenQueue
+		now := time.Now()
+		done := now.Add(-time.Minute)
+		job := domain.Job{ID: "h", Type: "album", Status: status, Title: "Hero Album", ArtistName: "Artist h", TotalItems: 5, CreatedAt: now.Add(-time.Hour), StartedAt: &done}
+		if status == domain.JobCompleted {
+			job.FinishedAt = &done
+		}
+		a.Store.ApplySnapshot(client.DownloadList{
+			StatusCounts: domain.JobStatusCounts{Running: 1, Completed: 1, Failed: 1, Total: 3},
+			Downloads: []domain.Job{job,
+				{ID: "f", Type: "album", Status: domain.JobFailed, Title: "Broken Album", ArtistName: "Artist f", TotalItems: 5, CreatedAt: now.Add(-2 * time.Hour)}},
+		})
+		tt := ui.NewTester(a.View, 1280, 800)
+		all, ok := tt.Find("All")
+		active, ok2 := tt.Find("Active · 1")
+		if !ok || !ok2 || all.X >= active.X {
+			t.Errorf("%s: the All tab at %v, Active at %v: want All first", status, all, active)
+		}
+		if !tt.HasText("Artist f · Album") {
+			t.Errorf("%s: the queue opens without the failed job, as if not on All: %q", status, tt.Texts())
+		}
+		if err := tt.Click("Open Hero Album"); err != nil {
+			t.Fatal(err)
+		}
+		if a.Screen != ScreenDetail || a.Store.DetailID != "h" {
+			t.Errorf("%s: the hero's cover shows screen %v with job %q, want the job's detail", status, a.Screen, a.Store.DetailID)
+		}
 	}
 }
 

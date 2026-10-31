@@ -402,12 +402,13 @@ func (j *Job) setItem(it domain.JobItem) {
 // Tab is a filter of the queue.
 type Tab int
 
-// Queue tabs.
+// Queue tabs, in the order the queue shows them; the zero value, All, is
+// the one it opens on.
 const (
-	TabActive Tab = iota
+	TabAll Tab = iota
+	TabActive
 	TabDone
 	TabFailed
-	TabAll
 )
 
 // Matches reports whether j belongs on tab t.

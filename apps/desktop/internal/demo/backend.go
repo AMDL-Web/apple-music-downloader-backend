@@ -142,7 +142,7 @@ func (b *Backend) newJob(a *album, one *song, t time.Time) *job {
 	for n, i := range indexes {
 		id := songID(a, i)
 		j.items = append(j.items, domain.JobItem{
-			ID: fmt.Sprintf("%s-%02d", j.ID, n+1), JobID: j.ID, AdamID: id, Kind: "song", Index: n,
+			ID: fmt.Sprintf("%s-%02d", j.ID, n+1), JobID: j.ID, AdamID: id, Kind: "song", Index: n + 1,
 			Title: a.tracks[i], Artist: a.artist.name, Album: a.title, DurationMS: durationMS(id),
 			ArtworkURL: a.artwork(), HasLyrics: hash(id)%3 != 0, Status: domain.ItemQueued,
 			Progress: domain.ItemProgress{Resolved: true}, CreatedAt: t, UpdatedAt: t,
@@ -313,7 +313,7 @@ func (j *job) place(i int, now time.Time) {
 		p.Remuxed, p.Verified, p.Tagged, p.Saved = true, true, true, true
 		it.Status = domain.ItemCompleted
 		it.FileSize = int64(durationMS(it.AdamID)) * 290
-		it.OutputPath = fmt.Sprintf("%s/%s/%s/%02d %s.m4a", musicDir, j.album.artist.name, j.album.title, it.Index+1, it.Title)
+		it.OutputPath = fmt.Sprintf("%s/%s/%s/%02d %s.m4a", musicDir, j.album.artist.name, j.album.title, it.Index, it.Title)
 		if it.HasLyrics {
 			it.LyricsStatus = domain.LyricsFetched
 		}

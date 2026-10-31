@@ -131,11 +131,11 @@ func (a *App) queueScreen(c *ui.Context, k *Tokens, compact bool) {
 		a.latestHero(c, k, latest, compact)
 	}
 	a.recentWall(c, k, finished, latest, compact)
-	tabs := []string{fmt.Sprintf("Active · %d", s.Count(store.TabActive)), fmt.Sprintf("Done · %d", s.Count(store.TabDone)),
-		fmt.Sprintf("Failed · %d", s.Count(store.TabFailed)), "All"}
+	tabs := []string{"All", fmt.Sprintf("Active · %d", s.Count(store.TabActive)), fmt.Sprintf("Done · %d", s.Count(store.TabDone)),
+		fmt.Sprintf("Failed · %d", s.Count(store.TabFailed))}
 	ui.Row(c).Padding(14, 18, 10, 18).Gap(12).AlignItems(ui.Center).Background(k.Ground).Children(func() {
 		display(c, "Queue", 22).SingleLine()
-		segmented(c, k, "tabs", &a.Tab, tabs, map[int]ui.Color{2: k.Bad})
+		segmented(c, k, "tabs", &a.Tab, tabs, map[int]ui.Color{int(store.TabFailed): k.Bad})
 		ui.Spacer(c)
 		if !compact {
 			ui.Text(c, "Newest first").FontSize(12).TextColor(k.Muted)
@@ -164,10 +164,12 @@ func (a *App) hero(c *ui.Context, k *Tokens, j *store.Job, compact bool) {
 	pal := jobPalette(j, video != nil)
 	hc := heroColorsFor(pal, k)
 	ui.Row(c).Padding(18, 28, 24, 28).Gap(28).AlignItems(ui.End).Children(func() {
-		cover := widgets.Cover{Image: a.Art.Get(j.ArtworkURL, int(size*2)), Placeholder: pal.Bg, Size: size, Radius: radiusCover, Color: 1, Shadow: true, Video: video}.Show(c)
-		if j.MotionArtworkURL != "" && !compact {
-			cover.Children(func() { motionBadge(c, "MOTION") })
-		}
+		a.heroCover(c, j, func() {
+			cover := widgets.Cover{Image: a.Art.Get(j.ArtworkURL, int(size*2)), Placeholder: pal.Bg, Size: size, Radius: radiusCover, Color: 1, Shadow: true, Video: video}.Show(c)
+			if j.MotionArtworkURL != "" && !compact {
+				cover.Children(func() { motionBadge(c, "MOTION") })
+			}
+		})
 		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(10).Children(func() {
 			label(c, k, "Downloading now").TextColor(hc.label)
 			title := display(c, j.Name(), 42).TextColor(hc.title).MaxLines(2).Ellipsis("…")
@@ -244,6 +246,17 @@ func (a *App) heroRateText(c *ui.Context, j *store.Job) string {
 		parts = append(parts, r+" left")
 	}
 	return strings.Join(parts, " · ")
+}
+
+// heroCover makes a hero's cover open the job's detail, as its Details
+// button does, lifting a little under the pointer.
+func (a *App) heroCover(c *ui.Context, j *store.Job, show func()) {
+	b := ui.ButtonBase(c.Key("hero-cover")).Label("Open " + j.Name())
+	lift := b.AnimateTo("lift", map[bool]float32{true: 1, false: 0}[b.Hovered()], ui.Snappy)
+	if b.Clicked() {
+		a.OpenJob(j.ID)
+	}
+	b.Cursor(ui.CursorPointer).Scale(1+0.02*lift, 1+0.02*lift).Children(show)
 }
 
 // motionBadge marks a cover that has a motion loop.

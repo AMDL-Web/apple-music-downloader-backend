@@ -57,14 +57,16 @@ func (a *App) latestHero(c *ui.Context, k *Tokens, j *store.Job, compact bool) {
 	pal := latestPalette(j, video != nil)
 	hc := heroColorsFor(pal, k)
 	ui.Row(c).Padding(18, 28, 20, 28).Gap(28).AlignItems(ui.End).Children(func() {
-		cover := widgets.Cover{Image: a.Art.Get(j.ArtworkURL, int(size*2)), Placeholder: pal.Bg, Size: size, Height: height, Radius: radiusCover, Color: 1, Shadow: true, Video: video}.Show(c)
-		switch {
-		case compact:
-		case height > 0:
-			cover.Children(func() { motionBadge(c, "3:4 LOOP") })
-		case j.MotionArtworkURL != "":
-			cover.Children(func() { motionBadge(c, "MOTION") })
-		}
+		a.heroCover(c, j, func() {
+			cover := widgets.Cover{Image: a.Art.Get(j.ArtworkURL, int(size*2)), Placeholder: pal.Bg, Size: size, Height: height, Radius: radiusCover, Color: 1, Shadow: true, Video: video}.Show(c)
+			switch {
+			case compact:
+			case height > 0:
+				cover.Children(func() { motionBadge(c, "3:4 LOOP") })
+			case j.MotionArtworkURL != "":
+				cover.Children(func() { motionBadge(c, "MOTION") })
+			}
+		})
 		ui.Column(c).Grow(1).Shrink(1).MinWidth(0).Gap(10).Children(func() {
 			when := ""
 			if j.FinishedAt != nil {

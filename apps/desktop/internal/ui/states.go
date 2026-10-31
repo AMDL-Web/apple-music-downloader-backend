@@ -7,6 +7,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"amdl/apps/desktop/internal/mode"
+	"amdl/apps/desktop/internal/store"
 	"amdl/internal/client"
 	"amdl/internal/format"
 )
@@ -98,12 +99,19 @@ func (a *App) startFailed(c *ui.Context, k *Tokens) {
 	})
 }
 
+// narrowTab reports whether the queue shows only finished or only failed
+// jobs, where an empty list says nothing about what downloads.
+func (a *App) narrowTab() bool {
+	t := store.Tab(a.Tab)
+	return t == store.TabDone || t == store.TabFailed
+}
+
 // emptyQueue is the first launch, or a tab with nothing in it. quiet leaves
 // out the drawing, under a hero that already holds the eye.
 func (a *App) emptyQueue(c *ui.Context, k *Tokens, quiet bool) {
 	if quiet {
 		ui.Column(c).Grow(1).Center().Gap(6).Padding(24).Children(func() {
-			if a.Tab != 0 {
+			if a.narrowTab() {
 				ui.Text(c, "Nothing here").FontSize(15).FontWeight(650)
 				return
 			}
@@ -125,7 +133,7 @@ func (a *App) emptyQueue(c *ui.Context, k *Tokens, quiet bool) {
 				}
 			}
 		})
-		if a.Tab != 0 {
+		if a.narrowTab() {
 			display(c, "Nothing here", 24)
 			return
 		}
