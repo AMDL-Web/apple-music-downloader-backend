@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"amdl/internal/client"
+	"amdl/internal/config"
 	"amdl/internal/domain"
 )
 
@@ -49,8 +50,9 @@ type (
 		err   error
 	}
 	doneMsg struct {
-		out string
-		err error
+		out  string
+		clip string // what to put on the terminal's clipboard
+		err  error
 	}
 	jobsMsg struct {
 		gen  int
@@ -144,11 +146,11 @@ func artistAlbums(ctx context.Context, c *client.Client, gen int, artist client.
 	}
 }
 
-func submit(ctx context.Context, c *client.Client, urls []string) tea.Cmd {
+func submit(ctx context.Context, c *client.Client, urls []string, o *config.DownloadOverrides) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
-		res, err := c.Submit(ctx, urls, nil)
+		res, err := c.Submit(ctx, urls, o)
 		if err != nil && len(res.Results) > 0 {
 			err = nil // the per-link results say why each was refused
 		}

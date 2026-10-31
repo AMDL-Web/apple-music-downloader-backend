@@ -169,7 +169,18 @@ func (m *model) card(t theme, w int, id string, tracks int) string {
 		lines = append(lines, "  "+t.style(t.dim).Render("reading the tracklist…"))
 		return strings.Join(lines, "\n")
 	}
-	lines = append(lines, "  "+albumLine(t, w-2, a, accent, format.Remaining(st.rate.Remaining()), w >= narrowCols))
+	tail := ""
+	if w >= narrowCols {
+		tail = pad(format.Remaining(st.rate.Remaining()), etaWidth)
+	}
+	if w >= mediumCols {
+		speed := ""
+		if sp := progress.AvgSpeed(st.job, st.detail.Items, m.now()); sp > 0 {
+			speed = "avg " + format.Rate(sp)
+		}
+		tail += "  " + pad(speed, speedWidth)
+	}
+	lines = append(lines, "  "+albumLine(t, w-2, a, accent, tail))
 	if tracks == 0 {
 		return strings.Join(lines, "\n")
 	}
@@ -243,7 +254,11 @@ func (m *model) trackRow(t theme, w int, it domain.JobItem, accent color.Color) 
 		case domain.ItemCompleted:
 			c = t.ok
 		}
-		row += "  " + t.style(c).Render(trunc(itemState(it), metaW))
+		state := itemState(it)
+		if it.Status == domain.ItemWaitingDecrypt && lipgloss.Width(state) > metaW {
+			state = "Waiting" // the stage bar shows which stage it waits for
+		}
+		row += "  " + t.style(c).Render(trunc(state, metaW))
 	}
 	return row
 }
@@ -261,8 +276,10 @@ func itemState(it domain.JobItem) string {
 			return fmt.Sprintf("Decrypt %d%%", int(p.Decrypt*100))
 		}
 		return "Decrypting"
-	case domain.ItemWaitingDownload, domain.ItemWaitingDecrypt:
+	case domain.ItemWaitingDownload:
 		return "Waiting"
+	case domain.ItemWaitingDecrypt:
+		return "Waiting to decrypt"
 	case domain.ItemResolving:
 		return "Resolving"
 	case domain.ItemRemuxing:

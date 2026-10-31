@@ -146,18 +146,24 @@ func albumBar(t theme, w int, a progress.Album, accent color.Color) string {
 	return b.String()
 }
 
-// etaWidth fits the longest time left format.Remaining writes, "~59 min".
-const etaWidth = 7
+// etaWidth fits the longest time left format.Remaining writes, "~59 min",
+// and speedWidth the longest average speed, "avg 99.9 MB/s".
+const (
+	etaWidth   = 7
+	speedWidth = 13
+)
 
-// albumLine is the album bar between its count and its percent:
-// "3/12  ━━━━ ━━━━ ╍╍╍╍ ────  42%  ~1 min". The count, percent and time left
-// keep their widths, so the bar does not change length as they tick.
-func albumLine(t theme, w int, a progress.Album, accent color.Color, eta string, etaCol bool) string {
+// albumLine is the album bar between its count and its percent, then tail,
+// the time left and average speed padded to their widths:
+// "3/12  ━━━━ ━━━━ ╍╍╍╍ ────  42%  ~1 min   avg 4.1 MB/s". The count,
+// percent and tail keep their widths, so the bar does not change length as
+// they tick.
+func albumLine(t theme, w int, a progress.Album, accent color.Color, tail string) string {
 	digits := len(fmt.Sprint(a.Total))
 	left := pad(fmt.Sprintf("%d/%d", a.Lit, a.Total), 2*digits+1)
 	right := fmt.Sprintf("%3d%%", a.Percent)
-	if etaCol {
-		right += "  " + pad(eta, etaWidth)
+	if tail != "" {
+		right += "  " + tail
 	}
 	bw := w - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if bw < 8 {

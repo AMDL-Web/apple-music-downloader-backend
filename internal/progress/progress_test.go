@@ -272,3 +272,24 @@ func TestRateRemaining(t *testing.T) {
 		t.Error("a retry should restart the estimate")
 	}
 }
+
+// The average counts the bytes of tracks still downloading, so it has a value
+// before the first track finishes, and a finished track by its file size.
+func TestAvgSpeedCountsTracksStillDownloading(t *testing.T) {
+	started := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	j := domain.Job{Status: domain.JobRunning, StartedAt: &started}
+	items := []domain.JobItem{
+		{Status: domain.ItemDownloading, Progress: domain.ItemProgress{Download: 0.5, DownloadBytes: 30 << 20}},
+		{Status: domain.ItemDecrypting, Progress: domain.ItemProgress{Download: 1, DownloadBytes: 20 << 20}},
+	}
+	if got, want := AvgSpeed(j, items, started.Add(10*time.Second)), float64(5<<20); got != want {
+		t.Fatalf("nothing finished: %v, want %v", got, want)
+	}
+	items[1] = domain.JobItem{Status: domain.ItemCompleted, FileSize: 21 << 20, Progress: domain.ItemProgress{Download: 1, DownloadBytes: 20 << 20}}
+	if got, want := AvgSpeed(j, items, started.Add(10*time.Second)), float64(51<<20)/10; got != want {
+		t.Fatalf("one finished: %v, want %v", got, want)
+	}
+	if got := AvgSpeed(domain.Job{Status: domain.JobQueued}, items, started); got != 0 {
+		t.Errorf("a job that has not started: %v, want 0", got)
+	}
+}

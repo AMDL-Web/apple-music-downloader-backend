@@ -92,11 +92,13 @@ const (
 	panelConfirm
 	panelLogin
 	panelHelp
+	panelAsk
 )
 
 type pick struct {
 	hit      client.SearchHit
 	selected bool
+	page     bool // read under its filter's tab, so shown there and not under all
 }
 
 type results struct {
@@ -107,14 +109,20 @@ type results struct {
 	artist *client.SearchHit
 	back   *results
 	err    string
+	// paged are the tabs read a page at a time, next the offset of each
+	// one's next page (0 when none is left), loading a page in flight.
+	paged   map[string]bool
+	next    map[string]int
+	loading bool
 }
 
 var filters = []string{"all", "album", "song", "playlist", "artist"}
 
 func (r *results) visible() []int {
+	f := filters[r.filter]
 	var idx []int
 	for i, p := range r.items {
-		if filters[r.filter] == "all" || p.hit.Type == filters[r.filter] {
+		if f == "all" && !p.page || p.hit.Type == f && p.page == r.paged[f] {
 			idx = append(idx, i)
 		}
 	}
@@ -167,9 +175,11 @@ type model struct {
 	preview  []lookupResult
 	links    []string
 	res      *results
+	ask      *ask
 	confirm  struct{ prompt, id string }
 	loginSt  struct{ step, username, password, loginID string }
 	quitHint time.Time
+	now      func() time.Time
 	busy     string
 	reqGen   int
 	reading  bool // busy is a read that esc can drop
@@ -186,7 +196,7 @@ func newModel(ctx context.Context, cancel context.CancelFunc, opts Options) *mod
 	in.SetVirtualCursor(false) // the terminal's own cursor, where an IME composes
 	in.Focus()
 	m := &model{ctx: ctx, cancel: cancel, c: opts.Client, opts: opts, bus: &bus{},
-		width: 100, height: 30, profile: colorprofile.TrueColor, theme: newTheme(true, nil), input: in, headerWait: true,
+		width: 100, height: 30, now: time.Now, profile: colorprofile.TrueColor, theme: newTheme(true, nil), input: in, headerWait: true,
 		jobs: map[string]*jobState{}, printed: map[string]bool{}, num: map[string]int{}, titles: map[string]string{}}
 	m.restyleInput()
 	return m
@@ -296,14 +306,14 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		if st := m.jobs[msg.d.Job.ID]; st != nil {
 			d := msg.d
 			st.detail, st.index, st.job = &d, jobview.Index(d), d.Job
-			st.rate.Add(time.Now(), float64(progress.AlbumProgress(d.Job.Status, d.Items).Percent)/100)
+			st.rate.Add(m.now(), progress.JobStages(d.Job, d.Items).Weighted())
 		}
 		return nil
 	case eventMsg:
 		if st := m.jobs[msg.ev.JobID]; st != nil && st.detail != nil {
 			jobview.Apply(st.detail, st.index, msg.ev)
 			st.job = st.detail.Job
-			st.rate.Add(time.Now(), float64(progress.AlbumProgress(st.job.Status, st.detail.Items).Percent)/100)
+			st.rate.Add(m.now(), progress.JobStages(st.job, st.detail.Items).Weighted())
 		}
 		return nil
 	case followedMsg:
@@ -329,6 +339,10 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		}
 		m.reading = false
 		return m.onSearch(msg)
+	case pageMsg:
+		return m.onPage(msg)
+	case choicesMsg:
+		return m.onChoices(msg)
 	case albumsMsg:
 		if msg.gen != m.reqGen {
 			return nil
@@ -347,6 +361,9 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		m.busy = ""
 		if msg.err != nil {
 			return m.fail(msg.err)
+		}
+		if msg.clip != "" {
+			return tea.Batch(tea.SetClipboard(msg.clip), m.say(msg.out))
 		}
 		return m.say(msg.out)
 	case jobsMsg:

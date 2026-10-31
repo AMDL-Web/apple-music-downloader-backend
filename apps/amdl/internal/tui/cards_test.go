@@ -1,13 +1,17 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"charm.land/lipgloss/v2"
+
+	"amdl/internal/client"
 	"amdl/internal/domain"
 	"amdl/internal/progress"
-	"charm.land/lipgloss/v2"
 )
 
 // A running card shows the same number of rows from its first track to its
@@ -90,7 +94,7 @@ func TestAlbumLineKeepsItsBarLength(t *testing.T) {
 	th := newTheme(true, nil)
 	bar := func(lit, pct int, eta string) int {
 		a := progress.Album{Total: 14, Lit: lit, Percent: pct}
-		line := stripANSI(albumLine(th, 80, a, th.accent, eta, true))
+		line := stripANSI(albumLine(th, 80, a, th.accent, pad(eta, etaWidth)+"  "+pad("", speedWidth)))
 		return strings.Count(line, glyphTodo) + strings.Count(line, glyphDone)
 	}
 	if a, b := bar(9, 5, "~49 s"), bar(10, 100, ""); a != b {
@@ -139,5 +143,72 @@ func TestTrackCountIsSingularForOne(t *testing.T) {
 		if got := trackCount(n); got != want {
 			t.Errorf("trackCount(%d) = %q, want %q", n, got, want)
 		}
+	}
+}
+
+// A track working through saving and tagging must not reset the time left:
+// the estimate reads the job's weighted progress, which only moves forward.
+func TestTimeLeftSurvivesTracksFinishing(t *testing.T) {
+	m := sample(t)
+	now := at(0)
+	m.now = func() time.Time { return now }
+	job := domain.Job{ID: "j", Status: domain.JobRunning, TotalItems: 2, StartedAt: &now}
+	m.jobs["j"] = &jobState{job: job}
+	got := domain.ItemProgress{Resolved: true, Download: 1, Decrypt: 1}
+	remuxed := got
+	remuxed.Remuxed = true
+	verified := remuxed
+	verified.Verified = true
+	tagged := verified
+	tagged.Tagged = true
+	m.update(detailMsg{client.DownloadDetail{Job: job, Items: []domain.JobItem{
+		{ID: "a", Index: 1, Status: domain.ItemRemuxing, Progress: got},
+		{ID: "b", Index: 2, Status: domain.ItemDownloading, Progress: domain.ItemProgress{Resolved: true}},
+	}}})
+	finish := []domain.JobItem{
+		{ID: "a", Index: 1, Status: domain.ItemSaving, Progress: remuxed},
+		{ID: "a", Index: 1, Status: domain.ItemSaving, Progress: verified},
+		{ID: "a", Index: 1, Status: domain.ItemTagging, Progress: verified},
+		{ID: "a", Index: 1, Status: domain.ItemTagging, Progress: tagged},
+		{ID: "a", Index: 1, Status: domain.ItemCompleted, Progress: tagged},
+	}
+	id := int64(1)
+	send := func(it domain.JobItem) {
+		id++
+		payload, err := json.Marshal(it)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.update(eventMsg{domain.Event{ID: id, JobID: "j", ItemID: it.ID, Type: domain.EventItemProgress, Payload: payload}})
+	}
+	for step := 1; step <= 12; step++ {
+		now = at(0).Add(time.Duration(step) * 2 * time.Second)
+		send(domain.JobItem{ID: "b", Index: 2, Status: domain.ItemDownloading,
+			Progress: domain.ItemProgress{Resolved: true, Download: float64(step) / 14}})
+		if step <= len(finish) {
+			send(finish[step-1])
+		}
+		if r := m.jobs["j"].rate.Remaining(); step >= 3 && r <= 0 {
+			t.Fatalf("step %d: no time left while progress rises", step)
+		}
+	}
+}
+
+// The card's album line carries the average speed while the job downloads,
+// from the bytes of tracks still downloading as well as finished ones, where
+// the terminal has room for it.
+func TestCardShowsTheAverageSpeed(t *testing.T) {
+	m := sample(t)
+	delete(m.jobs, "job_b")
+	m.now = func() time.Time { return at(10) }
+	items := m.jobs["job_a"].detail.Items
+	items[2].Progress.DownloadBytes = 30e6 // I THINK, downloading
+	for _, w := range []int{100, 72} {
+		if out := stripANSI(render(m, w)); !strings.Contains(out, "avg ") || !strings.Contains(out, "MB/s") {
+			t.Errorf("%d columns: no average speed:\n%s", w, out)
+		}
+	}
+	if out := stripANSI(render(m, 60)); strings.Contains(out, "avg ") {
+		t.Errorf("60 columns keep the speed out:\n%s", out)
 	}
 }

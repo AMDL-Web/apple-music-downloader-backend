@@ -233,21 +233,29 @@ screen is redrawn.
 - **The prompt** takes a pasted Apple Music link (several at once download as a batch),
   which shows a preview to confirm with Enter; plain text followed by Enter, which
   searches the catalog (nothing is searched while typing) and lists the hits (↑↓ to
-  move, Space to select several, Tab to filter by type, → to open an artist's albums,
-  Enter to download); or a `/` command, listed as you type it (↑↓ choose, Tab
-  completes, Enter runs; `/help` shows them all, `/login` signs the wrapper in without
+  move, Space to select several, Tab to a type's tab, which reads its group a page at a
+  time (`apps/amdl/internal/tui#pageSize`) and the next as the cursor nears the end, →
+  to open an artist's albums, Enter to download); or a `/` command, listed as you type
+  it (↑↓ choose, Tab completes, Enter runs; `/help` shows them all, `/login` signs the wrapper in without
   echoing the password). Esc closes a panel, drops a search still in flight, or clears
   the prompt.
+- **A download from search asks first** only where there is a choice, below the prompt:
+  Lossless or Dolby Atmos where a hit has both and the server's
+  `download.quality_priority` lists both (`internal/format#QualityChoices`; the one it
+  lists first is chosen), and, for what is already in the library, whether to skip or
+  replace the files on disk. The answers go as the job's overrides. A pasted link
+  downloads with the server's settings.
 - **Above the prompt** sits one card per job in progress, up to three, in the order the
   jobs appeared: its title and session number, the album bar of
   `internal/progress#AlbumProgress` (finished tracks in the order they finished, the
   rest of the progress dashed, one cell per track up to `internal/progress#TickMax`)
-  with the count, percent and time left, and three track rows with a seven-stage bar
+  with the count, percent, time left and average speed (`internal/progress#AvgSpeed`),
+  and three track rows with a seven-stage bar
   each. A running card keeps its height until the job ends
   (`apps/amdl/internal/tui#tracksPerCard`). The card takes its color from the album's
   artwork. `ctrl+o` shows every track, `ctrl+t` every job.
 - **Jobs have session numbers**, `#1`, `#2`, on their cards and finished lines, which
-  `/cancel`, `/retry`, `/remove` and `/logs` take, as well as the start of a job ID.
+  `/cancel`, `/retry`, `/remove`, `/copy` and `/logs` take, as well as the start of a job ID.
 - **Below the prompt** open the panels (the `/` menu, search hits, the preview, help),
   so opening one does not move the prompt, and under everything one status line: the
   connection, the job counts, and the keys that matter at that moment.

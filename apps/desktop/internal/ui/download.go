@@ -1,13 +1,12 @@
 package ui
 
 import (
-	"slices"
-
 	"github.com/egoist/mygo/ui"
 
 	"amdl/apps/desktop/internal/store"
 	"amdl/internal/client"
 	"amdl/internal/config"
+	"amdl/internal/format"
 )
 
 // downloadAsk is a download waiting for its sheet: which of two qualities
@@ -27,42 +26,6 @@ type downloadAsk struct {
 	open    bool
 }
 
-// askCodecs are the qualities a download of a hit with traits asks between:
-// lossless and Dolby, when the hit has both and priority lists both, in
-// priority's order. Any other mix, AAC among them, the server settles on its
-// own.
-func askCodecs(traits, priority []string) []string {
-	lossless := slices.Contains(traits, "lossless") || slices.Contains(traits, "hi-res-lossless")
-	dolby := slices.Contains(traits, "atmos")
-	var out []string
-	hasDolby := false
-	for _, c := range priority {
-		switch {
-		case c == "alac" && lossless && !slices.Contains(out, c):
-			out = append(out, c)
-		case (c == "ec3" || c == "ac3") && dolby && !hasDolby:
-			out, hasDolby = append(out, c), true
-		}
-	}
-	if len(out) < 2 {
-		return nil
-	}
-	return out
-}
-
-// codecLabel names a codec the sheet offers.
-func codecLabel(c string) string {
-	switch c {
-	case "alac":
-		return "Lossless"
-	case "ec3":
-		return "Dolby Atmos"
-	case "ac3":
-		return "Dolby Digital"
-	}
-	return c
-}
-
 // download starts h, after a sheet when there is something to ask: the
 // quality where the hit offers both lossless and Dolby and the server would
 // take either, and whether to replace the files of an earlier download
@@ -70,7 +33,7 @@ func codecLabel(c string) string {
 func (a *App) download(h client.SearchHit) {
 	s := a.Store
 	priority := strs(s.Config.Value("download.quality_priority"))
-	ask := downloadAsk{hit: h, priority: priority, codecs: askCodecs(h.AudioTraits, priority)}
+	ask := downloadAsk{hit: h, priority: priority, codecs: format.QualityChoices(h.AudioTraits, priority)}
 	mark, _ := s.HitMark(h)
 	done := mark == store.MarkDone
 	ask.again = done && !a.Settings.SkipExisting
@@ -138,7 +101,7 @@ func (a *App) downloadSheet(c *ui.Context, k *Tokens) {
 				label(c, k, "Quality")
 				names := make([]string, len(d.codecs))
 				for i, cd := range d.codecs {
-					names[i] = codecLabel(cd)
+					names[i] = format.CodecName(cd)
 				}
 				// A row, so the track is as wide as its choices.
 				ui.Row(c).Children(func() { segmented(c, k, "codec", &d.codec, names, nil) })

@@ -1,5 +1,6 @@
 // Package format writes the numbers the amdl clients show people: sizes,
-// durations, rates and audio quality labels.
+// durations, rates and audio quality labels, and which qualities a download
+// asks between.
 package format
 
 import (

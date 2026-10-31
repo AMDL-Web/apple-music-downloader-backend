@@ -28,6 +28,7 @@ var slashes = []slash{
 	{"/cancel", "<job>", "cancel a queued or running job"},
 	{"/retry", "<job>", "re-run a failed or cancelled job"},
 	{"/remove", "<job>", "delete a finished job's records (asks first)"},
+	{"/copy", "<job>", "copy a job's link"},
 	{"/library", "[text]", "list finished downloads"},
 	{"/logs", "[job]", "show recent warnings and errors"},
 	{"/system", "", "show the server's version, queue and free space"},
@@ -91,6 +92,10 @@ func (m *model) onKey(k tea.KeyPressMsg) tea.Cmd {
 		if cmd, ok := m.resultsKey(key); ok {
 			return cmd
 		}
+	case panelAsk:
+		if cmd, ok := m.askKey(key); ok {
+			return cmd
+		}
 	case panelPreview:
 		if key == "esc" {
 			m.closePanel()
@@ -100,7 +105,7 @@ func (m *model) onKey(k tea.KeyPressMsg) tea.Cmd {
 			links := m.links
 			m.closePanel()
 			m.busy = "queueing"
-			return submit(m.ctx, m.c, links)
+			return submit(m.ctx, m.c, links, nil)
 		}
 	case panelHelp:
 		if key == "esc" || key == "?" {
@@ -117,10 +122,7 @@ func (m *model) onKey(k tea.KeyPressMsg) tea.Cmd {
 	case "enter":
 		return m.enter()
 	case "esc":
-		if m.reading {
-			m.reqGen++
-			m.reading, m.busy = false, ""
-		}
+		m.dropRead()
 		m.input.SetValue("")
 		return nil
 	case "up", "down":
@@ -194,7 +196,7 @@ func (m *model) closePanel() {
 	if m.panel == panelLogin {
 		m.endLogin()
 	}
-	m.panel, m.preview, m.links, m.res = panelNone, nil, nil, nil
+	m.panel, m.preview, m.links, m.res, m.ask = panelNone, nil, nil, nil, nil
 }
 
 // resultsKey handles the keys of the search list; ok is false for keys the
@@ -211,16 +213,23 @@ func (m *model) resultsKey(key string) (tea.Cmd, bool) {
 		if r.cursor < len(vis)-1 {
 			r.cursor++
 		}
+		return m.morePages(r), true
 	case "space":
 		if m.input.Value() != "" || len(vis) == 0 {
 			return nil, false
 		}
 		p := &r.items[vis[r.cursor]]
-		p.selected = !p.selected
+		on := !p.selected
+		for i := range r.items {
+			if r.items[i].hit.URL == p.hit.URL {
+				r.items[i].selected = on
+			}
+		}
 	case "tab":
 		if r.artist == nil {
 			r.filter = (r.filter + 1) % len(filters)
 			r.cursor = 0
+			return m.morePages(r), true
 		}
 	case "right":
 		if m.input.Value() != "" || len(vis) == 0 {
@@ -235,33 +244,34 @@ func (m *model) resultsKey(key string) (tea.Cmd, bool) {
 		}
 		m.res = r.back
 	case "esc":
+		m.dropRead()
 		m.closePanel()
 	case "enter":
 		if strings.TrimSpace(m.input.Value()) != "" {
 			return nil, false
 		}
-		var urls, names []string
+		var hits []client.SearchHit
+		var names []string
+		seen := map[string]bool{}
 		for _, p := range r.items {
-			if p.selected {
-				urls, names = append(urls, p.hit.URL), append(names, p.hit.Name)
+			if p.selected && !seen[p.hit.URL] {
+				seen[p.hit.URL] = true
+				hits, names = append(hits, p.hit), append(names, p.hit.Name)
 				m.titles[p.hit.URL] = p.hit.Name
 			}
 		}
-		if len(urls) == 0 && len(vis) > 0 {
+		if len(hits) == 0 && len(vis) > 0 {
 			h := r.items[vis[r.cursor]].hit
 			if h.Type == "artist" {
 				return artistAlbums(m.ctx, m.c, m.read("reading "+h.Name+"'s albums"), h), true
 			}
-			urls, names = []string{h.URL}, []string{h.Name}
+			hits, names = []client.SearchHit{h}, []string{h.Name}
 			m.titles[h.URL] = h.Name
 		}
-		if len(urls) == 0 {
+		if len(hits) == 0 {
 			return nil, true
 		}
-		m.closePanel()
-		m.busy = "queueing"
-		you := m.you(strings.Join(names, ", "))
-		return tea.Sequence(m.println(func(int) string { return you }), submit(m.ctx, m.c, urls)), true
+		return m.download(hits, names), true
 	default:
 		return nil, false
 	}
@@ -294,6 +304,15 @@ func (m *model) read(busy string) int {
 	m.reqGen++
 	m.reading, m.busy = true, busy
 	return m.reqGen
+}
+
+// dropRead forgets the read in flight: its answer arrives under an old gen
+// and goes unread.
+func (m *model) dropRead() {
+	if m.reading {
+		m.reqGen++
+		m.reading, m.busy = false, ""
+	}
 }
 
 // unescape shows a pasted link's percent-encoded titles as text.
@@ -401,7 +420,7 @@ func (m *model) command(line string) tea.Cmd {
 			return m.say("usage: /download <link>…")
 		}
 		m.busy = "queueing"
-		return submit(m.ctx, m.c, links)
+		return submit(m.ctx, m.c, links, nil)
 	case "/jobs":
 		return listJobs(m.ctx, m.c, m.read("reading jobs"), client.ListQuery{Limit: 10})
 	case "/library":
@@ -423,9 +442,24 @@ func (m *model) command(line string) tea.Cmd {
 		if !ok {
 			return m.say("usage: /remove <job>")
 		}
+		if st := m.jobs[id]; st != nil && !st.job.Status.IsTerminal() {
+			return m.say(m.ref(id) + " has not finished; /cancel " + strings.TrimPrefix(m.ref(id), "#") + " stops it")
+		}
 		m.confirm.id, m.confirm.prompt = id, "delete the records of "+m.ref(id)+"? the files stay on disk"
 		m.panel = panelConfirm
 		return nil
+	case "/copy":
+		id, ok := needJob()
+		if !ok {
+			return m.say("usage: /copy <job>")
+		}
+		m.busy = "copying"
+		return func() tea.Msg {
+			ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
+			defer cancel()
+			d, err := m.c.Download(ctx, id)
+			return doneMsg{out: "copied " + d.Job.Input, clip: d.Job.Input, err: err}
+		}
 	case "/system":
 		return m.do("system", func(ctx context.Context) (string, error) {
 			s, err := m.c.System(ctx)

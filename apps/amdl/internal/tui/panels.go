@@ -54,6 +54,8 @@ func (m *model) panelView(w, room int) string {
 		return "  " + t.style(t.dim).Render(trunc("sign in · "+what, w-2))
 	case panelHelp:
 		return m.helpView(w)
+	case panelAsk:
+		return m.askView(w)
 	}
 	return m.menuView(w, room)
 }
@@ -137,12 +139,19 @@ func (m *model) resultsView(w, room int) string {
 		}
 		line += "   " + strings.Join(tabs, "  ")
 	}
+	if r.loading {
+		line += t.style(t.dim).Render("  · loading…")
+	}
 	lines := []string{truncStyled(line, w)}
 	if r.err != "" {
 		lines = append(lines, "  "+t.style(t.bad).Render(trunc(r.err, w-2)))
 	}
-	if len(vis) == 0 && r.err == "" {
-		lines = append(lines, "  "+t.style(t.dim).Render("no hits"))
+	if len(vis) == 0 && r.err == "" && !r.loading {
+		none := "nothing found for “" + r.term + "”"
+		if r.artist != nil {
+			none = "no albums"
+		}
+		lines = append(lines, "  "+t.style(t.dim).Render(trunc(none, w-2)))
 	}
 	maxRows := min(len(vis), max(1, room-len(lines)))
 	start := 0

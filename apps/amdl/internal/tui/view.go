@@ -280,9 +280,9 @@ func (m *model) status(w int) string {
 	var left string
 	switch {
 	case m.conn.Phase == client.Offline:
-		left = t.style(t.warn).Render("○ offline, retrying")
+		left = t.style(t.warn).Render("○ offline")
 	case m.conn.Phase == client.Connecting && m.system == nil:
-		left = t.style(t.dim).Render("◌ connecting")
+		left = t.style(t.dim).Render("◌ connecting…")
 	default:
 		left = t.style(t.ok).Render("●") + t.style(t.dim).Render(fmt.Sprintf(" %d running · %d queued", running, queued))
 	}
@@ -328,6 +328,12 @@ func (m *model) hints() []string {
 		return []string{"enter downloads", "esc dismisses"}
 	case panelConfirm:
 		return []string{"y deletes", "n keeps"}
+	case panelAsk:
+		h := []string{"enter downloads", "←→ chooses", "esc goes back"}
+		if m.ask != nil && m.ask.codecs != nil && m.ask.again {
+			h = append(h, "↑↓ question")
+		}
+		return h
 	case panelLogin:
 		return []string{"esc cancels"}
 	case panelHelp:
