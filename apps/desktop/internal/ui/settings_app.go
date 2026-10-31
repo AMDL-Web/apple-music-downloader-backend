@@ -209,6 +209,13 @@ func (a *App) appearanceSettings(c *ui.Context, k *Tokens) {
 		a.set.draft.Notify = on
 		a.Act.ApplySettings(next)
 	}
+	skip := a.Settings.SkipExisting
+	if settingRow(c, k, "skip-existing", &skip, "Skip files already downloaded", "Downloading again then skips the tracks on disk without asking.").Changed() {
+		next := a.Settings
+		next.SkipExisting = skip
+		a.set.draft.SkipExisting = skip
+		a.Act.ApplySettings(next)
+	}
 }
 
 func (a *App) aboutSettings(c *ui.Context, k *Tokens) {

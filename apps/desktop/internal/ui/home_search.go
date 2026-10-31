@@ -21,8 +21,9 @@ func (a *App) searchText() (term string, tooLong bool) {
 	return store.SearchTerm(o.Text, len(o.Links) > 0)
 }
 
-// searchBody is home's answer to words: the catalog's albums, songs and
-// artists, or one artist's albums, or the state that stands for them.
+// searchBody is home's answer to words: the first of the catalog's albums,
+// songs, playlists and artists, or one group of them page after page, or
+// one artist's albums, or the state that stands for them.
 func (a *App) searchBody(c *ui.Context, k *Tokens, width float32) {
 	s := a.Store
 	q := &s.Search
@@ -41,25 +42,125 @@ func (a *App) searchBody(c *ui.Context, k *Tokens, width float32) {
 			skeletonGroups(c, k, width)
 		case len(q.ShownHits()) == 0:
 			searchMessage(c, k, icSearch, "Nothing found for “"+q.Term+"”", "Try fewer words, or the name as Apple Music writes it.")
+		case q.Focus != "":
+			a.focusedGroup(c, k, sel, width)
 		default:
 			for _, g := range store.SearchGroups {
-				hg := hitGroupOf(q.Result, g)
+				hg := store.HitGroup(q.Result, g)
 				if hg == nil || len(hg.Items) == 0 {
 					continue
 				}
 				ui.Column(c.Key(g)).Gap(14).Children(func() {
-					ui.Row(c).Height(30).AlignItems(ui.Center).Children(func() {
-						display(c, strings.ToUpper(g[:1])+g[1:], 18)
+					ui.Row(c).Height(groupRow).AlignItems(ui.Center).Children(func() {
+						display(c, groupTitle(g), 18)
 						ui.Spacer(c)
-						morePage(c, k, g, hg.NextOffset > 0, q.More[g], func() { s.MoreSearch(g) })
+						if hg.NextOffset > 0 && button(c, k, buttonGhost, "Show more", nil).Label("Show more "+g).Clicked() {
+							a.focusGroup(g)
+						}
 					})
-					if g == "songs" {
-						a.songGrid(c, k, hg.Items, sel, width)
-					} else {
-						a.tileGrid(c, k, g, hg.Items, sel, width)
-					}
+					a.groupGrid(c, k, g, hg.Items, sel, width)
 				})
 			}
+		}
+	})
+}
+
+// groupRow is the height of a group's title row, and of the tabs that take
+// its place when one group shows alone; loadAhead is how far from the end
+// of a group shown alone its next page is read.
+const groupRow, loadAhead = 30, 600
+
+func groupTitle(g string) string { return strings.ToUpper(g[:1]) + g[1:] }
+
+// groupGrid lays a group's hits out: songs as cards, the rest as tiles.
+func (a *App) groupGrid(c *ui.Context, k *Tokens, g string, hits []client.SearchHit, sel *client.SearchHit, width float32) {
+	if g == "songs" {
+		a.songGrid(c, k, hits, sel, width)
+		return
+	}
+	a.tileGrid(c, k, g, hits, sel, width)
+}
+
+// focusGroup shows group alone from its top, or every group for "".
+func (a *App) focusGroup(group string) {
+	a.Store.FocusGroup(group)
+	a.searchSel = ""
+	if st := a.scrolls["home-body"]; st != nil {
+		st.Y = 0
+	}
+}
+
+// focusedGroup is one group alone under the four groups' tabs, its next
+// page read as the end comes near.
+func (a *App) focusedGroup(c *ui.Context, k *Tokens, sel *client.SearchHit, width float32) {
+	s := a.Store
+	q := &s.Search
+	g := q.Focus
+	a.groupTabs(c, k)
+	hg := store.HitGroup(q.Result, g)
+	if hg == nil || len(hg.Items) == 0 {
+		if hg != nil && hg.NextOffset > 0 {
+			skeletonTiles(c, k, width, 5)
+		} else {
+			searchMessage(c, k, icSearch, "No "+g+" for “"+q.Term+"”", "")
+		}
+	} else {
+		a.groupGrid(c, k, g, hg.Items, sel, width)
+	}
+	if hg == nil || hg.NextOffset == 0 {
+		return
+	}
+	// The row keeps one height whether it loads, failed or waits.
+	ui.Row(c.Key(g + "-more")).Height(groupRow).Gap(10).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
+		switch q.More[g] {
+		case store.PageLoading:
+			ui.Text(c, "Loading more…").FontSize(12).TextColor(k.Muted)
+		case store.PageFailed:
+			ui.Text(c, "Could not load more.").FontSize(12).TextColor(k.Bad)
+			if button(c, k, buttonGhost, "Try again", nil).Clicked() {
+				s.MoreSearch(g)
+			}
+		}
+	})
+	if q.More[g] == store.PageIdle && !q.Stale {
+		if st := a.scrolls["home-body"]; st == nil || st.MaxY-st.Y < loadAhead {
+			s.MoreSearch(g)
+		}
+	}
+}
+
+// groupTabs are the four groups as pills in the row of a group's title,
+// the one shown filled, after a Back to every group.
+func (a *App) groupTabs(c *ui.Context, k *Tokens) {
+	q := &a.Store.Search
+	ui.Row(c).Height(groupRow).Gap(8).AlignItems(ui.Center).Children(func() {
+		back := ui.ButtonBase(c.Key("focus-back")).Size(groupRow, groupRow).Radius(radiusFull).Center().Label("All results").Tooltip("All results")
+		col := k.Muted
+		if back.Hovered() {
+			back.Background(k.Track)
+			col = k.Fg
+		}
+		if back.Clicked() {
+			a.focusGroup("")
+		}
+		back.Cursor(ui.CursorPointer).Children(func() { ui.Icon(c, icBack).FontSize(15).TextColor(col) })
+		for _, g := range store.SearchGroups {
+			on := g == q.Focus
+			t := ui.ButtonBase(c.Key("tab-" + g)).Height(groupRow).PaddingX(14).Radius(radiusFull).AlignItems(ui.Center).Label(groupTitle(g))
+			bg, fg := k.Wash, k.Fg
+			switch {
+			case on:
+				bg, fg = k.Pill, k.PillInk
+			case t.Hovered():
+				bg = k.Track
+			}
+			t.Background(bg)
+			if t.Clicked() && !on {
+				a.focusGroup(g)
+			}
+			t.Cursor(ui.CursorPointer).Children(func() {
+				ui.Text(c, groupTitle(g)).FontSize(13.5).FontWeight(600).TextColor(fg).SingleLine()
+			})
 		}
 	})
 }
@@ -151,9 +252,8 @@ func (a *App) moveHit(by int) {
 
 // searchKeys are the search's window keys, for when the keyboard is out of
 // the field (fieldKey takes them in it): the arrows, Home and End, Return,
-// and Escape,
-// which leaves an artist, then forgets the chosen hit, then clears the
-// field.
+// and Escape, which leaves an artist, then a group shown alone, then
+// forgets the chosen hit, then clears the field.
 func (a *App) searchKeys(c *ui.Context) {
 	s := a.Store
 	c.OnShortcut(0, ui.KeyDown, func() { a.moveHit(1) })
@@ -167,6 +267,8 @@ func (a *App) searchKeys(c *ui.Context) {
 			a.searchSel = store.HitKey(s.Search.Artist.Artist)
 			a.searchReveal = true
 			s.OpenArtist("")
+		case s.Search.Focus != "":
+			a.focusGroup("")
 		case a.searchSel != "":
 			a.searchSel = ""
 		default:
@@ -196,7 +298,7 @@ func (a *App) actOnHit() {
 		return
 	}
 	if m, _ := s.HitMark(*h); m != store.MarkActive {
-		s.SubmitHit(*h)
+		a.download(*h)
 	}
 }
 
@@ -212,16 +314,6 @@ func albumCount(ar *store.ArtistPages) string {
 		return fmt.Sprintf("%d+ albums", n)
 	}
 	return plural(n, "album")
-}
-
-func hitGroupOf(r *client.SearchResult, g string) *client.HitGroup {
-	switch g {
-	case "songs":
-		return r.Songs
-	case "albums":
-		return r.Albums
-	}
-	return r.Artists
 }
 
 // downloadAll starts every album of the artist, after a second click: it
@@ -247,7 +339,7 @@ func (a *App) downloadAll(c *ui.Context, k *Tokens, ar *store.ArtistPages) {
 	if button(c, k, kind, text, icDown).Height(34).Label("Download every album of the artist").Clicked() {
 		if armed {
 			// The button stays armed until the answer replaces it.
-			s.SubmitHit(ar.Artist)
+			a.download(ar.Artist)
 		} else {
 			a.confirmAll, a.confirmAt = ar.ID, c.Now()
 		}

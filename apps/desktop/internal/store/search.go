@@ -6,11 +6,13 @@ import (
 	"unicode/utf8"
 
 	"amdl/internal/client"
+	"amdl/internal/config"
 	"amdl/internal/domain"
 )
 
-// Catalog search, as the web console's lib/search.js runs it: keep the two in
-// step, so both clients page and mark the same hits.
+// Catalog search pages and marks hits as the web console's lib/search.js
+// does: keep the page sizes in step. The console shows no playlists and no
+// group alone.
 const (
 	// SearchMaxTerm is the longest term the backend searches (GET search).
 	SearchMaxTerm = 200
@@ -24,7 +26,7 @@ const (
 )
 
 // SearchGroups are the result groups in the order they are shown.
-var SearchGroups = []string{"albums", "songs", "artists"}
+var SearchGroups = []string{"albums", "songs", "playlists", "artists"}
 
 // SearchStatus is how far a search or an artist's first page has come.
 type SearchStatus int
@@ -61,6 +63,9 @@ type Search struct {
 	Err    string
 	// More is a group's next page while it loads or after it failed.
 	More map[string]PageState
+	// Focus is the group shown alone, page after page, or "" for the first
+	// hits of every group. It stays as the words change.
+	Focus string
 	// Artist is the artist whose albums show instead of the hits.
 	Artist ArtistPages
 	// Album is the album the album screen shows, opened from a hit.
@@ -132,7 +137,7 @@ func (s *Store) WantSearch(term string) {
 	// A new term shows its own hits, not the artist opened from the last.
 	s.OpenArtist("")
 	if term == "" {
-		*q = Search{cache: q.cache, sent: q.sent, gone: q.gone, Starting: q.Starting, Artist: q.Artist, Album: q.Album, want: term, gen: q.gen}
+		*q = Search{cache: q.cache, sent: q.sent, gone: q.gone, Starting: q.Starting, Artist: q.Artist, Album: q.Album, Focus: q.Focus, want: term, gen: q.gen}
 		return
 	}
 	if r, ok := q.cache.get(term); ok {
@@ -230,6 +235,8 @@ func (s *Store) applyMore(gen int, term, group string, page *client.HitGroup, er
 		next.Songs = merged
 	case "albums":
 		next.Albums = merged
+	case "playlists":
+		next.Playlists = merged
 	case "artists":
 		next.Artists = merged
 	}
@@ -244,11 +251,20 @@ func hitGroup(r *client.SearchResult, group string) *client.HitGroup {
 		return r.Songs
 	case "albums":
 		return r.Albums
+	case "playlists":
+		return r.Playlists
 	case "artists":
 		return r.Artists
 	}
 	return nil
 }
+
+// HitGroup is r's group of that name, or nil.
+func HitGroup(r *client.SearchResult, group string) *client.HitGroup { return hitGroup(r, group) }
+
+// FocusGroup shows group alone, its pages following as they are read;
+// "" shows every group again.
+func (s *Store) FocusGroup(group string) { s.Search.Focus = group }
 
 // appendPage is g with page's hits after its own, each id once, and page's
 // next offset.
@@ -273,12 +289,19 @@ func appendPage(g, page *client.HitGroup) *client.HitGroup {
 }
 
 // ShownHits are the hits in the order the rows show them and the arrow keys
-// move through: the open artist's albums, else every group's hits.
+// move through: the open artist's albums, else the focused group's hits,
+// else every group's.
 func (q *Search) ShownHits() []client.SearchHit {
 	if q.Artist.ID != "" {
 		return q.Artist.Albums.Items
 	}
 	if q.Result == nil {
+		return nil
+	}
+	if q.Focus != "" {
+		if hg := hitGroup(q.Result, q.Focus); hg != nil {
+			return hg.Items
+		}
 		return nil
 	}
 	var out []client.SearchHit
@@ -406,15 +429,16 @@ func (s *Store) HitMark(h client.SearchHit) (MarkState, string) {
 	return MarkNone, ""
 }
 
-// SubmitHit downloads exactly h, with the preset chosen on the screen.
-func (s *Store) SubmitHit(h client.SearchHit) {
+// SubmitHit downloads exactly h under overrides (nil: the backend's
+// settings).
+func (s *Store) SubmitHit(h client.SearchHit, overrides *config.DownloadOverrides) {
 	key := HitKey(h)
 	q := &s.Search
 	if _, on := q.Starting[key]; on {
 		return
 	}
 	q.Starting[key] = s.now()
-	s.submit([]string{h.URL}, func(res domain.BatchSubmitResponse, err error) {
+	s.submit([]string{h.URL}, overrides, func(res domain.BatchSubmitResponse, err error) {
 		delete(q.Starting, key)
 		for _, r := range res.Results {
 			if r.Job != nil {

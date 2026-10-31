@@ -144,6 +144,8 @@ type App struct {
 	// deleteOpen keeps the dialog up.
 	deleting   *store.Job
 	deleteOpen bool
+	// asking is the download whose sheet is up, or nil.
+	asking *downloadAsk
 	// nowShown is the job the sidebar's now card shows, kept while the
 	// card closes after it.
 	nowShown *store.Job

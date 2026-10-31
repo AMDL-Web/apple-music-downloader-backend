@@ -156,16 +156,6 @@ func TestFindLinksAndRunningMatch(t *testing.T) {
 	}
 }
 
-func TestQualityOverrides(t *testing.T) {
-	if QualityDefault.overrides(false) != nil {
-		t.Error("the default preset should keep the backend's settings")
-	}
-	o := QualityLossless.overrides(true)
-	if o == nil || (*o.QualityPriority)[0] != "alac" || *o.ALACMaxSampleRate != 48000 || !*o.ForceOverwrite {
-		t.Errorf("lossless %+v", o)
-	}
-}
-
 func TestItemEventsRecountTracks(t *testing.T) {
 	s, _ := newTestStore(t)
 	stale := domain.Job{ID: "j", Status: domain.JobRunning, TotalItems: 2}

@@ -49,10 +49,11 @@ func (a *App) tileGrid(c *ui.Context, k *Tokens, key string, hits []client.Searc
 	})
 }
 
-// hitTile is an album's or an artist's tile: the cover large, its title and
-// one line of facts under it. An album's cover opens its page and carries
-// its best quality and its one control, which downloads it or says it is in
-// the queue or the library (tileControl); an artist's opens its albums.
+// hitTile is an album's, a playlist's or an artist's tile: the cover large,
+// its title and one line of facts under it. An album's cover opens its page
+// and a playlist's downloads it, or opens the download a mark names; both
+// carry the best quality and one control, which downloads it or says it is
+// in the queue or the library (tileControl). An artist's opens its albums.
 func (a *App) hitTile(c *ui.Context, k *Tokens, h client.SearchHit, key string, sel *client.SearchHit, size float32) {
 	hk := store.HitKey(h)
 	on := sel != nil && store.HitKey(*sel) == hk
@@ -75,10 +76,13 @@ func (a *App) hitTile(c *ui.Context, k *Tokens, h client.SearchHit, key string, 
 				}
 			}
 			if open.Clicked() {
-				if round {
+				switch h.Type {
+				case "artist":
 					a.openArtist(h)
-				} else {
+				case "album":
 					a.OpenAlbum(h)
+				default:
+					a.openOrDownload(h)
 				}
 			}
 			open.Cursor(ui.CursorPointer).Children(func() {
@@ -158,10 +162,13 @@ func (a *App) tileControl(c *ui.Context, k *Tokens, h client.SearchHit, shown bo
 	}
 	b.Opacity(op).Hidden(op < 0.01)
 	if b.Clicked() && !starting {
-		if mark == store.MarkActive {
+		switch {
+		case mark == store.MarkActive && h.Type == "album":
 			a.OpenAlbum(h)
-		} else {
-			s.SubmitHit(h)
+		case mark == store.MarkActive:
+			a.openOrDownload(h)
+		default:
+			a.download(h)
 		}
 	}
 	b.Cursor(ui.CursorPointer).Children(func() {
@@ -233,7 +240,7 @@ func (a *App) songCard(c *ui.Context, k *Tokens, h client.SearchHit, key string,
 				dl.Background(k.Track)
 			}
 			if dl.Clicked() {
-				s.SubmitHit(h)
+				a.download(h)
 			}
 			dl.Cursor(ui.CursorPointer).Children(func() { ui.Icon(c, icDown).FontSize(15).TextColor(k.Fg) })
 		}

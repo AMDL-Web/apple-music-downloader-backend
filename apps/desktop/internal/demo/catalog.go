@@ -66,6 +66,42 @@ var albums = []*album{
 		"海边的耳机", "潮汐表", "白色衬衫", "灯塔", "冰柠檬", "防波堤", "落日", "空房间", "回程"}},
 }
 
+// playlist is a made-up playlist, its cover an album's.
+type playlist struct {
+	id, name, curator, cover string
+}
+
+var playlists = []*playlist{
+	{id: "pl.demo0001", name: "Glass and Neon", curator: "AMDL Editors", cover: "920001"},
+	{id: "pl.demo0002", name: "Coastal Nights", curator: "Nightjar Coast", cover: "920003"},
+	{id: "pl.demo0003", name: "Orchard Sessions", curator: "The Velvet Orchard", cover: "920005"},
+	{id: "pl.demo0004", name: "夏天的电台", curator: "青柠电台", cover: "920007"},
+	{id: "pl.demo0005", name: "Signals After Dark", curator: "AMDL Editors", cover: "920002"},
+	{id: "pl.demo0006", name: "Slow Lightning Radio", curator: "Mira Solenne", cover: "920004"},
+}
+
+func (p *playlist) url() string {
+	return "https://music.apple.com/us/playlist/" + slug(p.name) + "/" + p.id
+}
+
+func (p *playlist) hit() client.SearchHit {
+	a := findAlbum(p.cover)
+	return client.SearchHit{
+		ID: p.id, Type: "playlist", Name: p.name, URL: p.url(), ArtworkURL: a.artwork(),
+		ArtworkBgColor: a.bg, ArtworkTextColor1: a.fg, ArtworkTextColor2: "ffffff",
+		ArtistName: p.curator, AudioTraits: []string{"lossless"},
+	}
+}
+
+// traits are the album's audio traits: two albums come in Dolby Atmos too,
+// so a download of them asks which to take.
+func (a *album) traits() []string {
+	if a.id == "920001" || a.id == "920003" {
+		return []string{"atmos", "lossless", "lossy-stereo", "spatial"}
+	}
+	return []string{"lossless", "lossy-stereo"}
+}
+
 // songID is a song's catalog id: its album's and its position.
 func songID(a *album, i int) string { return fmt.Sprintf("%s%02d", a.id, i+1) }
 
@@ -139,7 +175,7 @@ func (a *album) hit() client.SearchHit {
 		ID: a.id, Type: "album", Name: a.title, URL: a.url(), ArtworkURL: a.artwork(),
 		ArtworkBgColor: a.bg, ArtworkTextColor1: a.fg, ArtworkTextColor2: "ffffff",
 		ArtistName: a.artist.name, ReleaseDate: a.releaseDate(), Genre: a.artist.genre,
-		TrackCount: len(a.tracks), AudioTraits: []string{"lossless", "lossy-stereo"},
+		TrackCount: len(a.tracks), AudioTraits: a.traits(),
 	}
 }
 
@@ -149,7 +185,7 @@ func (s song) hit() client.SearchHit {
 		ID: s.id, Type: "song", Name: a.tracks[s.index], URL: s.url(), ArtworkURL: a.artwork(),
 		ArtworkBgColor: a.bg, ArtworkTextColor1: a.fg, ArtworkTextColor2: "ffffff",
 		ArtistName: a.artist.name, AlbumName: a.title, ReleaseDate: a.releaseDate(), Genre: a.artist.genre,
-		DurationMS: durationMS(s.id), AudioTraits: []string{"lossless", "lossy-stereo"},
+		DurationMS: durationMS(s.id), AudioTraits: a.traits(),
 	}
 }
 
@@ -176,13 +212,13 @@ func (a *album) detail() client.Album {
 		Storefront: "us", ID: a.id, URL: a.url(), Title: a.title, ArtistName: a.artist.name, ArtistURL: a.artist.url(),
 		ArtworkURL: a.artwork(), ArtworkBgColor: a.bg, ArtworkTextColor1: a.fg, ArtworkTextColor2: "ffffff",
 		ReleaseDate: a.releaseDate(), Genre: a.artist.genre, TrackCount: len(a.tracks), DiscCount: 1,
-		AudioTraits: []string{"lossless", "lossy-stereo"},
+		AudioTraits: a.traits(),
 	}
 	for i, name := range a.tracks {
 		id := songID(a, i)
 		out.Tracks = append(out.Tracks, client.AlbumTrack{
 			ID: id, URL: song{id: id, album: a, index: i}.url(), DiscNumber: 1, TrackNumber: i + 1,
-			Name: name, ArtistName: a.artist.name, DurationMS: durationMS(id), AudioTraits: []string{"lossless"},
+			Name: name, ArtistName: a.artist.name, DurationMS: durationMS(id), AudioTraits: a.traits(),
 		})
 	}
 	return out

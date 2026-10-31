@@ -7,6 +7,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"amdl/apps/desktop/internal/artwork"
 	"amdl/apps/desktop/internal/demo"
 	"amdl/apps/desktop/internal/store"
 	"amdl/internal/client"
@@ -18,8 +19,12 @@ func demoApp(t *testing.T) (*App, func(until func() bool)) {
 	t.Helper()
 	a, _ := newTestApp(remoteSettings())
 	queue := make(chan func(), 1024)
-	a.Store = store.New(func(fn func()) { queue <- fn }, nil)
-	c, err := client.NewWith(demo.Address, demo.New(time.Now).Transport())
+	post := func(fn func()) { queue <- fn }
+	b := demo.New(time.Now)
+	a.Store = store.New(post, nil)
+	// Covers too come back on the test's goroutine, from the demo.
+	a.Art = artwork.NewWith(post, b.Transport())
+	c, err := client.NewWith(demo.Address, b.Transport())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,10 +11,6 @@ import (
 	"amdl/apps/desktop/internal/widgets"
 )
 
-// qualityTabs are the presets of home's quality chip; the first keeps the
-// backend's own download settings.
-var qualityTabs = []store.Quality{store.QualityDefault, store.QualityHiRes, store.QualityLossless, store.QualityAtmos, store.QualityAAC}
-
 // The dock, the glass bar that starts the pasted links.
 const (
 	dockHeight = 64

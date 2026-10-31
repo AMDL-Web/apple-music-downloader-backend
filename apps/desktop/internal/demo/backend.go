@@ -76,6 +76,7 @@ func New(now func() time.Time) *Backend {
 	b.rt = roundTripper{b.handler()}
 	if dl, ok := view["download"].(map[string]any); ok {
 		dl["downloads_dir"] = musicDir
+		dl["quality_priority"] = []any{"alac", "ec3"}
 	}
 	t := now()
 	seed := []struct {

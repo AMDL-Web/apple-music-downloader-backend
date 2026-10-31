@@ -19,11 +19,6 @@ type Omnibox struct {
 	Text string
 	// Links are the Apple Music links in Text, in order, without repeats.
 	Links []*Link
-	// Quality is the preset the next submit applies, QualityDefault for the
-	// backend's own settings.
-	Quality Quality
-	// Overwrite replaces files already on disk.
-	Overwrite bool
 	// Submitting is set while a submit is under way, and SubmitSince is
 	// when it left.
 	Submitting  bool
@@ -192,50 +187,7 @@ func (s *Store) Startable() []*Link {
 	return out
 }
 
-// Quality is a preset of home's quality chip.
-type Quality int
-
-// Quality presets.
-const (
-	QualityDefault Quality = iota
-	QualityHiRes
-	QualityLossless
-	QualityAtmos
-	QualityAAC
-)
-
-// QualityLabels name the presets other than the default.
-var QualityLabels = map[Quality]string{
-	QualityHiRes: "Hi-Res", QualityLossless: "Lossless", QualityAtmos: "Atmos", QualityAAC: "AAC",
-}
-
-// overrides turns a preset into the submit's overrides; nil keeps the
-// backend's runtime download settings.
-func (q Quality) overrides(overwrite bool) *config.DownloadOverrides {
-	var o config.DownloadOverrides
-	set := false
-	list := func(codecs ...string) *[]string { return &codecs }
-	num := func(n int) *int { return &n }
-	switch q {
-	case QualityHiRes:
-		o.QualityPriority, o.ALACMaxSampleRate, o.ALACMaxBitDepth, set = list("alac"), num(192000), num(24), true
-	case QualityLossless:
-		o.QualityPriority, o.ALACMaxSampleRate, o.ALACMaxBitDepth, set = list("alac"), num(48000), num(24), true
-	case QualityAtmos:
-		o.QualityPriority, set = list("ec3", "alac"), true
-	case QualityAAC:
-		o.QualityPriority, set = list("aac"), true
-	}
-	if overwrite {
-		o.ForceOverwrite, set = &overwrite, true
-	}
-	if !set {
-		return nil
-	}
-	return &o
-}
-
-// Submit starts the startable links with the chosen preset. When every link
+// Submit starts the startable links with the backend's own settings. When every link
 // is accepted the field clears; otherwise it keeps the text and Result says
 // why each link was refused.
 func (s *Store) Submit() {
@@ -249,7 +201,7 @@ func (s *Store) Submit() {
 	}
 	o := &s.Omni
 	o.Submitting, o.SubmitSince = true, s.now()
-	s.submit(urls, func(res domain.BatchSubmitResponse, err error) {
+	s.submit(urls, nil, func(res domain.BatchSubmitResponse, err error) {
 		o.Submitting = false
 		o.Result = &res
 		switch {
@@ -264,10 +216,10 @@ func (s *Store) Submit() {
 	})
 }
 
-// submit starts urls with the screen's preset, adds the jobs it created and
-// hands the outcome to then on the UI thread.
-func (s *Store) submit(urls []string, then func(domain.BatchSubmitResponse, error)) {
-	c, ctx, overrides := s.client, s.ctx, s.Omni.Quality.overrides(s.Omni.Overwrite)
+// submit starts urls under overrides (nil: the backend's settings), adds
+// the jobs it created and hands the outcome to then on the UI thread.
+func (s *Store) submit(urls []string, overrides *config.DownloadOverrides, then func(domain.BatchSubmitResponse, error)) {
+	c, ctx := s.client, s.ctx
 	if c == nil {
 		return
 	}

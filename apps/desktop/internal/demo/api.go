@@ -347,7 +347,7 @@ func (b *Backend) lookup(w http.ResponseWriter, r *http.Request) {
 	l := client.Lookup{Input: body.URL, Type: "album", Storefront: "us", ID: a.id, Title: a.title, ArtistName: a.artist.name,
 		ArtistURL: a.artist.url(), ArtworkURL: a.artwork(), ArtworkBgColor: a.bg, ArtworkTextColor1: a.fg,
 		ArtworkTextColor2: "ffffff", ReleaseDate: a.releaseDate(), Genre: a.artist.genre, TrackCount: len(a.tracks),
-		AudioTraits: []string{"lossless", "lossy-stereo"}}
+		AudioTraits: a.traits()}
 	if one != nil {
 		l.Type, l.TrackID, l.Title, l.AlbumName, l.TrackCount, l.DurationMS = "song", one.id, a.tracks[one.index], a.title, 0, durationMS(one.id)
 	}
@@ -361,7 +361,7 @@ func (b *Backend) search(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "term is required")
 		return
 	}
-	types := map[string]bool{"songs": true, "albums": true, "artists": true}
+	types := map[string]bool{"songs": true, "albums": true, "playlists": true, "artists": true}
 	if t := q.Get("types"); t != "" {
 		types = map[string]bool{}
 		for _, s := range strings.Split(t, ",") {
@@ -397,6 +397,15 @@ func (b *Backend) search(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		res.Albums = page(hits, limit, offset)
+	}
+	if types["playlists"] {
+		var hits []client.SearchHit
+		for _, p := range playlists {
+			if match(p.name, p.curator) {
+				hits = append(hits, b.marked(p.hit()))
+			}
+		}
+		res.Playlists = page(hits, limit, offset)
 	}
 	if types["songs"] {
 		var hits []client.SearchHit

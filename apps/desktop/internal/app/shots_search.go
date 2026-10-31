@@ -48,7 +48,7 @@ func (a *App) searchShots(shot func(name string, setup func(), settle time.Durat
 	shot("21-search-start", func() {
 		for _, h := range a.store.Search.ShownHits() {
 			if h.Type == "album" && h.ID == shotAlbumID {
-				a.store.SubmitHit(h)
+				a.store.SubmitHit(h, nil)
 			}
 		}
 	}, 4*time.Second)

@@ -40,6 +40,10 @@ type Settings struct {
 	Theme string `json:"theme,omitempty"`
 	// HideSidebar keeps the main window's sidebar closed.
 	HideSidebar bool `json:"hide_sidebar,omitempty"`
+	// SkipExisting downloads again what is in the library without asking,
+	// skipping the tracks already on disk; off, the download asks whether
+	// to replace them.
+	SkipExisting bool `json:"skip_existing,omitempty"`
 }
 
 // DefaultSettings are a first launch's settings.

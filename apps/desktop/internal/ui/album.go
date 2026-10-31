@@ -190,6 +190,7 @@ func (a *App) albumScreen(c *ui.Context, k *Tokens, page float32) {
 		a.Back()
 		return
 	}
+	a.Store.WatchConfig()
 	padX := float32(32)
 	if a.compact {
 		padX = 20
@@ -295,12 +296,8 @@ func (a *App) albumActions(c *ui.Context, k *Tokens, hc heroColors) {
 				ui.Icon(c, icCheck).FontSize(14).TextColor(k.OK)
 				ui.Text(c, "In your library").FontSize(12.5).FontWeight(600).TextColor(k.OK).SingleLine()
 			})
-			again := "Download again: tracks already on disk are skipped"
-			if s.Omni.Overwrite {
-				again = "Download again: replaces the files on disk"
-			}
-			if buttonOff(c, k, buttonPlain, "Download again", icDown, wait).Height(34).Label(again).Clicked() && !starting {
-				s.SubmitHit(h)
+			if buttonOff(c, k, buttonPlain, "Download again", icDown, wait).Height(34).Label("Download "+h.Name+" again").Clicked() && !starting {
+				a.download(h)
 			}
 			showJob()
 		})
@@ -308,9 +305,8 @@ func (a *App) albumActions(c *ui.Context, k *Tokens, hc heroColors) {
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Wrap().Children(func() {
 			if buttonOff(c, k, buttonPrimary, "Download", icDown, wait).Height(34).PaddingX(16).
 				Label("Download "+h.Name).Clicked() && !starting {
-				s.SubmitHit(h)
+				a.download(h)
 			}
-			a.homeChips(c, k)
 		})
 	}
 }
@@ -446,7 +442,7 @@ func (a *App) trackDownload(c *ui.Context, k *Tokens, th client.SearchHit, shown
 	op := b.AnimateWith("shown", show, 120*time.Millisecond, ui.EaseOut)
 	b.Opacity(op).Hidden(op < 0.01)
 	if b.Clicked() {
-		a.Store.SubmitHit(th)
+		a.download(th)
 	}
 	b.Cursor(ui.CursorPointer).Children(func() { ui.Icon(c, icDown).FontSize(14).TextColor(k.Fg) })
 }
