@@ -34,6 +34,7 @@ var slashes = []slash{
 	{"/system", "", "show the server's version, queue and free space"},
 	{"/wrapper", "", "show whether an Apple ID is signed in"},
 	{"/login", "", "sign the wrapper in to an Apple ID"},
+	{"/quality", "", "order the qualities the server tries, or turn them off"},
 	{"/config", "[key]", "show the runtime config or one key"},
 	{"/reload", "", "re-read config.yaml on the server"},
 	{"/help", "", "keys and commands"},
@@ -94,6 +95,10 @@ func (m *model) onKey(k tea.KeyPressMsg) tea.Cmd {
 		}
 	case panelAsk:
 		if cmd, ok := m.askKey(key); ok {
+			return cmd
+		}
+	case panelPriority:
+		if cmd, ok := m.priorityKey(key); ok {
 			return cmd
 		}
 	case panelPreview:
@@ -196,7 +201,7 @@ func (m *model) closePanel() {
 	if m.panel == panelLogin {
 		m.endLogin()
 	}
-	m.panel, m.preview, m.links, m.res, m.ask = panelNone, nil, nil, nil, nil
+	m.panel, m.preview, m.links, m.res, m.ask, m.priority = panelNone, nil, nil, nil, nil, nil
 }
 
 // resultsKey handles the keys of the search list; ok is false for keys the
@@ -533,6 +538,8 @@ func (m *model) command(line string) tea.Cmd {
 			}
 			return b.String(), nil
 		})
+	case "/quality":
+		return m.openPriority()
 	case "/config":
 		return m.do("config", func(ctx context.Context) (string, error) {
 			raw, err := m.c.Call(ctx, http.MethodGet, "/api/v1/config", nil, nil)

@@ -56,6 +56,8 @@ func (m *model) panelView(w, room int) string {
 		return m.helpView(w)
 	case panelAsk:
 		return m.askView(w)
+	case panelPriority:
+		return m.priorityView(w, room)
 	}
 	return m.menuView(w, room)
 }

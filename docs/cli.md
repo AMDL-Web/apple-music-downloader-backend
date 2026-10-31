@@ -239,6 +239,9 @@ screen is redrawn.
   it (↑↓ choose, Tab completes, Enter runs; `/help` shows them all, `/login` signs the wrapper in without
   echoing the password). Esc closes a panel, drops a search still in flight, or clears
   the prompt.
+- **`/quality`** lists the qualities of `download.quality_priority`, the ones on in the
+  order the server tries them, then the rest: shift+↑↓ moves one, Space turns one on or
+  off (one stays on; AAC-LC is always tried last and not listed), Enter saves.
 - **A download from search asks first** only where there is a choice, below the prompt:
   Lossless or Dolby Atmos where a hit has both and the server's
   `download.quality_priority` lists both (`internal/format#QualityChoices`; the one it

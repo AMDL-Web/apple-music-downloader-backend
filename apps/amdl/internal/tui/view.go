@@ -328,6 +328,8 @@ func (m *model) hints() []string {
 		return []string{"enter downloads", "esc dismisses"}
 	case panelConfirm:
 		return []string{"y deletes", "n keeps"}
+	case panelPriority:
+		return []string{"enter saves", "space turns on/off", "shift+↑↓ moves", "esc cancels"}
 	case panelAsk:
 		h := []string{"enter downloads", "←→ chooses", "esc goes back"}
 		if m.ask != nil && m.ask.codecs != nil && m.ask.again {

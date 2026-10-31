@@ -148,3 +148,42 @@ func TestEscDropsADownloadWaitingForItsChoices(t *testing.T) {
 		t.Error("the choices opened after esc")
 	}
 }
+
+// /quality orders the qualities the server tries and turns them on or off,
+// keeping one on, as the desktop app's codec priority does.
+func TestQualityPriorityIsEditedFromTheKeyboard(t *testing.T) {
+	m := sample(t)
+	m.update(priorityMsg{gen: m.read("reading"), priority: []string{"alac", "nonsense"}})
+	if m.panel != panelPriority {
+		t.Fatalf("panel %v", m.panel)
+	}
+	p := m.priority
+	if want := []string{"alac", "ec3", "ac3", "aac", "aac-binaural", "aac-downmix"}; !slices.Equal(p.rows(), want) {
+		t.Fatalf("rows %v, want the one on first, then the rest", p.rows())
+	}
+	m.priorityKey("space")
+	if !p.last || !slices.Equal(p.on, []string{"alac"}) {
+		t.Errorf("the last quality on was turned off: %v", p.on)
+	}
+	m.priorityKey("down")
+	m.priorityKey("space") // Dolby Atmos on, after ALAC
+	m.priorityKey("shift+up")
+	if !slices.Equal(p.on, []string{"ec3", "alac"}) || p.cursor != 0 {
+		t.Errorf("moved up: %v, cursor %d", p.on, p.cursor)
+	}
+	m.priorityKey("down")
+	m.priorityKey("down")
+	m.priorityKey("shift+up") // AC-3 is off: it does not move
+	if !slices.Equal(p.on, []string{"ec3", "alac"}) {
+		t.Errorf("a quality that is off moved: %v", p.on)
+	}
+	for _, w := range []int{100, 40} {
+		out := stripANSI(m.priorityView(w, 10))
+		if !strings.Contains(out, "1  Dolby Atmos (E-AC-3)") || !strings.Contains(out, "2  ALAC (lossless)") {
+			t.Errorf("%d columns: the order shows:\n%s", w, out)
+		}
+	}
+	if cmd, _ := m.priorityKey("enter"); cmd == nil || m.panel != panelNone {
+		t.Error("enter saves and closes")
+	}
+}

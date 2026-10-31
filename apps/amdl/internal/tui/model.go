@@ -93,6 +93,7 @@ const (
 	panelLogin
 	panelHelp
 	panelAsk
+	panelPriority
 )
 
 type pick struct {
@@ -176,6 +177,7 @@ type model struct {
 	links    []string
 	res      *results
 	ask      *ask
+	priority *priorityEdit
 	confirm  struct{ prompt, id string }
 	loginSt  struct{ step, username, password, loginID string }
 	quitHint time.Time
@@ -343,6 +345,8 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		return m.onPage(msg)
 	case choicesMsg:
 		return m.onChoices(msg)
+	case priorityMsg:
+		return m.onPriority(msg)
 	case albumsMsg:
 		if msg.gen != m.reqGen {
 			return nil
