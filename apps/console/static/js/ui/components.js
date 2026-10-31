@@ -48,12 +48,12 @@ export function Chip({ children, title, mono }) {
  * then an opt-in hook the base hides: .jprog-legend (a count per cell state),
  * hidden from screen readers because it repeats aria-valuetext. Inside a
  * RatesContext (the Overview's live queue) the legend's last word is the job's
- * average speed and time left.
+ * time left.
  */
 export function JobProgress({ job }) {
   const rates = useContext(RatesContext);
   const rate = rates && rates[job.id];
-  const words = rate ? speedWords(rate.avg, rate.left) : null;
+  const words = rate ? speedWords(0, rate.left) : null;
   const p = jobProgress(job);
   const cells = progressCells(job);
   const legend = progressLegend(job);
@@ -66,12 +66,8 @@ export function JobProgress({ job }) {
               <span class="jprog-key-n">${k.n}</span> <span class="jprog-key-label">${k.label}</span>
             </span>`,
           )}
-          ${words && (words.rate || words.time)
-            ? html`<span class="jprog-rate" title=${[words.avg, words.left].filter(Boolean).join(' · ')}>
-                ${words.rate ? html`<span><span class="jprog-rate-word">avg </span>${words.rate}</span>` : null}
-                ${words.rate && words.time ? ' · ' : null}
-                ${words.time ? html`<span>${words.time}<span class="jprog-rate-word"> left</span></span>` : null}
-              </span>`
+          ${words && words.time
+            ? html`<span class="jprog-rate" title=${words.left}>${words.time}<span class="jprog-rate-word"> left</span></span>`
             : null}
         </span>`
       : null,
