@@ -210,7 +210,9 @@ const prefetchSubpriority = 1 << 40
 // have the wrapper alternate between the two. Once needed is closed the key
 // leaves that lane and competes for a playback permit at its track's rank, as
 // a /key asked for at decrypt time does. A prefetch holding the manifest permit
-// keeps a /m3u8 waiting for at most that one /key.
+// keeps a /m3u8 waiting until its /key is served, and that /key may itself wait
+// for a playback permit behind needed keys of lower-ranked tracks, which a
+// /m3u8 waits behind anyway.
 func (c *Client) withKeyPermits(ctx context.Context, needed <-chan struct{}, run func() error) error {
 	wait := playbackWaitTimeouts * c.timeout
 	waitCtx, cancel := context.WithTimeout(ctx, wait)

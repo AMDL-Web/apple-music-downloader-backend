@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"amdl/internal/applemusic"
 	"amdl/internal/domain"
@@ -185,20 +186,25 @@ func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected
 type keyPrefetch struct {
 	keys []string
 	stop context.CancelFunc
+	// failed is set by the fetch's goroutine when the fetch fails.
+	failed *atomic.Bool
 }
 
-// start fetches keys for songID in the background unless that fetch already
-// runs. A retry that chose a stream with other keys ends the old fetch.
+// start fetches keys for songID in the background unless a fetch of the same
+// keys runs or succeeded. A retry that chose a stream with other keys ends the
+// old fetch; one after a failed fetch starts it again.
 func (p *keyPrefetch) start(ctx context.Context, d *Downloader, songID string, keys []string) {
-	if len(keys) == 0 || (p.stop != nil && slices.Equal(p.keys, keys)) {
+	if len(keys) == 0 || (p.stop != nil && slices.Equal(p.keys, keys) && !p.failed.Load()) {
 		return
 	}
 	p.end()
 	ctx, cancel := context.WithCancel(ctx)
-	p.keys, p.stop = keys, cancel
+	failed := new(atomic.Bool)
+	p.keys, p.stop, p.failed = keys, cancel, failed
 	backend, log := d.backend(), logging.FromContext(ctx, d.logger)
 	go func() {
 		if err := backend.prefetchKeys(ctx, songID, keys); err != nil && ctx.Err() == nil {
+			failed.Store(true)
 			log.Warn("key prefetch failed; the decrypt stage asks again", "song_id", songID, "error", err)
 		}
 	}()

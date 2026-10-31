@@ -548,6 +548,25 @@ func TestFailedKeyPrefetchIsLogged(t *testing.T) {
 	}
 }
 
+// A retry after a failed prefetch prefetches again: the failure dropped the
+// key from the cache, so otherwise the decrypt stage would queue for it anew.
+func TestFailedKeyPrefetchStartsAgainOnRetry(t *testing.T) {
+	rec := &prefetchRecorder{fail: fmt.Errorf("wrapper refused the key")}
+	d := newTestDownloader(&Downloader{cfg: config.Default(), wrapper: rec.wrapper()})
+	keys := &keyPrefetch{}
+	defer keys.end()
+	keys.start(context.Background(), d, "song", []string{"skd://k"})
+	deadline := time.Now().Add(5 * time.Second)
+	for !keys.failed.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("the first prefetch never failed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	keys.start(context.Background(), d, "song", []string{"skd://k"})
+	waitForPrefetches(t, rec, 2)
+}
+
 // waitForPrefetches waits until rec has seen at least n prefetches; one starts
 // in its own goroutine.
 func waitForPrefetches(t *testing.T, rec *prefetchRecorder, n int) {
