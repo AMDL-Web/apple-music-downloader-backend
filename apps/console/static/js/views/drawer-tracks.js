@@ -7,6 +7,7 @@ import { trackLength, bytes, codecMeaning } from '../lib/format.js';
 import { albumCodec, trackView, trackNote, stagePercent } from '../lib/jobview.js';
 import { itemStatusView, isTerminal } from '../lib/status.js';
 import { albumProgress } from '../lib/album-progress.js';
+import { useJobRate } from '../ui/job-rate.js';
 import { StatusText, StageTrack, Icon, Chip } from '../ui/components.js';
 
 const OUTCOME_WORDS = { completed: 'saved', skipped_existing: 'already on disk', failed: 'failed', cancelled: 'cancelled' };
@@ -23,6 +24,8 @@ const OUTCOME_WORDS = { completed: 'saved', skipped_existing: 'already on disk',
  */
 export function AlbumProgress({ job, items }) {
   const p = albumProgress(job.status, items);
+  const rate = useJobRate(job, items, p.fraction);
+  const speed = [rate.avg, rate.left].filter(Boolean).join(' · ');
   const resolving = p.total === 0;
   const short = isTerminal(job.status) && job.status !== 'completed';
   const counts = {};
@@ -53,7 +56,7 @@ export function AlbumProgress({ job, items }) {
       </span>
     </div>
     <div class="abar-caption num" aria-hidden="true">
-      <span class="abar-count">${resolving ? 'Resolving' : `${short ? p.onDisk : p.lit} / ${p.total}`}</span>
+      <span class="abar-count">${resolving ? 'Resolving' : `${short ? p.onDisk : p.lit} / ${p.total}`}${speed ? html`<span class="abar-rate" title=${speed}>${speed}</span>` : null}</span>
       <span class="abar-pct">${resolving || short || p.total === 1 ? '' : `${p.percent}%`}</span>
     </div>
   </div>`;

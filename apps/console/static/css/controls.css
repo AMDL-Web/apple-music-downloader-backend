@@ -481,6 +481,18 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* A running job's average speed and time left, the legend's last word (inside
+   a RatesContext). It takes what the keys leave and gives way to them. */
+.jprog-rate {
+  flex: 1 1 0;
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .jprog-key {
   display: inline-flex;
   align-items: center;

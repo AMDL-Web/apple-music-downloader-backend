@@ -86,3 +86,11 @@ test('albumProgress counts the tracks on disk for a job that ended short', () =>
   assert.equal(p.onDisk, 2);
   assert.equal(albumProgress('running', [item(1, 'completed'), item(2, 'queued')]).onDisk, 1);
 });
+
+test('the fraction is the overall progress before it is rounded to a percent', () => {
+  const p = albumProgress('running', [item(1, 'completed'), item(2, 'downloading', { progress: { resolved: true, download: 0.5 } })]);
+  near(p.fraction, (1 + W.resolve + W.download * 0.5) / 2);
+  assert.equal(p.percent, Math.round(p.fraction * 100));
+  assert.equal(albumProgress('completed', [item(1, 'completed')]).fraction, 1);
+  assert.equal(albumProgress('running', []).fraction, 0);
+});

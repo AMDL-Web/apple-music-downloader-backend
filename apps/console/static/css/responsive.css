@@ -287,6 +287,11 @@
     grid-area: prog;
   }
 
+  /* The live cards' speed keeps its numbers and drops its filler words. */
+  .jprog-rate-word {
+    display: none;
+  }
+
   .job-row[data-progress="off"],
   .job-list-compact .job-row[data-progress="off"] {
     grid-template-areas: "art main status";

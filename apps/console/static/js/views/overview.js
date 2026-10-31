@@ -10,6 +10,7 @@ import { SETTINGS_SECTIONS } from '../lib/settings-sections.js';
 import { buildHash, settingsHash } from '../lib/route.js';
 import { useApp, Card, Icon, Badge, ErrorNote, SkeletonJobRows, Skeleton, LinkButton, Button, RelTime, StatusText } from '../ui/components.js';
 import { useNow } from '../ui/hooks.js';
+import { RatesContext, useLiveRates } from '../ui/job-rate.js';
 import { useStatus } from '../ui/system-status.js';
 import { cached, remember } from '../lib/cache.js';
 import { JobRow, applyFeedToList } from './queue.js';
@@ -98,6 +99,7 @@ function LiveQueue({ loggedOut }) {
   useEffect(() => {
     load();
   }, [app.epoch, stamp]);
+  const rates = useLiveRates(state.jobs);
   const jobsRef = useRef(state.jobs);
   jobsRef.current = state.jobs;
   useEffect(
@@ -127,9 +129,11 @@ function LiveQueue({ loggedOut }) {
   else if (state.error) body = html`<${ErrorNote} title="Couldn't load the queue" error=${state.error} onRetry=${load} />`;
   else if (state.loading || state.jobs.length === 0) body = html`<${LiveIdle} loggedOut=${loggedOut} />`;
   else
-    body = html`<ul class="job-list job-list-compact" aria-label="Active jobs">
-      ${state.jobs.map((job) => html`<li key=${job.id}><${JobRow} job=${job} href=${buildHash('overview', {}, job.id)} /></li>`)}
-    </ul>`;
+    body = html`<${RatesContext.Provider} value=${rates}>
+      <ul class="job-list job-list-compact" aria-label="Active jobs">
+        ${state.jobs.map((job) => html`<li key=${job.id}><${JobRow} job=${job} href=${buildHash('overview', {}, job.id)} /></li>`)}
+      </ul>
+    </${RatesContext.Provider}>`;
   return html`<${Card}
     className="card-flush"
     section="live"

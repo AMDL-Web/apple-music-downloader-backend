@@ -54,14 +54,15 @@ const finishTime = (item) => {
  * - `live`: the translucent fill's end, never behind the solid fill.
  * - `percent`: the overall progress, the mean of itemFraction. It stays below
  *   100 while a track is still working (200 tracks with one left would round
- *   up) and is 100 once the job completes.
+ *   up) and is 100 once the job completes. `fraction` is the same, unrounded
+ *   (0..1), for the time-left estimate (lib/speed.js).
  * - `ticks`: cells to cut the bar into, 0 for none (one track, or more than
  *   TICK_MAX).
  * - `onDisk`: the tracks saved or already on disk, what a job that ended
  *   short of completion counts.
  *
  * A single track is not segmented: the solid fill is its own progress.
- * @returns {{total: number, lit: number, onDisk: number, runs: {state: string, role: string, share: number}[], done: number, live: number, percent: number, ticks: number}}
+ * @returns {{total: number, lit: number, onDisk: number, runs: {state: string, role: string, share: number}[], done: number, live: number, percent: number, fraction: number, ticks: number}}
  */
 export function albumProgress(jobStatus, items) {
   const list = Array.isArray(items) ? items.filter(Boolean) : [];
@@ -98,6 +99,7 @@ export function albumProgress(jobStatus, items) {
     done,
     live: total > 1 ? Math.max(done, overall) : done,
     percent: Math.round(overall * 100),
+    fraction: overall,
     ticks: total >= 2 && total <= TICK_MAX ? total : 0,
   };
 }

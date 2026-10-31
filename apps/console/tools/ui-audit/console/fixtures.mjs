@@ -78,7 +78,7 @@ const CODECS = {
 function stageFields(stage, frac, codecKey) {
   const c = CODECS[codecKey] || CODECS['alac-24-48'];
   const label = c.codec === 'alac' ? 'ALAC' : c.codec.toUpperCase();
-  const p = { download: 0, decrypt: 0, resolved: false, remuxed: false, verified: false, tagged: false, saved: false };
+  const p = { download: 0, decrypt: 0, download_bytes: 0, resolved: false, remuxed: false, verified: false, tagged: false, saved: false };
   const withCodec = { codec: c.codec, bit_depth: c.bit_depth, sample_rate: c.sample_rate, bitrate: c.bitrate };
   switch (stage) {
     case 'queued':
@@ -120,6 +120,18 @@ function stageFields(stage, frac, codecKey) {
     default:
       throw new Error(`unknown stage ${stage}`);
   }
+}
+
+const PAST_DOWNLOAD = new Set(['waiting_decrypt', 'decrypting', 'remuxing', 'tagging', 'saving', 'completed']);
+
+/**
+ * `progress.download_bytes` of a track of `size` bytes in a stage: the share
+ * of the file received while it downloads (or when it failed part-way), all of
+ * it once the transfer is over, 0 before.
+ */
+export function downloadBytes(stage, frac, size) {
+  if (PAST_DOWNLOAD.has(stage)) return size;
+  return stage === 'downloading' || stage === 'failed' ? Math.round((frac || 0) * size) : 0;
 }
 
 /** The order a track moves through; used by the live ticker. */
@@ -195,6 +207,7 @@ export function makeJob(world, spec) {
     const durationMs = s.duration_ms || 180000 + Math.floor(r() * 120000);
     const size = Math.round((durationMs / 1000) * ((f.bitrate || 1800000) / 8) * (0.95 + r() * 0.1));
     const updated = finished ? finished - (n - i) * 1500 : (started || created) + i * 1000;
+    f.progress = { ...f.progress, download_bytes: downloadBytes(stage, frac, size) };
     const item = {
       id: hexId('item', `${spec.key}:${i}`),
       job_id: id,

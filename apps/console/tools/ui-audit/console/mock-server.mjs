@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { albumProgress } from '../../../static/js/lib/album-progress.js';
-import { WORLDS, CATALOG, LOSSY_ALBUM, CODECS, STAGE_ORDER, stageFields, findAlbum, makeJob, stats, system, iso } from './fixtures.mjs';
+import { WORLDS, CATALOG, LOSSY_ALBUM, CODECS, STAGE_ORDER, stageFields, downloadBytes, findAlbum, makeJob, stats, system, iso } from './fixtures.mjs';
 
 const STATIC_DIR = fileURLToPath(new URL('../../../static/', import.meta.url));
 const CONSOLE_GO = fileURLToPath(new URL('../../../console.go', import.meta.url));
@@ -190,8 +190,10 @@ export async function startMockServer({ port = 0, host = '127.0.0.1', world = 'a
             }
           }
           Object.assign(it, stageFields(stage, frac, CODECS[codecKey] ? codecKey : 'alac-24-48'), { updated_at: iso(Date.now()) });
+          const size = Math.round((it.duration_ms / 1000) * ((it.bitrate || 1800000) / 8));
+          it.progress.download_bytes = downloadBytes(stage, frac, size);
           if (stage === 'completed') {
-            it.file_size = Math.round((it.duration_ms / 1000) * ((it.bitrate || 1800000) / 8));
+            it.file_size = size;
             it.output_path = `/app/data/downloads/albums/${job.artist_name}/${job.title}/${String(it.index).padStart(2, '0')}. ${it.title}.m4a`;
             w.addEvent({ job_id: job.id, item_id: it.id, type: 'item_completed', message: 'saved', payload: { ...it } });
           } else {
@@ -205,6 +207,14 @@ export async function startMockServer({ port = 0, host = '127.0.0.1', world = 'a
           w.addEvent({ job_id: job.id, type: job.status === 'failed' ? 'job_failed' : 'job_finished', message: 'job finished', payload: { ...job } });
         } else job.updated_at = iso(Date.now());
       }
+    }
+    // The feed pushes a running job again every 2 s while its progress moves,
+    // between the milestones.
+    const last = w.events.length ? w.events[w.events.length - 1].id : 0;
+    for (const job of w.jobs.values()) {
+      if (job.status !== 'running' || !job.title) continue;
+      const msg = { type: 'download_upserted', job: withProgress(w, job), event_id: last, status_counts: statusCounts(w) };
+      for (const res of feeds) send(res, last, msg.type, msg);
     }
     return moved;
   }
