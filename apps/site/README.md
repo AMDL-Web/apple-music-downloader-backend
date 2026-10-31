@@ -92,7 +92,9 @@ The domain is in the maintainer's Cloudflare zone: `amdl` is a CNAME to
 `amdl-web.github.io` with the proxy on, and the repository's Pages settings name
 `amdl.lyjw.me` as the custom domain. Cloudflare holds the certificate, redirects `http`
 to `https` (the zone's Always Use HTTPS) and sends the files Brotli-compressed, the
-desktop demo's `.wasm` included. It reaches
+desktop demo's `.wasm` included: GitHub Pages answers with gzip, which Cloudflare would
+pass through, so a compression rule on `amdl.lyjw.me` (Brotli first, then Auto) has it
+re-encode them. It reaches
 GitHub over HTTPS without checking GitHub's certificate (the zone's SSL mode Full):
 GitHub cannot issue a certificate for a proxied name, so Pages' own certificate and its
 Enforce HTTPS setting stay off.
