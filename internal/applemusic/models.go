@@ -87,7 +87,8 @@ type Collection struct {
 	// URL (attributes.url) and TrackCount (attributes.trackCount, the whole
 	// release) are filled for album summaries: search hits and an artist's
 	// albums. AudioTraits (amp-api's attributes.audioTraits) is filled for
-	// those and by Album.
+	// those, by Album and for playlists. Playlists have no TrackCount: the
+	// catalog states none.
 	URL         string
 	TrackCount  int
 	AudioTraits []string
@@ -291,6 +292,11 @@ type playlistAttributes struct {
 	CuratorName string  `json:"curatorName"`
 	ArtistName  string  `json:"artistName"`
 	Artwork     artwork `json:"artwork"`
+	// URL is the documented attributes.url of a Playlists resource.
+	URL string `json:"url"`
+	// AudioTraits is amp-api only, as on songs and albums; search hits carry
+	// it, empty so far.
+	AudioTraits []string `json:"audioTraits"`
 }
 
 type artwork struct {

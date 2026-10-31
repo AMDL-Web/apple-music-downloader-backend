@@ -299,7 +299,7 @@ func inputSchema(c capability.Capability) map[string]any {
 var paramDescriptions = map[string]string{
 	"job_id":               "The job's id, job_<32 hex>.",
 	"url":                  "One Apple Music link, such as the url of a search hit.",
-	"search_catalog.types": "The groups to search: any of songs, albums, artists; default all three.",
+	"search_catalog.types": "The groups to search: any of songs, albums, playlists, artists; default all four.",
 	"get_logs.cursor":      "Only entries after this sequence number: the next_cursor of the previous page.",
 	"get_logs.limit":       "Maximum number of entries to return; default 200.",
 }

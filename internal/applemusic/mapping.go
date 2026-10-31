@@ -107,6 +107,17 @@ func mapAlbumSummary(raw catalogAlbumData) Collection {
 	}
 }
 
+// mapPlaylistSummary maps a playlist resource without its tracks: a search hit
+// or the head of Playlist. Artist is the curator.
+func mapPlaylistSummary(raw catalogPlaylistData) Collection {
+	return Collection{
+		ID: raw.ID, Type: TypePlaylist, Name: raw.Attributes.Name,
+		Artist:     firstNonEmpty(raw.Attributes.CuratorName, raw.Attributes.ArtistName),
+		ArtworkURL: raw.Attributes.Artwork.URL, ArtworkColors: raw.Attributes.Artwork.colors(),
+		URL: raw.Attributes.URL, AudioTraits: raw.Attributes.AudioTraits,
+	}
+}
+
 func mapArtist(raw artistData) Artist {
 	return Artist{
 		ID: raw.ID, Name: raw.Attributes.Name, URL: raw.Attributes.URL, GenreNames: raw.Attributes.GenreNames,

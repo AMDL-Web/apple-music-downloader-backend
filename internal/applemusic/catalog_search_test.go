@@ -49,7 +49,7 @@ func TestSearchMapsTheRecordedResponse(t *testing.T) {
 		t.Fatalf("path = %q", req.Path)
 	}
 	q := req.Query()
-	if q.Get("term") != "Taylor Swift" || q.Get("types") != "songs,albums,artists" || q.Get("limit") != "2" || q.Get("l") != "zh-Hans_CN" || q.Has("offset") {
+	if q.Get("term") != "Taylor Swift" || q.Get("types") != "songs,albums,playlists,artists" || q.Get("limit") != "2" || q.Get("l") != "zh-Hans_CN" || q.Has("offset") {
 		t.Fatalf("query = %v", q)
 	}
 
@@ -99,6 +99,38 @@ func TestSearchMapsTheRecordedResponse(t *testing.T) {
 	}
 }
 
+// Playlists come from testdata/search-playlists-us.json, captured live: one a
+// listener's playlist (playlistType external) and one Apple's own (editorial).
+func TestSearchMapsPlaylists(t *testing.T) {
+	client, req := recordedCatalog(t, "search-playlists-us.json", http.StatusOK)
+	res, err := client.Search(context.Background(), "us", "lofi beats to study", []SearchType{SearchPlaylists}, 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := req.Query(); q.Get("types") != "playlists" || q.Get("limit") != "2" {
+		t.Fatalf("query = %v", q)
+	}
+	if len(res.Playlists) != 2 || len(res.Songs)+len(res.Albums)+len(res.Artists) != 0 {
+		t.Fatalf("results = %+v", res)
+	}
+	curated := res.Playlists[0]
+	if curated.ID != "pl.2553030a768547e9ab3e91230de8439f" || curated.Type != TypePlaylist || curated.Artist != "BeatTape" || curated.Name == "" {
+		t.Fatalf("curated playlist = %+v", curated)
+	}
+	if curated.URL != "https://music.apple.com/us/playlist/lo-fi-beats-to-study-work-sleep-and-relax-to/pl.2553030a768547e9ab3e91230de8439f?l=zh-Hans-CN" {
+		t.Fatalf("curated url = %q", curated.URL)
+	}
+	if !strings.Contains(curated.ArtworkURL, "{w}x{h}") || curated.TrackCount != 0 || len(curated.Tracks) != 0 {
+		t.Fatalf("curated artwork %q, track count %d, tracks %d", curated.ArtworkURL, curated.TrackCount, len(curated.Tracks))
+	}
+	if editorial := res.Playlists[1]; editorial.ID != "pl.e090651aa73242cb9ed6eedef081fcfe" || editorial.Artist != "Apple Music 嘻哈/说唱" {
+		t.Fatalf("editorial playlist = %+v", editorial)
+	}
+	if want := map[SearchType]int{SearchPlaylists: 2}; !reflect.DeepEqual(res.NextOffset, want) {
+		t.Fatalf("next offsets = %v, want %v", res.NextOffset, want)
+	}
+}
+
 func TestSearchReadsNonLatinTermsAndStorefronts(t *testing.T) {
 	client, req := recordedCatalog(t, "search-jp.json", http.StatusOK)
 	res, err := client.Search(context.Background(), "jp", "星街すいせい", []SearchType{SearchSongs, SearchArtists}, 2, 4)
@@ -125,7 +157,7 @@ func TestSearchWithoutHits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Songs)+len(res.Albums)+len(res.Artists) != 0 || len(res.NextOffset) != 0 {
+	if len(res.Songs)+len(res.Albums)+len(res.Playlists)+len(res.Artists) != 0 || len(res.NextOffset) != 0 {
 		t.Fatalf("results = %+v", res)
 	}
 }

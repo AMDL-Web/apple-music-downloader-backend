@@ -202,7 +202,7 @@ CORS 头。
 | **下载** | `POST /downloads` · `GET /downloads` · `GET/DELETE /downloads/{id}` · `POST /downloads/{id}/cancel` · `POST /downloads/{id}/retry` |
 | **事件** | `GET /downloads/{id}/events` 单个作业 · `GET /downloads/events` 总览流（SSE） |
 | **链接预览** | `POST /lookup`：不建作业，预览链接的标题、艺人和封面 |
-| **搜索** | `GET /search`：在曲库里搜歌曲、专辑和艺人 · `GET /artists/{id}/albums`：分页列出艺人的专辑 · `GET /albums/{id}`：专辑的歌曲列表 |
+| **搜索** | `GET /search`：在曲库里搜歌曲、专辑、歌单和艺人 · `GET /artists/{id}/albums`：分页列出艺人的专辑 · `GET /albums/{id}`：专辑的歌曲列表 |
 | **音质探测** | `POST /quality`：不建作业，探测链接的编码和音质 |
 | **wrapper** | `GET /wrapper/status` · `POST /wrapper/login` · `POST /wrapper/login/{login_id}/2fa` · `POST /wrapper/logout` |
 | **配置** | `GET /config` · `PUT /config` · `POST /config/reload` · `GET /hooks` |

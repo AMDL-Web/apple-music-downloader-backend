@@ -504,17 +504,21 @@ curl 'http://localhost:18080/api/v1/search?term=Taylor+Swift&storefront=us&limit
    "artist_name":"Taylor Swift","release_date":"2026-09-24","track_count":16,
    "content_rating":"explicit","prior_job":{"id":"job_…","status":"completed",
    "finished_at":"2026-10-30T03:12:09Z"}, …}, …],"next_offset":2},
+ "playlists":{"items":[{"id":"pl.2553030a768547e9ab3e91230de8439f","type":"playlist",
+   "name":"Lo-fi beats to study, work, sleep and relax to",
+   "url":"https://music.apple.com/us/playlist/lo-fi-beats-to-study-work-sleep-and-relax-to/pl.2553030a768547e9ab3e91230de8439f",
+   "artist_name":"BeatTape", …}, …],"next_offset":2},
  "artists":{"items":[{"id":"159260351","type":"artist","name":"Taylor Swift",
    "url":"https://music.apple.com/us/artist/taylor-swift/159260351","genre":"Pop", …}]}}
 ```
 
-Searches the Apple Music catalog for songs, albums and artists, one page per group in
+Searches the Apple Music catalog for songs, albums, playlists and artists, one page per group in
 Apple's relevance order. Nothing is downloaded and no job is created.
 
 | Parameter | Meaning |
 | --- | --- |
 | `term` | Required. Runs of white space count as one space; at most 200 characters. |
-| `types` | A subset of `songs`, `albums`, `artists`, comma-separated or repeated; default all three. Groups come back in that order whatever order is given. |
+| `types` | A subset of `songs`, `albums`, `playlists`, `artists`, comma-separated or repeated; default all four. Groups come back in that order whatever order is given. |
 | `storefront` | A two-letter storefront code; default `catalog.default_storefront`. |
 | `limit`, `offset` | Hits per group, 1-50 (default 10), and where each group's page starts (default 0). |
 
@@ -525,7 +529,8 @@ read the next page. Apple reports no totals.
 A hit's `url` is ready to submit to `POST /downloads` and downloads exactly that item: a
 song's is a `/song/` link, which `catalog.album_track_url_mode` cannot turn into the whole
 album. The metadata fields have the names and meaning of the `POST /lookup` fields.
-`audio_traits` is Apple's list for the song or album, such as `lossless`,
+A playlist hit has `type` `playlist`, the curator as `artist_name` and no `track_count`:
+the catalog states none. `audio_traits` is Apple's list for the song, album or playlist, such as `lossless`,
 `hi-res-lossless`, `atmos` and `spatial`, when the catalog sends one.
 
 `prior_job` names the job that put a hit in the library or holds it in the queue: the newest

@@ -206,11 +206,9 @@ func (c *CatalogClient) Playlist(ctx context.Context, storefront, id, mediaUserT
 	// ArtworkColors always describes the public catalog artwork: the private
 	// library-copy cover (when it replaces artworkURL above) carries no
 	// palette of its own in the library relationship payload.
-	return Collection{
-		ID: playlist.ID, Type: TypePlaylist, Name: playlist.Attributes.Name,
-		Artist:     firstNonEmpty(playlist.Attributes.CuratorName, playlist.Attributes.ArtistName),
-		ArtworkURL: artworkURL, ArtworkColors: playlist.Attributes.Artwork.colors(), Tracks: tracks,
-	}, nil
+	out := mapPlaylistSummary(playlist)
+	out.ArtworkURL, out.Tracks = artworkURL, tracks
+	return out, nil
 }
 
 // libraryArtworkURL fetches a private playlist's cover from the owner's

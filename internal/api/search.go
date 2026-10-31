@@ -37,9 +37,10 @@ const (
 // and the id goes into the upstream request path.
 var catalogIDPattern = regexp.MustCompile(`^[0-9]{1,20}$`)
 
-// searchHit is the SearchSong, SearchAlbum and SearchArtist schemas: the fields
-// every hit has, then the ones its type has. The metadata fields carry the
-// names and meaning of the LookupResponse fields of the same name.
+// searchHit is the SearchSong, SearchAlbum, SearchPlaylist and SearchArtist
+// schemas: the fields every hit has, then the ones its type has. The
+// metadata fields carry the names and meaning of the LookupResponse fields
+// of the same name.
 type searchHit struct {
 	ID                 string             `json:"id"`
 	Type               applemusic.URLType `json:"type"`
@@ -82,6 +83,7 @@ type searchResponse struct {
 	Storefront string    `json:"storefront"`
 	Songs      *hitGroup `json:"songs,omitempty"`
 	Albums     *hitGroup `json:"albums,omitempty"`
+	Playlists  *hitGroup `json:"playlists,omitempty"`
 	Artists    *hitGroup `json:"artists,omitempty"`
 }
 
@@ -119,6 +121,15 @@ func albumHit(storefront string, album applemusic.Collection) *searchHit {
 		AudioTraits: album.AudioTraits,
 	}
 	h.setArtwork(album.ArtworkURL, album.ArtworkColors)
+	return h
+}
+
+func playlistHit(storefront string, playlist applemusic.Collection) *searchHit {
+	h := &searchHit{
+		ID: playlist.ID, Type: applemusic.TypePlaylist, Name: playlist.Name, URL: hitURL(applemusic.TypePlaylist, storefront, playlist.ID, playlist.URL),
+		ArtistName: playlist.Artist, AudioTraits: playlist.AudioTraits,
+	}
+	h.setArtwork(playlist.ArtworkURL, playlist.ArtworkColors)
 	return h
 }
 
@@ -202,6 +213,11 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 				group.Items = append(group.Items, albumHit(storefront, album))
 			}
 			resp.Albums = group
+		case applemusic.SearchPlaylists:
+			for _, playlist := range res.Playlists {
+				group.Items = append(group.Items, playlistHit(storefront, playlist))
+			}
+			resp.Playlists = group
 		case applemusic.SearchArtists:
 			for _, artist := range res.Artists {
 				group.Items = append(group.Items, artistHit(storefront, artist))
@@ -258,8 +274,9 @@ func (s *Server) artistAlbums(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// parseSearchTypes reads types, a subset of songs, albums and artists (all
-// three when absent), in the order results are shown whatever the order given.
+// parseSearchTypes reads types, a subset of songs, albums, playlists and
+// artists (all four when absent), in the order results are shown whatever
+// the order given.
 func parseSearchTypes(q url.Values) ([]applemusic.SearchType, error) {
 	given := parseCSVQuery(q, "types")
 	if len(given) == 0 {
@@ -269,10 +286,10 @@ func parseSearchTypes(q url.Values) ([]applemusic.SearchType, error) {
 	for _, t := range given {
 		st := applemusic.SearchType(t)
 		switch st {
-		case applemusic.SearchSongs, applemusic.SearchAlbums, applemusic.SearchArtists:
+		case applemusic.SearchSongs, applemusic.SearchAlbums, applemusic.SearchPlaylists, applemusic.SearchArtists:
 			want[st] = true
 		default:
-			return nil, fmt.Errorf("types: %q is not supported; allowed: songs, albums, artists", t)
+			return nil, fmt.Errorf("types: %q is not supported; allowed: songs, albums, playlists, artists", t)
 		}
 	}
 	var types []applemusic.SearchType

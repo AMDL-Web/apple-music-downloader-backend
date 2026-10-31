@@ -14,13 +14,14 @@ type SearchType string
 
 // The result groups Search reads.
 const (
-	SearchSongs   SearchType = "songs"
-	SearchAlbums  SearchType = "albums"
-	SearchArtists SearchType = "artists"
+	SearchSongs     SearchType = "songs"
+	SearchAlbums    SearchType = "albums"
+	SearchPlaylists SearchType = "playlists"
+	SearchArtists   SearchType = "artists"
 )
 
 // SearchTypes lists every SearchType in the order results are shown.
-var SearchTypes = []SearchType{SearchSongs, SearchAlbums, SearchArtists}
+var SearchTypes = []SearchType{SearchSongs, SearchAlbums, SearchPlaylists, SearchArtists}
 
 // SearchResults holds one catalog search's hits per group, each in Apple's
 // relevance order. NextOffset maps a group to the offset of its next page and
@@ -28,6 +29,7 @@ var SearchTypes = []SearchType{SearchSongs, SearchAlbums, SearchArtists}
 type SearchResults struct {
 	Songs      []Song
 	Albums     []Collection
+	Playlists  []Collection
 	Artists    []Artist
 	NextOffset map[SearchType]int
 }
@@ -41,9 +43,10 @@ type AlbumPage struct {
 
 type catalogSearchResponse struct {
 	Results struct {
-		Songs   searchGroup[catalogSongData]  `json:"songs"`
-		Albums  searchGroup[catalogAlbumData] `json:"albums"`
-		Artists searchGroup[artistData]       `json:"artists"`
+		Songs     searchGroup[catalogSongData]     `json:"songs"`
+		Albums    searchGroup[catalogAlbumData]    `json:"albums"`
+		Playlists searchGroup[catalogPlaylistData] `json:"playlists"`
+		Artists   searchGroup[artistData]          `json:"artists"`
 	} `json:"results"`
 }
 
@@ -84,13 +87,19 @@ func (c *CatalogClient) Search(ctx context.Context, storefront, term string, typ
 			out.Albums = append(out.Albums, mapAlbumSummary(raw))
 		}
 	}
+	for _, raw := range resp.Results.Playlists.Data {
+		if raw.Type == "playlists" {
+			out.Playlists = append(out.Playlists, mapPlaylistSummary(raw))
+		}
+	}
 	for _, raw := range resp.Results.Artists.Data {
 		out.Artists = append(out.Artists, mapArtist(raw))
 	}
 	for group, next := range map[SearchType]string{
-		SearchSongs:   resp.Results.Songs.Next,
-		SearchAlbums:  resp.Results.Albums.Next,
-		SearchArtists: resp.Results.Artists.Next,
+		SearchSongs:     resp.Results.Songs.Next,
+		SearchAlbums:    resp.Results.Albums.Next,
+		SearchPlaylists: resp.Results.Playlists.Next,
+		SearchArtists:   resp.Results.Artists.Next,
 	} {
 		if n := nextOffset(next, offset+limit); n > 0 {
 			out.NextOffset[group] = n

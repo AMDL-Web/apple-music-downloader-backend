@@ -29,7 +29,7 @@ by meaning.
 
 | Command | API | Safety |
 | --- | --- | --- |
-| `search <term> [--types songs,albums,artists] [--storefront] [--limit] [--offset]` | `GET /search` | read |
+| `search <term> [--types songs,albums,playlists,artists] [--storefront] [--limit] [--offset]` | `GET /search` | read |
 | `artists albums <artist_id> [--storefront] [--limit] [--offset]` | `GET /artists/{artist_id}/albums` | read |
 | `albums get <album_id> [--storefront]` | `GET /albums/{album_id}` | read |
 | `lookup <url>` | `POST /lookup` | read |

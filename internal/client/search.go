@@ -15,8 +15,8 @@ import (
 // take the backend's defaults.
 type SearchQuery struct {
 	Term string
-	// Types are the groups to search: songs, albums, artists. Empty searches
-	// all three.
+	// Types are the groups to search: songs, albums, playlists, artists. Empty
+	// searches all four.
 	Types []string
 	// Storefront is a two-letter code; empty is catalog.default_storefront.
 	Storefront string
@@ -25,8 +25,8 @@ type SearchQuery struct {
 	Limit, Offset int
 }
 
-// SearchHit is the SearchSong, SearchAlbum and SearchArtist schemas: the fields
-// every hit has, then those of its type. URL submitted to POST
+// SearchHit is the SearchSong, SearchAlbum, SearchPlaylist and SearchArtist
+// schemas: the fields every hit has, then those of its type. URL submitted to POST
 // /api/v1/downloads downloads exactly that item.
 type SearchHit struct {
 	ID                 string    `json:"id"`
@@ -73,6 +73,7 @@ type SearchResult struct {
 	Storefront string    `json:"storefront"`
 	Songs      *HitGroup `json:"songs,omitempty"`
 	Albums     *HitGroup `json:"albums,omitempty"`
+	Playlists  *HitGroup `json:"playlists,omitempty"`
 	Artists    *HitGroup `json:"artists,omitempty"`
 }
 

@@ -702,7 +702,7 @@ paths:
   /api/v1/search:
     get:
       tags: [Search]
-      summary: Search the catalog for songs, albums and artists
+      summary: Search the catalog for songs, albums, playlists and artists
       description: |
         One page of Apple Music catalog hits per requested group, each group in
         Apple's relevance order. Nothing is downloaded and no job is created.
@@ -730,13 +730,13 @@ paths:
           in: query
           description: >-
             The groups to search; repeat the parameter or separate values with
-            commas. Default all three. Groups are returned in the order songs,
-            albums, artists whatever the order given.
+            commas. Default all four. Groups are returned in the order songs,
+            albums, playlists, artists whatever the order given.
           schema:
             type: array
             items:
               type: string
-              enum: [songs, albums, artists]
+              enum: [songs, albums, playlists, artists]
           style: form
           explode: true
         - $ref: '#/components/parameters/BrowseStorefront'
@@ -2685,6 +2685,8 @@ components:
           $ref: '#/components/schemas/SearchSongGroup'
         albums:
           $ref: '#/components/schemas/SearchAlbumGroup'
+        playlists:
+          $ref: '#/components/schemas/SearchPlaylistGroup'
         artists:
           $ref: '#/components/schemas/SearchArtistGroup'
     SearchSongGroup:
@@ -2707,6 +2709,18 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SearchAlbum'
+          description: The page's hits; empty when there are none.
+        next_offset:
+          type: integer
+          description: The offset of the next page; absent on the last page.
+    SearchPlaylistGroup:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchPlaylist'
           description: The page's hits; empty when there are none.
         next_offset:
           type: integer
@@ -2736,7 +2750,7 @@ components:
           description: Apple Music catalog id.
         type:
           type: string
-          enum: [song, album, artist]
+          enum: [song, album, playlist, artist]
         name:
           type: string
         url:
@@ -2745,7 +2759,7 @@ components:
             A music.apple.com link that downloads exactly this item when
             submitted: a song's is a /song/ link, which
             catalog.album_track_url_mode cannot read as the whole album; an
-            album's or artist's is Apple's page without its query.
+            album's, playlist's or artist's is Apple's page without its query.
         artwork_url:
           type: string
           description: Artwork URL template with {w}x{h} placeholders, as on Job.
@@ -2809,6 +2823,19 @@ components:
               description: True when the catalog marks the album isMasteredForItunes; absent otherwise.
             audio_traits:
               $ref: '#/components/schemas/AudioTraits'
+    SearchPlaylist:
+      allOf:
+        - $ref: '#/components/schemas/SearchHit'
+        - type: object
+          properties:
+            type:
+              type: string
+              const: playlist
+            artist_name:
+              type: string
+              description: The playlist's curator.
+            audio_traits:
+              $ref: '#/components/schemas/AudioTraits'
     SearchArtist:
       allOf:
         - $ref: '#/components/schemas/SearchHit'
@@ -2822,9 +2849,9 @@ components:
       items:
         type: string
       description: >-
-        Apple's audioTraits of the song or album, as sent: values seen include
-        lossless, hi-res-lossless, lossy-stereo, atmos and spatial. A hint of
-        what the catalog offers; POST /api/v1/quality reads what a download
+        Apple's audioTraits of the song, album or playlist, as sent: values
+        seen include lossless, hi-res-lossless, lossy-stereo, atmos and
+        spatial. A hint of what the catalog offers; POST /api/v1/quality reads what a download
         gets. Absent when the catalog sends none.
     PriorJob:
       type: object

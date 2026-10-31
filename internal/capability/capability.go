@@ -53,7 +53,7 @@ func (c Capability) ID() string {
 // All is every capability, in the order help lists them.
 var All = []Capability{
 	{Command: "search", Tool: "search_catalog", Ops: []string{"searchCatalog"}, Safety: Read, Args: []string{"term"},
-		Summary:  "Search the Apple Music catalog for songs, albums and artists",
+		Summary:  "Search the Apple Music catalog for songs, albums, playlists and artists",
 		Examples: []string{`amdl search "igor tyler" --types albums --limit 3`}},
 	{Command: "artists albums", Tool: "list_artist_albums", Ops: []string{"listArtistAlbums"}, Safety: Read, Args: []string{"artist_id"},
 		Summary:  "List an artist's albums, one page at a time",

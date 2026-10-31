@@ -34,6 +34,11 @@ func sampleSearch() *applemusic.SearchResults {
 			ArtworkURL: "https://is1-ssl.mzstatic.com/b/{w}x{h}bb.jpg", ReleaseDate: "2026-09-24", GenreNames: []string{"Pop"},
 			TrackCount: 16, AudioTraits: []string{"lossless", "lossy-stereo"},
 		}},
+		Playlists: []applemusic.Collection{{
+			ID: "pl.2553030a768547e9ab3e91230de8439f", Type: applemusic.TypePlaylist, Name: "Lo-fi beats to study, work, sleep and relax to", Artist: "BeatTape",
+			URL:        "https://music.apple.com/us/playlist/lo-fi-beats-to-study-work-sleep-and-relax-to/pl.2553030a768547e9ab3e91230de8439f?l=zh-Hans-CN",
+			ArtworkURL: "https://is1-ssl.mzstatic.com/c/{w}x{h}bb.jpg", AudioTraits: []string{"lossless"},
+		}},
 		NextOffset: map[applemusic.SearchType]int{applemusic.SearchSongs: 10},
 	}
 }
@@ -56,7 +61,7 @@ func TestSearchReturnsOneGroupPerType(t *testing.T) {
 	}
 	// The term is trimmed with inner runs of space collapsed, the storefront is
 	// catalog.default_storefront, and every group is read, 10 per group.
-	if want := []string{"search us/Taylor Swift [songs albums artists] 10+0"}; !reflect.DeepEqual(catalog.calls, want) {
+	if want := []string{"search us/Taylor Swift [songs albums playlists artists] 10+0"}; !reflect.DeepEqual(catalog.calls, want) {
 		t.Fatalf("catalog calls = %v, want %v", catalog.calls, want)
 	}
 	want := map[string]any{
@@ -80,6 +85,14 @@ func TestSearchReturnsOneGroupPerType(t *testing.T) {
 				"artwork_url": "https://is1-ssl.mzstatic.com/b/{w}x{h}bb.jpg",
 				"artist_name": "Taylor Swift", "release_date": "2026-09-24", "genre": "Pop", "track_count": float64(16),
 				"audio_traits": []any{"lossless", "lossy-stereo"},
+			}},
+		},
+		"playlists": map[string]any{
+			"items": []any{map[string]any{
+				"id": "pl.2553030a768547e9ab3e91230de8439f", "type": "playlist", "name": "Lo-fi beats to study, work, sleep and relax to",
+				"url":         "https://music.apple.com/us/playlist/lo-fi-beats-to-study-work-sleep-and-relax-to/pl.2553030a768547e9ab3e91230de8439f",
+				"artwork_url": "https://is1-ssl.mzstatic.com/c/{w}x{h}bb.jpg", "artist_name": "BeatTape",
+				"audio_traits": []any{"lossless"},
 			}},
 		},
 		// A group without hits is there, empty.
@@ -108,12 +121,27 @@ func TestSearchReadsOnlyTheRequestedTypes(t *testing.T) {
 	}
 }
 
+func TestSearchReadsPlaylistsBetweenAlbumsAndArtists(t *testing.T) {
+	catalog := &fakeCatalog{t: t, search: sampleSearch()}
+	recorder := requestJSON(t, newLookupServer(catalog, nil), http.MethodGet, "/api/v1/search?term=a&types=artists,playlists", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", recorder.Code, recorder.Body.String())
+	}
+	if want := []string{"search cn/a [playlists artists] 10+0"}; !reflect.DeepEqual(catalog.calls, want) {
+		t.Fatalf("catalog calls = %v, want %v", catalog.calls, want)
+	}
+	got := decodeBody(t, recorder.Body.Bytes())
+	if got["playlists"] == nil || got["artists"] == nil || got["songs"] != nil || got["albums"] != nil {
+		t.Fatalf("response = %v", got)
+	}
+}
+
 func TestSearchRefusesBadParameters(t *testing.T) {
 	for _, query := range []string{
 		"",
 		"term=%20%20",
 		"term=" + strings.Repeat("a", searchMaxTermRunes+1),
-		"term=a&types=playlists",
+		"term=a&types=tracks",
 		"term=a&storefront=usa",
 		"term=a&limit=0",
 		"term=a&limit=51",
@@ -157,6 +185,7 @@ func TestSearchMarksHitsWithTheirJobs(t *testing.T) {
 		{ID: "song-failed", Type: "song", CanonicalKey: "song:us:6814997425", Status: domain.JobFailed, CreatedAt: created},
 		{ID: "song-running", Type: "song", CanonicalKey: "song:us:6814997425", Status: domain.JobRunning, CreatedAt: created},
 		{ID: "song-done", Type: "song", CanonicalKey: "song:us:6814997425", Status: domain.JobCompleted, CreatedAt: created.Add(time.Hour), FinishedAt: &finished},
+		{ID: "playlist-done", Type: "playlist", CanonicalKey: "playlist:us:pl.2553030a768547e9ab3e91230de8439f", Status: domain.JobCompleted, CreatedAt: created, FinishedAt: &finished},
 	} {
 		job.Input, job.Storefront, job.UpdatedAt = "input", "us", created
 		if err := server.store.CreateJob(ctx, job); err != nil {
@@ -168,7 +197,7 @@ func TestSearchMarksHitsWithTheirJobs(t *testing.T) {
 		t.Fatalf("status = %d, body %s", recorder.Code, recorder.Body.String())
 	}
 	var resp struct {
-		Songs, Albums struct {
+		Songs, Albums, Playlists struct {
 			Items []struct {
 				PriorJob *struct {
 					ID         string `json:"id"`
@@ -189,6 +218,9 @@ func TestSearchMarksHitsWithTheirJobs(t *testing.T) {
 	if got := resp.Albums.Items[0].PriorJob; got == nil || got.ID != "album-new" || got.Status != "completed" || got.FinishedAt != "2026-10-01T10:00:00Z" {
 		t.Fatalf("album prior job = %+v", got)
 	}
+	if got := resp.Playlists.Items[0].PriorJob; got == nil || got.ID != "playlist-done" || got.Status != "completed" {
+		t.Fatalf("playlist prior job = %+v", got)
+	}
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -204,10 +236,12 @@ func TestHitURLsDownloadTheHit(t *testing.T) {
 		{applemusic.TypeSong, "https://music.apple.com/jp/album/%E6%99%B4%E3%82%8B/1721450220?i=1721450223&l=ja", "https://music.apple.com/jp/song/%E6%99%B4%E3%82%8B/1721450223"},
 		{applemusic.TypeSong, "", "https://music.apple.com/jp/song/1721450223"},
 		{applemusic.TypeAlbum, "https://music.apple.com/jp/album/bubble-single/1889425900?l=ja", "https://music.apple.com/jp/album/bubble-single/1889425900"},
+		{applemusic.TypePlaylist, "https://music.apple.com/jp/playlist/%E5%A4%9C/pl.2553030a768547e9ab3e91230de8439f?l=ja", "https://music.apple.com/jp/playlist/%E5%A4%9C/pl.2553030a768547e9ab3e91230de8439f"},
+		{applemusic.TypePlaylist, "", "https://music.apple.com/jp/playlist/pl.2553030a768547e9ab3e91230de8439f"},
 		{applemusic.TypeArtist, "https://music.apple.com/jp/artist/%E3%83%A8%E3%83%AB%E3%82%B7%E3%82%AB/1250709916", "https://music.apple.com/jp/artist/%E3%83%A8%E3%83%AB%E3%82%B7%E3%82%AB/1250709916"},
 		{applemusic.TypeArtist, "not a url \x7f", "https://music.apple.com/jp/artist/1250709916"},
 	} {
-		id := map[applemusic.URLType]string{applemusic.TypeSong: "1721450223", applemusic.TypeAlbum: "1889425900", applemusic.TypeArtist: "1250709916"}[c.kind]
+		id := map[applemusic.URLType]string{applemusic.TypeSong: "1721450223", applemusic.TypeAlbum: "1889425900", applemusic.TypePlaylist: "pl.2553030a768547e9ab3e91230de8439f", applemusic.TypeArtist: "1250709916"}[c.kind]
 		got := hitURL(c.kind, "jp", id, c.appleURL)
 		if got != c.want {
 			t.Errorf("hitURL(%s, %q) = %q, want %q", c.kind, c.appleURL, got, c.want)

@@ -80,7 +80,7 @@ type results struct {
 	err    string
 }
 
-var filters = []string{"all", "album", "song", "artist"}
+var filters = []string{"all", "album", "song", "playlist", "artist"}
 
 func (r *results) visible() []int {
 	var idx []int
@@ -321,7 +321,7 @@ func (m *model) onSearch(msg searchMsg) tea.Cmd {
 	if msg.err != nil {
 		r.err = errText(msg.err)
 	}
-	for _, g := range []*client.HitGroup{msg.res.Albums, msg.res.Songs, msg.res.Artists} {
+	for _, g := range []*client.HitGroup{msg.res.Albums, msg.res.Songs, msg.res.Playlists, msg.res.Artists} {
 		if g == nil {
 			continue
 		}

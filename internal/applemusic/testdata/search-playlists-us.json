@@ -1,0 +1,61 @@
+{
+  "results": {
+    "playlists": {
+      "data": [
+        {
+          "attributes": {
+            "artwork": {
+              "hasP3": false,
+              "height": 2400,
+              "url": "https://is1-ssl.mzstatic.com/image/thumb/ksAlFSSvq-54eOTHjd_9eQ/{w}x{h}bb.jpg",
+              "width": 2400
+            },
+            "audioTraits": [],
+            "curatorName": "BeatTape",
+            "hasCollaboration": false,
+            "isChart": false,
+            "lastModifiedDate": "2026-10-28T16:48:17Z",
+            "name": "Lo-fi beats to study, work, sleep and relax to ✨",
+            "playlistType": "external",
+            "supportsSing": false,
+            "url": "https://music.apple.com/us/playlist/lo-fi-beats-to-study-work-sleep-and-relax-to/pl.2553030a768547e9ab3e91230de8439f?l=zh-Hans-CN"
+          },
+          "href": "/v1/catalog/us/playlists/pl.2553030a768547e9ab3e91230de8439f?l=zh-Hans-CN",
+          "id": "pl.2553030a768547e9ab3e91230de8439f",
+          "type": "playlists"
+        },
+        {
+          "attributes": {
+            "artwork": {
+              "bgColor": "e1eaf1",
+              "hasP3": false,
+              "height": 1080,
+              "textColor1": "060608",
+              "textColor2": "2d312a",
+              "textColor3": "323337",
+              "textColor4": "515652",
+              "url": "https://is1-ssl.mzstatic.com/image/thumb/AMCArtistImages211/v4/16/5a/f3/165af305-ab2a-3f53-fe8b-dd7a0887c111/ami-identity-09dc0d0ecb835ea055330c50e6964fe2-2025-08-13T06-55-18.082Z_cropped.png/{w}x{h}SC.FPSL03.jpg?l=zh-Hans",
+              "width": 1080
+            },
+            "audioTraits": [],
+            "curatorName": "Apple Music 嘻哈/说唱",
+            "editorialPlaylistKind": "artist-franchise",
+            "editorialPlaylistSubKind": "artist-created-set-list",
+            "hasCollaboration": false,
+            "isChart": false,
+            "lastModifiedDate": "2026-10-02T15:37:38Z",
+            "name": "演出曲目单：Rato《Lo-Fi & Chillhop Essentials - Chilled HipHop Beats》演唱会",
+            "playlistType": "editorial",
+            "supportsSing": false,
+            "url": "https://music.apple.com/us/playlist/%E6%BC%94%E5%87%BA%E6%9B%B2%E7%9B%AE%E5%8D%95-rato-lo-fi-chillhop-essentials-chilled-hiphop/pl.e090651aa73242cb9ed6eedef081fcfe?l=zh-Hans-CN"
+          },
+          "href": "/v1/catalog/us/playlists/pl.e090651aa73242cb9ed6eedef081fcfe?l=zh-Hans-CN",
+          "id": "pl.e090651aa73242cb9ed6eedef081fcfe",
+          "type": "playlists"
+        }
+      ],
+      "href": "/v1/catalog/us/search?l=zh-Hans-CN&limit=2&term=lofi+beats+to+study&types=playlists",
+      "next": "/v1/catalog/us/search?l=zh-Hans-CN&offset=2&term=lofi+beats+to+study&types=playlists"
+    }
+  }
+}
