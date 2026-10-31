@@ -15,8 +15,8 @@ is in root `AGENTS.md` "Config".
 - A runtime `download.*` key either gets a same-named `DownloadOverrides` field or
   an entry in `overrideExclusions` with the reason in the `DownloadOverrides`
   godoc.
-- `configs/hooks.yaml` belongs to `internal/hooks`; its comments document it the
-  same way.
+- `configs/hooks.example.yaml` belongs to `internal/hooks`; its comments document
+  it the same way.
 
 The full list of files a new key touches is in
 [amdl-api-change](../../.claude/skills/amdl-api-change/SKILL.md).

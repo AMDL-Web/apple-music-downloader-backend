@@ -8,7 +8,7 @@
 //   - gh pr merge with --admin            (AGENTS.md: Merging with `--admin`)
 //   - git push whose destination is main  (AGENTS.md: Commits and releases)
 //   - git commit without -s / --signoff   (AGENTS.md: Commits and releases)
-//   - git add -f of configs/config.yaml, *.p8, keys/, data/
+//   - git add -f of configs/config.yaml, configs/hooks.yaml, *.p8, keys/, data/
 //                                         (AGENTS.md: Data safety)
 //
 // Input that is not the expected JSON passes through (exit 0): a guard that
@@ -171,7 +171,7 @@ function pushTargetsMain(args) {
   });
 }
 
-const PROTECTED_PATH = /^(?:configs\/config\.yaml|.*\.p8|(?:.*\/)?keys(?:\/.*)?|data(?:\/.*)?|\.|\*)$/;
+const PROTECTED_PATH = /^(?:configs\/(?:config|hooks)\.yaml|.*\.p8|(?:.*\/)?keys(?:\/.*)?|data(?:\/.*)?|\.|\*)$/;
 
 function forceAddsProtected(args) {
   const force = args.some((arg) => arg === "--force" || /^-[A-Za-z]*f[A-Za-z]*$/.test(arg));
@@ -198,7 +198,7 @@ export const REASONS = {
   signoff:
     "every commit needs a DCO Signed-off-by trailer (AGENTS.md: Commits and releases). Do rerun the commit with -s (or --signoff) instead.",
   forceAdd:
-    "configs/config.yaml, *.p8 keys, keys/ and data/ are git-ignored because they hold secrets or local state (AGENTS.md: Data safety). Do add the example or source file you meant (for config, configs/config.example.yaml) without -f instead.",
+    "configs/config.yaml, configs/hooks.yaml, *.p8 keys, keys/ and data/ are git-ignored because they hold secrets or local state (AGENTS.md: Data safety). Do add the example or source file you meant (configs/config.example.yaml, configs/hooks.example.yaml) without -f instead.",
 };
 
 export function forbiddenReason(command) {

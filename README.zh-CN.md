@@ -233,7 +233,7 @@ wrapper，或 `wrapper.data_dir` 指向 wrapper 的文件时，直接从 wrapper
 
 ## 自动化
 
-- **作业钩子**（[`configs/hooks.yaml`](configs/hooks.yaml)）在作业入队或结束时调用 webhook 或
+- **作业钩子**（[`configs/hooks.example.yaml`](configs/hooks.example.yaml)）在作业入队或结束时调用 webhook 或
   运行命令，比如刷新媒体服务器或发送通知。webhook 也能通过接口编辑；命令只能在文件里改。
 - **资料库同步**监视你的 Apple Music 资料库，你每加一首歌，就下载它所在的专辑。需要订阅令牌：
   wrapper 的，或 `catalog.media_user_token`。

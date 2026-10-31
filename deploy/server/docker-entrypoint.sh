@@ -43,7 +43,7 @@ cp "$DIST_DIR/config.example.yaml" "$CONFIG_DIR/config.example.yaml"
 # template to make editing easy.
 if [ ! -f "$HOOKS_PATH" ]; then
     mkdir -p "$(dirname "$HOOKS_PATH")"
-    cp "$DIST_DIR/hooks.yaml" "$HOOKS_PATH"
+    cp "$DIST_DIR/hooks.example.yaml" "$HOOKS_PATH"
 fi
 
 # own_path PATH...: gives each existing PATH (not its contents) to PUID:PGID,

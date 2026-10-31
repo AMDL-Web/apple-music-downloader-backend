@@ -26,9 +26,10 @@ keys/
 coverage.txt
 
 # Local/runtime configs; the image keeps only config.example.yaml and
-# hooks.yaml.
+# hooks.example.yaml.
 *.local.yaml
 configs/config.yaml
+configs/hooks.yaml
 # The old two-file runtime config and the one-off backups left by merging it.
 configs/runtime.yaml
 configs/runtime.yaml.pre-merge.bak*

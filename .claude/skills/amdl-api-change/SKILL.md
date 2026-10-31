@@ -50,7 +50,7 @@ Event type or job status: the `internal/domain` constant, the OpenAPI enum, the
 internal/db queries that filter on status, the stream close rules in internal/api
 (`eventsExhausted`), the [Events](../../../docs/api.md#events) section of
 docs/api.md, and for hook events the allowed list in internal/hooks,
-`configs/hooks.yaml` and [docs/automation.md](../../../docs/automation.md).
+`configs/hooks.example.yaml` and [docs/automation.md](../../../docs/automation.md).
 
 Config key: the struct field (yaml and json tags), `Default()`, `Config.Validate`,
 the full comment in `configs/config.example.yaml`, the runtime or startup

@@ -113,6 +113,7 @@ test("force-adding ignored secrets or local state is blocked", () => {
   expectReason(REASONS.forceAdd, [
     "git add -f configs/config.yaml",
     "git add --force ./configs/config.yaml",
+    "git add -f configs/hooks.yaml",
     "git add -f AuthKey_ABC123.p8",
     "git add -f keys/AuthKey.p8",
     "git add -f keys",

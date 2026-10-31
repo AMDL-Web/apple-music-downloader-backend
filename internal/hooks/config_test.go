@@ -207,13 +207,14 @@ entries:
 	}
 }
 
-// TestShippedHooksConfigLoads guards the shipped configs/hooks.yaml: with every
-// example commented out, `entries:` must parse as an empty list (not error),
-// and hooks must default to disabled.
+// TestShippedHooksConfigLoads guards the shipped configs/hooks.example.yaml,
+// which installs copy to hooks.yaml: with every example commented out,
+// `entries:` must parse as an empty list (not error), and hooks must default
+// to disabled.
 func TestShippedHooksConfigLoads(t *testing.T) {
-	cfg, err := LoadConfig(filepath.Join("..", "..", "configs", "hooks.yaml"))
+	cfg, err := LoadConfig(filepath.Join("..", "..", "configs", "hooks.example.yaml"))
 	if err != nil {
-		t.Fatalf("shipped configs/hooks.yaml failed to load: %v", err)
+		t.Fatalf("shipped configs/hooks.example.yaml failed to load: %v", err)
 	}
 	if cfg.Enabled {
 		t.Fatalf("shipped config enabled = true, want false by default")

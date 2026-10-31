@@ -144,7 +144,7 @@ func TestEditorKeepsTheFileWhenAWriteWouldNotLoad(t *testing.T) {
 }
 
 func TestEditorStartsFromTheShippedFile(t *testing.T) {
-	shipped, err := os.ReadFile(filepath.Join("..", "..", "configs", "hooks.yaml"))
+	shipped, err := os.ReadFile(filepath.Join("..", "..", "configs", "hooks.example.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,13 +166,28 @@ func TestEditorStartsFromTheShippedFile(t *testing.T) {
 		t.Errorf("the shipped comments went:\n%s", out)
 	}
 
-	// No file at all is an empty, disabled one.
-	missing := NewEditor(filepath.Join(t.TempDir(), "hooks.yaml"), d)
-	if _, err := missing.PutWebhook("jellyfin", WebhookPatch{URL: &url, Events: &events}); err != nil {
+}
+
+// TestEditorCreatesAMissingFile pins what the default path relies on:
+// configs/hooks.yaml is not in the repository, so a clone starts without it,
+// with hooks off, and the first write through the API creates it.
+func TestEditorCreatesAMissingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "configs", "hooks.yaml")
+	cfg, err := LoadConfig(path)
+	if err != nil || cfg.Enabled || len(cfg.Entries) != 0 {
+		t.Fatalf("a missing file loads as %+v, %v; want hooks off", cfg, err)
+	}
+	d := NewDispatcher(cfg, nil, discardLogger())
+	url := "http://jellyfin.local:8096/Library/Refresh"
+	events := []string{"job_finished"}
+	if _, err := NewEditor(path, d).PutWebhook("jellyfin", WebhookPatch{URL: &url, Events: &events}); err != nil {
 		t.Fatal(err)
 	}
-	if cfg, err := LoadConfig(missing.path); err != nil || cfg.Enabled || len(cfg.Entries) != 1 {
+	if cfg, err := LoadConfig(path); err != nil || cfg.Enabled || len(cfg.Entries) != 1 || cfg.Entries[0].URL != url {
 		t.Errorf("the created file: %+v, %v", cfg, err)
+	}
+	if got := d.List(); len(got.Entries) != 1 {
+		t.Errorf("the dispatcher after the first write: %+v", got)
 	}
 }
 

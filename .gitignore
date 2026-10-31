@@ -38,6 +38,7 @@ coverage.txt
 # Live config file: bootstrapped from the example file on first start and
 # rewritten by PUT /api/v1/config. It is not tracked.
 configs/config.yaml
+configs/hooks.yaml
 # Legacy split runtime file and the one-time archive created after merging it.
 configs/runtime.yaml
 configs/runtime.yaml.pre-merge.bak*

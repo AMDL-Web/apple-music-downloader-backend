@@ -104,8 +104,8 @@ two kinds (`internal/applemusic/AGENTS.md`):
 - A schema change is a new migration that keeps every existing row
   (`internal/db/AGENTS.md`). Before applying one to a real database, describe its
   impact and get the maintainer's confirmation.
-- Never commit `configs/config.yaml`, `*.p8` files, `keys/` or `data/`: they hold
-  tokens, private keys and local state.
+- Never commit `configs/config.yaml`, `configs/hooks.yaml`, `*.p8` files, `keys/` or
+  `data/`: they hold tokens, private keys and local state.
 
 ## Language
 

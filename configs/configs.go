@@ -10,7 +10,7 @@ import _ "embed"
 //go:embed config.example.yaml
 var Example []byte
 
-// Hooks is hooks.yaml, the commented hooks template.
+// Hooks is hooks.example.yaml, the commented hooks template.
 //
-//go:embed hooks.yaml
+//go:embed hooks.example.yaml
 var Hooks []byte

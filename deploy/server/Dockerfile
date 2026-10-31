@@ -64,7 +64,7 @@ WORKDIR /app
 # into the config directory /app/configs as the documentation and the hooks
 # template users edit. config.yaml itself the backend creates from the copy of
 # the example built into the binary.
-COPY configs/config.example.yaml configs/hooks.yaml /opt/amdl/
+COPY configs/config.example.yaml configs/hooks.example.yaml /opt/amdl/
 COPY deploy/server/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY --from=build /out/amdl /app/amdl
 

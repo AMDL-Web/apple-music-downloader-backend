@@ -74,7 +74,7 @@ func hookEnv(environ []string, payload Payload) []string {
 }
 
 // buildEnv returns the documented hook variables (docs/automation.md, and the
-// exec example in configs/hooks.yaml).
+// exec example in configs/hooks.example.yaml).
 func buildEnv(payload Payload) []string {
 	outputPaths := make([]string, 0, len(payload.Items))
 	for _, item := range payload.Items {

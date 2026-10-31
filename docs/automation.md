@@ -7,7 +7,7 @@ and **library sync** creates jobs of its own. Both are off by default.
 
 ## Job hooks
 
-[`configs/hooks.yaml`](../configs/hooks.yaml) — its comments are the reference; this is the
+[`configs/hooks.example.yaml`](../configs/hooks.example.yaml) — its comments are the reference; this is the
 summary. The file is loaded independently of `config.yaml`, so hooks can be added, removed
 or toggled without touching the main configuration. A missing file is not an error; hooks
 are simply disabled. **The file is read at startup, so a hand edit needs a restart.** The

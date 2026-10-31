@@ -64,7 +64,7 @@ config file:
 | Variable | Sets |
 | --- | --- |
 | `AMDL_CONFIG` | Path of `config.yaml` (default `configs/config.yaml`) |
-| `AMDL_HOOKS_CONFIG` | Path of `hooks.yaml` (default `configs/hooks.yaml`) |
+| `AMDL_HOOKS_CONFIG` | Path of `hooks.yaml` (default `configs/hooks.yaml`, git-ignored; `configs/hooks.example.yaml` is the commented template) |
 | `AMDL_SERVER_LISTEN` | `server.listen` |
 | `AMDL_WRAPPER_ADDRESS` | `wrapper.address` |
 | `AMDL_WRAPPER_DATA_DIR` | `wrapper.data_dir` |

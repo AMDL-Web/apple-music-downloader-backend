@@ -264,7 +264,7 @@ itself or `wrapper.data_dir` points at the wrapper's files, and otherwise from
 
 ## Automation
 
-- **Job hooks** ([`configs/hooks.yaml`](configs/hooks.yaml)) call a webhook or run a
+- **Job hooks** ([`configs/hooks.example.yaml`](configs/hooks.example.yaml)) call a webhook or run a
   command when a job is queued or ends, for example to refresh a media server or send a
   notification. Webhooks can also be edited through the API; commands only in the file.
 - **Library sync** watches your Apple Music library and downloads the album behind each
