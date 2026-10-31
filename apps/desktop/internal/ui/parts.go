@@ -90,7 +90,7 @@ func chip(c *ui.Context, k *Tokens, s string, fg ui.Color) ui.Element {
 		fg = k.Muted
 	}
 	return ui.Row(c).PaddingX(7).PaddingY(2).Radius(radiusInner).Background(k.Track).Children(func() {
-		mono(c, s, 11).FontWeight(600).TextColor(fg)
+		mono(c, s, 11).FontWeight(600).TextColor(fg).SingleLine().Ellipsis("…").Shrink(1)
 	})
 }
 

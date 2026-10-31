@@ -183,6 +183,11 @@ func (a *App) Go(s Screen) {
 	if s == ScreenHome {
 		a.focusField = true
 	}
+	if s == ScreenSettings && a.Settings.Mode == "" && a.set.pin == "" {
+		// With nothing set up, Connection is where Settings opens; once
+		// there, the page scrolls freely.
+		a.showSection("connection")
+	}
 }
 
 // OpenJob shows a job's detail; Back returns to the screen it opened from.

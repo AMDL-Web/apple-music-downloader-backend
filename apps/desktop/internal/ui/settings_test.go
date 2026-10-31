@@ -8,6 +8,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"gopkg.in/yaml.v3"
 
+	"amdl/apps/desktop/internal/mode"
 	"amdl/internal/client"
 )
 
@@ -188,5 +189,28 @@ func TestTokenFieldNamesTheWrappersToken(t *testing.T) {
 	tt.Frame()
 	if !tt.HasText("…abcd") || tt.HasText("Saved token · ends") || tt.HasText("Remove") {
 		t.Errorf("with no saved token only the wrapper's should show: %q", tt.Texts())
+	}
+}
+
+func TestSettingsOpenAtASectionAndScrollFreelyFromThere(t *testing.T) {
+	// Nothing set up yet: Settings opens at Connection, below the
+	// backend's message.
+	a, _ := newTestApp(mode.Settings{})
+	a.Go(ScreenSettings)
+	tt := ui.NewTester(a.View, 1280, 600)
+	for range 5 {
+		tt.Frame()
+	}
+	st := a.scrolls["settings"]
+	if st == nil || st.Y == 0 || a.set.page != "connection" {
+		t.Fatalf("Settings opened at %+v marking %q, want Connection at the top", st, a.set.page)
+	}
+	// Scrolled back up, the page stays where the user put it.
+	st.Y = 0
+	for range 5 {
+		tt.Frame()
+	}
+	if st.Y != 0 || a.set.pin != "" {
+		t.Errorf("the page went back to %v (pin %q) after the user scrolled", st.Y, a.set.pin)
 	}
 }

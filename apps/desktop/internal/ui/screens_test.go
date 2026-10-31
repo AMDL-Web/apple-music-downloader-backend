@@ -202,7 +202,9 @@ func TestStatusBoardTilesOpenTheirSections(t *testing.T) {
 			t.Errorf("no %q in %q", want, tt.Texts())
 		}
 	}
-	if tt.HasText("System") {
+	// The status board took the System screen's place; "System" is left
+	// only as a theme.
+	if n := strings.Count(strings.Join(tt.Texts(), "\n"), "System"); n > 1 {
 		t.Errorf("the System screen is Settings' status board now: %q", tt.Texts())
 	}
 	if err := tt.Click("Account"); err != nil {

@@ -1,17 +1,29 @@
 package ui
 
 import (
-	"github.com/egoist/mygo/ui"
 	"time"
 
+	"github.com/egoist/mygo/ui"
+
 	"amdl/apps/desktop/internal/mode"
+	"amdl/apps/desktop/internal/store"
 )
 
 // settingsForm is the Settings screen's state between frames.
 type settingsForm struct {
-	// page is the page shown: "" for the status board, a section id of the
-	// web console's, or one of the app's own.
+	// page is the section the navigation marks: "" for the status board, a
+	// section id of the web console's, or one of the app's own. The
+	// sections run as one page; page follows its scroll.
 	page string
+	// tops are the sections' tops in the window, and areaTop the scroll
+	// area's, as the last frame laid them out.
+	tops    map[string]float32
+	areaTop float32
+	// pin is a section held at the top until the user scrolls, while the
+	// sections above it may still grow as their state arrives; pinY is
+	// where it put the scroll last.
+	pin  string
+	pinY float32
 	// draft holds the app's connection settings until Apply, since
 	// applying them connects again.
 	loaded  bool
@@ -73,8 +85,15 @@ var themeNames = []string{"system", "light", "dark"}
 
 // GoSettings opens Settings at page.
 func (a *App) GoSettings(page string) {
-	a.set.page = page
+	a.showSection(page)
 	a.Go(ScreenSettings)
+}
+
+// showSection brings section id to the top of Settings' page and holds it
+// there until the user scrolls.
+func (a *App) showSection(id string) {
+	f := &a.set
+	f.page, f.pin, f.pinY = id, id, -1
 }
 
 func (a *App) settings(c *ui.Context, k *Tokens) {
@@ -88,9 +107,6 @@ func (a *App) settings(c *ui.Context, k *Tokens) {
 				f.theme = i
 			}
 		}
-	}
-	if a.Settings.Mode == "" {
-		f.page = "connection"
 	}
 	ui.Row(c).Padding(0, 18).Height(44).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, "Settings").FontSize(15).FontWeight(600)
@@ -111,24 +127,121 @@ func (a *App) settings(c *ui.Context, k *Tokens) {
 				}
 			})
 		})
-		a.scrollArea(c, "settings-"+f.page, k.Ground, 0, func() {
-			ui.Column(c).Padding(20, 28, 28, 28).Gap(18).MaxWidth(860).Children(func() {
-				switch f.page {
-				case "":
-					a.statusBoard(c, k)
-				case "connection":
-					a.connectionSettings(c, k)
-				case "appearance":
-					a.appearanceSettings(c, k)
-				case "about":
-					a.aboutSettings(c, k)
-				default:
-					a.backendSection(c, k, f.page)
-				}
+		width := min(max(a.pageWidth(c)-settingsNavWidth-2*settingsPad, 320), settingsMaxWidth)
+		area := a.scrollArea(c, "settings", k.Ground, 0, func() {
+			ui.Column(c).FillWidth().AlignItems(ui.Center).Padding(20, settingsPad, 64, settingsPad).Children(func() {
+				ui.Column(c).Width(width).Gap(40).Children(func() { a.settingsSections(c, k, width) })
 			})
 		}).Grow(1)
+		f.areaTop = area.Bounds().Y
 	})
+	a.followSections(c)
 	a.confirmDialog(c, k)
+}
+
+// Settings' page, in DIPs: the navigation's width, the room either side of
+// the sections, and the widest they grow.
+const settingsNavWidth, settingsPad, settingsMaxWidth = 196, 28, 1160
+
+// settingsSections are Settings' sections, one after another in the
+// navigation's order: the status board, the backend's, then the app's. A
+// backend that cannot be read says so once, in place of its sections.
+func (a *App) settingsSections(c *ui.Context, k *Tokens, width float32) {
+	s := a.Store
+	s.WatchServer()
+	s.WatchConfig()
+	c.After(store.ServerEvery)
+	down := s.Server.Read.IsZero() && a.unreachable(c, k)
+	for g, group := range settingsNav {
+		if g == len(settingsNav)-1 {
+			label(c, k, "This app").Margin(8, 0, -24, 0)
+		}
+		for _, p := range group {
+			switch p.id {
+			case "connection":
+				a.settingsSection(c, k, p, func() { a.connectionSettings(c, k) })
+			case "appearance":
+				a.settingsSection(c, k, p, func() { a.appearanceSettings(c, k) })
+			case "about":
+				a.settingsSection(c, k, p, func() { a.aboutSettings(c, k) })
+			case "":
+				if !down {
+					a.settingsSection(c, k, p, func() { a.statusBoard(c, k, width) })
+				}
+			default:
+				if !down {
+					a.settingsSection(c, k, p, func() { a.backendSection(c, k, p.id) })
+				}
+			}
+		}
+	}
+}
+
+// settingsSection is one section of Settings' page: its name over its
+// content. Its top is kept for the navigation.
+func (a *App) settingsSection(c *ui.Context, k *Tokens, p settingsPage, body func()) {
+	f := &a.set
+	if f.tops == nil {
+		f.tops = map[string]float32{}
+	}
+	sec := ui.Column(c.Key("section-" + p.id)).Gap(14)
+	if b := sec.Bounds(); b.H > 0 {
+		f.tops[p.id] = b.Y
+	}
+	sec.Children(func() {
+		ui.Row(c).Height(28).Gap(10).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, p.icon).FontSize(16).TextColor(k.Muted)
+			display(c, p.label, 20).SingleLine()
+		})
+		body()
+	})
+}
+
+// followSections keeps a pinned section at the top until the user scrolls,
+// and else marks in the navigation the section at the top of the page.
+func (a *App) followSections(c *ui.Context) {
+	f := &a.set
+	st := a.scrolls["settings"]
+	if st == nil {
+		return
+	}
+	if f.pin != "" {
+		top, ok := f.tops[f.pin]
+		switch {
+		case f.pinY >= 0 && st.Y != f.pinY:
+			// The user scrolled: the pin lets go.
+			f.pin = ""
+		case !ok:
+			// Not laid out yet: the next frame places it.
+			c.Invalidate()
+			return
+		default:
+			y := max(0, min(st.Y+top-f.areaTop, st.MaxY))
+			if y != st.Y {
+				st.Y = y
+				c.Invalidate()
+			}
+			f.pinY, f.page = st.Y, f.pin
+			return
+		}
+	}
+	if st.Scrolling() {
+		return
+	}
+	cur := ""
+	for _, group := range settingsNav {
+		for _, p := range group {
+			if top, ok := f.tops[p.id]; ok && top-f.areaTop <= 96 {
+				cur = p.id
+			}
+		}
+	}
+	if st.MaxY > 0 && st.Y >= st.MaxY-1 && f.page != "" {
+		// At the end the last sections cannot reach the top: the one asked
+		// for keeps its mark.
+		return
+	}
+	f.page = cur
 }
 
 func (a *App) settingsNavItem(c *ui.Context, k *Tokens, p settingsPage) {
@@ -142,7 +255,10 @@ func (a *App) settingsNavItem(c *ui.Context, k *Tokens, p settingsPage) {
 		it.Background(k.Raise)
 	}
 	if it.Clicked() {
-		f.page = p.id
+		f.page, f.pin = p.id, ""
+		if st, top := a.scrolls["settings"], f.tops[p.id]; st != nil {
+			st.ScrollTo(0, max(0, min(st.Y+top-f.areaTop, st.MaxY)), ui.Smooth)
+		}
 	}
 	it.Cursor(ui.CursorPointer).Children(func() {
 		ui.Icon(c, p.icon).FontSize(14).TextColor(col)

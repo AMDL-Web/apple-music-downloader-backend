@@ -11,22 +11,12 @@ import (
 	"amdl/internal/format"
 )
 
-// backendSection is one of the backend's sections in Settings: its state
-// as a head, then what was fixed at startup, its fields and its actions.
+// backendSection is one of the backend's sections in Settings: what was
+// fixed at startup, its fields and its actions. Its state is its tile on
+// the status board above.
 func (a *App) backendSection(c *ui.Context, k *Tokens, id string) {
 	s := a.Store
-	s.WatchServer()
-	s.WatchConfig()
-	c.After(store.ServerEvery)
 	sv := &s.Server
-	if sv.Read.IsZero() && a.unreachable(c, k) {
-		return
-	}
-	if id == "lyrics_artwork" {
-		ui.Text(c, "Lyrics & artwork").FontSize(20).FontWeight(650)
-	} else if !sv.Read.IsZero() {
-		a.domainCard(c, k, id, 1)
-	}
 	switch id {
 	case "account":
 		a.accountSession(c, k)

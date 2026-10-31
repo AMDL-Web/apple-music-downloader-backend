@@ -14,18 +14,10 @@ import (
 
 // statusBoard is Settings' first page: one tile per domain of the backend,
 // each opening its section, as the web console's board.
-func (a *App) statusBoard(c *ui.Context, k *Tokens) {
-	s := a.Store
-	s.WatchServer()
-	s.WatchConfig()
-	c.After(store.ServerEvery)
-	sv := &s.Server
-	if sv.Read.IsZero() && a.unreachable(c, k) {
-		return
-	}
-	w, _ := c.Size()
+func (a *App) statusBoard(c *ui.Context, k *Tokens, width float32) {
+	sv := &a.Store.Server
 	cols := 2
-	if w >= 1500 {
+	if width >= 960 {
 		cols = 4
 	}
 	ui.Grid(c).Columns(cols).Gap(14).Children(func() {
@@ -41,11 +33,15 @@ func (a *App) statusBoard(c *ui.Context, k *Tokens) {
 		wide := map[string]int{"server": 2, "account": 2, "hooks": 2, "logging": 2}
 		for _, id := range []string{"server", "account", "quality", "files", "jobs", "library_sync", "hooks", "logging"} {
 			span := 1
-			if cols == 4 {
+			switch {
+			case cols == 4:
 				span = max(1, wide[id])
+			case width < 780 && (id == "server" || id == "account"):
+				// Side by side, the server's word would be cut short.
+				span = 2
 			}
 			el := a.domainCard(c, k, id, span)
-			el.Cursor(ui.CursorPointer).OnClick(func() { a.set.page = id })
+			el.Cursor(ui.CursorPointer).OnClick(func() { a.showSection(id) })
 			if el.Hovered() {
 				el.Background(k.Raise2)
 			}
@@ -93,11 +89,13 @@ func moleCard(c *ui.Context, k *Tokens, key string, span int, tile ui.Color, ic 
 			ui.Box(c).Size(18, 18).Radius(radiusInner).Background(tile).Center().Children(func() {
 				ui.Icon(c, ic).FontSize(11).TextColor(ui.RGB(255, 255, 255))
 			})
-			ui.Text(c, title).FontSize(12).FontWeight(600).TextColor(titleColor).SingleLine()
+			// The title keeps its words; the chips give way when the
+			// tile is narrow.
+			ui.Text(c, title).FontSize(12).FontWeight(600).TextColor(titleColor).SingleLine().Shrink(0)
 			ui.Spacer(c)
 			for _, ch := range chips {
 				if ch != "" {
-					chip(c, k, ch, ui.Color{})
+					chip(c, k, ch, ui.Color{}).Shrink(1).MinWidth(0)
 				}
 			}
 		})
