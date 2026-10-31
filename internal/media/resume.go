@@ -123,6 +123,10 @@ func resumeObjectChanged(metadata resumeMetadata, header http.Header) bool {
 	return metadata.LastModified != "" && header.Get("Last-Modified") != "" && metadata.LastModified != header.Get("Last-Modified")
 }
 
+// cleanupResumableDownload removes one checkpoint and its metadata. It leaves
+// the job's directory, even empty: a sibling track may have just created it
+// and be about to open its own checkpoint there. cleanupResumeOwner removes
+// the directory once the job is done with it.
 func cleanupResumableDownload(path string) {
 	if path == "" {
 		return
@@ -130,10 +134,6 @@ func cleanupResumableDownload(path string) {
 	_ = os.Remove(path)
 	_ = os.Remove(path + ".json")
 	_ = os.Remove(path + ".json.tmp")
-	parent := filepath.Dir(path)
-	if strings.HasPrefix(filepath.Base(parent), "resume-job-") {
-		_ = os.Remove(parent) // removes only an already-empty owner dir
-	}
 }
 
 func cleanupResumeForKey(dir, owner, resumeKey string) {
