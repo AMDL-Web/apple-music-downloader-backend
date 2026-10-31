@@ -6,7 +6,8 @@ import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { LANGS, REF, REPO, SHOTS, UsageError, build, commands, inline, loadContent, parseArgs, webpSize } from './build.mjs';
+import { commands } from './blocks.mjs';
+import { LANGS, REF, REPO, SHOTS, UsageError, build, inline, loadContent, parseArgs, webpSize } from './build.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const script = path.join(here, 'build.mjs');

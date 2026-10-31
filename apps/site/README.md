@@ -13,9 +13,10 @@ nothing from another host.
 
 | Path | What it holds |
 | --- | --- |
-| `build.mjs` | The template and the build: renders `content/<lang>.json` into a page, inlines `static/site.css` and `static/site.js`, copies the images |
+| `build.mjs` | The template and the build: renders `content/<lang>.json` into a page, inlines the stylesheets and `static/site.js`, copies the images |
+| `blocks.mjs` | The template's pieces that do not depend on the content: escaping, icons, code blocks with copy buttons, tab lists |
 | `content/` | The page text, one file per language with the same keys. Strings may use `` `code` ``, `**strong**` and `[text](href)`; an href may start with `{repo}` or `{blob}` |
-| `static/` | Stylesheet, script, favicon, Open Graph card, the hero animation (`hero.html`), the terminal capture (`tui.html`), the CLI and MCP samples, and the screenshots in `img/` |
+| `static/` | Stylesheets (`site.css`, and `demo.css` for the live demos), script, favicon, Open Graph card, the hero animation (`hero.html`), the terminal capture (`tui.html`), the CLI and MCP samples, and the screenshots in `img/` |
 | `demo/` | The live console demo: the fake backend (`fake-api.js`), its made-up catalog, the module that installs it (`boot.js`), and `bundle.mjs`, which puts the demo into the build |
 | `serve.mjs` | The preview server behind `--serve` |
 | `build.test.mjs` | Content parity, links and anchors, local-only resources, image sizes, arguments |

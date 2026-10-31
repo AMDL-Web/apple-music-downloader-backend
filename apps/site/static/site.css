@@ -261,45 +261,6 @@ h1 span { display: block; color: var(--muted); }
 .stats dd span { margin-left: 5px; color: var(--muted); font-size: 15px; font-weight: 450; letter-spacing: 0; }
 .stats dt { font-size: 11px; line-height: 1.5; color: var(--muted); }
 
-/* Live demo: each app in a window, the console live in an iframe. */
-.demo { border-top: 1px solid var(--line); background: var(--bg-subtle); }
-.demo .tabs { border-top: 0; }
-.demo .tablist { background: var(--bg); }
-.demo .panel { padding: clamp(20px, 3vw, 36px) var(--pad) 0; background: none; }
-.demo .panel + .panel { border-top: 0; }
-.window { overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); box-shadow: var(--win-shadow); }
-.win-bar { display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, auto) minmax(max-content, 1fr); align-items: center; gap: 12px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--bg-subtle); }
-.lights { display: flex; gap: 8px; }
-.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--light-close); }
-.lights i:nth-child(2) { background: var(--light-min); }
-.lights i:nth-child(3) { background: var(--light-max); }
-.win-title { overflow: hidden; color: var(--fg-2); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.win-console .win-title { padding: 4px 16px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--muted); font: 12px/1.4 var(--mono); }
-.win-bar > :last-child:not(.win-title) { justify-self: end; }
-.win-action { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; margin-right: -8px; border-radius: 7px; color: var(--muted); font: 500 11px/1 var(--mono); letter-spacing: 0.1em; text-decoration: none; text-transform: uppercase; }
-:lang(zh-CN) .win-action { font-size: 12px; letter-spacing: 0.04em; }
-.win-action:hover { background: var(--bg); color: var(--fg); }
-.win-action svg { width: 14px; height: 14px; }
-.win-body { position: relative; height: clamp(560px, 76vh, 760px); }
-.win-body iframe { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
-.win-body .shot { height: 100%; border: 0; border-radius: 0; box-shadow: none; object-fit: cover; object-position: left top; }
-.win-open { display: none; }
-/* The desktop app needs 820 px: below that its window keeps the screenshot. */
-.win-desktop .win-body { container-type: inline-size; }
-.win-desktop .win-body iframe { position: absolute; inset: 0; display: none; }
-.win-start { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; border: 0; background: linear-gradient(transparent, var(--scrim)); cursor: pointer; }
-.win-start span { display: inline-flex; align-items: center; gap: 8px; height: 44px; padding: 0 18px; border-radius: 10px; background: var(--btn-bg); color: var(--btn-fg); font-size: 15px; font-weight: 550; }
-.win-start svg { width: 16px; height: 16px; transition: transform 0.2s; }
-.win-start:hover svg { transform: translateX(2px); }
-.win-start:focus-visible { outline: none; }
-.win-start:focus-visible span { outline: 2px solid var(--accent); outline-offset: 2px; }
-@container (min-width: 820px) {
-  .win-start { display: flex; }
-  .win-desktop .is-live iframe { display: block; }
-  .win-desktop .is-live .win-start { display: none; }
-}
-.demo-note { margin: 0; padding: 20px var(--pad) 28px; color: var(--muted); font-size: 14px; line-height: 1.6; text-align: center; }
-
 /* Sections */
 .sec { border-top: 1px solid var(--line); }
 .sec-head { max-width: 840px; padding: clamp(56px, 8vw, 96px) var(--pad) clamp(32px, 4vw, 44px); }
@@ -437,19 +398,6 @@ figcaption { margin-top: 12px; color: var(--muted); font: 500 11px/1.5 var(--mon
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .features { grid-template-columns: minmax(0, 1fr); }
   .callout, .notice { grid-template-columns: minmax(0, 1fr); }
-}
-/* Narrow screens: the console draws its desktop layout at 1280 x 800, scaled
-   to the window (site.js sets --demo-scale), and a tap opens it full screen,
-   where it lays itself out for the screen. */
-@media (max-width: 720px) {
-  .win-body { height: auto; aspect-ratio: 16 / 10; overflow: hidden; }
-  .win-body iframe { position: absolute; top: 0; left: 0; width: 1280px; height: 800px; transform: scale(var(--demo-scale, 0.27)); transform-origin: 0 0; pointer-events: none; }
-  .win-action { display: none; }
-  .win-open { display: flex; position: absolute; inset: 0; align-items: flex-end; justify-content: center; padding: 14px; background: linear-gradient(transparent 45%, var(--scrim)); text-decoration: none; }
-  .win-open span { display: inline-flex; align-items: center; gap: 8px; height: 44px; padding: 0 18px; border-radius: 10px; background: var(--btn-bg); color: var(--btn-fg); font-size: 15px; font-weight: 550; }
-  .win-open svg { width: 16px; height: 16px; }
-  .win-open:focus-visible { outline: none; }
-  .win-open:focus-visible span { outline: 2px solid var(--accent); outline-offset: 2px; }
 }
 @media (max-width: 560px) {
   .steps, .links ul, .gallery { grid-template-columns: minmax(0, 1fr); }
