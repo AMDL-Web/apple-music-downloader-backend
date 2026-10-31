@@ -1,7 +1,8 @@
 // Puts the live demos into the built site. demo/console/ is a copy of
 // apps/console/static whose index.html runs boot.js before the console, with
-// this directory's modules beside it in demo/console/demo/; demo/desktop/ is
-// the desktop app's web build, when the build is given one.
+// this directory's modules beside it in demo/console/demo/; demo/desktop/ and
+// demo/terminal/ are the desktop app's and the TUI's web builds, when the
+// build is given them.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,11 +49,12 @@ export function demoIndex(html) {
   return html;
 }
 
-export function buildDemo(out, { desktop = '' } = {}) {
+export function buildDemo(out, { desktop = '', tuiWeb = '' } = {}) {
   const dir = path.join(out, 'demo', 'console');
   fs.cpSync(CONSOLE_STATIC, dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'index.html'), demoIndex(fs.readFileSync(path.join(CONSOLE_STATIC, 'index.html'), 'utf8')));
   fs.mkdirSync(path.join(dir, 'demo'));
   for (const file of MODULES) fs.copyFileSync(path.join(here, file), path.join(dir, 'demo', file));
   if (desktop) fs.cpSync(desktop, path.join(out, 'demo', 'desktop'), { recursive: true });
+  if (tuiWeb) fs.cpSync(tuiWeb, path.join(out, 'demo', 'terminal'), { recursive: true });
 }

@@ -14,6 +14,7 @@ on:
       - apps/desktop/**
       - internal/demo/**
       - apps/amdl/internal/tui/**
+      - apps/amdl/web/**
       - Makefile
       - .github/workflows/pages.yml
   workflow_dispatch:

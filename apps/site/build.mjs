@@ -29,7 +29,7 @@ export const LANGS = [
 const THEME_KEY = 'amdl-site-theme';
 const LANG_KEY = 'amdl-site-lang';
 
-const USAGE = `usage: node apps/site/build.mjs [--out <dir>] [--base <url>] [--desktop <dir>] [--tui <file>] [--serve <port>]
+const USAGE = `usage: node apps/site/build.mjs [--out <dir>] [--base <url>] [--desktop <dir>] [--tui <file>] [--tui-web <dir>] [--serve <port>]
 
   --out <dir>      where to write the site (default: apps/site/dist)
   --base <url>     absolute URL the site is served from, such as https://example.org/;
@@ -38,15 +38,17 @@ const USAGE = `usage: node apps/site/build.mjs [--out <dir>] [--base <url>] [--d
                    as the live desktop demo; without it the page has no desktop demo
   --tui <file>     a frame of the terminal interface with its color escapes, as the
                    TUI's snapshot test writes it; without it the page shows none
+  --tui-web <dir>  the terminal interface's web build (make tui-web), embedded as the
+                   live terminal demo behind the --tui frame, which it needs
   --serve <port>   after building, serve the output on 127.0.0.1:<port>`;
 
 export class UsageError extends Error {}
 
 export function parseArgs(argv) {
-  const opts = { out: path.join(here, 'dist'), base: '', desktop: '', tui: '', serve: 0 };
+  const opts = { out: path.join(here, 'dist'), base: '', desktop: '', tui: '', tuiWeb: '', serve: 0 };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
-    if (!['--out', '--base', '--desktop', '--tui', '--serve'].includes(flag)) throw new UsageError(`unknown argument: ${flag}`);
+    if (!['--out', '--base', '--desktop', '--tui', '--tui-web', '--serve'].includes(flag)) throw new UsageError(`unknown argument: ${flag}`);
     const value = argv[++i];
     if (value === undefined || value.startsWith('--')) throw new UsageError(`${flag} needs a value`);
     if (flag === '--out') opts.out = path.resolve(value);
@@ -68,12 +70,17 @@ export function parseArgs(argv) {
       opts.tui = path.resolve(value);
       if (!fs.statSync(opts.tui, { throwIfNoEntry: false })?.isFile()) throw new UsageError(`--tui is not a file: ${value}`);
     }
+    if (flag === '--tui-web') {
+      opts.tuiWeb = path.resolve(value);
+      if (!fs.existsSync(path.join(opts.tuiWeb, 'index.html'))) throw new UsageError(`--tui-web has no index.html: ${value}`);
+    }
     if (flag === '--serve') {
       const port = Number(value);
       if (!Number.isInteger(port) || port < 1 || port > 65535) throw new UsageError(`--serve needs a port number: ${value}`);
       opts.serve = port;
     }
   }
+  if (opts.tuiWeb && !opts.tui) throw new UsageError('--tui-web needs --tui, the frame it shows until it starts');
   return opts;
 }
 
@@ -256,6 +263,17 @@ ${
     return `<div class="live" role="img" aria-label="${esc(alt)}" data-scale="${shown}" style="--vw:${v.width};--vh:${v.height};--vx:${v.x ?? 0};--cw:${shown}"><iframe data-demo data-src="../demo/console/${v.route}" title="${esc(alt)}" tabindex="-1" inert></iframe></div>`;
   };
 
+  // The terminal frame; with the TUI's web build it is the poster, and a
+  // button over it loads the real TUI, dark like the frame, in its place.
+  const tp = c.products.terminal;
+  const terminal = ctx.tui
+    ? `<div class="term-wrap"><div class="term"><pre role="img" aria-label="${esc(tp.shot)}">${ctx.tui}</pre>${
+        ctx.tuiWeb
+          ? `<iframe data-src="../demo/terminal/?theme=dark" title="${esc(tp.frame)}"></iframe><button class="term-start" type="button"><span>${esc(tp.start)}${ICON.arrow}</span></button>`
+          : ''
+      }</div></div>`
+    : '';
+
   const stats = `<dl class="stats">${c.stats
     .map((s) => `<div><dt>${esc(s.label)}</dt><dd>${esc(s.value)}${s.unit ? `<span>${esc(s.unit)}</span>` : ''}</dd></div>`)
     .join('')}</dl>`;
@@ -280,7 +298,7 @@ ${
 <figure>${view('drawer', p.console.shots.drawer)}</figure>
 <figure>${view('search', p.console.shots.search)}</figure>
 </div></article>
-<article class="prod" id="terminal" aria-label="${esc(p.terminal.label)}">${prodCopy(p.terminal)}${ctx.tui ? `<div class="term-wrap"><div class="term" role="img" aria-label="${esc(p.terminal.shot)}"><pre>${ctx.tui}</pre></div></div>` : ''}</article>
+<article class="prod" id="terminal" aria-label="${esc(p.terminal.label)}">${prodCopy(p.terminal)}${terminal}</article>
 <article class="prod" id="desktop" aria-label="${esc(p.desktop.label)}">${prodCopy(p.desktop, ctx.desktop ? `<div class="cta"><a class="btn" href="#tab-demo-desktop">${esc(p.desktop.try)}${ICON.arrow}</a></div>` : '')}</article>
 </section>`;
 
@@ -388,13 +406,14 @@ export function loadContent(code) {
   return JSON.parse(fs.readFileSync(path.join(here, 'content', `${code}.json`), 'utf8'));
 }
 
-export function build({ out, base = '', desktop = '', tui = '' }) {
+export function build({ out, base = '', desktop = '', tui = '', tuiWeb = '' }) {
   const staticDir = path.join(here, 'static');
   const read = (rel) => fs.readFileSync(path.join(staticDir, rel), 'utf8');
   const shared = {
     css: squeeze(`${read('site.css')}\n${read('demo.css')}`),
     js: read('site.js').trim(),
     tui: tui ? terminalFrame(tui) : '',
+    tuiWeb: Boolean(tuiWeb),
     hero: read('hero.html').trim(),
     cli: read('cli.txt').trimEnd().split('\n'),
     mcp: read('mcp.txt').trimEnd().split('\n---\n').map((b) => b.split('\n')),
@@ -406,7 +425,7 @@ export function build({ out, base = '', desktop = '', tui = '' }) {
   fs.rmSync(out, { recursive: true, force: true });
   fs.mkdirSync(out, { recursive: true });
   fs.copyFileSync(path.join(staticDir, 'favicon.svg'), path.join(out, 'favicon.svg'));
-  buildDemo(out, { desktop });
+  buildDemo(out, { desktop, tuiWeb });
 
   const pages = [];
   for (const lang of LANGS) {

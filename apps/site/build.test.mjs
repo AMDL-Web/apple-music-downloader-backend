@@ -38,6 +38,7 @@ describe('arguments', () => {
     ['a --serve out of range', ['--serve', '70000']],
     ['a --desktop without an index.html', ['--desktop', fs.mkdtempSync(path.join(os.tmpdir(), 'amdl-desktop-'))]],
     ['a --tui that is not a file', ['--tui', os.tmpdir()]],
+    ['a --tui-web without an index.html', ['--tui-web', fs.mkdtempSync(path.join(os.tmpdir(), 'amdl-tui-web-'))]],
   ]) {
     test(`rejects ${name}`, () => assert.throws(() => parseArgs(argv), UsageError));
   }
@@ -101,8 +102,25 @@ describe('terminal frame', () => {
     const out = fs.mkdtempSync(path.join(os.tmpdir(), 'amdl-site-'));
     try {
       build({ out, tui: parseArgs(['--tui', tmp('\x1b[1mamdl\x1b[0m 2.0.0')]).tui });
-      assert.match(fs.readFileSync(path.join(out, 'en', 'index.html'), 'utf8'), /<pre><span class="b">amdl<\/span> 2\.0\.0<\/pre>/);
+      assert.match(fs.readFileSync(path.join(out, 'en', 'index.html'), 'utf8'), /<pre role="img" aria-label="[^"]+"><span class="b">amdl<\/span> 2\.0\.0<\/pre>/);
     } finally {
+      fs.rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  test('a TUI web build given with --tui-web starts in place of the frame', () => {
+    const web = fs.mkdtempSync(path.join(os.tmpdir(), 'amdl-tui-web-'));
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), 'amdl-site-'));
+    try {
+      fs.writeFileSync(path.join(web, 'index.html'), '<!doctype html><title>amdl</title>');
+      assert.throws(() => parseArgs(['--tui-web', web]), /--tui-web needs --tui/);
+      const opts = parseArgs(['--tui', tmp('amdl'), '--tui-web', web]);
+      build({ out, tui: opts.tui, tuiWeb: opts.tuiWeb });
+      assert.ok(fs.existsSync(path.join(out, 'demo', 'terminal', 'index.html')));
+      const html = fs.readFileSync(path.join(out, 'en', 'index.html'), 'utf8');
+      assert.match(html, /<pre role="img"[^>]*>amdl<\/pre><iframe data-src="\.\.\/demo\/terminal\/\?theme=dark"[^>]*><\/iframe><button class="term-start" type="button">/);
+    } finally {
+      fs.rmSync(web, { recursive: true, force: true });
       fs.rmSync(out, { recursive: true, force: true });
     }
   });

@@ -89,6 +89,21 @@
     frame.addEventListener('load', () => tell(frame));
   }
 
+  // The TUI's web build loads in place of its frame when the visitor starts
+  // it, as wide as the frame (or the box, if narrower) so it lays out the
+  // same, and takes the keyboard.
+  for (const start of document.querySelectorAll('.term-start')) {
+    const box = start.parentElement;
+    const frame = box.querySelector('iframe');
+    start.addEventListener('click', () => {
+      box.scrollLeft = 0;
+      frame.style.width = `${box.querySelector('pre').offsetWidth}px`;
+      frame.src = frame.dataset.src;
+      box.classList.add('is-live');
+      frame.focus();
+    });
+  }
+
   // The desktop app's web build loads when the visitor starts it, and wears
   // the site's theme through MyGo's data-mygo-theme.
   const dark = matchMedia('(prefers-color-scheme: dark)');

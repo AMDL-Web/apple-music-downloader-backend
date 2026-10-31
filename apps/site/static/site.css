@@ -25,6 +25,10 @@
   --light-close: #ff5f57;
   --light-min: #febc2e;
   --light-max: #28c840;
+  /* The terminal is dark in both themes, like the TUI's frame. */
+  --term-bg: #141413;
+  --term-fg: #e8e6dc;
+  --term-line: #262624;
   --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", "PingFang SC", "Noto Sans Mono CJK SC", monospace;
   --pad: clamp(16px, 3.5vw, 40px);
@@ -297,8 +301,8 @@ h3 { font-weight: 600; letter-spacing: -0.015em; }
 .g-phone { position: absolute; right: clamp(10px, 3vw, 40px); bottom: calc(-1 * clamp(24px, 5vw, 64px)); width: clamp(84px, 19%, 220px); }
 
 .term-wrap { padding: 0 var(--pad) clamp(40px, 5vw, 56px); }
-.term { overflow-x: auto; border: 1px solid #262624; border-radius: 12px; background: #141413; box-shadow: var(--shadow); }
-.term pre { width: max-content; margin: 0 auto; padding: 18px 20px; color: #e8e6dc; font: 13px/1.38 var(--mono); }
+.term { overflow-x: auto; border: 1px solid var(--term-line); border-radius: 12px; background: var(--term-bg); box-shadow: var(--shadow); }
+.term pre { width: max-content; margin: 0 auto; padding: 18px 20px; color: var(--term-fg); font: 13px/1.38 var(--mono); }
 .term .b { font-weight: 700; }
 .term .u { text-decoration: underline; }
 /* A wide (CJK) character takes two terminal cells. */

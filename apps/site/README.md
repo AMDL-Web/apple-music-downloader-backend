@@ -51,11 +51,13 @@ node --test apps/site/
 
 runs the tests; `make node-test` includes them.
 
-That preview has the console demo only. The page as published also has the desktop demo,
-a frame of the terminal interface and the Open Graph card, which `make site` adds; it
-needs Go, Node.js and Chrome, and writes `apps/site/dist/` (`SITE_OUT` elsewhere):
+That preview has the console demo only. The page as published also has the desktop and
+terminal demos, a frame of the terminal interface and the Open Graph card, which
+`make site` adds; it needs Go, Node.js and Chrome, and writes `apps/site/dist/`
+(`SITE_OUT` elsewhere):
 
-- `make desktop-web` builds the desktop app's web build, given to `--desktop`.
+- `make desktop-web` builds the desktop app's web build, given to `--desktop`, and
+  `make tui-web` the terminal interface's, given to `--tui-web`.
 - The TUI's snapshot test, `apps/amdl/internal/tui` `TestEveryLineFitsTheTerminal`
   with `AMDL_TUI_SNAPSHOTS=<dir>`, writes a frame per terminal width; `--tui` takes the
   100-column one, `ansi.mjs` turns it into HTML, and the build refuses a frame that shows
@@ -93,6 +95,10 @@ has no screenshots.
   1280 x 800 scaled to fit. The page passes its theme in as `data-mygo-theme`.
 - Up to 720 px wide the console window is a scaled-down live view; a tap opens
   `demo/console/` full screen, where the console lays itself out for the screen.
+- Given the terminal interface's web build with `--tui-web <dir>`, the build copies it to
+  `demo/terminal/`, and the terminal frame becomes its poster: a button over the frame
+  loads the real TUI, on the demo backend and in its dark palette, in the frame's box.
+  `--tui-web` needs `--tui`, since that frame is what the page shows until then.
 
 ## Publishing
 
