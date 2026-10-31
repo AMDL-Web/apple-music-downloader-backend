@@ -255,6 +255,7 @@ export function createFakeApi({ progress, now = Date.now(), timers = globalThis 
         updated_at: iso(finished ? finished - (n - i) * 1500 : at + i * 1000),
       };
       if (stage === 'completed' || stage === 'skipped_existing') finishItem(job, item);
+      setBytes(item);
       if (stage === 'failed') {
         item.error = DECRYPT_ERROR;
         item.attempt = 3;
@@ -266,8 +267,12 @@ export function createFakeApi({ progress, now = Date.now(), timers = globalThis 
     recount(job);
   }
 
+  const fileSize = (it) => Math.round((it.duration_ms / 1000) * ((it.bitrate || 1000000) / 8) * (0.96 + (hash(it.id) % 80) / 1000));
+  // download_bytes: the share of the file received, all of it once the transfer is over.
+  const setBytes = (it) => (it.progress.download_bytes = Math.round(it.progress.download * fileSize(it)));
+
   function finishItem(job, it) {
-    it.file_size = Math.round((it.duration_ms / 1000) * ((it.bitrate || 1000000) / 8) * (0.96 + (hash(it.id) % 80) / 1000));
+    it.file_size = fileSize(it);
     it.output_path = `/app/data/downloads/${outputDir(job)}/${String(it.index).padStart(2, '0')}. ${it.title}.m4a`;
   }
 
@@ -403,6 +408,7 @@ export function createFakeApi({ progress, now = Date.now(), timers = globalThis 
           }
         }
         Object.assign(it, stageFields(stage, frac, key), { updated_at: iso(Date.now()) });
+        setBytes(it);
         if (stage === 'completed') {
           finishItem(job, it);
           addEvent({ job_id: job.id, item_id: it.id, type: 'item_completed', message: 'saved', payload: { ...it } });

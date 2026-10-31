@@ -90,6 +90,18 @@ describe('fake API', () => {
     }
   });
 
+  test('a downloading track reports the bytes received, in step with its download share', () => {
+    const api = fresh();
+    const all = [...api.items.values()].flat();
+    const downloading = all.filter((it) => it.status === 'downloading' && it.progress.download > 0);
+    assert.ok(downloading.length > 0);
+    // The whole file is what the share was of: bytes / share lands on the size it is saved at.
+    const total = new Map(downloading.map((it) => [it.id, it.progress.download_bytes / it.progress.download]));
+    for (const it of all.filter((x) => x.status === 'queued')) assert.equal(it.progress.download_bytes, 0);
+    settle(api);
+    for (const it of downloading) assert.ok(Math.abs(it.file_size - total.get(it.id)) / it.file_size < 0.01, it.id);
+  });
+
   test('a link submitted from the console becomes a job that runs', async () => {
     const api = fresh();
     const album = albums.find((a) => a.name === 'Every Bridge Is a Promise');
