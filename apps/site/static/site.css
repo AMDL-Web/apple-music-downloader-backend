@@ -307,6 +307,13 @@ h3 { font-weight: 600; letter-spacing: -0.015em; }
 .term .u { text-decoration: underline; }
 /* A wide (CJK) character takes two terminal cells. */
 .term .w { display: inline-block; width: 2ch; text-align: center; vertical-align: top; }
+/* A block glyph fills the cell to the line's edges, as in a terminal: full, upper or lower half. */
+.term .kf, .term .ku, .term .kl { display: inline-block; width: 1ch; height: 1lh; vertical-align: top; -webkit-text-fill-color: transparent; }
+.term .kf { background: currentColor; }
+.term .ku { background: linear-gradient(currentColor 50%, transparent 50%); }
+.term .kl { background: linear-gradient(transparent 50%, currentColor 50%); }
+/* The vertical line overshoots the line's edges, so it meets the box's corners whatever the font's glyph height. */
+.term .kv { display: inline-block; transform: scaleY(1.5); }
 
 /* Features */
 .features { grid-template-columns: repeat(2, minmax(0, 1fr)); }

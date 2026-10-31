@@ -98,6 +98,13 @@ describe('terminal frame', () => {
     );
   });
 
+  test('block glyphs and the vertical line reach the line edges', () => {
+    assert.equal(
+      ansiToHtml('\x1b[38;2;251;113;133m█▄\x1b[0m ▀ │x'),
+      '<span style="color:#fb7185"><span class="kf">█</span><span class="kl">▄</span></span> <span class="ku">▀</span> <span class="kv">│</span>x',
+    );
+  });
+
   test('a frame given with --tui is on the page', () => {
     const out = fs.mkdtempSync(path.join(os.tmpdir(), 'amdl-site-'));
     try {

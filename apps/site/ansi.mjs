@@ -1,7 +1,8 @@
 // Turns a terminal frame (text with SGR escapes, as the TUI's snapshot test
 // writes it) into the HTML the page shows in `.term pre`: runs of one style
-// in spans with an inline color, `b` for bold, `u` for underline, and each
-// wide (CJK) character in a `w` span two cells wide, so the columns line up.
+// in spans with an inline color, `b` for bold, `u` for underline, each wide
+// (CJK) character in a `w` span two cells wide, so the columns line up, and
+// each block glyph and vertical line in a span that reaches the line's edges.
 
 import { esc } from './blocks.mjs';
 
@@ -9,6 +10,11 @@ const SGR = /\x1b\[([0-9;]*)m/g;
 // Other control sequences (cursor moves, OSC 8 links) carry nothing to draw.
 const OTHER = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[A-Za-ln-z]/g;
 const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦\u{1f300}-\u{1f64f}\u{1f900}-\u{1f9ff}\u{20000}-\u{3fffd}]/u;
+
+// The font's block glyphs and vertical line stop short of the page's line
+// height, which would stripe the logo's bars and break the prompt box's
+// sides; a terminal draws them edge to edge, and so do these.
+const CELL = { '█': 'kf', '▀': 'ku', '▄': 'kl', '│': 'kv' };
 
 const hex = (r, g, b) => `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
 
@@ -31,7 +37,13 @@ function apply(st, params) {
 }
 
 function span(st, text) {
-  const body = [...text].map((ch) => (WIDE.test(ch) ? `<span class="w">${esc(ch)}</span>` : esc(ch))).join('');
+  const body = [...text]
+    .map((ch) => {
+      if (WIDE.test(ch)) return `<span class="w">${esc(ch)}</span>`;
+      if (CELL[ch]) return `<span class="${CELL[ch]}">${ch}</span>`;
+      return esc(ch);
+    })
+    .join('');
   const cls = [st.b && 'b', st.u && 'u'].filter(Boolean).join(' ');
   const style = [st.fg && `color:${st.fg}`, st.bg && `background:${st.bg}`].filter(Boolean).join(';');
   if (!cls && !style) return body;
