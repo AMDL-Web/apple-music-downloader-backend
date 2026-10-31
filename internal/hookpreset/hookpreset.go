@@ -1,7 +1,8 @@
-// Package hookpreset is the services the hooks editor knows: what each asks
-// for, and the webhook that calls it, as a write to PUT /api/v1/hooks/{name}.
-// Each request is the one the service documents; the backend sends it as
-// written, its body a template over the hook payload.
+// Package hookpreset is the services a webhook hook can be made for, which
+// GET /api/v1/hooks/presets lists and PUT /api/v1/hooks/{name} builds from:
+// what each asks for, and the request that calls it. Each request is the one
+// the service documents; the backend sends it as built, its body a template
+// over the hook payload (internal/hooks renders it).
 package hookpreset
 
 import (
@@ -11,42 +12,59 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-
-	"amdl/internal/client"
 )
 
-// Kind groups the presets in the editor.
-type Kind int
+// Kind groups the presets in an editor.
+type Kind string
 
 const (
-	Notify Kind = iota
-	Library
-	Custom
+	Notify  Kind = "notify"
+	Library Kind = "library"
+	Custom  Kind = "custom"
 )
 
 // Field is one value a preset asks for. A field with Choices is picked from
-// them; Multiline takes a body.
+// them; Multiline takes a body; Secret is shown masked.
 type Field struct {
-	Key, Label, Placeholder, Default string
-	Secret, Optional, Multiline      bool
-	Choices                          []string
+	Key         string   `json:"key"`
+	Label       string   `json:"label"`
+	Placeholder string   `json:"placeholder,omitempty"`
+	Default     string   `json:"default,omitempty"`
+	Secret      bool     `json:"secret,omitempty"`
+	Optional    bool     `json:"optional,omitempty"`
+	Multiline   bool     `json:"multiline,omitempty"`
+	Choices     []string `json:"choices,omitempty"`
 }
 
 // Preset is one service.
 type Preset struct {
-	ID, Name string
-	Kind     Kind
-	Fields   []Field
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind Kind   `json:"kind"`
 	// Events are the events a new hook of the preset runs on.
-	Events []string
-	build  func(v map[string]string) (client.HookWrite, error)
+	Events []string `json:"events"`
+	Fields []Field  `json:"fields"`
+	build  func(v map[string]string) (Request, error)
 }
 
-// Build is the write that points a hook at the service with values, keyed
-// by field: its address, method, headers and body, all set, so a hook that
-// called another service before is replaced whole. Events, job types and
-// the switch are the caller's.
-func (p Preset) Build(values map[string]string) (client.HookWrite, error) {
+// Request is the webhook request a preset builds; Body empty sends the JSON
+// payload, or nothing for a GET.
+type Request struct {
+	Method, URL string
+	Headers     map[string]string
+	Body        string
+}
+
+// Build is the request that calls the service with values, keyed by field.
+// A required field left empty, a key the preset does not ask for and
+// template braces in a value are errors, worded for the person filling the
+// fields in.
+func (p Preset) Build(values map[string]string) (Request, error) {
+	for k := range values {
+		if !slices.ContainsFunc(p.Fields, func(f Field) bool { return f.Key == k }) {
+			return Request{}, fmt.Errorf("%s has no field %q", p.Name, k)
+		}
+	}
 	v := map[string]string{}
 	for _, f := range p.Fields {
 		s := strings.TrimSpace(values[f.Key])
@@ -57,12 +75,13 @@ func (p Preset) Build(values map[string]string) (client.HookWrite, error) {
 			s = f.Default
 		}
 		if s == "" && !f.Optional {
-			return client.HookWrite{}, fmt.Errorf("%s is needed", f.Label)
+			return Request{}, fmt.Errorf("%s is needed", f.Label)
 		}
-		if strings.Contains(s, "{{") || strings.Contains(s, "}}") {
-			if !f.Multiline {
-				return client.HookWrite{}, fmt.Errorf("%s cannot hold {{ or }}", f.Label)
-			}
+		if len(f.Choices) > 0 && s != "" && !slices.Contains(f.Choices, s) {
+			return Request{}, fmt.Errorf("%s is one of %s", f.Label, strings.Join(f.Choices, ", "))
+		}
+		if !f.Multiline && (strings.Contains(s, "{{") || strings.Contains(s, "}}")) {
+			return Request{}, fmt.Errorf("%s cannot hold {{ or }}", f.Label)
 		}
 		v[f.Key] = s
 	}
@@ -92,10 +111,6 @@ func server(placeholder, def string) Field {
 // joinURL is base with path after it, base's trailing slashes dropped.
 func joinURL(base, path string) string { return strings.TrimRight(base, "/") + path }
 
-func str(s string) *string { return &s }
-
-func headers(h map[string]string) *map[string]string { return &h }
-
 // jsonLiteral is s as a JSON string, to write into a body template; Build
 // has kept {{ and }} out of it.
 func jsonLiteral(s string) string {
@@ -113,13 +128,13 @@ var All = []Preset{
 		},
 		// ntfy publishes a POST to the topic's URL as a message: the body
 		// is its text, Title and Tags its headers.
-		build: func(v map[string]string) (client.HookWrite, error) {
+		build: func(v map[string]string) (Request, error) {
 			h := map[string]string{"Title": title, "Tags": "musical_note", "Content-Type": "text/plain; charset=utf-8"}
 			if v["token"] != "" {
 				h["Authorization"] = "Bearer " + v["token"]
 			}
-			return client.HookWrite{Method: http.MethodPost, URL: joinURL(v["server"], "/"+url.PathEscape(v["topic"])),
-				Headers: headers(h), Body: str(message + "{{$m}}")}, nil
+			return Request{Method: http.MethodPost, URL: joinURL(v["server"], "/"+url.PathEscape(v["topic"])),
+				Headers: h, Body: message + "{{$m}}"}, nil
 		}},
 	{ID: "bark", Name: "Bark", Kind: Notify, Events: finishedOrFailed,
 		Fields: []Field{
@@ -127,10 +142,10 @@ var All = []Preset{
 			{Key: "key", Label: "Device key", Secret: true},
 		},
 		// Bark's POST /push takes a JSON body with the device's key.
-		build: func(v map[string]string) (client.HookWrite, error) {
+		build: func(v map[string]string) (Request, error) {
 			body := fmt.Sprintf(`%s{"device_key": %s, "title": %s, "body": {{json $m}}, "group": %s}`,
 				message, jsonLiteral(v["key"]), jsonLiteral(title), jsonLiteral(title))
-			return client.HookWrite{Method: http.MethodPost, URL: joinURL(v["server"], "/push"), Headers: headers(map[string]string{}), Body: &body}, nil
+			return Request{Method: http.MethodPost, URL: joinURL(v["server"], "/push"), Headers: map[string]string{}, Body: body}, nil
 		}},
 	{ID: "telegram", Name: "Telegram", Kind: Notify, Events: finishedOrFailed,
 		Fields: []Field{
@@ -138,13 +153,13 @@ var All = []Preset{
 			{Key: "chat", Label: "Chat ID", Placeholder: "123456789"},
 		},
 		// The Bot API's sendMessage takes chat_id and text as JSON.
-		build: func(v map[string]string) (client.HookWrite, error) {
+		build: func(v map[string]string) (Request, error) {
 			if strings.ContainsAny(v["token"], "/ ?#") {
-				return client.HookWrite{}, fmt.Errorf("Bot token is the one BotFather gave, as 123456:ABC…")
+				return Request{}, fmt.Errorf("Bot token is the one BotFather gave, as 123456:ABC…")
 			}
 			body := fmt.Sprintf(`%s{"chat_id": %s, "text": {{json $m}}}`, message, jsonLiteral(v["chat"]))
-			return client.HookWrite{Method: http.MethodPost, URL: "https://api.telegram.org/bot" + v["token"] + "/sendMessage",
-				Headers: headers(map[string]string{}), Body: &body}, nil
+			return Request{Method: http.MethodPost, URL: "https://api.telegram.org/bot" + v["token"] + "/sendMessage",
+				Headers: map[string]string{}, Body: body}, nil
 		}},
 	{ID: "plex", Name: "Plex", Kind: Library, Events: finished,
 		Fields: []Field{
@@ -152,9 +167,9 @@ var All = []Preset{
 			{Key: "token", Label: "Plex token", Secret: true},
 		},
 		// Plex scans every library on a GET of sections/all/refresh.
-		build: func(v map[string]string) (client.HookWrite, error) {
-			return client.HookWrite{Method: http.MethodGet, URL: joinURL(v["server"], "/library/sections/all/refresh"),
-				Headers: headers(map[string]string{"X-Plex-Token": v["token"]}), Body: str("")}, nil
+		build: func(v map[string]string) (Request, error) {
+			return Request{Method: http.MethodGet, URL: joinURL(v["server"], "/library/sections/all/refresh"),
+				Headers: map[string]string{"X-Plex-Token": v["token"]}}, nil
 		}},
 	{ID: "jellyfin", Name: "Jellyfin", Kind: Library, Events: finished,
 		Fields: []Field{
@@ -163,9 +178,9 @@ var All = []Preset{
 		},
 		// Jellyfin scans on POST /Library/Refresh, its key in the
 		// Authorization header's MediaBrowser scheme.
-		build: func(v map[string]string) (client.HookWrite, error) {
-			return client.HookWrite{Method: http.MethodPost, URL: joinURL(v["server"], "/Library/Refresh"),
-				Headers: headers(map[string]string{"Authorization": `MediaBrowser Token="` + v["key"] + `"`}), Body: str("")}, nil
+		build: func(v map[string]string) (Request, error) {
+			return Request{Method: http.MethodPost, URL: joinURL(v["server"], "/Library/Refresh"),
+				Headers: map[string]string{"Authorization": `MediaBrowser Token="` + v["key"] + `"`}}, nil
 		}},
 	{ID: "emby", Name: "Emby", Kind: Library, Events: finished,
 		Fields: []Field{
@@ -173,9 +188,9 @@ var All = []Preset{
 			{Key: "key", Label: "API key", Secret: true},
 		},
 		// Emby scans on POST /emby/Library/Refresh with X-Emby-Token.
-		build: func(v map[string]string) (client.HookWrite, error) {
-			return client.HookWrite{Method: http.MethodPost, URL: joinURL(v["server"], "/emby/Library/Refresh"),
-				Headers: headers(map[string]string{"X-Emby-Token": v["key"]}), Body: str("")}, nil
+		build: func(v map[string]string) (Request, error) {
+			return Request{Method: http.MethodPost, URL: joinURL(v["server"], "/emby/Library/Refresh"),
+				Headers: map[string]string{"X-Emby-Token": v["key"]}}, nil
 		}},
 	{ID: "custom", Name: "Custom", Kind: Custom, Events: finished,
 		Fields: []Field{
@@ -184,12 +199,12 @@ var All = []Preset{
 			{Key: "header", Label: "Header", Placeholder: "Authorization: Bearer …", Secret: true, Optional: true},
 			{Key: "body", Label: "Body", Placeholder: "The JSON payload", Optional: true, Multiline: true},
 		},
-		build: func(v map[string]string) (client.HookWrite, error) {
+		build: func(v map[string]string) (Request, error) {
 			h := map[string]string{}
 			if line := v["header"]; line != "" {
 				name, value, ok := strings.Cut(line, ":")
 				if !ok || strings.TrimSpace(name) == "" {
-					return client.HookWrite{}, fmt.Errorf("Header is Name: value")
+					return Request{}, fmt.Errorf("Header is Name: value")
 				}
 				h[strings.TrimSpace(name)] = strings.TrimSpace(value)
 			}
@@ -197,7 +212,7 @@ var All = []Preset{
 			if v["method"] == http.MethodGet {
 				body = ""
 			}
-			return client.HookWrite{Method: v["method"], URL: v["url"], Headers: headers(h), Body: &body}, nil
+			return Request{Method: v["method"], URL: v["url"], Headers: h, Body: body}, nil
 		}},
 }
 
@@ -208,31 +223,4 @@ func Find(id string) (Preset, bool) {
 		return Preset{}, false
 	}
 	return All[i], true
-}
-
-// Recognize is the preset a webhook looks made by, from what the backend
-// shows of it, its origin and header names; Custom when none fits.
-func Recognize(e client.HookEntry) Preset {
-	host := ""
-	if u, err := url.Parse(e.Origin); err == nil {
-		host = u.Hostname()
-	}
-	has := func(name string) bool { return slices.Contains(e.HeaderNames, name) }
-	id := "custom"
-	switch {
-	case has("X-Plex-Token"):
-		id = "plex"
-	case has("X-Emby-Token"):
-		id = "emby"
-	case host == "api.telegram.org":
-		id = "telegram"
-	case host == "api.day.app":
-		id = "bark"
-	case host == "ntfy.sh" || (has("Title") && has("Tags")):
-		id = "ntfy"
-	case len(e.HeaderNames) == 1 && has("Authorization") && e.Method == http.MethodPost:
-		id = "jellyfin"
-	}
-	p, _ := Find(id)
-	return p
 }

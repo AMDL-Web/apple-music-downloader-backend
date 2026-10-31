@@ -287,6 +287,15 @@ func (c *Client) Hooks(ctx context.Context) (Hooks, error) {
 	return h, err
 }
 
+// HookPresets reads GET /api/v1/hooks/presets.
+func (c *Client) HookPresets(ctx context.Context) ([]HookPreset, error) {
+	var r struct {
+		Presets []HookPreset `json:"presets"`
+	}
+	err := c.do(ctx, http.MethodGet, "/api/v1/hooks/presets", nil, nil, &r)
+	return r.Presets, err
+}
+
 // SetHooksEnabled sets hooks.yaml's master switch (PUT /api/v1/hooks).
 func (c *Client) SetHooksEnabled(ctx context.Context, on bool) (Hooks, error) {
 	var h Hooks

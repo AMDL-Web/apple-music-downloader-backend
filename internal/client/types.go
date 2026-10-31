@@ -246,6 +246,7 @@ type HookEntry struct {
 	Type        string   `json:"type"`
 	Events      []string `json:"events"`
 	JobTypes    []string `json:"job_types"`
+	Preset      string   `json:"preset,omitempty"`
 	Method      string   `json:"method,omitempty"`
 	Origin      string   `json:"origin,omitempty"`
 	HeaderNames []string `json:"header_names,omitempty"`
@@ -253,8 +254,11 @@ type HookEntry struct {
 }
 
 // HookWrite is the WebhookWrite schema: a field left nil, or empty where it
-// is not a pointer, keeps the entry's value.
+// is not a pointer, keeps the entry's value. Preset and Values build the
+// request in place of Method, URL, Headers and Body.
 type HookWrite struct {
+	Preset      string             `json:"preset,omitempty"`
+	Values      map[string]string  `json:"values,omitempty"`
 	Enabled     *bool              `json:"enabled,omitempty"`
 	Events      []string           `json:"events,omitempty"`
 	JobTypes    *[]string          `json:"job_types,omitempty"`
@@ -263,6 +267,27 @@ type HookWrite struct {
 	URL         string             `json:"url,omitempty"`
 	Headers     *map[string]string `json:"headers,omitempty"`
 	Body        *string            `json:"body,omitempty"`
+}
+
+// HookPreset is the HookPreset schema: a service a webhook can be built for.
+type HookPreset struct {
+	ID     string      `json:"id"`
+	Name   string      `json:"name"`
+	Kind   string      `json:"kind"`
+	Events []string    `json:"events"`
+	Fields []HookField `json:"fields"`
+}
+
+// HookField is the HookPresetField schema.
+type HookField struct {
+	Key         string   `json:"key"`
+	Label       string   `json:"label"`
+	Placeholder string   `json:"placeholder,omitempty"`
+	Default     string   `json:"default,omitempty"`
+	Secret      bool     `json:"secret,omitempty"`
+	Optional    bool     `json:"optional,omitempty"`
+	Multiline   bool     `json:"multiline,omitempty"`
+	Choices     []string `json:"choices,omitempty"`
 }
 
 // HookTest is the HookTestResult schema.

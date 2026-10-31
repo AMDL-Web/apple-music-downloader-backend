@@ -155,6 +155,7 @@ func (s *Server) routes() []route {
 		{http.MethodPost, "/api/v1/config/reload", h(s.reloadConfig)},
 		{http.MethodGet, "/api/v1/hooks", h(s.listHooks)},
 		{http.MethodPut, "/api/v1/hooks", h(s.setHooksEnabled)},
+		{http.MethodGet, "/api/v1/hooks/presets", h(s.listHookPresets)},
 		{http.MethodPut, "/api/v1/hooks/{name}", h(s.updateHook)},
 		{http.MethodDelete, "/api/v1/hooks/{name}", h(s.deleteHook)},
 		{http.MethodPost, "/api/v1/hooks/{name}/test", h(s.testHook)},

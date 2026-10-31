@@ -8,7 +8,6 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"amdl/internal/hookpreset"
 	"amdl/internal/client"
 )
 
@@ -48,13 +47,13 @@ type hookSheet struct {
 
 // hookLook is the icon and tile color of a hook: what kind of service it
 // calls, or a command.
-func hookLook(k *Tokens, kind hookpreset.Kind, command bool) (*ui.SVG, ui.Color) {
+func hookLook(k *Tokens, kind string, command bool) (*ui.SVG, ui.Color) {
 	switch {
 	case command:
 		return icTerminal, k.TileSettings
-	case kind == hookpreset.Notify:
+	case kind == "notify":
 		return icBell, k.TileDisk
-	case kind == hookpreset.Library:
+	case kind == "library":
 		return icSync, k.TileSystem
 	}
 	return icLink, k.TileQueue
@@ -75,14 +74,16 @@ func (a *App) hookList(c *ui.Context, k *Tokens) {
 			a.Store.SetHooksEnabled(on)
 		}
 		ui.Text(c, "Run hooks").FontSize(13).FontWeight(600).Grow(1)
-		if len(h.Entries) > 0 && button(c, k, buttonPlain, "Add hook", icPlus).Clicked() {
+		if len(h.Entries) > 0 && len(a.Store.Server.HookPresets) > 0 && button(c, k, buttonPlain, "Add hook", icPlus).Clicked() {
 			a.openHookSheet(nil, "")
 		}
 	})
 	if len(h.Entries) == 0 {
-		card(c, k).Gap(14).Children(func() {
-			a.presetGrid(c, k, func(id string) { a.openHookSheet(nil, id) })
-		})
+		if len(a.Store.Server.HookPresets) > 0 {
+			card(c, k).Gap(14).Children(func() {
+				a.presetGrid(c, k, func(id string) { a.openHookSheet(nil, id) })
+			})
+		}
 		return
 	}
 	ui.Column(c.Key("hook-list")).Padding(4, padCard).Radius(radiusCard).Background(k.Raise).Dividers(1, k.Line).Children(func() {
@@ -94,7 +95,7 @@ func (a *App) hookList(c *ui.Context, k *Tokens) {
 
 func (a *App) hookRow(c *ui.Context, k *Tokens, h *client.Hooks, e *client.HookEntry) {
 	command := e.Type != "webhook"
-	p := hookpreset.Recognize(*e)
+	p := a.hookPreset(e.Preset)
 	ui.Row(c.Key("hook-" + e.Name)).Height(58).Gap(12).AlignItems(ui.Center).Children(func() {
 		ic, tile := hookLook(k, p.Kind, command)
 		ui.Box(c).Size(30, 30).Radius(radiusInner).Background(tile.Alpha(0.16)).Center().Children(func() {
@@ -178,7 +179,7 @@ func (a *App) webhookControls(c *ui.Context, k *Tokens, e *client.HookEntry) {
 
 // hookSubtitle is the line under a hook's name: how its last test went for
 // a while after it, else what it calls.
-func (a *App) hookSubtitle(c *ui.Context, k *Tokens, e *client.HookEntry, p hookpreset.Preset, command bool) (string, ui.Color) {
+func (a *App) hookSubtitle(c *ui.Context, k *Tokens, e *client.HookEntry, p client.HookPreset, command bool) (string, ui.Color) {
 	if t, ok := a.Store.HookTests[e.Name]; ok {
 		switch {
 		case t.Running && waited(c, true, t.At):
@@ -195,7 +196,7 @@ func (a *App) hookSubtitle(c *ui.Context, k *Tokens, e *client.HookEntry, p hook
 		return "Command", k.Muted
 	}
 	host := strings.TrimPrefix(strings.TrimPrefix(e.Origin, "https://"), "http://")
-	if strings.EqualFold(e.Name, p.Name) || p.Kind == hookpreset.Custom {
+	if strings.EqualFold(e.Name, p.Name) || p.Kind == "custom" {
 		return host, k.Muted
 	}
 	return p.Name + " · " + host, k.Muted
@@ -213,6 +214,24 @@ func (a *App) hookRuns(name string) string {
 		}
 	}
 	return ""
+}
+
+// findPreset is the backend's preset with id.
+func (a *App) findPreset(id string) (client.HookPreset, bool) {
+	ps := a.Store.Server.HookPresets
+	if i := slices.IndexFunc(ps, func(p client.HookPreset) bool { return p.ID == id }); i >= 0 {
+		return ps[i], true
+	}
+	return client.HookPreset{}, false
+}
+
+// hookPreset is the preset a webhook was built from, or Custom for one
+// written by hand.
+func (a *App) hookPreset(id string) client.HookPreset {
+	if p, ok := a.findPreset(id); ok {
+		return p
+	}
+	return client.HookPreset{ID: "custom", Name: "Custom", Kind: "custom"}
 }
 
 // typesLabel names the job types a hook is limited to, "" for all of them.
@@ -233,15 +252,15 @@ func typesLabel(types []string) string {
 func (a *App) presetGrid(c *ui.Context, k *Tokens, pick func(id string)) {
 	groups := []struct {
 		label string
-		kind  hookpreset.Kind
-	}{{"Notify", hookpreset.Notify}, {"Refresh a library", hookpreset.Library}, {"Other", hookpreset.Custom}}
+		kind  string
+	}{{"Notify", "notify"}, {"Refresh a library", "library"}, {"Other", "custom"}}
 	ui.Column(c).Gap(14).Children(func() {
 		for _, g := range groups {
 			ui.Column(c).Gap(8).Children(func() {
 				label(c, k, g.label)
 				// Three a row, one width, so the rows line up.
 				ui.Grid(c).Columns(3).Gap(8).Children(func() {
-					for _, p := range hookpreset.All {
+					for _, p := range a.Store.Server.HookPresets {
 						if p.Kind != g.kind {
 							continue
 						}
@@ -271,7 +290,7 @@ func (a *App) presetGrid(c *ui.Context, k *Tokens, pick func(id string)) {
 func (a *App) openHookSheet(e *client.HookEntry, preset string) {
 	d := &hookSheet{open: true, fields: map[string]*string{}, choice: map[string]*int{}, events: map[string]bool{}, types: map[string]bool{}}
 	if e != nil {
-		d.editing, d.kind = e.Name, hookpreset.Recognize(*e).ID
+		d.editing, d.kind = e.Name, e.Preset
 		for _, ev := range e.Events {
 			d.events[ev] = true
 		}
@@ -287,7 +306,7 @@ func (a *App) openHookSheet(e *client.HookEntry, preset string) {
 // choosePreset shows preset's fields in d; a new hook takes its name and
 // events.
 func (a *App) choosePreset(d *hookSheet, id string) {
-	p, _ := hookpreset.Find(id)
+	p, _ := a.findPreset(id)
 	d.preset, d.err = id, ""
 	d.fields, d.choice = map[string]*string{}, map[string]*int{}
 	for _, f := range p.Fields {
@@ -378,7 +397,7 @@ func (a *App) hookSheetTitle(d *hookSheet) string {
 	if d.editing != "" {
 		return d.editing
 	}
-	if p, ok := hookpreset.Find(d.preset); ok {
+	if p, ok := a.findPreset(d.preset); ok {
 		return p.Name
 	}
 	return "Add hook"
@@ -396,7 +415,7 @@ func (a *App) hookForm(c *ui.Context, k *Tokens, d *hookSheet) {
 			})
 		}
 		if d.editing != "" && !d.replace {
-			p, _ := hookpreset.Find(d.kind)
+			p := a.hookPreset(d.kind)
 			e := a.hookEntry(d.editing)
 			ui.Row(c).Gap(10).Padding(8, 8, 8, 12).Radius(radiusControl).Background(k.Raise2).Border(1, k.Line).AlignItems(ui.Center).Children(func() {
 				ic, tile := hookLook(k, p.Kind, false)
@@ -406,7 +425,7 @@ func (a *App) hookForm(c *ui.Context, k *Tokens, d *hookSheet) {
 					d.replace, d.preset = true, ""
 				}
 			})
-		} else if p, ok := hookpreset.Find(d.preset); ok {
+		} else if p, ok := a.findPreset(d.preset); ok {
 			for _, f := range p.Fields {
 				ui.Column(c).Gap(6).Children(func() {
 					formLabel(f.Label)
@@ -544,24 +563,20 @@ func (a *App) saveHook(d *hookSheet) {
 	}
 	w.JobTypes = &types
 	if d.editing == "" || d.replace {
-		p, ok := hookpreset.Find(d.preset)
+		p, ok := a.findPreset(d.preset)
 		if !ok {
 			d.err = "Pick a service"
 			return
 		}
-		values := map[string]string{}
+		// The backend builds the request from the values and says what is
+		// missing.
+		w.Preset, w.Values = p.ID, map[string]string{}
 		for _, f := range p.Fields {
-			values[f.Key] = *d.fields[f.Key]
+			w.Values[f.Key] = *d.fields[f.Key]
 			if len(f.Choices) > 0 {
-				values[f.Key] = f.Choices[*d.choice[f.Key]]
+				w.Values[f.Key] = f.Choices[*d.choice[f.Key]]
 			}
 		}
-		req, err := p.Build(values)
-		if err != nil {
-			d.err = err.Error()
-			return
-		}
-		w.Method, w.URL, w.Headers, w.Body = req.Method, req.URL, req.Headers, req.Body
 	}
 	d.busy, d.since, d.err = true, time.Now(), ""
 	a.Store.PutHook(name, w, func(reason string) {

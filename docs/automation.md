@@ -46,7 +46,9 @@ Telegram message:
 body: '{"chat_id": "123456", "text": {{json (printf "%s · %v of %v tracks" (or .job.title .job.input) .job.completed_items .job.total_items)}}}'
 ```
 
-`max_attempts` counts the first try, and retries wait one second between attempts.
+`preset` names the service a webhook was built for through the hooks API
+(`GET /api/v1/hooks/presets` lists them); clients show it, and the request stays in the
+other keys. `max_attempts` counts the first try, and retries wait one second between attempts.
 
 **Exec entries** run `command` through `sh -c` with the JSON payload on stdin, optionally
 in `workdir`. The command inherits the backend's environment (`PATH`, `HOME`, `TZ`, …)

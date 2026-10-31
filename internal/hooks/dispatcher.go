@@ -120,6 +120,7 @@ type ListedEntry struct {
 	Type        string   `json:"type"`
 	Events      []string `json:"events"`
 	JobTypes    []string `json:"job_types"`
+	Preset      string   `json:"preset,omitempty"`
 	Method      string   `json:"method,omitempty"`
 	Origin      string   `json:"origin,omitempty"`
 	HeaderNames []string `json:"header_names,omitempty"`
@@ -154,7 +155,7 @@ func listedEntry(entry Entry) ListedEntry {
 	if entry.Type != typeWebhook {
 		return out
 	}
-	out.Method, out.MaxAttempts = entry.Method, entry.MaxAttempts
+	out.Preset, out.Method, out.MaxAttempts = entry.Preset, entry.Method, entry.MaxAttempts
 	if out.Method == "" {
 		out.Method = http.MethodPost
 	}

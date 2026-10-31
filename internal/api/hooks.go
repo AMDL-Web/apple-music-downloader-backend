@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"amdl/internal/hookpreset"
 	"amdl/internal/hooks"
 )
 
@@ -20,6 +21,12 @@ type HooksService interface {
 
 func (s *Server) listHooks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.manager.ListHooks())
+}
+
+// listHookPresets answers with the presets a webhook can be built from,
+// whether or not this process can write hooks.yaml.
+func (s *Server) listHookPresets(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"presets": hookpreset.All})
 }
 
 // hooksEditor is the editor, or false after answering 503 when this process
@@ -57,8 +64,12 @@ func (s *Server) setHooksEnabled(w http.ResponseWriter, r *http.Request) {
 
 // hookWrite is the body of PUT /hooks/{name}: an omitted field keeps the
 // entry's value, as PUT /config does, so a client changes the events of a
-// hook without sending its address and tokens again.
+// hook without sending its address and tokens again. Preset and Values build
+// the request from internal/hookpreset in place of URL, Method, Headers and
+// Body.
 type hookWrite struct {
+	Preset      *string            `json:"preset"`
+	Values      map[string]string  `json:"values"`
 	Type        *string            `json:"type"`
 	Enabled     *bool              `json:"enabled"`
 	Events      *[]string          `json:"events"`
@@ -87,10 +98,37 @@ func (s *Server) updateHook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeInvalidRequest, "only webhook hooks are written through the API; command hooks are edited in hooks.yaml")
 		return
 	}
-	entry, err := ed.PutWebhook(name, hooks.WebhookPatch{
+	patch := hooks.WebhookPatch{
 		Enabled: req.Enabled, Events: req.Events, JobTypes: req.JobTypes, MaxAttempts: req.MaxAttempts,
 		Method: req.Method, URL: req.URL, Headers: req.Headers, Body: req.Body,
-	})
+	}
+	raw := req.Method != nil || req.URL != nil || req.Headers != nil || req.Body != nil
+	switch {
+	case req.Preset != nil && raw:
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest, "preset and values build url, method, headers and body; send one or the other")
+		return
+	case req.Preset != nil:
+		p, ok := hookpreset.Find(*req.Preset)
+		if !ok {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "no preset is named "+*req.Preset)
+			return
+		}
+		built, err := p.Build(req.Values)
+		if err != nil {
+			writeError(w, http.StatusUnprocessableEntity, CodeInvalidHook, err.Error())
+			return
+		}
+		patch.Method, patch.URL, patch.Headers, patch.Body = &built.Method, &built.URL, &built.Headers, &built.Body
+		patch.Preset, patch.NewEvents = &p.ID, p.Events
+	case req.Values != nil:
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest, "values need a preset")
+		return
+	case raw:
+		// A request written by hand is no preset's any more.
+		none := ""
+		patch.Preset = &none
+	}
+	entry, err := ed.PutWebhook(name, patch)
 	if err != nil {
 		writeHookError(w, name, err)
 		return

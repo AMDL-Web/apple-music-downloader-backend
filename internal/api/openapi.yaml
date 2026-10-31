@@ -347,6 +347,31 @@ paths:
           $ref: '#/components/responses/InvalidHooksFile'
         '503':
           $ref: '#/components/responses/HooksNotEditable'
+  /api/v1/hooks/presets:
+    get:
+      tags: [System]
+      summary: List the services a webhook can be built for
+      description: >-
+        Returns the presets PUT /hooks/{name} builds a webhook from with preset
+        and values: notifications (ntfy, Bark, Telegram), library refreshes (Plex,
+        Jellyfin, Emby) and a custom request, each with the fields it asks for and
+        the events a new hook of it runs on. Each builds the request its service
+        documents.
+      operationId: listHookPresets
+      responses:
+        '200':
+          description: The presets, in the order an editor offers them.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [presets]
+                properties:
+                  presets:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/HookPreset'
   /api/v1/hooks/{name}:
     put:
       tags: [System]
@@ -358,6 +383,12 @@ paths:
         again; a new entry needs events and url. The result must pass the same
         validation as at startup and applies to the next job event; hooks.yaml keeps
         its comments and other entries.
+
+        preset and values build url, method, headers and body from a preset of GET
+        /hooks/presets and replace all four; a new entry of a preset runs on the
+        preset's events unless events is sent. Sending preset with any of the four
+        is 400. A write of url, method, headers or body without a preset clears the
+        entry's preset.
 
         Only webhook entries are written here. A command (exec) entry is edited in
         hooks.yaml itself: a write to one answers 409 hook_read_only, and a body
@@ -388,8 +419,9 @@ paths:
           description: >-
             invalid_hook: the entry would not load (a missing or bad url, no
             events, an unknown method, a body that is not a template, a GET with a
-            body); invalid_hooks_file: hooks.yaml on disk no longer loads, and
-            nothing was written.
+            body) or a preset's values do not build (a required field left empty,
+            a field it does not ask for); invalid_hooks_file: hooks.yaml on disk no
+            longer loads, and nothing was written.
           content:
             application/json:
               schema:
@@ -2154,6 +2186,10 @@ components:
           items:
             type: string
             enum: [song, album, playlist, artist, station]
+        preset:
+          type: string
+          description: Webhook entries only, absent when its request was written by hand; the id of the preset (GET /hooks/presets) it was built from.
+          example: ntfy
         method:
           type: string
           enum: [GET, POST, PUT]
@@ -2181,6 +2217,16 @@ components:
         type:
           type: string
           enum: [webhook]
+        preset:
+          type: string
+          description: A preset id of GET /hooks/presets; with values, it builds url, method, headers and body, which the body then must not carry.
+          example: ntfy
+        values:
+          type: object
+          description: The preset's fields by key; only with preset.
+          additionalProperties:
+            type: string
+          example: {topic: amdl-downloads}
         enabled:
           type: boolean
         events:
@@ -2217,6 +2263,59 @@ components:
             A Go text/template rendered over the payload as its JSON reads (.event,
             .job.title, .items) into the request body; json writes a value as a
             JSON literal. Empty sends the JSON payload itself.
+    HookPreset:
+      type: object
+      additionalProperties: false
+      required: [id, name, kind, events, fields]
+      properties:
+        id:
+          type: string
+          example: ntfy
+        name:
+          type: string
+          example: ntfy
+        kind:
+          type: string
+          enum: [notify, library, custom]
+          description: What the service does with the event, for grouping the presets.
+        events:
+          type: array
+          description: The events a new hook of the preset runs on unless the write sends its own.
+          items:
+            type: string
+            enum: [job_queued, job_finished, job_failed, job_cancelled]
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/HookPresetField'
+    HookPresetField:
+      type: object
+      additionalProperties: false
+      required: [key, label]
+      properties:
+        key:
+          type: string
+          description: The key of this field in a write's values.
+        label:
+          type: string
+        placeholder:
+          type: string
+        default:
+          type: string
+          description: The value an empty field takes.
+        secret:
+          type: boolean
+          description: Whether the value is a token or key, to show masked.
+        optional:
+          type: boolean
+        multiline:
+          type: boolean
+          description: Whether the value is a body, many lines long.
+        choices:
+          type: array
+          description: The only values the field takes, when present.
+          items:
+            type: string
     HookTestResult:
       type: object
       additionalProperties: false

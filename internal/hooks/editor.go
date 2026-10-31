@@ -55,10 +55,13 @@ func (e *InvalidError) Error() string { return e.Err.Error() }
 func (e *InvalidError) Unwrap() error { return e.Err }
 
 // WebhookPatch is a write to one webhook entry. A nil field keeps the
-// entry's value; a new entry starts from none.
+// entry's value; a new entry starts from none, and from NewEvents when Events
+// is nil.
 type WebhookPatch struct {
 	Enabled     *bool
 	Events      *[]string
+	NewEvents   []string
+	Preset      *string
 	JobTypes    *[]string
 	MaxAttempts *int
 	Method      *string
@@ -95,6 +98,9 @@ func (p WebhookPatch) apply(e *Entry) {
 	}
 	if p.Body != nil {
 		e.Body = *p.Body
+	}
+	if p.Preset != nil {
+		e.Preset = *p.Preset
 	}
 }
 
@@ -137,6 +143,9 @@ func (ed *Editor) PutWebhook(name string, p WebhookPatch) (ListedEntry, error) {
 		if entry.Type != typeWebhook {
 			return ListedEntry{}, ErrReadOnly
 		}
+	}
+	if item == nil && p.Events == nil {
+		entry.Events = append([]string{}, p.NewEvents...)
 	}
 	p.apply(&entry)
 	var node yaml.Node

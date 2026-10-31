@@ -33,6 +33,9 @@ type Server struct {
 	Stats   *client.Stats
 	Sync    *client.LibrarySync
 	Hooks   *client.Hooks
+	// HookPresets are the services a webhook can be built for, read once
+	// per connection: they change only with the backend's version.
+	HookPresets []client.HookPreset
 	// Startup is what the backend read only when it started, from /system.
 	Startup *Startup
 	// Errors are the error logs of the last day, or nil.
@@ -70,8 +73,9 @@ func (s *Store) WatchServerWithin(every time.Duration) {
 	}
 	sv.reading, sv.stale = true, false
 	c, ctx := s.client, s.ctx
+	presets := sv.HookPresets
 	go func() {
-		var next Server
+		next := Server{HookPresets: presets}
 		var wg sync.WaitGroup
 		read := func(fn func(context.Context)) {
 			wg.Add(1)
@@ -118,6 +122,13 @@ func (s *Store) WatchServerWithin(every time.Duration) {
 				next.Hooks = &v
 			}
 		})
+		if presets == nil {
+			read(func(ctx context.Context) {
+				if v, err := c.HookPresets(ctx); err == nil {
+					next.HookPresets = v
+				}
+			})
+		}
 		wg.Wait()
 		s.postIf(ctx, func() {
 			// A change made while this read ran asks for one more.

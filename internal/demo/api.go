@@ -46,6 +46,7 @@ func (b *Backend) handler() http.Handler {
 	})
 	m.HandleFunc("GET /api/v1/hooks", b.listHooks)
 	m.HandleFunc("PUT /api/v1/hooks", b.setHooksEnabled)
+	m.HandleFunc("GET /api/v1/hooks/presets", b.hookPresets)
 	m.HandleFunc("PUT /api/v1/hooks/{name}", b.putHook)
 	m.HandleFunc("DELETE /api/v1/hooks/{name}", b.deleteHook)
 	m.HandleFunc("POST /api/v1/hooks/{name}/test", b.testHook)

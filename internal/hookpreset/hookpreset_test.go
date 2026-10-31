@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"text/template"
-
-	"amdl/internal/client"
 )
 
 // render renders body as the backend does (internal/hooks renderBody): a
@@ -39,7 +37,7 @@ const (
 	finishedSong  = `{"event":"job_finished","job":{"type":"song","title":"Ame","artist_name":"Yorushika","status":"completed","total_items":1,"completed_items":1}}`
 )
 
-func build(t *testing.T, id string, v map[string]string) client.HookWrite {
+func build(t *testing.T, id string, v map[string]string) Request {
 	t.Helper()
 	p, ok := Find(id)
 	if !ok {
@@ -54,10 +52,10 @@ func build(t *testing.T, id string, v map[string]string) client.HookWrite {
 
 func TestNotificationsSayWhatHappened(t *testing.T) {
 	w := build(t, "ntfy", map[string]string{"topic": "amdl downloads"})
-	if w.URL != "https://ntfy.sh/amdl%20downloads" || w.Method != "POST" || (*w.Headers)["Title"] != "AMDL" {
-		t.Errorf("ntfy write: %+v %v", w, *w.Headers)
+	if w.URL != "https://ntfy.sh/amdl%20downloads" || w.Method != "POST" || (w.Headers)["Title"] != "AMDL" {
+		t.Errorf("ntfy write: %+v %v", w, w.Headers)
 	}
-	if _, ok := (*w.Headers)["Authorization"]; ok {
+	if _, ok := (w.Headers)["Authorization"]; ok {
 		t.Errorf("ntfy without a token sends Authorization")
 	}
 	for payload, want := range map[string]string{
@@ -66,12 +64,12 @@ func TestNotificationsSayWhatHappened(t *testing.T) {
 		abortedSong:   "Failed https://music.apple.com/x: wrapper unavailable",
 		finishedSong:  "Downloaded Ame — Yorushika",
 	} {
-		if got := render(t, *w.Body, payload); got != want {
+		if got := render(t, w.Body, payload); got != want {
 			t.Errorf("ntfy message = %q, want %q", got, want)
 		}
 	}
-	if w := build(t, "ntfy", map[string]string{"server": "https://ntfy.example.com/", "topic": "t", "token": "tk_1"}); w.URL != "https://ntfy.example.com/t" || (*w.Headers)["Authorization"] != "Bearer tk_1" {
-		t.Errorf("self-hosted ntfy with a token: %+v %v", w, *w.Headers)
+	if w := build(t, "ntfy", map[string]string{"server": "https://ntfy.example.com/", "topic": "t", "token": "tk_1"}); w.URL != "https://ntfy.example.com/t" || (w.Headers)["Authorization"] != "Bearer tk_1" {
+		t.Errorf("self-hosted ntfy with a token: %+v %v", w, w.Headers)
 	}
 }
 
@@ -92,7 +90,7 @@ func TestJSONBodiesAreJSON(t *testing.T) {
 			t.Errorf("%s write: %+v", c.id, w)
 		}
 		var got map[string]any
-		body := render(t, *w.Body, finishedAlbum)
+		body := render(t, w.Body, finishedAlbum)
 		if err := json.Unmarshal([]byte(body), &got); err != nil {
 			t.Errorf("%s body is not JSON: %v\n%s", c.id, err, body)
 			continue
@@ -115,16 +113,8 @@ func TestLibraryRefreshes(t *testing.T) {
 	} {
 		p, _ := Find(c.id)
 		w := build(t, c.id, map[string]string{"server": c.server, p.Fields[1].Key: "p"})
-		if w.Method != c.method || w.URL != c.url || (*w.Headers)[c.header] != c.value || w.Body == nil || *w.Body != "" {
-			t.Errorf("%s write: %+v %v", c.id, w, *w.Headers)
-		}
-		// What the backend shows of the hook brings the preset back.
-		var names []string
-		for k := range *w.Headers {
-			names = append(names, k)
-		}
-		if got := Recognize(client.HookEntry{Method: w.Method, Origin: "http://nas:8096", HeaderNames: names}); got.ID != c.id {
-			t.Errorf("%s is recognized as %s", c.id, got.ID)
+		if w.Method != c.method || w.URL != c.url || (w.Headers)[c.header] != c.value || w.Body != "" {
+			t.Errorf("%s write: %+v %v", c.id, w, w.Headers)
 		}
 	}
 }
@@ -144,10 +134,13 @@ func TestMissingAndUnsafeValuesAreRefused(t *testing.T) {
 	}
 	p, _ = Find("custom")
 	w, err := p.Build(map[string]string{"url": "https://x.example", "method": "GET", "body": "ignored", "header": "X-Key: v"})
-	if err != nil || w.Method != "GET" || *w.Body != "" || (*w.Headers)["X-Key"] != "v" {
+	if err != nil || w.Method != "GET" || w.Body != "" || (w.Headers)["X-Key"] != "v" {
 		t.Errorf("custom GET: %+v %v", w, err)
 	}
-	if got := Recognize(client.HookEntry{Origin: "https://x.example", Method: "GET", HeaderNames: []string{"X-Key"}}); got.ID != "custom" {
-		t.Errorf("an unknown webhook is recognized as %s", got.ID)
+	if _, err := p.Build(map[string]string{"url": "https://x.example", "method": "PATCH"}); err == nil {
+		t.Errorf("a method the preset does not offer was taken")
+	}
+	if _, err := p.Build(map[string]string{"url": "https://x.example", "command": "rm"}); err == nil || !strings.Contains(err.Error(), "command") {
+		t.Errorf("a field the preset does not ask for: %v", err)
 	}
 }

@@ -658,6 +658,8 @@ directory, are never returned.
 
 ```bash
 curl -X PUT http://localhost:18080/api/v1/hooks -d '{"enabled": true}'
+curl http://localhost:18080/api/v1/hooks/presets
+curl -X PUT http://localhost:18080/api/v1/hooks/ntfy -d '{"preset": "ntfy", "values": {"topic": "amdl-downloads"}}'
 curl -X PUT http://localhost:18080/api/v1/hooks/jellyfin \
   -d '{"events": ["job_finished"], "url": "http://jellyfin.local:8096/Library/Refresh",
        "headers": {"Authorization": "MediaBrowser Token=\"KEY\""}}'
@@ -669,7 +671,14 @@ The write routes edit `hooks.yaml` in place, keeping its comments and other entr
 apply to the next job event. `PUT /api/v1/hooks` sets the master switch. `PUT
 /api/v1/hooks/{name}` creates or changes a webhook entry with the keys of
 [automation.md](automation.md#job-hooks); an omitted field keeps its value, so a client can
-change a hook's events without sending its URL and tokens again. `POST
+change a hook's events without sending its URL and tokens again. `GET /api/v1/hooks/presets`
+lists the services a webhook can be built for — ntfy, Bark and Telegram notifications, Plex,
+Jellyfin and Emby library refreshes, a custom request — with the fields each asks for and
+the events a new hook of it runs on. A write with `preset` and `values` has the backend
+build `url`, `method`, `headers` and `body` from them, as each service documents, and
+records the preset, which `GET` returns as the entry's `preset`; sending `preset` with any
+of those four is `400`, and values that do not build (a required field left empty) are
+`422 invalid_hook`. A write of a raw request clears the preset. `POST
 /api/v1/hooks/{name}/test` sends it once with a sample payload (a finished album titled
 "Test from amdl") and answers `200` with `succeeded` and, when it failed, `error`.
 Command hooks are only read: writing, deleting or testing one is `409 hook_read_only`, and

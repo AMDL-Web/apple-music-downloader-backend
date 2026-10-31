@@ -69,6 +69,12 @@ entries:
   #   # Content-Type here replaces the default application/json.
   #   headers:
   #     X-Api-Key: "replace-with-your-api-key"
+  #   # string, type webhook only: the preset the hooks API built this
+  #   # request from (GET /api/v1/hooks/presets lists them: ntfy, bark,
+  #   # telegram, plex, jellyfin, emby, custom), for clients to show. The
+  #   # request itself is in url, method, headers and body; an unknown preset
+  #   # fails backend startup with an error naming this entry. Omitted = none.
+  #   preset: ""
   #   # string, type webhook only: the request body, a Go text/template
   #   # rendered over the JSON payload (see below) as its JSON reads, e.g.
   #   # {{.job.title}}, {{.job.completed_items}}, {{.event}}; the json function

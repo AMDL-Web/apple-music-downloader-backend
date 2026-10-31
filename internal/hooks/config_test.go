@@ -241,3 +241,17 @@ entries:
 		})
 	}
 }
+
+func TestLoadConfigChecksAPreset(t *testing.T) {
+	for body, want := range map[string]string{
+		"entries:\n  - {name: a, type: webhook, events: [job_finished], url: \"https://x.example\", preset: pager}\n": "unknown preset",
+		"entries:\n  - {name: a, type: exec, events: [job_finished], command: x, preset: ntfy}\n":                     "for type webhook",
+	} {
+		if _, err := LoadConfig(writeHooksConfig(t, body)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v, want an error naming %q", body, err, want)
+		}
+	}
+	if _, err := LoadConfig(writeHooksConfig(t, "entries:\n  - {name: a, type: webhook, events: [job_finished], url: \"https://x.example\", preset: ntfy}\n")); err != nil {
+		t.Errorf("a known preset: %v", err)
+	}
+}

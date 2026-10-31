@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"amdl/internal/hookpreset"
 	"amdl/internal/hooks"
 	"amdl/internal/jobs"
 )
@@ -136,5 +137,63 @@ func TestHookTestReportsTheEndpointsAnswer(t *testing.T) {
 	}
 	if err := json.Unmarshal(got.Body.Bytes(), &result); err != nil || got.Code != http.StatusOK || result.Succeeded || result.Error != "unexpected status 401" {
 		t.Errorf("test against a 401: %d %s", got.Code, got.Body.String())
+	}
+}
+
+func TestAPresetBuildsTheWebhook(t *testing.T) {
+	routes, path := hooksServer(t)
+	var presets struct {
+		Presets []hookpreset.Preset `json:"presets"`
+	}
+	if err := json.Unmarshal(requestJSON(t, routes, http.MethodGet, "/api/v1/hooks/presets", "").Body.Bytes(), &presets); err != nil || len(presets.Presets) != len(hookpreset.All) || presets.Presets[0].ID != "ntfy" {
+		t.Fatalf("GET /hooks/presets: %+v, %v", presets, err)
+	}
+
+	got := make(chan map[string]any, 1)
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body) // a bad body fails the check below
+		got <- body
+	}))
+	defer endpoint.Close()
+	recorder := requestJSON(t, routes, http.MethodPut, "/api/v1/hooks/phone",
+		`{"preset":"bark","values":{"server":"`+endpoint.URL+`","key":"device-1"}}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("create from a preset: %d %s", recorder.Code, recorder.Body.String())
+	}
+	var entry hooks.ListedEntry
+	_ = json.Unmarshal(recorder.Body.Bytes(), &entry) // checked field by field next
+	if entry.Preset != "bark" || len(entry.Events) != 2 || strings.Contains(recorder.Body.String(), "device-1") {
+		t.Errorf("entry from the Bark preset: %s", recorder.Body.String())
+	}
+	// The body the preset wrote renders, sent, as Bark's push asks.
+	if r := requestJSON(t, routes, http.MethodPost, "/api/v1/hooks/phone/test", ""); !strings.Contains(r.Body.String(), `"succeeded":true`) {
+		t.Fatalf("test: %s", r.Body.String())
+	}
+	if body := <-got; body["device_key"] != "device-1" || body["title"] != "AMDL" || body["body"] != "Downloaded Test from amdl — amdl · 1 tracks" {
+		t.Errorf("Bark got %v", body)
+	}
+
+	// A request written by hand is no preset's.
+	if r := requestJSON(t, routes, http.MethodPut, "/api/v1/hooks/phone", `{"url":"`+endpoint.URL+`/other"}`); r.Code != http.StatusOK || strings.Contains(r.Body.String(), `"preset"`) {
+		t.Errorf("a raw write kept the preset: %s", r.Body.String())
+	}
+	cfg, _ := hooks.LoadConfig(path)
+	if cfg.Entries[1].Preset != "" || cfg.Entries[1].Body == "" {
+		t.Errorf("phone after the raw write: %+v", cfg.Entries[1])
+	}
+
+	for _, c := range []struct {
+		body   string
+		status int
+		code   ErrorCode
+	}{
+		{`{"preset":"ntfy","values":{"topic":"t"},"url":"https://x.example"}`, http.StatusBadRequest, CodeInvalidRequest},
+		{`{"preset":"pager"}`, http.StatusBadRequest, CodeInvalidRequest},
+		{`{"values":{"topic":"t"}}`, http.StatusBadRequest, CodeInvalidRequest},
+		{`{"preset":"ntfy","values":{}}`, http.StatusUnprocessableEntity, CodeInvalidHook},
+		{`{"preset":"ntfy","values":{"topic":"t","command":"x"}}`, http.StatusUnprocessableEntity, CodeInvalidHook},
+	} {
+		assertErrorCode(t, requestJSON(t, routes, http.MethodPut, "/api/v1/hooks/new", c.body), c.status, c.code)
 	}
 }

@@ -18,7 +18,7 @@ func hooksApp(t *testing.T) (*App, *ui.Tester, func(until func() bool)) {
 	a.GoSettings("hooks")
 	tt := ui.NewTester(a.View, 1280, 900)
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
-	run(func() bool { return a.Store.Server.Hooks != nil })
+	run(func() bool { return a.Store.Server.Hooks != nil && a.Store.Server.HookPresets != nil })
 	// The pin brings Hooks to the top over a few frames.
 	for range 4 {
 		tt.Frame()
@@ -63,10 +63,13 @@ func TestAPresetAddsAWebhook(t *testing.T) {
 			t.Fatalf("%s: %v in %q", step, err, tt.Texts())
 		}
 	}
-	// A required field left empty is said beside the buttons.
+	// A required field left empty is the backend's to say, beside the
+	// buttons.
 	if err := tt.Click("Add"); err != nil {
 		t.Fatal(err)
 	}
+	run(func() bool { return a.hookAsk.err != "" })
+	tt.Frame()
 	if !tt.HasText("Topic is needed") {
 		t.Fatalf("an empty topic was sent: %q", tt.Texts())
 	}
@@ -80,7 +83,7 @@ func TestAPresetAddsAWebhook(t *testing.T) {
 	run(func() bool { _, ok := hookNamed(a, "ntfy"); return ok })
 	tt.Frame()
 	e, _ := hookNamed(a, "ntfy")
-	if e.Origin != "https://ntfy.sh" || !slices.Equal(e.Events, []string{"job_finished", "job_failed"}) || a.hookAsk != nil {
+	if e.Origin != "https://ntfy.sh" || e.Preset != "ntfy" || !slices.Equal(e.Events, []string{"job_finished", "job_failed"}) || a.hookAsk != nil {
 		t.Errorf("added %+v, sheet %v", e, a.hookAsk)
 	}
 	if !tt.HasText("ntfy.sh") {

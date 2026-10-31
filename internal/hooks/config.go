@@ -12,6 +12,7 @@ import (
 
 	"amdl/internal/config"
 	"amdl/internal/domain"
+	"amdl/internal/hookpreset"
 
 	"gopkg.in/yaml.v3"
 )
@@ -41,12 +42,14 @@ const (
 // Entry is one hook definition. Enabled uses a pointer so an omitted field
 // defaults to true while an explicit `false` in the file is still honored.
 // Method and Body shape a webhook's request (webhookRunner): POST with the
-// JSON payload unless they say otherwise. omitempty keeps the entries Editor
-// writes to the keys they set.
+// JSON payload unless they say otherwise. Preset names the internal/hookpreset
+// service a webhook was built for, for clients to show; the request is in the
+// other keys. omitempty keeps the entries Editor writes to the keys they set.
 type Entry struct {
 	Name        string            `yaml:"name"`
 	Enabled     *bool             `yaml:"enabled,omitempty"`
 	Type        string            `yaml:"type"`
+	Preset      string            `yaml:"preset,omitempty"`
 	Events      []string          `yaml:"events,flow"`
 	JobTypes    []string          `yaml:"job_types,omitempty,flow"`
 	URL         string            `yaml:"url,omitempty"`
@@ -228,12 +231,15 @@ func (c Config) validate() error {
 			if _, err := bodyTemplate(e.Body); err != nil {
 				return fmt.Errorf("%s: body: %w", label, err)
 			}
+			if _, ok := hookpreset.Find(e.Preset); e.Preset != "" && !ok {
+				return fmt.Errorf("%s: unknown preset %q", label, e.Preset)
+			}
 		case typeExec:
 			if strings.TrimSpace(e.Command) == "" {
 				return fmt.Errorf("%s: command is required for type exec", label)
 			}
-			if e.Method != "" || e.Body != "" {
-				return fmt.Errorf("%s: method and body are for type webhook", label)
+			if e.Method != "" || e.Body != "" || e.Preset != "" {
+				return fmt.Errorf("%s: method, body and preset are for type webhook", label)
 			}
 		}
 		// max_attempts is not validated here: values <= 0 (including

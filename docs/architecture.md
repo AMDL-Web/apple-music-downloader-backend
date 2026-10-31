@@ -63,7 +63,8 @@ passes it on through `internal/api#Deps`, and the API leaves `/` and `/console/`
 | `internal/domain` | shared types, enums and event type constants | import other internal packages |
 | `internal/events` | in-process wake signals for streams | carry events (subscribers re-read the store) |
 | `internal/config` | config file, env overrides, validation, runtime store | |
-| `internal/hooks` | webhook/exec hook execution | |
+| `internal/hooks` | webhook/exec hook execution, and the API's writes of hooks.yaml | |
+| `internal/hookpreset` | the services a webhook can be built for and the request each documents | import other internal packages |
 | `internal/librarysync` | the library watcher | |
 | `internal/usertoken` | which media-user-token the backend uses: the wrapper's `MUSIC_TOKEN` when it can read one, else `catalog.media_user_token` | log or return the token |
 | `internal/logging` | slog setup, in-memory ring buffer, log subscriptions | |
