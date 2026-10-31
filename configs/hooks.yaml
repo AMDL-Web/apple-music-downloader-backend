@@ -5,8 +5,12 @@
 # touching the main backend configuration.
 # Missing this file entirely is not an error: hooks are simply disabled.
 #
-# Config reload: hooks.yaml is read once at backend startup. Changes require
-# restarting the backend to take effect.
+# Config reload: hooks.yaml is read at backend startup, so a hand edit takes
+# effect after a restart. The API's hook routes (PUT /api/v1/hooks and
+# PUT/DELETE /api/v1/hooks/{name}, which the desktop app's Hooks settings use)
+# change the master switch and webhook entries by editing this file in place,
+# keeping its comments and other entries, and apply at once. Exec entries are
+# never written through the API: they change only here.
 
 # bool: master switch for all hooks. true/false. When false, no hook entry
 # runs regardless of its own `enabled` value. Default false.
@@ -32,7 +36,7 @@ entries:
   #   # Default true.
   #   enabled: true
   #   # enum: webhook, exec.
-  #   #   webhook: sends an HTTP POST to `url`.
+  #   #   webhook: sends an HTTP request to `url`.
   #   #   exec: runs a local command via `command`.
   #   type: "webhook"
   #   # list enum, required, at least one: job_queued, job_finished,
@@ -54,16 +58,25 @@ entries:
   #   # list enum: song, album, playlist, artist, station. Empty list or
   #   # omitted = all job types match.
   #   job_types: ["album"]
-  #   # string, required for type webhook: target URL for the POST request.
+  #   # string, required for type webhook: target URL of the request.
   #   # Must be an absolute http:// or https:// URL with a host; anything else
   #   # fails backend startup with an error naming this entry.
   #   url: "http://media-server.local/Library/Refresh"
-  #   # map of string to string: extra HTTP headers sent with the request.
+  #   # enum, type webhook only: GET, POST, PUT. Omitted = POST. A GET sends no
+  #   # body.
+  #   method: "POST"
+  #   # map of string to string: extra HTTP headers sent with the request. A
+  #   # Content-Type here replaces the default application/json.
   #   headers:
   #     X-Api-Key: "replace-with-your-api-key"
-  #   # The request body is always the JSON payload (see below), sent with
-  #   # Content-Type: application/json; an endpoint that ignores the body, such
-  #   # as a library refresh, just ignores it.
+  #   # string, type webhook only: the request body, a Go text/template
+  #   # rendered over the JSON payload (see below) as its JSON reads, e.g.
+  #   # {{.job.title}}, {{.job.completed_items}}, {{.event}}; the json function
+  #   # writes a value as a JSON literal: {"text": {{json .job.title}}}.
+  #   # Omitted = the JSON payload itself; an endpoint that ignores the body,
+  #   # such as a library refresh, just ignores it. A template that does not
+  #   # parse fails backend startup with an error naming this entry.
+  #   body: ""
   #   # integer: maximum total attempts including the first. Values <= 0 behave
   #   # as 1 (single attempt, no retry). Retries wait 1 second between attempts.
   #   # When the backend shuts down, retries stop at once and an attempt still
@@ -100,10 +113,12 @@ entries:
   #   # backend process's working directory.
   #   workdir: ""
 
-# JSON payload sent as the webhook request body
+# JSON payload sent as the webhook request body (unless `body` replaces it)
 # and written to an exec hook's stdin. The job counters are the API's job
-# counters; "error" is present only when the job has an error, "started_at" and
-# "finished_at" (RFC 3339) only once set, and "items" is absent for job_queued.
+# counters; "title" and "artist_name" are present once the link has resolved
+# (never for job_queued), "error" only when the job has an error, "started_at"
+# and "finished_at" (RFC 3339) only once set, and "items" is absent for
+# job_queued.
 # Every "output_path" is absolute.
 #
 # {
@@ -114,6 +129,8 @@ entries:
 #     "input": "https://music.apple.com/us/album/...",
 #     "type": "album",
 #     "storefront": "us",
+#     "title": "Album Name",
+#     "artist_name": "Artist Name",
 #     "status": "completed",
 #     "total_items": 12,
 #     "completed_items": 11,

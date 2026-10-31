@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/url"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"amdl/internal/domain"
@@ -33,7 +37,9 @@ const recordTimeout = 5 * time.Second
 // subscribes to it. Dispatch never blocks the caller: matching hooks run in
 // background goroutines bounded by a concurrency semaphore.
 type Dispatcher struct {
-	cfg      Config
+	// cfg is swapped whole by SetConfig when Editor writes hooks.yaml; an
+	// execution already dispatched keeps the entry it started with.
+	cfg      atomic.Pointer[Config]
 	recorder EventRecorder
 	logger   *slog.Logger
 	sem      chan struct{}
@@ -81,13 +87,20 @@ type Dispatcher struct {
 func NewDispatcher(cfg Config, recorder EventRecorder, logger *slog.Logger) *Dispatcher {
 	runCtx, abortRuns := context.WithCancel(context.Background())
 	retryCtx, stopRetries := context.WithCancel(runCtx)
-	return &Dispatcher{
-		cfg: cfg, recorder: recorder, logger: logger,
+	d := &Dispatcher{
+		recorder: recorder, logger: logger,
 		sem:    make(chan struct{}, maxConcurrent),
 		runCtx: runCtx, abortRuns: abortRuns, retryCtx: retryCtx, stopRetries: stopRetries,
 		pending: map[string]int{},
 		done:    make(chan struct{}),
 	}
+	d.cfg.Store(&cfg)
+	return d
+}
+
+// SetConfig replaces the configuration later events are dispatched with.
+func (d *Dispatcher) SetConfig(cfg Config) {
+	d.cfg.Store(&cfg)
 }
 
 // Listing is the public, sanitized view of the hooks configuration. It
@@ -98,32 +111,64 @@ type Listing struct {
 	Entries []ListedEntry `json:"entries"`
 }
 
+// ListedEntry is one entry of Listing. A webhook's address shows only as
+// its origin (scheme and host), its headers only by name: the path, query,
+// header values and body may hold tokens.
 type ListedEntry struct {
-	Name     string   `json:"name"`
-	Enabled  bool     `json:"enabled"`
-	Type     string   `json:"type"`
-	Events   []string `json:"events"`
-	JobTypes []string `json:"job_types"`
+	Name        string   `json:"name"`
+	Enabled     bool     `json:"enabled"`
+	Type        string   `json:"type"`
+	Events      []string `json:"events"`
+	JobTypes    []string `json:"job_types"`
+	Method      string   `json:"method,omitempty"`
+	Origin      string   `json:"origin,omitempty"`
+	HeaderNames []string `json:"header_names,omitempty"`
+	MaxAttempts int      `json:"max_attempts,omitempty"`
 }
 
 // List returns configured entries in file order. Nil-safe for deployments
 // with no dispatcher configured.
 func (d *Dispatcher) List() Listing {
-	listing := Listing{Entries: make([]ListedEntry, 0)}
 	if d == nil {
-		return listing
+		return listingOf(Default())
 	}
-	listing.Enabled = d.cfg.Enabled
-	for _, entry := range d.cfg.Entries {
-		listing.Entries = append(listing.Entries, ListedEntry{
-			Name:     entry.Name,
-			Enabled:  entry.IsEnabled(),
-			Type:     entry.Type,
-			Events:   append([]string{}, entry.Events...),
-			JobTypes: append([]string{}, entry.JobTypes...),
-		})
+	return listingOf(*d.cfg.Load())
+}
+
+func listingOf(cfg Config) Listing {
+	listing := Listing{Enabled: cfg.Enabled, Entries: make([]ListedEntry, 0, len(cfg.Entries))}
+	for _, entry := range cfg.Entries {
+		listing.Entries = append(listing.Entries, listedEntry(entry))
 	}
 	return listing
+}
+
+func listedEntry(entry Entry) ListedEntry {
+	out := ListedEntry{
+		Name:     entry.Name,
+		Enabled:  entry.IsEnabled(),
+		Type:     entry.Type,
+		Events:   append([]string{}, entry.Events...),
+		JobTypes: append([]string{}, entry.JobTypes...),
+	}
+	if entry.Type != typeWebhook {
+		return out
+	}
+	out.Method, out.MaxAttempts = entry.Method, entry.MaxAttempts
+	if out.Method == "" {
+		out.Method = http.MethodPost
+	}
+	if out.MaxAttempts < 1 {
+		out.MaxAttempts = 1
+	}
+	if u, err := url.Parse(entry.URL); err == nil && u.Host != "" {
+		out.Origin = u.Scheme + "://" + u.Host
+	}
+	for name := range entry.Headers {
+		out.HeaderNames = append(out.HeaderNames, name)
+	}
+	sort.Strings(out.HeaderNames)
+	return out
 }
 
 // Dispatch evaluates every entry against the event and the job's type, then
@@ -131,11 +176,15 @@ func (d *Dispatcher) List() Listing {
 // a no-op Dispatcher (nil-safe) so callers don't need to branch when hooks are
 // disabled.
 func (d *Dispatcher) Dispatch(event string, job domain.Job, items []domain.JobItem) {
-	if d == nil || !d.cfg.Enabled {
+	if d == nil {
+		return
+	}
+	cfg := d.cfg.Load()
+	if !cfg.Enabled {
 		return
 	}
 	var matched []Entry
-	for _, e := range d.cfg.Entries {
+	for _, e := range cfg.Entries {
 		if !e.IsEnabled() || !e.MatchesEvent(event) || !e.MatchesJobType(job.Type) {
 			continue
 		}

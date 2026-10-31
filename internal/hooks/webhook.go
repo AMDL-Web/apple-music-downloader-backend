@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 )
 
@@ -14,17 +15,37 @@ type webhookRunner struct {
 	client *http.Client
 }
 
+// Run sends entry's request: its method, POST when unset, with its body
+// template rendered over the payload, or the JSON payload itself when it has
+// none; a GET carries no body. Content-Type is application/json, unless the
+// entry's headers name another.
 func (r *webhookRunner) Run(ctx context.Context, entry Entry, payload Payload) error {
-	var body bytes.Buffer
-	if err := json.NewEncoder(&body).Encode(payload); err != nil {
-		return fmt.Errorf("encode payload: %w", err)
+	method := entry.Method
+	if method == "" {
+		method = http.MethodPost
+	}
+	var body io.Reader
+	if method != http.MethodGet {
+		var raw []byte
+		var err error
+		if entry.Body != "" {
+			raw, err = renderBody(entry.Body, payload)
+		} else {
+			raw, err = json.Marshal(payload)
+		}
+		if err != nil {
+			return fmt.Errorf("build body: %w", err)
+		}
+		body = bytes.NewReader(raw)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, entry.URL, &body)
+	req, err := http.NewRequestWithContext(ctx, method, entry.URL, body)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	for k, v := range entry.Headers {
 		req.Header.Set(k, v)
 	}

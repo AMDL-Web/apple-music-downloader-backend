@@ -234,10 +234,39 @@ type LibrarySync struct {
 
 // Hooks is the HooksResponse schema.
 type Hooks struct {
-	Enabled bool `json:"enabled"`
-	Entries []struct {
-		Name    string `json:"name"`
-		Enabled bool   `json:"enabled"`
-		Type    string `json:"type"`
-	} `json:"entries"`
+	Enabled bool        `json:"enabled"`
+	Entries []HookEntry `json:"entries"`
+}
+
+// HookEntry is the HookEntry schema. Method, Origin, HeaderNames and
+// MaxAttempts are a webhook's; a command hook has none.
+type HookEntry struct {
+	Name        string   `json:"name"`
+	Enabled     bool     `json:"enabled"`
+	Type        string   `json:"type"`
+	Events      []string `json:"events"`
+	JobTypes    []string `json:"job_types"`
+	Method      string   `json:"method,omitempty"`
+	Origin      string   `json:"origin,omitempty"`
+	HeaderNames []string `json:"header_names,omitempty"`
+	MaxAttempts int      `json:"max_attempts,omitempty"`
+}
+
+// HookWrite is the WebhookWrite schema: a field left nil, or empty where it
+// is not a pointer, keeps the entry's value.
+type HookWrite struct {
+	Enabled     *bool              `json:"enabled,omitempty"`
+	Events      []string           `json:"events,omitempty"`
+	JobTypes    *[]string          `json:"job_types,omitempty"`
+	MaxAttempts *int               `json:"max_attempts,omitempty"`
+	Method      string             `json:"method,omitempty"`
+	URL         string             `json:"url,omitempty"`
+	Headers     *map[string]string `json:"headers,omitempty"`
+	Body        *string            `json:"body,omitempty"`
+}
+
+// HookTest is the HookTestResult schema.
+type HookTest struct {
+	Succeeded bool   `json:"succeeded"`
+	Error     string `json:"error,omitempty"`
 }

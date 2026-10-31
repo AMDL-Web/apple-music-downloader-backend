@@ -287,6 +287,32 @@ func (c *Client) Hooks(ctx context.Context) (Hooks, error) {
 	return h, err
 }
 
+// SetHooksEnabled sets hooks.yaml's master switch (PUT /api/v1/hooks).
+func (c *Client) SetHooksEnabled(ctx context.Context, on bool) (Hooks, error) {
+	var h Hooks
+	err := c.do(ctx, http.MethodPut, "/api/v1/hooks", nil, map[string]bool{"enabled": on}, &h)
+	return h, err
+}
+
+// PutHook creates or changes the webhook hook name (PUT /api/v1/hooks/{name}).
+func (c *Client) PutHook(ctx context.Context, name string, w HookWrite) (HookEntry, error) {
+	var e HookEntry
+	err := c.do(ctx, http.MethodPut, "/api/v1/hooks/"+url.PathEscape(name), nil, w, &e)
+	return e, err
+}
+
+// DeleteHook removes the webhook hook name.
+func (c *Client) DeleteHook(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodDelete, "/api/v1/hooks/"+url.PathEscape(name), nil, nil, nil)
+}
+
+// TestHook sends the webhook hook name once with a sample payload.
+func (c *Client) TestHook(ctx context.Context, name string) (HookTest, error) {
+	var t HookTest
+	err := c.do(ctx, http.MethodPost, "/api/v1/hooks/"+url.PathEscape(name)+"/test", nil, nil, &t)
+	return t, err
+}
+
 // Downloads reads one page of GET /api/v1/downloads.
 func (c *Client) Downloads(ctx context.Context, q ListQuery) (DownloadList, error) {
 	var l DownloadList

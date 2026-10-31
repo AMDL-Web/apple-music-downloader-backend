@@ -297,12 +297,13 @@ paths:
       tags: [System]
       summary: List the available job hooks
       description: >-
-        Returns the global switch and entry metadata loaded from hooks.yaml at
-        process startup, in file order. Every enabled entry that matches a job's
-        event and type runs for it. An entry's enabled value is the result after defaults are
-        applied; an empty job_types array matches every job type. The response never
-        includes the URL, headers, command, workdir or any other configuration field
-        that may carry secrets.
+        Returns the global switch and entry metadata of hooks.yaml as it was
+        loaded at startup or last written through the API, in file order. Every
+        enabled entry that matches a job's event and type runs for it. An entry's
+        enabled value is the result after defaults are applied; an empty job_types
+        array matches every job type. The response never includes a webhook's path,
+        query, header values or body, nor a command or workdir: those may carry
+        secrets. A webhook shows its origin and header names instead.
       operationId: listHooks
       responses:
         '200':
@@ -311,6 +312,148 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HooksResponse'
+    put:
+      tags: [System]
+      summary: Turn every hook on or off
+      description: >-
+        Sets the global enabled switch of hooks.yaml. The file is edited in place,
+        keeping its comments and entries, and the change applies to the next job
+        event. When hooks.yaml no longer loads, nothing is written: fix the file
+        first.
+      operationId: setHooksEnabled
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: The hooks configuration after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HooksResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/JSONBodyTooLarge'
+        '422':
+          $ref: '#/components/responses/InvalidHooksFile'
+        '503':
+          $ref: '#/components/responses/HooksNotEditable'
+  /api/v1/hooks/{name}:
+    put:
+      tags: [System]
+      summary: Create or change a webhook hook
+      description: >-
+        Writes the webhook entry named name in hooks.yaml, appended when no entry has
+        the name. Omitted fields keep the entry's current values, so a client can
+        change a hook's events or switch without sending its address and tokens
+        again; a new entry needs events and url. The result must pass the same
+        validation as at startup and applies to the next job event; hooks.yaml keeps
+        its comments and other entries.
+
+        Only webhook entries are written here. A command (exec) entry is edited in
+        hooks.yaml itself: a write to one answers 409 hook_read_only, and a body
+        with a type other than webhook answers 400.
+      operationId: updateHook
+      parameters:
+        - $ref: '#/components/parameters/HookName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookWrite'
+      responses:
+        '200':
+          description: The entry as written, redacted as in GET /hooks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HookEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/HookReadOnly'
+        '413':
+          $ref: '#/components/responses/JSONBodyTooLarge'
+        '422':
+          description: >-
+            invalid_hook: the entry would not load (a missing or bad url, no
+            events, an unknown method, a body that is not a template, a GET with a
+            body); invalid_hooks_file: hooks.yaml on disk no longer loads, and
+            nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/HooksNotEditable'
+    delete:
+      tags: [System]
+      summary: Delete a webhook hook
+      description: >-
+        Removes the webhook entry named name from hooks.yaml; it no longer runs from
+        the next job event on. A command (exec) entry answers 409 hook_read_only.
+      operationId: deleteHook
+      parameters:
+        - $ref: '#/components/parameters/HookName'
+      responses:
+        '200':
+          description: The entry has been removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: deleted
+        '404':
+          $ref: '#/components/responses/HookNotFound'
+        '409':
+          $ref: '#/components/responses/HookReadOnly'
+        '422':
+          $ref: '#/components/responses/InvalidHooksFile'
+        '503':
+          $ref: '#/components/responses/HooksNotEditable'
+  /api/v1/hooks/{name}/test:
+    post:
+      tags: [System]
+      summary: Send a webhook hook once
+      description: >-
+        Sends the webhook entry named name once, as a job event would but with a
+        sample payload: a finished one-track album titled "Test from amdl" under the
+        entry's first event. It is sent whether or not the hook or the global switch
+        is on, without retries, cut off after 30 seconds, and records no event. The
+        answer is 200 either way; succeeded says whether the endpoint took it. A
+        command (exec) entry is not run: 409 hook_read_only.
+      operationId: testHook
+      parameters:
+        - $ref: '#/components/parameters/HookName'
+      responses:
+        '200':
+          description: The test ran.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HookTestResult'
+        '404':
+          $ref: '#/components/responses/HookNotFound'
+        '409':
+          $ref: '#/components/responses/HookReadOnly'
+        '422':
+          $ref: '#/components/responses/InvalidHooksFile'
+        '503':
+          $ref: '#/components/responses/HooksNotEditable'
   /api/v1/library-sync:
     get:
       tags: [System]
@@ -1320,6 +1463,14 @@ paths:
           $ref: '#/components/responses/StoreError'
 components:
   parameters:
+    HookName:
+      name: name
+      in: path
+      required: true
+      description: The hook's name in hooks.yaml.
+      schema:
+        type: string
+      example: notify
     LoginID:
       name: login_id
       in: path
@@ -1458,6 +1609,30 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    HookNotFound:
+      description: hook_not_found; no entry in hooks.yaml has this name.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    HookReadOnly:
+      description: hook_read_only; the entry is a command (exec) hook, which is edited in hooks.yaml itself.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InvalidHooksFile:
+      description: invalid_hooks_file; hooks.yaml on disk no longer loads, and nothing was written.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    HooksNotEditable:
+      description: feature_unavailable; this process was started without a hooks.yaml path.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     Conflict:
       description: >-
         already_logged_in: the account already has a wrapper; login_pending: a
@@ -1529,15 +1704,16 @@ components:
         400 invalid_request (query or body validation), invalid_json (the body
         is not well-formed JSON); 401 authentication_failed; 404
         route_not_found, job_not_found, login_not_found, account_not_found,
-        catalog_not_found (Apple has no resource with that id); 405
+        catalog_not_found (Apple has no resource with that id), hook_not_found; 405
         method_not_allowed (with an Allow header); 409 job_active,
         job_not_retryable, job_not_cancellable, job_finalizing, duplicate_active, already_logged_in,
-        login_pending; 413 request_too_large; 422
-        invalid_overrides, config_key_not_mutable, invalid_config,
-        no_urls_accepted; 500 internal_error, store_error
+        login_pending, hook_read_only; 413 request_too_large; 422
+        invalid_overrides, config_key_not_mutable, invalid_config, invalid_hook,
+        invalid_hooks_file, no_urls_accepted; 500 internal_error, store_error
         (retrying may succeed); 501 login_unsupported; 502 upstream_error; 503 queue_full,
         wrapper_unavailable, feature_unavailable (the process keeps no log
-        history, so the log routes cannot answer); 504 upstream_timeout.
+        history, so the log routes cannot answer, or has no hooks.yaml to
+        write); 504 upstream_timeout.
       enum:
         - invalid_request
         - invalid_json
@@ -1547,6 +1723,7 @@ components:
         - login_not_found
         - account_not_found
         - catalog_not_found
+        - hook_not_found
         - method_not_allowed
         - job_active
         - job_not_retryable
@@ -1555,10 +1732,13 @@ components:
         - duplicate_active
         - already_logged_in
         - login_pending
+        - hook_read_only
         - request_too_large
         - invalid_overrides
         - config_key_not_mutable
         - invalid_config
+        - invalid_hook
+        - invalid_hooks_file
         - no_urls_accepted
         - internal_error
         - store_error
@@ -1974,6 +2154,80 @@ components:
           items:
             type: string
             enum: [song, album, playlist, artist, station]
+        method:
+          type: string
+          enum: [GET, POST, PUT]
+          description: Webhook entries only, always present on them; the HTTP method, POST when the file sets none.
+        origin:
+          type: string
+          description: Webhook entries only; the scheme and host of the url, without user info, path or query.
+          example: https://ntfy.sh
+        header_names:
+          type: array
+          description: Webhook entries only, absent when it sends no extra headers; the names of its headers, sorted, without their values.
+          items:
+            type: string
+        max_attempts:
+          type: integer
+          minimum: 1
+          description: Webhook entries only, always present on them; total attempts per job event including the first.
+    WebhookWrite:
+      type: object
+      additionalProperties: false
+      description: >-
+        A write to one webhook entry; an omitted field keeps the entry's value. The
+        fields mean what the same keys mean in hooks.yaml.
+      properties:
+        type:
+          type: string
+          enum: [webhook]
+        enabled:
+          type: boolean
+        events:
+          type: array
+          minItems: 1
+          description: job_queued cannot be combined with the terminal events in one entry.
+          items:
+            type: string
+            enum: [job_queued, job_finished, job_failed, job_cancelled]
+        job_types:
+          type: array
+          description: An empty array matches every job type.
+          items:
+            type: string
+            enum: [song, album, playlist, artist, station]
+        max_attempts:
+          type: integer
+          description: Total attempts including the first; 0 or less behaves as 1.
+        method:
+          type: string
+          enum: [GET, POST, PUT]
+          description: A new entry without one sends POST. A GET sends no body.
+        url:
+          type: string
+          description: An absolute http or https URL with a host.
+        headers:
+          type: object
+          description: Extra request headers; replaces all of them. A Content-Type here replaces application/json.
+          additionalProperties:
+            type: string
+        body:
+          type: string
+          description: >-
+            A Go text/template rendered over the payload as its JSON reads (.event,
+            .job.title, .items) into the request body; json writes a value as a
+            JSON literal. Empty sends the JSON payload itself.
+    HookTestResult:
+      type: object
+      additionalProperties: false
+      required: [succeeded]
+      properties:
+        succeeded:
+          type: boolean
+          description: Whether the endpoint answered with a 2xx status.
+        error:
+          type: string
+          description: Present when succeeded is false; what a dispatched run would record in its hook_failed event.
     LogEntry:
       type: object
       required: [sequence, time, level, message]

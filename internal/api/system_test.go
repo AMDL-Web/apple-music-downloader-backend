@@ -89,7 +89,8 @@ func TestHooksEndpoint(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := hooks.Listing{Enabled: true, Entries: []hooks.ListedEntry{
-			{Name: "notify", Enabled: true, Type: "webhook", Events: []string{"job_finished"}, JobTypes: []string{}},
+			{Name: "notify", Enabled: true, Type: "webhook", Events: []string{"job_finished"}, JobTypes: []string{},
+				Method: "POST", Origin: "https://secret.example", HeaderNames: []string{"Authorization"}, MaxAttempts: 1},
 			{Name: "cleanup", Enabled: false, Type: "exec", Events: []string{"job_failed"}, JobTypes: []string{"album"}},
 		}}
 		if !reflect.DeepEqual(got, want) {

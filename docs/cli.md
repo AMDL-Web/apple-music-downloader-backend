@@ -45,6 +45,7 @@ by meaning.
 | `library sync get`, `library sync reset` | `/library-sync`, `…/reset` | read, destructive |
 | `logs list [filters]`, `logs tail [filters]` | `GET /logs`, `/logs/stream` | read |
 | `system get`, `system health`, `system stats [--days]`, `hooks list` | `/system`, `/health`, `/stats`, `/hooks` | read |
+| `hooks switch --enabled`, `hooks set <name> [--url] [--events] [--headers <json>] [--body] ...`, `hooks test <name>`, `hooks delete <name>` | `PUT /hooks`, `PUT`/`DELETE /hooks/{name}`, `POST …/test` | write, write, write, destructive |
 | `config get [key...]`, `config set <key=value>...`, `config reload` | `GET`/`PUT /config`, `…/reload` | read, write, write |
 | `wrapper status`, `wrapper login [--username <id>] [--password-stdin]`, `wrapper 2fa <login_id>`, `wrapper logout --username <id>` | `/wrapper/*` | read, write, write, destructive |
 | `context list\|add <name> <url>\|use <name>\|remove <name>`, `version` | local, `/system` | |

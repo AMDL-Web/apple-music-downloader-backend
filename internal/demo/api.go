@@ -44,9 +44,11 @@ func (b *Backend) handler() http.Handler {
 	m.HandleFunc("POST /api/v1/library-sync/reset", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, client.LibrarySync{IntervalMinutes: 60})
 	})
-	m.HandleFunc("GET /api/v1/hooks", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, client.Hooks{})
-	})
+	m.HandleFunc("GET /api/v1/hooks", b.listHooks)
+	m.HandleFunc("PUT /api/v1/hooks", b.setHooksEnabled)
+	m.HandleFunc("PUT /api/v1/hooks/{name}", b.putHook)
+	m.HandleFunc("DELETE /api/v1/hooks/{name}", b.deleteHook)
+	m.HandleFunc("POST /api/v1/hooks/{name}/test", b.testHook)
 	m.HandleFunc("GET /api/v1/logs", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"logs": []any{}})
 	})

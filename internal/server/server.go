@@ -195,11 +195,15 @@ func Run(ctx context.Context, opts Options) (err error) {
 	httpHandlerCtx, cancelHTTPHandlers := context.WithCancel(context.Background())
 	defer cancelHTTPHandlers()
 	var activeHTTPHandlers sync.WaitGroup
+	var hooksEditor api.HooksService
+	if opts.HooksPath != "" {
+		hooksEditor = hooks.NewEditor(opts.HooksPath, hookDispatcher)
+	}
 	apiServer, err := api.New(api.Deps{
 		Config: cfgStore, Store: store, Hub: hub, Manager: manager,
 		Logger: logSystem.Logger, Logging: logSystem,
 		Wrapper: wrapperService(wrapperClient, opts.WrapperHost), Quality: qualityService, LibrarySync: libraryWatcher,
-		Catalog: catalog, Tokens: tokens, Console: opts.Console,
+		Catalog: catalog, Tokens: tokens, Console: opts.Console, Hooks: hooksEditor,
 	})
 	if err != nil {
 		return fmt.Errorf("build api server: %w", err)

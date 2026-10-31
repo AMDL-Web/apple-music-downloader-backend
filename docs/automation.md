@@ -10,7 +10,11 @@ and **library sync** creates jobs of its own. Both are off by default.
 [`configs/hooks.yaml`](../configs/hooks.yaml) — its comments are the reference; this is the
 summary. The file is loaded independently of `config.yaml`, so hooks can be added, removed
 or toggled without touching the main configuration. A missing file is not an error; hooks
-are simply disabled. **The file is read once at startup — changes need a restart.**
+are simply disabled. **The file is read at startup, so a hand edit needs a restart.** The
+master switch and webhook entries can also be changed through the API
+([api.md](api.md#config-and-hooks)) and the desktop app's Hooks settings: those writes edit
+the file in place, keep its comments and other entries, and apply to the next job event.
+Command (`exec`) entries are never written or run that way; they change only in the file.
 
 The one top-level key is `enabled` (default `false`), the master switch: when off, no entry
 runs regardless of its own flag. Every attempt is cut off after 30 seconds, and at most two
@@ -30,11 +34,19 @@ Every entry whose `enabled`, `events` and `job_types` all match runs, within tha
   when the backend stopped fires none of them then: it resumes on the next start and fires
   its terminal hook when it finishes.
 
-**Webhook entries** POST to `url`, which must be an absolute `http` or `https` URL (an
-invalid one fails startup and names the entry), with optional `headers`.
-The body is always the JSON payload below; an endpoint that ignores it, such as a library
-refresh, just ignores it. `max_attempts` counts the first try, and retries wait one second
-between attempts.
+**Webhook entries** send a request to `url`, which must be an absolute `http` or `https`
+URL (an invalid one fails startup and names the entry), with optional `headers`. `method`
+is `POST` (the default), `PUT` or `GET`; a `GET` has no body. The body is the JSON payload
+below, unless `body` sets one: a Go `text/template` rendered over the payload as its JSON
+reads (`.event`, `.job.title`, `.items`), where `json` writes a value as a JSON literal.
+The `Content-Type` is `application/json` unless `headers` names another. For example, a
+Telegram message:
+
+```yaml
+body: '{"chat_id": "123456", "text": {{json (printf "%s · %v of %v tracks" (or .job.title .job.input) .job.completed_items .job.total_items)}}}'
+```
+
+`max_attempts` counts the first try, and retries wait one second between attempts.
 
 **Exec entries** run `command` through `sh -c` with the JSON payload on stdin, optionally
 in `workdir`. The command inherits the backend's environment (`PATH`, `HOME`, `TZ`, …)
@@ -59,10 +71,11 @@ AMDL_OUTPUT_PATHS     newline-separated absolute output paths
 
 A failing exec hook records the last 4 KiB of its stderr in its `hook_failed` event.
 
-The JSON payload — sent as the webhook body and written to an
+The JSON payload — the webhook body unless `body` replaces it, and written to an
 exec hook's stdin — looks like this. The `job` counters are the API's (see
-[api.md](api.md#query-cancel-retry-delete)); `error` is present only when the job has one, `started_at` and
-`finished_at` only once set, and `output_path` is absolute:
+[api.md](api.md#query-cancel-retry-delete)); `title` and `artist_name` are present once the
+link has resolved (never for `job_queued`), `error` only when the job has one, `started_at`
+and `finished_at` only once set, and `output_path` is absolute:
 
 ```json
 {
@@ -73,6 +86,8 @@ exec hook's stdin — looks like this. The `job` counters are the API's (see
     "input": "https://music.apple.com/us/album/...",
     "type": "album",
     "storefront": "us",
+    "title": "Album Name",
+    "artist_name": "Artist Name",
     "status": "completed",
     "total_items": 12,
     "completed_items": 11,

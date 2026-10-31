@@ -233,7 +233,7 @@ is the API's only browser client: responses carry no CORS headers.
 | **Search** | `GET /search`: search the catalog for songs, albums, playlists and artists · `GET /artists/{id}/albums`: an artist's albums, page by page · `GET /albums/{id}`: an album's songs |
 | **Quality** | `POST /quality`: probe a link's codecs and audio quality without creating a job |
 | **Wrapper** | `GET /wrapper/status` · `POST /wrapper/login` · `POST /wrapper/login/{login_id}/2fa` · `POST /wrapper/logout` |
-| **Config** | `GET /config` · `PUT /config` · `POST /config/reload` · `GET /hooks` |
+| **Config** | `GET /config` · `PUT /config` · `POST /config/reload` · `GET /hooks` · `PUT /hooks` · `PUT /hooks/{name}` · `DELETE /hooks/{name}` · `POST /hooks/{name}/test` |
 | **Library sync** | `GET /library-sync` · `POST /library-sync/reset` |
 | **System** | `GET /health` · `GET /system` · `GET /stats` · `GET /logs` · `GET /logs/stream` |
 
@@ -265,7 +265,8 @@ itself or `wrapper.data_dir` points at the wrapper's files, and otherwise from
 ## Automation
 
 - **Job hooks** ([`configs/hooks.yaml`](configs/hooks.yaml)) call a webhook or run a
-  command when a job is queued or ends, for example to refresh a media server.
+  command when a job is queued or ends, for example to refresh a media server or send a
+  notification. Webhooks can also be edited through the API; commands only in the file.
 - **Library sync** watches your Apple Music library and downloads the album behind each
   song you add. It needs a subscription token, the wrapper's or `catalog.media_user_token`.
 

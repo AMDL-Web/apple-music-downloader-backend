@@ -205,7 +205,7 @@ CORS 头。
 | **搜索** | `GET /search`：在曲库里搜歌曲、专辑、歌单和艺人 · `GET /artists/{id}/albums`：分页列出艺人的专辑 · `GET /albums/{id}`：专辑的歌曲列表 |
 | **音质探测** | `POST /quality`：不建作业，探测链接的编码和音质 |
 | **wrapper** | `GET /wrapper/status` · `POST /wrapper/login` · `POST /wrapper/login/{login_id}/2fa` · `POST /wrapper/logout` |
-| **配置** | `GET /config` · `PUT /config` · `POST /config/reload` · `GET /hooks` |
+| **配置** | `GET /config` · `PUT /config` · `POST /config/reload` · `GET /hooks` · `PUT /hooks` · `PUT /hooks/{name}` · `DELETE /hooks/{name}` · `POST /hooks/{name}/test` |
 | **资料库同步** | `GET /library-sync` · `POST /library-sync/reset` |
 | **系统** | `GET /health` · `GET /system` · `GET /stats` · `GET /logs` · `GET /logs/stream` |
 
@@ -234,7 +234,7 @@ wrapper，或 `wrapper.data_dir` 指向 wrapper 的文件时，直接从 wrapper
 ## 自动化
 
 - **作业钩子**（[`configs/hooks.yaml`](configs/hooks.yaml)）在作业入队或结束时调用 webhook 或
-  运行命令，比如刷新媒体服务器。
+  运行命令，比如刷新媒体服务器或发送通知。webhook 也能通过接口编辑；命令只能在文件里改。
 - **资料库同步**监视你的 Apple Music 资料库，你每加一首歌，就下载它所在的专辑。需要订阅令牌：
   wrapper 的，或 `catalog.media_user_token`。
 

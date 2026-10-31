@@ -318,8 +318,12 @@ is the same absolute path, shown only for a finished item). Exec hooks get the
 backend's environment without any `AMDL_*` variable (the backend's own settings; one left
 over from an older install may hold a secret) plus the documented hook variables, and a failed
 one records at most the last 4 KiB of its stderr. Webhook URLs must be absolute
-`http`/`https` URLs; an invalid one fails startup naming the entry. Attempts run on a
+`http`/`https` URLs; an invalid one fails startup naming the entry. A webhook's optional
+`method` and `body` template shape its request. Attempts run on a
 dispatcher-owned context, so shutdown can stop retries and cancel running attempts.
+`hooks.Editor` writes the master switch and webhook entries for the API by editing the
+file's YAML tree, validating the result as a startup would and swapping the dispatcher's
+config; it refuses every write and test of an exec entry.
 
 ## 7. Web console
 

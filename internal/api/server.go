@@ -49,6 +49,9 @@ type Deps struct {
 	// redirects to it. Nil leaves both routes out. The binary passes it in so
 	// this package does not import a product.
 	Console http.Handler
+	// Hooks writes hooks.yaml for the hook routes that change it; nil
+	// answers them 503 feature_unavailable.
+	Hooks HooksService
 }
 
 // Server holds the HTTP handlers; build it with New and serve Routes.
@@ -69,6 +72,7 @@ type Server struct {
 	catalog     CatalogService
 	tokens      *usertoken.Provider
 	console     http.Handler
+	hooks       HooksService
 	// now is the clock of GET /system uptime and the GET /stats window and
 	// cache; nil means time.Now.
 	now        func() time.Time
@@ -105,7 +109,7 @@ func New(deps Deps) (*Server, error) {
 		cfg: deps.Config, store: deps.Store, hub: deps.Hub, manager: deps.Manager,
 		logger: deps.Logger, logSystem: deps.Logging,
 		wrapper: deps.Wrapper, quality: deps.Quality, librarySync: deps.LibrarySync,
-		catalog: deps.Catalog, tokens: deps.Tokens, console: deps.Console,
+		catalog: deps.Catalog, tokens: deps.Tokens, console: deps.Console, hooks: deps.Hooks,
 	}
 	s.streams, s.endStreams = context.WithCancel(context.Background())
 	// logging.buffer_size is a startup key, so the snapshot read here is the
@@ -150,6 +154,10 @@ func (s *Server) routes() []route {
 		{http.MethodPut, "/api/v1/config", h(s.updateConfig)},
 		{http.MethodPost, "/api/v1/config/reload", h(s.reloadConfig)},
 		{http.MethodGet, "/api/v1/hooks", h(s.listHooks)},
+		{http.MethodPut, "/api/v1/hooks", h(s.setHooksEnabled)},
+		{http.MethodPut, "/api/v1/hooks/{name}", h(s.updateHook)},
+		{http.MethodDelete, "/api/v1/hooks/{name}", h(s.deleteHook)},
+		{http.MethodPost, "/api/v1/hooks/{name}/test", h(s.testHook)},
 		{http.MethodGet, "/api/v1/library-sync", h(s.librarySyncStatus)},
 		{http.MethodPost, "/api/v1/library-sync/reset", h(s.librarySyncReset)},
 		{http.MethodGet, "/api/v1/wrapper/status", h(s.wrapperStatus)},

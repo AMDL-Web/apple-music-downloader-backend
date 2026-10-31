@@ -138,14 +138,20 @@ func TestList(t *testing.T) {
 	}
 
 	d := NewDispatcher(Config{Enabled: false, Entries: []Entry{
-		{Name: "default-enabled", Type: "webhook", Events: []string{"job_finished"}},
-		{Name: "explicit-enabled", Enabled: boolPtr(true), Type: "exec", Events: []string{"job_failed"}, JobTypes: []string{"album"}},
-		{Name: "disabled", Enabled: boolPtr(false), Type: "webhook", Events: []string{"job_queued"}, JobTypes: []string{}},
+		{Name: "default-enabled", Type: "webhook", Events: []string{"job_finished"},
+			URL: "https://user:pw@api.example.com/bot123:secret/send?token=x", Headers: map[string]string{"X-Token": "secret", "Accept": "*/*"}},
+		{Name: "explicit-enabled", Enabled: boolPtr(true), Type: "exec", Events: []string{"job_failed"}, JobTypes: []string{"album"}, Command: "secret.sh"},
+		{Name: "disabled", Enabled: boolPtr(false), Type: "webhook", Events: []string{"job_queued"}, JobTypes: []string{},
+			URL: "http://jellyfin.local:8096/Library/Refresh", Method: "PUT", MaxAttempts: 3, Body: "{{json .job.id}}"},
 	}}, nil, discardLogger())
+	// A webhook shows its origin and header names only: the path, query,
+	// user info, header values and body can carry tokens.
 	want := Listing{Enabled: false, Entries: []ListedEntry{
-		{Name: "default-enabled", Enabled: true, Type: "webhook", Events: []string{"job_finished"}, JobTypes: []string{}},
+		{Name: "default-enabled", Enabled: true, Type: "webhook", Events: []string{"job_finished"}, JobTypes: []string{},
+			Method: "POST", Origin: "https://api.example.com", HeaderNames: []string{"Accept", "X-Token"}, MaxAttempts: 1},
 		{Name: "explicit-enabled", Enabled: true, Type: "exec", Events: []string{"job_failed"}, JobTypes: []string{"album"}},
-		{Name: "disabled", Enabled: false, Type: "webhook", Events: []string{"job_queued"}, JobTypes: []string{}},
+		{Name: "disabled", Enabled: false, Type: "webhook", Events: []string{"job_queued"}, JobTypes: []string{},
+			Method: "PUT", Origin: "http://jellyfin.local:8096", MaxAttempts: 3},
 	}}
 	if got := d.List(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("listing = %+v, want %+v", got, want)

@@ -246,7 +246,7 @@ the Compose service name stay as they were.
 | Hook selection per submission | `overrides.hooks` limited a batch to named entries (`[]` ran none) | removed; every enabled entry whose `events` and `job_types` match runs for every job. `GET /api/v1/hooks` still lists the entries | scripts that turned hooks off for a batch |
 | Hook limits | top-level `timeout_seconds` (default 30) and `max_concurrent` (default 2) in `hooks.yaml` | removed, fixed at 30 seconds per attempt and 2 executions at once; a file that still has either fails startup naming it | `hooks.yaml` files that set either |
 | Per-entry `timeout_seconds` | overrode the top-level timeout for one hook | removed; every attempt is cut off after 30 seconds; a file that still has it fails startup naming the entry | `hooks.yaml` entries that set it |
-| Webhook `send_payload` | `send_payload: false` sent an empty body | removed; the body is always the JSON payload, and a receiver that ignores the body ignores it; a file that still has it fails startup naming the entry | `hooks.yaml` webhook entries that set it |
+| Webhook `send_payload` | `send_payload: false` sent an empty body | removed; the body is the JSON payload unless the entry's `body` template sets another, and a receiver that ignores the body ignores it; a file that still has it fails startup naming the entry | `hooks.yaml` webhook entries that set it |
 | Shutdown while a hook retries | slept out every remaining retry | retries stop; an attempt still running after the drain is cancelled and recorded as `hook_failed` | hooks whose last retry used to run during a shutdown; nothing to change |
 
 ## Output paths

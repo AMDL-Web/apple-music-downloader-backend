@@ -28,6 +28,7 @@ const (
 	CodeLoginNotFound   ErrorCode = "login_not_found"
 	CodeAccountNotFound ErrorCode = "account_not_found"
 	CodeCatalogNotFound ErrorCode = "catalog_not_found"
+	CodeHookNotFound    ErrorCode = "hook_not_found"
 	// 405
 	CodeMethodNotAllowed ErrorCode = "method_not_allowed"
 	// 409
@@ -38,12 +39,15 @@ const (
 	CodeDuplicateActive   ErrorCode = "duplicate_active"
 	CodeAlreadyLoggedIn   ErrorCode = "already_logged_in"
 	CodeLoginPending      ErrorCode = "login_pending"
+	CodeHookReadOnly      ErrorCode = "hook_read_only"
 	// 413
 	CodeRequestTooLarge ErrorCode = "request_too_large"
 	// 422
 	CodeInvalidOverrides    ErrorCode = "invalid_overrides"
 	CodeConfigKeyNotMutable ErrorCode = "config_key_not_mutable"
 	CodeInvalidConfig       ErrorCode = "invalid_config"
+	CodeInvalidHook         ErrorCode = "invalid_hook"
+	CodeInvalidHooksFile    ErrorCode = "invalid_hooks_file"
 	CodeNoURLsAccepted      ErrorCode = "no_urls_accepted"
 	// 500
 	CodeInternalError ErrorCode = "internal_error"

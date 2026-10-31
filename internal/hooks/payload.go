@@ -17,10 +17,14 @@ type Payload struct {
 // API's job counters (docs/architecture.md section 3.2): disjoint, and always
 // present.
 type JobPayload struct {
-	ID             string     `json:"id"`
-	Input          string     `json:"input"`
-	Type           string     `json:"type"`
-	Storefront     string     `json:"storefront,omitempty"`
+	ID         string `json:"id"`
+	Input      string `json:"input"`
+	Type       string `json:"type"`
+	Storefront string `json:"storefront,omitempty"`
+	// Title and ArtistName are the job's name and artist as the queue shows
+	// them, absent until its link resolves (always for job_queued).
+	Title          string     `json:"title,omitempty"`
+	ArtistName     string     `json:"artist_name,omitempty"`
 	Status         string     `json:"status"`
 	TotalItems     int        `json:"total_items"`
 	CompletedItems int        `json:"completed_items"`
@@ -47,6 +51,7 @@ type ItemPayload struct {
 func jobPayload(job domain.Job) JobPayload {
 	return JobPayload{
 		ID: job.ID, Input: job.Input, Type: job.Type, Storefront: job.Storefront,
+		Title: job.Title, ArtistName: job.ArtistName,
 		Status: string(job.Status), TotalItems: job.TotalItems,
 		CompletedItems: job.CompletedItems, SkippedItems: job.SkippedItems,
 		FailedItems: job.FailedItems, CancelledItems: job.CancelledItems,

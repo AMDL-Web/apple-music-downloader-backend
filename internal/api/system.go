@@ -51,7 +51,3 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
-
-func (s *Server) listHooks(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.manager.ListHooks())
-}

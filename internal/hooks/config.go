@@ -3,6 +3,7 @@ package hooks
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"sort"
@@ -39,17 +40,22 @@ const (
 
 // Entry is one hook definition. Enabled uses a pointer so an omitted field
 // defaults to true while an explicit `false` in the file is still honored.
+// Method and Body shape a webhook's request (webhookRunner): POST with the
+// JSON payload unless they say otherwise. omitempty keeps the entries Editor
+// writes to the keys they set.
 type Entry struct {
 	Name        string            `yaml:"name"`
-	Enabled     *bool             `yaml:"enabled"`
+	Enabled     *bool             `yaml:"enabled,omitempty"`
 	Type        string            `yaml:"type"`
-	Events      []string          `yaml:"events"`
-	JobTypes    []string          `yaml:"job_types"`
-	URL         string            `yaml:"url"`
-	Headers     map[string]string `yaml:"headers"`
-	MaxAttempts int               `yaml:"max_attempts"`
-	Command     string            `yaml:"command"`
-	Workdir     string            `yaml:"workdir"`
+	Events      []string          `yaml:"events,flow"`
+	JobTypes    []string          `yaml:"job_types,omitempty,flow"`
+	URL         string            `yaml:"url,omitempty"`
+	Method      string            `yaml:"method,omitempty"`
+	Headers     map[string]string `yaml:"headers,omitempty"`
+	Body        string            `yaml:"body,omitempty"`
+	MaxAttempts int               `yaml:"max_attempts,omitempty"`
+	Command     string            `yaml:"command,omitempty"`
+	Workdir     string            `yaml:"workdir,omitempty"`
 }
 
 func (e Entry) IsEnabled() bool {
@@ -85,14 +91,19 @@ func Default() Config {
 // file is not an error: it is treated the same as an empty, disabled config
 // so the backend runs with hooks off until the operator opts in.
 func LoadConfig(path string) (Config, error) {
-	cfg := Default()
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cfg, nil
+			return Default(), nil
 		}
-		return cfg, err
+		return Default(), err
 	}
+	return parseConfig(raw)
+}
+
+// parseConfig decodes and validates the contents of a hooks.yaml.
+func parseConfig(raw []byte) (Config, error) {
+	cfg := Default()
 	if removed := removedKeys(raw); len(removed) > 0 {
 		return cfg, fmt.Errorf("removed hooks key(s) %s; every hook now gets the payload and runs with a fixed %s timeout and at most %d hooks at once, see %s",
 			strings.Join(removed, ", "), hookTimeout, maxConcurrent, config.UpgradeGuide)
@@ -206,9 +217,23 @@ func (c Config) validate() error {
 			if err := validateWebhookURL(e.URL); err != nil {
 				return fmt.Errorf("%s: url: %w", label, err)
 			}
+			switch e.Method {
+			case "", http.MethodGet, http.MethodPost, http.MethodPut:
+			default:
+				return fmt.Errorf("%s: method must be one of GET, POST, PUT", label)
+			}
+			if e.Method == http.MethodGet && e.Body != "" {
+				return fmt.Errorf("%s: a GET request has no body", label)
+			}
+			if _, err := bodyTemplate(e.Body); err != nil {
+				return fmt.Errorf("%s: body: %w", label, err)
+			}
 		case typeExec:
 			if strings.TrimSpace(e.Command) == "" {
 				return fmt.Errorf("%s: command is required for type exec", label)
+			}
+			if e.Method != "" || e.Body != "" {
+				return fmt.Errorf("%s: method and body are for type webhook", label)
 			}
 		}
 		// max_attempts is not validated here: values <= 0 (including

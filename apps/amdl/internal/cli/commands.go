@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"strconv"
@@ -127,6 +128,15 @@ func specFlags(fs *flag.FlagSet, op capability.Operation, positional []string) m
 		case "array":
 			fs.Func(flagName(name), usage+"; comma-separated", func(s string) error {
 				values[name] = append(asStrings(values[name]), splitList(s)...)
+				return nil
+			})
+		case "object":
+			fs.Func(flagName(name), usage+"; a JSON object", func(s string) error {
+				var obj map[string]any
+				if err := json.Unmarshal([]byte(s), &obj); err != nil {
+					return fmt.Errorf("not a JSON object: %s", s)
+				}
+				values[name] = obj
 				return nil
 			})
 		default:

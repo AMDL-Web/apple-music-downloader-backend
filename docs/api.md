@@ -32,11 +32,11 @@ write it lists the offending keys, on a failed `POST /lookup` it holds the parse
 | --- | --- |
 | 400 | `invalid_request` (query or body validation, a malformed stream cursor), `invalid_json` (the body is not well-formed JSON) |
 | 401 | `authentication_failed` |
-| 404 | `route_not_found`, `job_not_found`, `login_not_found`, `account_not_found`, `catalog_not_found` |
+| 404 | `route_not_found`, `job_not_found`, `login_not_found`, `account_not_found`, `catalog_not_found`, `hook_not_found` |
 | 405 | `method_not_allowed`, with an `Allow` header |
-| 409 | `job_active`, `job_not_retryable`, `job_not_cancellable`, `job_finalizing`, `duplicate_active`, `already_logged_in`, `login_pending` |
+| 409 | `job_active`, `job_not_retryable`, `job_not_cancellable`, `job_finalizing`, `duplicate_active`, `already_logged_in`, `login_pending`, `hook_read_only` |
 | 413 | `request_too_large` (JSON bodies are capped at 1 MiB) |
-| 422 | `invalid_overrides`, `config_key_not_mutable`, `invalid_config`, `no_urls_accepted` |
+| 422 | `invalid_overrides`, `config_key_not_mutable`, `invalid_config`, `invalid_hook`, `invalid_hooks_file`, `no_urls_accepted` |
 | 500 | `internal_error`, `store_error` (the job store failed; retrying may succeed) |
 | 501 | `login_unsupported` |
 | 502 | `upstream_error` |
@@ -44,9 +44,10 @@ write it lists the offending keys, on a failed `POST /lookup` it holds the parse
 | 504 | `upstream_timeout` |
 
 An unknown path under `/api/` answers `404 route_not_found`; a path that exists with other
-methods answers `405 method_not_allowed`. `feature_unavailable` comes only from
+methods answers `405 method_not_allowed`. `feature_unavailable` comes from
 `GET /logs` and `GET /logs/stream`, when `logging.buffer_size` is `0` and no log history
-is kept. A job lookup answers `404 job_not_found` only
+is kept, and from the hook routes that write `hooks.yaml` in a process started without
+its path. A job lookup answers `404 job_not_found` only
 when the job does not exist; a store failure is `500 store_error`, so a client never drops
 a job because of a transient error.
 
@@ -651,7 +652,30 @@ config_key_not_mutable` (a startup key), listing the dotted key names in `detail
 validates); `400 invalid_request` for an unknown key. See [configuration.md](configuration.md).
 
 `GET /api/v1/hooks` returns the master switch plus each entry's name, enabled state, type,
-events and job types — never URLs, headers, commands or working directories.
+events and job types. A webhook adds its `method`, `max_attempts`, `origin` (scheme and host)
+and `header_names`; its path, query, header values and body, and a command or working
+directory, are never returned.
+
+```bash
+curl -X PUT http://localhost:18080/api/v1/hooks -d '{"enabled": true}'
+curl -X PUT http://localhost:18080/api/v1/hooks/jellyfin \
+  -d '{"events": ["job_finished"], "url": "http://jellyfin.local:8096/Library/Refresh",
+       "headers": {"Authorization": "MediaBrowser Token=\"KEY\""}}'
+curl -X POST http://localhost:18080/api/v1/hooks/jellyfin/test
+curl -X DELETE http://localhost:18080/api/v1/hooks/jellyfin
+```
+
+The write routes edit `hooks.yaml` in place, keeping its comments and other entries, and
+apply to the next job event. `PUT /api/v1/hooks` sets the master switch. `PUT
+/api/v1/hooks/{name}` creates or changes a webhook entry with the keys of
+[automation.md](automation.md#job-hooks); an omitted field keeps its value, so a client can
+change a hook's events without sending its URL and tokens again. `POST
+/api/v1/hooks/{name}/test` sends it once with a sample payload (a finished album titled
+"Test from amdl") and answers `200` with `succeeded` and, when it failed, `error`.
+Command hooks are only read: writing, deleting or testing one is `409 hook_read_only`, and
+a body with a `type` other than `webhook` is `400 invalid_request`. A result that would not
+load is `422 invalid_hook`; a `hooks.yaml` on disk that no longer loads is `422
+invalid_hooks_file`, and nothing is written until it is fixed.
 
 ## Library sync
 

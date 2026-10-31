@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"amdl/internal/client"
 	"amdl/internal/config"
 	"amdl/internal/domain"
 	"amdl/internal/progress"
@@ -50,6 +51,7 @@ type Backend struct {
 	sinceFeed time.Duration
 	feeds     map[chan domain.DownloadFeedMessage]bool
 	covers    map[string][]byte
+	hooks     client.Hooks
 }
 
 type job struct {
@@ -67,7 +69,7 @@ type job struct {
 // New returns a backend whose clock is now, with its jobs as they stand at
 // that moment: two running, one waiting, some finished, one failed.
 func New(now func() time.Time) *Backend {
-	b := &Backend{now: now, signedIn: true, feeds: map[chan domain.DownloadFeedMessage]bool{}, covers: map[string][]byte{}}
+	b := &Backend{now: now, signedIn: true, feeds: map[chan domain.DownloadFeedMessage]bool{}, covers: map[string][]byte{}, hooks: demoHooks()}
 	view, err := config.MutableView(config.Default())
 	if err != nil {
 		panic("demo: the default config does not render: " + err.Error())
