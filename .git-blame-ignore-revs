@@ -50,3 +50,5 @@ d9fe175f9dac521866c8e33938024c6100a535d7
 e80b7e3d1a9e7af8e6f511fbc599216cea703533
 # refactor(console): move New download's artist confirm to its own file (move-only)
 4d91665861b73299ee134659a67db868eddc5310
+# refactor(console): split the ui-audit mock, its fixtures and scenarios, and the hooks styles (move-only)
+e7aa7d702eba5a12efb61feaaeaaac6447836292
