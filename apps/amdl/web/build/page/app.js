@@ -53,10 +53,11 @@
   };
 
   var go = new Go();
-  var wasm = fetch('amdl.wasm');
+  var url = el.dataset.wasm;
+  var wasm = fetch(url);
   var load = WebAssembly.instantiateStreaming
     ? WebAssembly.instantiateStreaming(wasm, go.importObject).catch(function () {
-        return fetch('amdl.wasm').then(function (r) { return r.arrayBuffer(); })
+        return fetch(url).then(function (r) { return r.arrayBuffer(); })
           .then(function (b) { return WebAssembly.instantiate(b, go.importObject); });
       })
     : wasm.then(function (r) { return r.arrayBuffer(); }).then(function (b) { return WebAssembly.instantiate(b, go.importObject); });

@@ -17,9 +17,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"crypto/sha512"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -120,6 +122,9 @@ func build(out, ldflags string) error {
 		return err
 	}
 	for _, f := range page {
+		if f.Name() == "index.html" {
+			continue
+		}
 		body, err := assets.ReadFile("page/" + f.Name())
 		if err != nil {
 			return err
@@ -128,12 +133,41 @@ func build(out, ldflags string) error {
 			return err
 		}
 	}
+	if err := writeIndex(out); err != nil {
+		return err
+	}
 	info, err := os.Stat(filepath.Join(out, "amdl.wasm"))
 	if err != nil {
 		return err
 	}
 	fmt.Printf("wrote %s (amdl.wasm %.1f MB)\n", out, float64(info.Size())/1e6)
 	return nil
+}
+
+// versioned are the files index.html names, which it names with a hash of
+// their content: the CDN in front of the website keeps scripts and
+// stylesheets for hours, and wasm_exec.js has to come from the Go that built
+// amdl.wasm.
+var versioned = []string{"amdl.wasm", "wasm_exec.js", "app.js", "app.css", "xterm/xterm.js", "xterm/xterm.css"}
+
+func writeIndex(out string) error {
+	index, err := assets.ReadFile("page/index.html")
+	if err != nil {
+		return err
+	}
+	for _, name := range versioned {
+		body, err := os.ReadFile(filepath.Join(out, filepath.FromSlash(name)))
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(body)
+		ref := []byte(`"` + name + `"`)
+		if bytes.Count(index, ref) != 1 {
+			return fmt.Errorf("page/index.html names %s %d times, want once", name, bytes.Count(index, ref))
+		}
+		index = bytes.Replace(index, ref, []byte(`"`+name+"?v="+hex.EncodeToString(sum[:6])+`"`), 1)
+	}
+	return os.WriteFile(filepath.Join(out, "index.html"), index, 0o644)
 }
 
 // patched copies module path, at the version go.mod builds with, into tmp
