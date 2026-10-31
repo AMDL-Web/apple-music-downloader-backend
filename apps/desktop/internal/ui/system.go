@@ -448,9 +448,9 @@ func hooksCard(c *ui.Context, k *Tokens, sv *store.Server, span int) ui.Element 
 	return moleCard(c, k, "hooks", span, k.TileQueue, icLink, "Hooks", ui.Color{}, chips, func() {
 		if h == nil || len(h.Entries) == 0 || !h.Enabled {
 			display(c, "None", 24)
-			foot := "No hooks in hooks.yaml"
+			foot := "No hooks"
 			if h != nil && len(h.Entries) > 0 {
-				foot = "Hooks are switched off in hooks.yaml"
+				foot = "Hooks are switched off"
 			}
 			cardFoot(c, k, foot)
 			return

@@ -250,37 +250,6 @@ func (a *App) configFile(c *ui.Context, k *Tokens) {
 	})
 }
 
-// hookList lists the hooks of hooks.yaml with what they did lately.
-func (a *App) hookList(c *ui.Context, k *Tokens) {
-	sv := &a.Store.Server
-	h := sv.Hooks
-	if h == nil || len(h.Entries) == 0 {
-		return
-	}
-	ui.Column(c.Key("hook-list")).Padding(4, padCard).Radius(radiusCard).Background(k.Raise).Dividers(1, k.Line).Children(func() {
-		for _, e := range h.Entries {
-			ui.Row(c.Key(e.Name)).Height(44).Gap(10).AlignItems(ui.Center).Children(func() {
-				name := mono(c, e.Name, 12.5).Grow(1).Shrink(1).SingleLine()
-				chip(c, k, e.Type, ui.Color{})
-				if !e.Enabled || !h.Enabled {
-					name.TextColor(k.Faint)
-					chip(c, k, "Off", ui.Color{})
-					return
-				}
-				runs := "No runs in " + fmt.Sprint(store.StatsDays) + " days"
-				if sv.Stats != nil {
-					for _, o := range sv.Stats.Hooks {
-						if o.Name == e.Name && o.Succeeded+o.Failed > 0 {
-							runs = fmt.Sprintf("%d ✓ · %d ✕", o.Succeeded, o.Failed)
-						}
-					}
-				}
-				mono(c, runs, 11.5).TextColor(k.Muted)
-			})
-		}
-	})
-}
-
 // logsCard is the backend's errors of the last day, by hour.
 func logsCard(c *ui.Context, k *Tokens, sv *store.Server, span int) ui.Element {
 	e := sv.Errors

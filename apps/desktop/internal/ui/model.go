@@ -146,6 +146,8 @@ type App struct {
 	deleteOpen bool
 	// asking is the download whose sheet is up, or nil.
 	asking *downloadAsk
+	// hookAsk is the hook sheet that is up, or nil.
+	hookAsk *hookSheet
 	// nowShown is the job the sidebar's now card shows, kept while the
 	// card closes after it.
 	nowShown *store.Job

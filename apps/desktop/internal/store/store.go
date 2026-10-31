@@ -59,6 +59,8 @@ type Store struct {
 	Search Search
 	// Notice is the latest message for a toast, or zero.
 	Notice Notice
+	// HookTests are the webhooks' last tests, by name.
+	HookTests map[string]HookTest
 	// Server is the backend's health, resources and settings in effect, for
 	// Settings and the tray panel.
 	Server Server
