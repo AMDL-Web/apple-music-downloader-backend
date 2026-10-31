@@ -251,7 +251,8 @@ screen is redrawn.
 - **Below the prompt** open the panels (the `/` menu, search hits, the preview, help),
   so opening one does not move the prompt, and under everything one status line: the
   connection, the job counts, and the keys that matter at that moment.
-- **Widths**: past 120 columns the layout stays 120 wide; narrow terminals drop the
+- **Widths**: past 120 columns the layout, and what goes into the scrollback, stays 120
+  wide, wrapped by amdl rather than the terminal; narrow terminals drop the
   per-track status column, then the artist and the track rows, and below 40 columns
   the prompt's border; short ones keep fewer cards (`apps/amdl/internal/tui#wideCols`
   and its siblings). When the width changes, the screen and its scrollback are cleared

@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/ansi"
 
 	"amdl/internal/client"
 	"amdl/internal/domain"
@@ -244,6 +245,23 @@ func TestWhatIsPrintedBeforeTheBannerFollowsIt(t *testing.T) {
 	}
 	if second := stripANSI(m.transcript[1](100)); !strings.Contains(second, "tidal") {
 		t.Errorf("then the line typed while it waited: %q", second)
+	}
+}
+
+func TestPrintedLinesFitTheTerminal(t *testing.T) {
+	m := sample(t)
+	m.width = 46
+	long := func(int) string {
+		return "✓ Glass Weather — Mira Solenne · 12/12 saved · ALAC 24/48 · 864.6 MB · 3:42 · #1\n  2 failed: the wrapper closed the connection · /retry 1"
+	}
+	lines := m.printLines(long)
+	if len(lines) < 4 {
+		t.Errorf("%d lines, want the two long ones wrapped", len(lines))
+	}
+	for _, l := range lines {
+		if w := ansi.StringWidth(l); w > 46 {
+			t.Errorf("%d columns in a 46-column terminal: %q", w, l)
+		}
 	}
 }
 

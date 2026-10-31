@@ -17,6 +17,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/ansi"
 
 	"amdl/apps/amdl/internal/jobview"
 	"amdl/internal/client"
@@ -387,7 +388,25 @@ func (m *model) println(e entry) tea.Cmd {
 	if len(m.transcript) > maxTranscript {
 		m.transcript = m.transcript[len(m.transcript)-maxTranscript:]
 	}
-	return tea.Println(m.downsample(e(m.contentWidth())))
+	// One row per print. bubbletea scrolls the screen by the rows it prints
+	// above the live region, a line the terminal wraps counting as several,
+	// before it moves up to write them; when the region and those rows are
+	// taller than the screen, the region's top rows go into the scrollback,
+	// where it cannot erase them. View keeps the region a row short of the
+	// screen, so one row always fits.
+	lines := m.printLines(e)
+	cmds := make([]tea.Cmd, len(lines))
+	for i, l := range lines {
+		cmds[i] = tea.Println(l)
+	}
+	return tea.Sequence(cmds...)
+}
+
+// printLines is e as it goes to the scrollback: in the terminal's colors, and
+// wrapped here to the content width rather than by the terminal.
+func (m *model) printLines(e entry) []string {
+	w := m.contentWidth()
+	return strings.Split(ansi.Wrap(m.downsample(e(w)), w, ""), "\n")
 }
 
 // downsample fits printed text to the terminal's colors, as the renderer
@@ -410,13 +429,12 @@ func (m *model) downsample(s string) string {
 // the renderer still holds the frame it drew before the clear and would only
 // paint what changed, so ClearScreen makes it paint the whole region again.
 func (m *model) redraw() tea.Cmd {
-	w := m.contentWidth()
 	blocks := make([]string, 0, len(m.transcript))
 	for _, e := range m.transcript {
-		blocks = append(blocks, e(w))
+		blocks = append(blocks, strings.Join(m.printLines(e), "\n"))
 	}
 	const clear = "\x1b[H\x1b[2J\x1b[3J" // home, erase the screen, erase the scrollback
-	return tea.Sequence(tea.Println(clear+m.downsample(strings.Join(blocks, "\n"))), tea.ClearScreen)
+	return tea.Sequence(tea.Println(clear+strings.Join(blocks, "\n")), tea.ClearScreen)
 }
 
 // commitHeader moves the banner from the live region into scrollback once
