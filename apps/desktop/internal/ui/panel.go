@@ -3,7 +3,6 @@ package ui
 import (
 	"fmt"
 	"runtime"
-	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -94,16 +93,18 @@ func (a *App) Panel(c *ui.Context) {
 		})
 	})
 	// The flyout does not size itself to native content: fit it to what
-	// the last frame laid out. Bounds are a frame late, and an idle panel
-	// draws no next frame of its own, so ask for one until it fits.
-	switch h := box.Bounds().H; {
-	case h == 0:
-		c.After(time.Millisecond)
-	case h != a.panelH:
+	// the last frame laid out. Bounds are a frame late, so the frame that
+	// lays out another height asks for the next one as it paints: the
+	// store's change may be the last frame the panel gets for seconds.
+	if h := box.Bounds().H; h > 0 && h != a.panelH {
 		a.panelH = h
 		a.Act.FitPanel(h)
-		c.After(time.Millisecond)
 	}
+	box.Draw(func(_ *ui.Painter, r ui.Rect) {
+		if r.H != a.panelH {
+			c.Invalidate()
+		}
+	})
 }
 
 func (a *App) panelHead(c *ui.Context, k *Tokens, sum store.Summary) {

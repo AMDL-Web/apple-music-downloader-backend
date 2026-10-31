@@ -117,6 +117,7 @@ func (a *App) ShowWindow() {
 // FitPanel sizes the tray panel to the height its content laid out.
 func (a *App) FitPanel(height float32) {
 	if a.panel != nil {
-		a.panel.SetContentSize(appui.PanelWidth, int(math.Ceil(float64(height))))
+		a.panelH = int(math.Ceil(float64(height)))
+		a.panel.SetContentSize(appui.PanelWidth, a.panelH)
 	}
 }

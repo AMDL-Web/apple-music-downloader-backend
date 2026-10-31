@@ -4,6 +4,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"net/http"
@@ -61,6 +62,10 @@ type App struct {
 	store *store.Store
 	shell *shell.Shell
 	view  *appui.App
+
+	// panelH is the height in DIPs the panel last fitted its content to,
+	// which the next one opens at, or 0 before the first.
+	panelH int
 
 	// standaloneBackend is the backend standalone mode runs or uses.
 	standaloneBackend
@@ -328,7 +333,9 @@ func (a *App) togglePanel() {
 		Placement: mygo.PlacementBottom,
 		Gap:       4,
 		Width:     appui.PanelWidth,
-		Height:    460,
+		// Opened at the height the last one fitted, it does not show at
+		// another for the frames before the view measures its content.
+		Height:    cmp.Or(a.panelH, 460),
 		Focusable: true,
 		Shadow:    true,
 		Popover:   runtime.GOOS == "darwin",
