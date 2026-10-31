@@ -20,7 +20,6 @@ nothing from another host.
 | `serve.mjs` | The preview server behind `--serve` |
 | `build.test.mjs` | Content parity, links and anchors, local-only resources, image sizes, arguments |
 | `demo.test.mjs` | The fake backend answers every console call, stays on its own origin, and runs jobs to the end |
-| `wrangler.jsonc` | The Cloudflare Workers project that serves `dist/` at the site's domain |
 
 ## Build and preview
 
@@ -70,82 +69,49 @@ for the desktop app.
   `--desktop <dir>` (a directory with its `index.html`), the build copies it to
   `demo/desktop/`, and a button over the screenshot starts it in the window: it is several
   megabytes of wasm, so it loads only then, and only where the window is at least 820 px
-  wide, the app's minimum. The page passes its theme in as `data-mygo-theme`. Workers
-  serves files up to 25 MiB, which the `.wasm` must stay under.
+  wide, the app's minimum. The page passes its theme in as `data-mygo-theme`.
 - Up to 720 px wide the console window is a scaled-down live view; a tap opens
   `demo/console/` full screen, where the console lays itself out for the screen.
 
 ## Publishing
 
-The site is Cloudflare Workers static assets, deployed by hand with the maintainer's
-Cloudflare login. Build with the domain from `wrangler.jsonc` as `--base`, then deploy:
+GitHub Pages serves the site, built by `.github/workflows/pages.yml`. A push to the
+branch in `build.mjs#REF` that touches the site, the desktop app or the workflow builds
+the desktop demo with `make desktop-web`, builds the site with
+`--base https://amdl.lyjw.me/` and deploys it; `gh workflow run pages.yml --ref <branch>`
+runs it by hand. The workflow refuses a branch other than the one `REF` names, so the
+page's install commands and repository links point at the branch it was built from. The
+`github-pages` environment lets `dev` and `main` deploy:
 
 ```bash
-make desktop-web
-node apps/site/build.mjs --base https://amdl.lyjw.me/ --desktop apps/desktop/build/web
-npx wrangler deploy --config apps/site/wrangler.jsonc
+gh api repos/AMDL-Web/apple-music-downloader/environments/github-pages/deployment-branch-policies \
+  --jq '.branch_policies[].name'
 ```
 
-Links into the repository, the install scripts and the Compose file come from the
-branch in `build.mjs#REF`, so it names the branch the published page describes.
-
-At the 2.0 release the site moves to GitHub Pages, built from `main` by
-`.github/workflows/pages.yml`: it runs on a push to `main` that touches the site or the
-desktop app, or by hand, builds the desktop demo with `make desktop-web` first, and refuses
-to deploy a build whose `REF` is not `main`.
+The domain is in the maintainer's Cloudflare zone: `amdl` is a CNAME to
+`amdl-web.github.io` with the proxy on, and the repository's Pages settings name
+`amdl.lyjw.me` as the custom domain. Cloudflare holds the certificate, redirects `http`
+to `https` (the zone's Always Use HTTPS) and sends the files Brotli-compressed, the
+desktop demo's `.wasm` included. It reaches
+GitHub over HTTPS without checking GitHub's certificate (the zone's SSL mode Full):
+GitHub cannot issue a certificate for a proxied name, so Pages' own certificate and its
+Enforce HTTPS setting stay off.
 
 ## Release day
 
-The move from Workers to Pages, in order. Run each check before the next step; until
-step 8 the Workers copy can take the domain back (see the end of this section). Steps 4
-and 5 are in the Cloudflare dashboard; the rest are commands, with
-`R=AMDL-Web/apple-music-downloader`.
+The site follows `dev` until a release and `main` from the release on.
 
-1. **Describe the release.** One commit on `dev`: `build.mjs#REF` becomes `'main'`, and
-   the hero eyebrow in both content files drops "in development" ("2.0 · Self-hosted ·
-   Open source", "2.0 · 自托管 · 开源"). Check: `node --test apps/site/`, and
-   `rg -n "in development|开发中" apps/site/content` finds nothing.
-2. **Enable Pages** with Actions as its source, and let `main` deploy to the
-   `github-pages` environment (the repository's default branch is `dev`):
-
-   ```bash
-   gh api -X POST repos/$R/pages -f build_type=workflow
-   gh api -X PUT repos/$R/environments/github-pages --input - <<'EOF'
-   {"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
-   EOF
-   gh api -X POST repos/$R/environments/github-pages/deployment-branch-policies \
-     -f name=main -f type=branch
-   ```
-
-   Check: `gh api repos/$R/pages --jq .build_type` prints `workflow`, and
-   `gh api repos/$R/environments/github-pages/deployment-branch-policies --jq '.branch_policies[].name'`
-   prints `main`.
-3. **Merge `dev` into `main`** with the release PR. The push runs the Pages workflow.
-   Check: `gh run list --workflow pages.yml --branch main --limit 1`, then
+1. **Point the site at `main`.** One commit on `dev`, before the release PR:
+   `build.mjs#REF` becomes `'main'`, the hero eyebrow in both content files drops "in
+   development" ("2.0 · Self-hosted · Open source", "2.0 · 自托管 · 开源"), and
+   `.github/workflows/pages.yml` runs on pushes to `main` instead of `dev`. From this
+   commit on, pushes to `dev` no longer publish the site. Check: `node --test apps/site/`,
+   and `rg -n "in development|开发中" apps/site/content` finds nothing.
+2. **Merge the release PR.** Its push to `main` runs the Pages workflow. Check:
+   `gh run list --workflow pages.yml --branch main --limit 1`, then
    `timeout 900 gh run watch <run-id> --exit-status`; afterwards
-   `curl -sI https://amdl-web.github.io/apple-music-downloader/en/` answers `200`. If
-   the run started before step 2, run it again with
-   `gh workflow run pages.yml --ref main`.
-4. **Take the domain off Workers.** In the Cloudflare dashboard: Workers & Pages →
-   `amdl-site` → Settings → Domains & Routes → `amdl.lyjw.me` → Remove. That also deletes
-   the DNS record Workers made. Check:
-   `curl -s -H 'accept: application/dns-json' 'https://cloudflare-dns.com/dns-query?name=amdl.lyjw.me&type=A'`
-   has no `Answer`. The site is down from here until step 6 ends.
-5. **Point DNS at GitHub.** In the `lyjw.me` zone add `CNAME amdl → amdl-web.github.io`
-   with the proxy off (DNS only), so GitHub can issue the certificate. Check: the same
-   DNS query with `type=CNAME` answers `amdl-web.github.io.`
-6. **Give Pages the domain** and turn on HTTPS once its certificate is issued:
-
-   ```bash
-   gh api -X PUT repos/$R/pages -f cname=amdl.lyjw.me
-   gh api repos/$R/pages --jq '.cname, .https_certificate.state'
-   gh api -X PUT repos/$R/pages -F https_enforced=true
-   ```
-
-   Run the second line until the state is `approved`, then the third. Check:
-   `curl -sI https://amdl.lyjw.me/en/` answers `200` with `server: GitHub.com`, and
-   `curl -sI http://amdl.lyjw.me/` redirects to `https://`.
-7. **Check the page's links.** Every link into the repository on the live page (the docs,
+   `curl -sI https://amdl.lyjw.me/en/` answers `200`.
+3. **Check the page's links.** Every link into the repository on the live page (the docs,
    the install scripts, the Compose file) answers `200` and points at `main`, and the
    install script finds the release:
 
@@ -153,18 +119,8 @@ and 5 are in the Cloudflare dashboard; the rest are commands, with
    curl -s https://amdl.lyjw.me/en/ \
      | grep -oE 'https://(raw\.githubusercontent\.com|github\.com)/AMDL-Web/[^"<# ]*' | sort -u \
      | xargs -n1 curl -so /dev/null -w '%{http_code} %{url_effective}\n'
-   curl -fsSL https://raw.githubusercontent.com/$R/main/deploy/install/install.sh | sh -s -- --dry-run
+   curl -fsSL https://raw.githubusercontent.com/AMDL-Web/apple-music-downloader/main/deploy/install/install.sh | sh -s -- --dry-run
    ```
-
-8. **Retire Workers.** `npx wrangler delete --name amdl-site`. In the next commit on
-   `dev`, delete `apps/site/wrangler.jsonc` and the `/.wrangler/` line in `.gitignore`,
-   and make the Publishing section above describe Pages only. Check: `amdl-site` is gone
-   from the dashboard's Workers & Pages list.
-
-To go back before step 8: clear the Pages domain with
-`echo '{"cname": null}' | gh api -X PUT repos/$R/pages --input -`, delete the `amdl`
-CNAME, then run `npx wrangler deploy --config apps/site/wrangler.jsonc`, which makes the
-Workers custom domain and its DNS record again.
 
 ## Changing the content
 

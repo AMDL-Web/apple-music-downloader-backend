@@ -1,13 +1,13 @@
 name: Pages
 
-# Build the website from main, with the desktop app's browser demo, and
-# publish it on GitHub Pages at its custom domain. main changes only through
-# the release PR, so this first runs on release day;
-# apps/site/README.md#release-day has the steps around it.
+# Build the website, with the desktop app's browser demo, and publish it on
+# GitHub Pages at its custom domain. It follows the branch build.mjs#REF
+# names: dev until a release, main from then on
+# (apps/site/README.md#release-day).
 
 on:
   push:
-    branches: [main]
+    branches: [dev]
     paths:
       - apps/site/**
       - apps/desktop/**
@@ -43,9 +43,11 @@ jobs:
           node-version: '26'
 
       # The page's install commands and repository links follow build.mjs#REF,
-      # so a page built from main must point at main.
-      - name: Check the site describes main
-        run: node --input-type=module -e "import { REF } from './apps/site/build.mjs'; if (REF !== 'main') { console.error('apps/site/build.mjs#REF is ' + REF + ', not main'); process.exit(1); }"
+      # so a page must be built from the branch it points at.
+      - name: Check the site describes this branch
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: node --input-type=module -e "import { REF } from './apps/site/build.mjs'; if (REF !== process.env.BRANCH) { console.error('apps/site/build.mjs#REF is ' + REF + ', not ' + process.env.BRANCH); process.exit(1); }"
 
       - name: Build the desktop demo
         run: make desktop-web

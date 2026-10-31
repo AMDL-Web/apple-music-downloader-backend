@@ -24,8 +24,10 @@ multi-arch image. The maintainer merges; agents prepare and check.
   is green within `timeout 1800`.
 - `gh api repos/AMDL-Web/apple-music-downloader/code-scanning/alerts?state=open --jq length`
   is `0`; fix an alert or dismiss it with its reason.
-- The website describes the release: `apps/site/build.mjs#REF` is `main`, and the
-  hero eyebrow in both `apps/site/content/` files no longer says "in development".
+- The website describes the release: `apps/site/build.mjs#REF` is `main`, the
+  hero eyebrow in both `apps/site/content/` files no longer says "in development",
+  and `.github/workflows/pages.yml` runs on pushes to `main`
+  ([apps/site/README.md](../../../apps/site/README.md#release-day), step 1).
 
 ## 2. Version and notes
 
@@ -82,14 +84,15 @@ Bound each wait with `timeout 900`; on timeout record FAIL with the last state.
   lists `linux/amd64` and `linux/arm64`, and the `X.Y` and `latest` tags have the
   same digest.
 - `git log --oneline origin/dev..origin/main` shows only the merge commit.
-- Republish the website from `main` ([apps/site/README.md](../../../apps/site/README.md#publishing)).
+- The release PR's push to `main` published the website: its Pages run is green and
+  the live page's links point at `main` ([apps/site/README.md](../../../apps/site/README.md#release-day),
+  steps 2 and 3).
 
 Report the version, release URL, image digest, and anything skipped.
 
 ## 2.0.0 only
 
-The first 2.0 release changes the image name and the website's host and starts the
-wrapper pin. These steps are the maintainer's unless marked; record each in the report.
+The first 2.0 release changes the image name and starts the wrapper pin. These steps are the maintainer's unless marked; record each in the report.
 
 - **Image visibility** (agent). As soon as the release's push finishes, pull it
   anonymously:
@@ -101,9 +104,6 @@ wrapper pin. These steps are the maintainer's unless marked; record each in the 
   `sha256` as `internal/wrapperhost#Builtin` and an `expires_at` weeks away. Otherwise
   run `gh workflow run wrapper-pin.yml`, and bump `Builtin` when upstream has a newer
   build.
-- **Website.** It moves from Cloudflare Workers back to GitHub Pages, built from
-  `main`; follow the cutover in [apps/site/README.md](../../../apps/site/README.md#release-day)
-  instead of republishing to Workers.
 - **NAS.** Redeploy the maintainer's own install on the new image name after the
   release (the `ssh-remote-ops` skill covers the host).
 - **Desktop app.** It ships with 2.0.0, unsigned (ad hoc on macOS) until a signing
