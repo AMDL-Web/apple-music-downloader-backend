@@ -194,6 +194,9 @@ const SCENARIOS = [
   { id: 'new/lookup-error', world: 'active', path: `#/new?url=${encodeURIComponent(albumUrl(8))}`, faults: { 'POST /api/v1/lookup': { status: 502, code: 'upstream_error', message: 'Apple answered 503 Service Unavailable' } } },
   { id: 'new/search', world: 'active', path: '#/new?q=yorushika' },
   { id: 'new/search-none', world: 'active', path: '#/new?q=zzzz' },
+  { id: 'new/search-group', world: 'active', path: '#/new?q=yorushika&group=albums' },
+  { id: 'new/search-group-empty', world: 'active', path: '#/new?q=beethoven&group=playlists' },
+  { id: 'new/search-group-page-error', world: 'active', path: '#/new?q=yorushika&group=songs', faults: { 'GET /api/v1/search?offset': { status: 504, code: 'upstream_timeout', message: 'Apple did not answer in time.' } } },
   { id: 'new/search-error', world: 'active', path: '#/new?q=radiohead', faults: { 'GET /api/v1/search': { status: 504, code: 'upstream_timeout', message: 'Apple did not answer in time.' } } },
   { id: 'new/artist', world: 'active', path: '#/new?q=yorushika&artist=1250709916' },
   {

@@ -1,13 +1,13 @@
 // New download: the state behind catalog search (views/download-search.js
 // draws it). useSearch runs the searcher and an open artist's pages
 // (lib/search.js) and keeps the library and queue notes live;
-// useHitActions downloads a hit and opens or closes an artist as a history
-// entry; toResults takes the text box's keys to the results.
+// useHitActions downloads a hit and opens or closes an artist or a group
+// shown alone as a history entry; toResults takes the text box's keys to the results.
 
 import { useState, useEffect, useRef } from '../ui/preact.js';
 import { searchCatalog, getArtistAlbums } from '../api.js';
 import { buildHash } from '../lib/route.js';
-import { createSearcher, createArtistPages, shownHits } from '../lib/search.js';
+import { createSearcher, createArtistPages, allHits, searchGroup } from '../lib/search.js';
 import { hitKey, hitPrior, trackJobs, sentJob, hitPreview } from '../lib/search-jobs.js';
 
 // Answers outlive the page for the life of the tab, like link previews.
@@ -53,7 +53,7 @@ export function useSearch({ term, debounced, artistId, epoch, subscribeFeed }) {
   const [jobs, setJobs] = useState(() => new Map());
   const search = searcher.current.state();
   const artist = artists.current.state();
-  const hits = [...shownHits(search.data), ...(artist.albums ? artist.albums.items : []), ...(artist.artist ? [artist.artist] : [])];
+  const hits = [...allHits(search.data), ...(artist.albums ? artist.albums.items : []), ...(artist.artist ? [artist.artist] : [])];
   const watched = useRef(new Set());
   watched.current = new Set([...sent.values(), ...hits.map((h) => h.prior_job && h.prior_job.id).filter(Boolean)]);
   useEffect(() => subscribeFeed((batch) => setJobs((m) => trackJobs(m, batch, watched.current))), []);
@@ -77,7 +77,7 @@ export function useSearch({ term, debounced, artistId, epoch, subscribeFeed }) {
 }
 
 /**
- * The page's side of the hits. download(hit) sends a song's or album's url
+ * The page's side of the hits. download(hit) sends a song's, album's or playlist's url
  * alone through the page's `send` and `report` (its result joins the
  * results), and asks first through `setConfirm` for an artist, whose url
  * queues every album as an artist link does. openArtist(hit) opens the
@@ -85,7 +85,11 @@ export function useSearch({ term, debounced, artistId, epoch, subscribeFeed }) {
  * browser's or the card's (closeArtist), returns to them. Returns {busy
  * (urls being sent), download, openArtist, closeArtist, openedHit (the hit
  * the open artist came from, for its head until the answer), focusArtist
- * (whether this page opened it)}.
+ * (whether this page opened it), group (#/new?group=, the group shown
+ * alone while there is a term), openGroup(id), closeGroup}. openGroup from
+ * every group is a history entry, from another group it replaces the
+ * entry, so Back, the browser's or the card's (closeGroup), returns to
+ * every group.
  */
 export function useHitActions({ app, route, term, artistId, search, send, report, overrides, setConfirm, clearNotes }) {
   const [busy, setBusy] = useState(() => new Set());
@@ -118,6 +122,20 @@ export function useHitActions({ app, route, term, artistId, search, send, report
     if (!artistId) pushed.current = false;
   }, [artistId]);
 
+  const group = term ? searchGroup(route.params.group) : '';
+  const pushedGroup = useRef(false);
+  const openGroup = (id) => {
+    if (!group) pushedGroup.current = true;
+    app.navigate(buildHash('new', { ...route.params, q: term, group: id, artist: '' }, route.jobId), { replace: Boolean(group) });
+  };
+  const closeGroup = () => {
+    if (pushedGroup.current) window.history.back();
+    else app.navigate(buildHash('new', { ...route.params, group: '' }, route.jobId), { replace: true });
+  };
+  useEffect(() => {
+    if (!group) pushedGroup.current = false;
+  }, [group]);
+
   return {
     busy,
     download,
@@ -126,6 +144,9 @@ export function useHitActions({ app, route, term, artistId, search, send, report
     openedHit: opened.current && opened.current.id === artistId ? opened.current : null,
     // An artist this page opened (not one a reload or a link opened) takes focus.
     focusArtist: pushed.current,
+    group,
+    openGroup,
+    closeGroup,
   };
 }
 

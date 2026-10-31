@@ -1,7 +1,8 @@
 // New download: the address and the text box follow each other. Links in
 // ?url= join the text, a term in ?q= fills a box without links, and the
 // settled text writes its links into ?url=, its search term into ?q= and
-// keeps ?artist= while the term it was found with stays.
+// keeps ?artist= while the term it was found with stays, and ?group= while
+// there is a term.
 
 import { useEffect, useRef, useState } from '../ui/preact.js';
 import { newDownloadUrls, buildHash } from '../lib/route.js';
@@ -99,14 +100,16 @@ export function useAddressSync({ app, route, incoming, text, settled, storefront
     const q = searchTerm(settled, found).term;
     // An open artist belongs to the term it was found with.
     const artist = q && q === (r.params.q || '') ? r.params.artist : undefined;
+    // A group shown alone stays as the words change.
+    const group = q ? r.params.group : undefined;
     const inParam = newDownloadUrls(r.params);
     const textMoved = settledSeen.current !== settled;
     settledSeen.current = settled;
-    if (sameList(urls, inParam) && q === (r.params.q || '') && artist === r.params.artist) return;
+    if (sameList(urls, inParam) && q === (r.params.q || '') && artist === r.params.artist && group === r.params.group) return;
     if (!textMoved && scanLinks(inParam.join('\n'), storefront).some((e) => !urls.includes(e.url))) return;
     if (!textMoved && r.params.q && r.params.q !== q) return;
     wroteQ.current = q;
-    app.navigate(buildHash('new', { ...r.params, url: urls.join('\n'), q, artist }, r.jobId), { replace: true });
+    app.navigate(buildHash('new', { ...r.params, url: urls.join('\n'), q, artist, group }, r.jobId), { replace: true });
   }, [settled, urlParam, route.params.q, storefront]);
   return routeRef;
 }

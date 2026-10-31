@@ -13,7 +13,7 @@ export const SEARCH_MAX_TERM = 200;
 export const SEARCH_DEBOUNCE_MS = 300;
 /** Hits per group on the first page: six fill one, two, three or six columns. */
 export const SEARCH_FIRST = 6;
-/** Hits per group a "Show more" adds. */
+/** Hits per page of a group shown alone, read as its end comes near. */
 export const SEARCH_MORE = 25;
 /** Albums per page of an artist. */
 export const ARTIST_PAGE = 25;
@@ -24,8 +24,14 @@ export const SEARCH_CACHE_MAX = 30;
 export const SEARCH_GROUPS = [
   { id: 'albums', label: 'Albums', one: 'album', many: 'albums' },
   { id: 'songs', label: 'Songs', one: 'song', many: 'songs' },
+  { id: 'playlists', label: 'Playlists', one: 'playlist', many: 'playlists' },
   { id: 'artists', label: 'Artists', one: 'artist', many: 'artists' },
 ];
+
+/** The group #/new?group= shows alone: one of SEARCH_GROUPS' ids, else '' (every group). */
+export function searchGroup(value) {
+  return SEARCH_GROUPS.some((g) => g.id === value) ? value : '';
+}
 
 /**
  * What the text box searches for: {term, tooLong}. The term is its words
@@ -298,7 +304,7 @@ const plural = (n, one, many) => `${count(n)} ${n === 1 ? one : many}`;
  * What a hit row shows: {title, facts, explicit, quality}. facts is the meta
  * line in order as {key, text, auto} (auto: Apple's text, shown dir=auto):
  * a song's artist, album and length; an album's artist, year and track
- * count; an artist's genre.
+ * count; a playlist's curator; an artist's genre.
  */
 export function hitView(hit) {
   if (!hit || typeof hit !== 'object') return null;
@@ -315,6 +321,9 @@ export function hitView(hit) {
     add('artist', hit.artist_name, true);
     add('year', releaseYear(hit));
     add('tracks', typeof hit.track_count === 'number' && hit.track_count > 0 ? plural(hit.track_count, 'track', 'tracks') : '');
+  } else if (hit.type === 'playlist') {
+    // Its curator; the catalog states no track count for a playlist.
+    add('curator', hit.artist_name, true);
   } else if (hit.type === 'artist') {
     add('genre', hit.genre || 'Artist', Boolean(hit.genre));
   }
@@ -326,18 +335,45 @@ export function hitView(hit) {
   };
 }
 
-/** The hits of a search answer in the order rows are shown (and the arrow keys move). */
-export function shownHits(data) {
-  if (!data) return [];
-  return SEARCH_GROUPS.flatMap((g) => (data[g.id] && Array.isArray(data[g.id].items) ? data[g.id].items : []));
+const itemsOf = (data, id) => (data && data[id] && Array.isArray(data[id].items) ? data[id].items : []);
+
+/** Every hit a search answer holds, pages read for a group shown alone included. */
+export function allHits(data) {
+  return SEARCH_GROUPS.flatMap((g) => itemsOf(data, g.id));
+}
+
+/**
+ * The hits of a search answer in the order they are shown (and the arrow
+ * keys move): every group's first SEARCH_FIRST, or all of `group`'s when it
+ * is shown alone.
+ */
+export function shownHits(data, group = '') {
+  if (group) return itemsOf(data, group);
+  return SEARCH_GROUPS.flatMap((g) => itemsOf(data, g.id).slice(0, SEARCH_FIRST));
+}
+
+/** Whether a group's title row offers Show more: it has hits past the first SEARCH_FIRST, read or not. */
+export function hasMore(group) {
+  return Boolean(group && ((group.next_offset || 0) > 0 || (Array.isArray(group.items) && group.items.length > SEARCH_FIRST)));
+}
+
+/**
+ * The foot under a group shown alone: 'loading' or 'error' while its next
+ * page is read or failed, 'wait' while more pages are to come, '' at the end.
+ */
+export function groupFoot(group, more) {
+  if (more === 'loading' || more === 'error') return more;
+  return group && group.next_offset > 0 ? 'wait' : '';
 }
 
 /**
  * The count line while searching, announced: "Searching…", "6 albums, 6
  * songs and 1 artist for “Yorushika”", "Nothing found for “xyz”", the
- * artist's album count in the artist view, '' otherwise.
+ * artist's album count in the artist view, for a group shown alone "31
+ * albums so far for “Yorushika”" or "No playlists for “Yorushika”", ''
+ * otherwise.
  */
-export function searchCountLine(st, artist = null) {
+export function searchCountLine(st, artist = null, group = '') {
   if (artist) {
     if (artist.status === 'loading') return 'Loading albums…';
     if (artist.status !== 'ready' || !artist.albums) return '';
@@ -348,8 +384,14 @@ export function searchCountLine(st, artist = null) {
   if (!st || !st.term) return '';
   if (st.status === 'loading') return 'Searching…';
   if (st.status !== 'ready' || !st.data) return '';
+  const alone = SEARCH_GROUPS.find((g) => g.id === group);
+  if (alone) {
+    const n = itemsOf(st.data, alone.id).length;
+    if (!n) return `No ${alone.many} for “${st.term}”`;
+    return `${plural(n, alone.one, alone.many)}${st.data[alone.id].next_offset ? ' so far' : ''} for “${st.term}”`;
+  }
   const parts = SEARCH_GROUPS.map((g) => {
-    const n = st.data[g.id] && Array.isArray(st.data[g.id].items) ? st.data[g.id].items.length : 0;
+    const n = Math.min(itemsOf(st.data, g.id).length, SEARCH_FIRST);
     return n ? plural(n, g.one, g.many) : '';
   }).filter(Boolean);
   if (!parts.length) return `Nothing found for “${st.term}”`;

@@ -2075,10 +2075,10 @@
   line-height: var(--lh-13);
 }
 
-/* Search hits: Albums and Artists sit on the page as Overview's wall (its
-   tile and shadow), Songs are the detected-link rows on a grouped surface,
+/* Search hits: Albums, Playlists and Artists sit on the page as Overview's
+   wall (its tile and shadow), Songs are the detected-link rows on a grouped surface,
    hairlines from the text, no rule across columns. */
-:root[data-skin="music"] :is([data-section="hits-albums"], [data-section="hits-artists"]) > .card-body {
+:root[data-skin="music"] :is([data-section="hits-albums"], [data-section="hits-playlists"], [data-section="hits-artists"]) > .card-body {
   padding: 0;
   background: transparent;
   border-radius: 0;

@@ -617,7 +617,7 @@ export function createFakeApi({ progress, now = Date.now(), timers = globalThis 
     return json(200, { input: body.url, storefront: link.storefront, type: src.type, adam_id: src.id, tracks });
   }
 
-  // Search matches names, artists and albums; a term with no match answers
+  // Search matches names, artists (a playlist's curator) and albums; a term with no match answers
   // with the whole catalog, so every search in the demo has something to show.
   function search(q) {
     const term = (q.get('term') || '').trim().replace(/\s+/g, ' ');
@@ -629,8 +629,10 @@ export function createFakeApi({ progress, now = Date.now(), timers = globalThis 
     const hit = (x) => [x.name, x.artist_name, x.album_name].some((v) => v && v.toLowerCase().includes(t));
     // Hits on the name come before hits on the artist or album.
     const ranked = (arr) => arr.filter(hit).sort((a, b) => !a.name.toLowerCase().includes(t) - !b.name.toLowerCase().includes(t));
-    let groups = { songs: ranked(songs), albums: ranked(albums), artists: ranked(artists) };
-    if (!groups.songs.length && !groups.albums.length && !groups.artists.length) groups = { songs, albums, artists };
+    // A playlist hit names its curator as artist_name, as GET /search does.
+    const lists = playlists.map(({ tracks, track_count, curator_name, ...p }) => ({ ...p, artist_name: curator_name }));
+    let groups = { songs: ranked(songs), albums: ranked(albums), playlists: ranked(lists), artists: ranked(artists) };
+    if (!Object.values(groups).some((g) => g.length)) groups = { songs, albums, playlists: lists, artists };
     const page = (arr, strip) => {
       const rows = arr.slice(offset, offset + limit).map(strip);
       return { items: rows, ...(offset + limit < arr.length ? { next_offset: offset + limit } : {}) };
@@ -640,6 +642,7 @@ export function createFakeApi({ progress, now = Date.now(), timers = globalThis 
     const out = { term, storefront: STOREFRONT };
     if (want('songs')) out.songs = page(groups.songs, song);
     if (want('albums')) out.albums = page(groups.albums, album);
+    if (want('playlists')) out.playlists = page(groups.playlists, (p) => p);
     if (want('artists')) out.artists = page(groups.artists, (a) => a);
     return json(200, out);
   }

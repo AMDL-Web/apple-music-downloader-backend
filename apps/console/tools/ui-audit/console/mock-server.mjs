@@ -7,7 +7,9 @@
 //
 //   node apps/console/tools/ui-audit/console/mock-server.mjs [--port 18571] [--world active]
 //
-// opens it for a look by hand; POST /__mock/{world,tick,fault} steer it.
+// opens it for a look by hand; POST /__mock/{world,tick,fault} steer it. A
+// fault or latency keyed `GET /api/v1/search?offset` hits only the later
+// pages of a search group shown alone.
 
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -15,7 +17,7 @@ import { readFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { albumProgress } from '../../../static/js/lib/album-progress.js';
-import { WORLDS, CATALOG, LOSSY_ALBUM, CODECS, STAGE_ORDER, stageFields, downloadBytes, findAlbum, makeJob, stats, system, iso } from './fixtures.mjs';
+import { WORLDS, CATALOG, PLAYLISTS, LOSSY_ALBUM, CODECS, STAGE_ORDER, stageFields, downloadBytes, findAlbum, makeJob, stats, system, iso } from './fixtures.mjs';
 
 const STATIC_DIR = fileURLToPath(new URL('../../../static/', import.meta.url));
 const CONSOLE_GO = fileURLToPath(new URL('../../../console.go', import.meta.url));
@@ -268,9 +270,11 @@ export async function startMockServer({ port = 0, host = '127.0.0.1', world = 'a
     const path = url.pathname;
     const q = url.searchParams;
     const key = `${req.method} ${path.replace(/job_[0-9a-f]{32}/, '{id}')}`;
-    const fault = state.faults[key] || state.faults[`${req.method} ${path}`];
+    // `GET /api/v1/search?offset` names a later page of a search alone.
+    const paged = q.get('offset') ? `${key}?offset` : '';
+    const fault = (paged && state.faults[paged]) || state.faults[key] || state.faults[`${req.method} ${path}`];
     // A scenario's latency, capped so that no request can hold the server.
-    const wait = Math.min(Number(state.latencies[key] ?? state.latency) || 0, 60_000);
+    const wait = Math.min(Number((paged && state.latencies[paged]) ?? state.latencies[key] ?? state.latency) || 0, 60_000);
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     if (fault) {
       if (fault.hang) return;
@@ -474,19 +478,40 @@ export async function startMockServer({ port = 0, host = '127.0.0.1', world = 'a
     return json(res, 200, { input: body.url, storefront: link.storefront, type: link.type, adam_id: link.id, tracks });
   }
 
+  // A term's hits: the recorded ones first, then the rest of the catalog,
+  // so albums, songs and playlists run to several pages. Playlists come
+  // from the term's artists; a term with none of them ("beethoven") has
+  // none, and "zzzz" finds nothing at all.
   function search(res, q) {
     const term = (q.get('term') || '').toLowerCase().trim();
-    if (term === 'zzzz') return json(res, 200, { term, storefront: 'cn', songs: { items: [] }, albums: { items: [] }, artists: { items: [] } });
+    const types = list(q.get('types'));
+    const limit = Number(q.get('limit')) || 10;
+    const offset = Number(q.get('offset')) || 0;
     const hit = Object.entries(CATALOG.searches).find(([k]) => k.includes(term) || term.includes(k)) || Object.entries(CATALOG.searches)[0];
     const byId = (arr, ids) => ids.map((id) => arr.find((x) => x.id === id)).filter(Boolean);
-    const limit = Number(q.get('limit')) || 10;
-    return json(res, 200, {
-      term: q.get('term'),
-      storefront: 'cn',
-      songs: { items: byId(CATALOG.songs, hit[1].songs).slice(0, limit), next_offset: limit },
-      albums: { items: byId(CATALOG.albums, hit[1].albums).slice(0, limit), next_offset: limit },
-      artists: { items: byId(CATALOG.artists, hit[1].artists).slice(0, limit) },
-    });
+    const padded = (arr, ids) => {
+      const first = byId(arr, ids);
+      const seen = new Set(first.map((x) => x.id));
+      return [...first, ...arr.filter((x) => !seen.has(x.id))];
+    };
+    const artists = byId(CATALOG.artists, hit[1].artists);
+    const names = new Set(artists.map((a) => a.name));
+    const own = PLAYLISTS.filter((p) => [...names].some((n) => p.name.startsWith(`${n} `)));
+    const groups =
+      term === 'zzzz'
+        ? { songs: [], albums: [], playlists: [], artists: [] }
+        : {
+            songs: padded(CATALOG.songs, hit[1].songs),
+            albums: padded(CATALOG.albums, hit[1].albums),
+            playlists: own.length ? [...own, ...PLAYLISTS.filter((p) => !own.includes(p))] : [],
+            artists,
+          };
+    const out = { term: q.get('term'), storefront: 'cn' };
+    for (const [g, arr] of Object.entries(groups)) {
+      if (types.length && !types.includes(g)) continue;
+      out[g] = { items: arr.slice(offset, offset + limit), ...(offset + limit < arr.length ? { next_offset: offset + limit } : {}) };
+    }
+    return json(res, 200, out);
   }
 
   function artistAlbums(res, id, q) {

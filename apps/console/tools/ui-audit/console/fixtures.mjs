@@ -52,6 +52,34 @@ export function findAlbum(id) {
   return albumById.get(String(id));
 }
 
+/**
+ * Search's playlists, made up from the catalog: two per artist (its
+ * Essentials and Deep Cuts, curated by Apple Music) with the cover and
+ * palette of one of its albums, the way GET /search sends a playlist.
+ */
+export const PLAYLISTS = CATALOG.artists.flatMap((a, i) => {
+  const own = CATALOG.albums.filter((x) => x.artist_name === a.name);
+  return [
+    ['Essentials', own[0]],
+    ['Deep Cuts', own[1] || own[0]],
+  ]
+    .filter(([, cover]) => cover)
+    .map(([what, cover], j) => {
+      const id = `pl.${hexId('pl', `${a.id}-${j}`).slice(-32)}`;
+      const name = `${a.name} ${what}`;
+      const palette = Object.fromEntries(Object.entries(cover).filter(([k]) => k.startsWith('artwork_')));
+      return {
+        id,
+        type: 'playlist',
+        name,
+        url: `https://music.apple.com/cn/playlist/${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}/${id}`,
+        ...palette,
+        artist_name: 'Apple Music',
+        audio_traits: (i + j) % 3 === 0 ? ['atmos', 'lossless', 'lossy-stereo'] : ['lossless', 'lossy-stereo'],
+      };
+    });
+});
+
 /** An album with no enhanced formats (lossy-stereo only), outside CATALOG so its indices stay. */
 export const LOSSY_ALBUM = {
   ...CATALOG.albums[10],

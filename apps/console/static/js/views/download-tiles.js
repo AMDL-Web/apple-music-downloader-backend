@@ -1,6 +1,7 @@
 // New download: the search hits drawn as Overview's tile wall (css/overview.css
-// .wall-tile): an album is its cover with Download over it, then title and
-// artist; an artist is a round cover that opens its albums. A hit in the
+// .wall-tile): an album or a playlist is its cover with Download over it,
+// then title and artist (a playlist's curator); an artist is a round cover
+// that opens its albums. A hit in the
 // library or the queue marks its cover, and the cover opens that job.
 
 import { html } from '../ui/preact.js';
@@ -12,7 +13,7 @@ const TILE_ART = artWidths(232);
 const TILE_SIZES = '(max-width: 639px) 45vw, 232px';
 
 /**
- * An album hit. row: {busy, jobHref(id), onDownload(hit), priorOf(hit)}.
+ * An album or playlist hit. row: {busy, jobHref(id), onDownload(hit), priorOf(hit)}.
  * Download (data-hit-primary) is the tile's one focus stop, aria-disabled
  * (not disabled, so focus stays on it) while it is sent and once the hit
  * is in the queue.
@@ -72,9 +73,9 @@ export function ArtistTile({ hit, row }) {
   </li>`;
 }
 
-/** Placeholder tiles while the first answer loads, round for artists. */
-export function SkeletonTiles({ n, kind }) {
-  return html`<ul class="wall new-wall" data-kind=${kind} aria-hidden="true">
+/** Placeholder tiles while the first answer loads, round for artists; `expanded` as a wall that does not scroll sideways on a phone. */
+export function SkeletonTiles({ n, kind, expanded }) {
+  return html`<ul class="wall new-wall" data-kind=${kind} data-expanded=${expanded ? '' : undefined} aria-hidden="true">
     ${Array.from(
       { length: n },
       (_, i) => html`<li key=${i} class="new-tile" data-kind=${kind}>

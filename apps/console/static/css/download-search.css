@@ -1,8 +1,9 @@
 /*
  * The New download page's search results (views/download-search.js,
- * download-tiles.js): three titled sections (Albums and Artists as
- * Overview's tile wall, Songs as rows on a grouped surface), Show more, the
- * notes and an artist's albums. A song row is a detected-link row
+ * download-search-group.js, download-tiles.js, download-songs.js): four
+ * titled sections (Albums, Playlists and Artists as Overview's tile wall,
+ * Songs as rows on a grouped surface) with Show more, one group alone under
+ * its tabs, the notes and an artist's albums. A song row is a detected-link row
  * (download-form.css .new-link) without the include box. Linked after
  * download.css, so its phone rules at the end are its own. Base structure
  * only; it reads tokens like every other base stylesheet, and the skin
@@ -46,7 +47,7 @@
 /* ---- Tile walls ---------------------------------------------------- */
 
 /* Six across (one answer's worth), three on a narrower page, two on a
-   phone page; Show more adds rows. */
+   phone page; a group shown alone runs on in rows. */
 .new-wall {
   --cols: 6;
   list-style: none;
@@ -64,8 +65,8 @@
   }
 
   /* On a phone the sections are shelves that scroll sideways, edge to
-     edge, until Show more opens one into rows; the padding keeps the
-     covers' shadows out of the clip. */
+     edge; a group shown alone is rows (data-expanded). The padding keeps
+     the covers' shadows out of the clip. */
   .new-search-group .new-wall:not([data-expanded]) {
     grid-template-columns: none;
     grid-auto-flow: column;
@@ -393,6 +394,59 @@
   width: 100%;
   height: 100%;
   border-radius: 0;
+}
+
+/* ---- One group alone ---------------------------------------------- */
+
+.new-search-alone {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+/* Back to every group, then the four groups; past the screen's width the
+   groups scroll sideways inside their track, never the page. */
+.new-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+  scroll-margin-top: calc(var(--topbar-h) + var(--s-4));
+}
+
+.new-group-back {
+  flex: none;
+}
+
+.new-group-head .seg {
+  flex: 0 1 auto;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.new-group-head .seg::-webkit-scrollbar {
+  display: none;
+}
+
+.new-group-head .seg-btn {
+  flex: 1 0 auto;
+  justify-content: center;
+}
+
+/* Under the list while pages are to come: one height whether it waits,
+   loads or failed, so nothing moves when its words change. */
+.new-search-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2) var(--s-3);
+  min-height: var(--touch);
+  color: var(--text-secondary);
+  font-size: var(--fs-13);
+  line-height: var(--lh-13);
 }
 
 /* ---- Show more, notes ---------------------------------------------- */

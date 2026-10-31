@@ -1,4 +1,4 @@
-// New download (#/new?url=&q=&artist=, #/new/:id for the drawer): paste
+// New download (#/new?url=&q=&artist=&group=, #/new/:id for the drawer): paste
 // links or search the catalog, choose the quality and submit. One column:
 // the compose field and its options, the detected links or the search
 // results, the dock (the count, Download; it floats at the bottom while
@@ -288,7 +288,7 @@ export function DownloadPage({ route }) {
     const link = e && e.link;
     return link ? (link.kind === 'album' && link.trackId && trackMode !== 'album' ? 'song' : link.kind) : 'item';
   };
-  const count = searching ? searchCountLine(search.search, search.artist.status !== 'idle' ? search.artist : null) : linkCount;
+  const count = searching ? searchCountLine(search.search, search.artist.status !== 'idle' ? search.artist : null, hits.group) : linkCount;
   const label = busy ? 'Submitting…' : downloadLabel(sendable.map(kindOf), entries.length > 0, allowed.length > 0);
 
   // Under 640 px the dock is fixed above the tab bar; the page keeps room
@@ -356,6 +356,9 @@ export function DownloadPage({ route }) {
           row=${{ busy: hits.busy, jobHref, onDownload: hits.download, onOpenArtist: hits.openArtist, priorOf: search.priorOf }}
           onBack=${hits.closeArtist}
           onDownloadAll=${hits.download}
+          group=${hits.group}
+          onGroup=${hits.openGroup}
+          onAllResults=${hits.closeGroup}
         />`
       : null}
     ${entries.length

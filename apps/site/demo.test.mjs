@@ -148,6 +148,11 @@ describe('fake API', () => {
     assert.ok(byArtist.albums.items.length >= 2);
     const any = await (await call(api, 'GET', '../api/v1/search?term=zzzz')).json();
     assert.ok(any.songs.items.length > 0 && any.albums.items.length > 0);
+    const lists = await (await call(api, 'GET', '../api/v1/search?term=rainy&types=playlists')).json();
+    assert.deepEqual(
+      lists.playlists.items.map((p) => [p.type, p.name, p.artist_name, p.track_count]),
+      [['playlist', 'Rainy Window', 'AMDL Demo', undefined]],
+    );
   });
 });
 

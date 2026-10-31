@@ -263,7 +263,9 @@ base durations (120 ms color, 200 ms overlays).
   browser shortcut's code is
   an inset cell; the steps are 13 px secondary.
   Search hits sit in Overview's section language: titled sections with a
-  red Show more. Albums and Artists are its tile wall on the page (covers
+  red Show more; a group alone puts a round ghost Back and the segmented
+  track of the four groups where its title was. Albums, Playlists and
+  Artists are its tile wall on the page (covers
   with the `--art-bg` shadow, 14 px titles, 13 px secondary lines; artists
   round and centred); an album's cover carries a frosted `--bg-chrome`
   quality tag, a library or queue badge and a 36 px frosted Download circle
