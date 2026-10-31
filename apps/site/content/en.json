@@ -135,7 +135,7 @@
         "One card per running job, colored after its album artwork.",
         "No server of your own? `amdl service install` runs the backend on this machine as a background service that starts at login."
       ],
-      "shot": "amdl's terminal interface: a job card with the album progress bar and per-track stage bars, a list of search results, the prompt and a status line"
+      "shot": "amdl's terminal interface: the opening banner with the server and download folder, two job cards with the album progress bar and per-track stage bars, the prompt, a list of search results and a status line"
     },
     "desktop": {
       "label": "Desktop",
