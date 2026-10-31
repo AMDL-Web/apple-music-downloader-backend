@@ -325,6 +325,8 @@ func (w *collectionQualityWrapper) WebPlayback(context.Context, string) (string,
 	return "", nil
 }
 
+func (*collectionQualityWrapper) PrepareKeys(context.Context, string, []string) error { return nil }
+
 func (w *collectionQualityWrapper) NewDecryptSession(context.Context, string) (wrapper.DecryptSession, error) {
 	return identityDecryptSession{}, nil
 }

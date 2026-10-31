@@ -29,13 +29,15 @@ const (
 )
 
 // Weights are each stage's share of a track's wall time, summing to 1. They
-// are the measured shares of a typical ALAC track on a home connection:
+// follow the measured shares of a typical ALAC track on a home connection:
 // download dominates and depends on the network, so it takes more of the bar
-// on a slow link and less on a fast one, and the remaining stages are a
-// sliver each. The web console keeps the same values as STAGE_WEIGHTS in
+// on a slow link and less on a fast one. Decrypt, its key fetched during the
+// download, and the four short stages after it measure under 1% each, so they
+// get a floor instead, decrypt's a little wider than the four equal ones after
+// it. The web console keeps the same values as STAGE_WEIGHTS in
 // apps/console/static/js/lib/status.js; TestWeightsMatchConsole holds them
 // together.
-var Weights = [StageCount]float64{0.09, 0.77, 0.09, 0.01, 0.02, 0.01, 0.01}
+var Weights = [StageCount]float64{0.13, 0.80, 0.02, 0.0125, 0.0125, 0.0125, 0.0125}
 
 // Stages is how far each stage has come, each in [0,1].
 type Stages [StageCount]float64

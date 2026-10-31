@@ -110,6 +110,34 @@ func TestDecryptFragmentReusesTemplatesAcrossSessions(t *testing.T) {
 	}
 }
 
+// A track's keys fetched ahead by PrepareKeys are what its decrypt session
+// uses: the session sends no /key of its own.
+func TestPrepareKeysWarmsTheSessionsTemplates(t *testing.T) {
+	const key = "skd://itunes.apple.com/p1/c6"
+	keys := newKeyServer(map[string]int{key: 0x5a, prefetchKeyURI: 0x11})
+	c := newTestClient(t, keys)
+
+	if err := c.PrepareKeys(context.Background(), "101", []string{prefetchKeyURI, key, "", key}); err != nil {
+		t.Fatalf("PrepareKeys: %v", err)
+	}
+	session, _ := c.NewDecryptSession(context.Background(), "101")
+	plain := []byte("0123456789abcdef")
+	for k, x := range map[string]byte{prefetchKeyURI: 0x11, key: 0x5a} {
+		got, err := session.DecryptFragment(k, [][]byte{encrypt(plain, x)})
+		if err != nil || string(got[0]) != string(plain) {
+			t.Fatalf("DecryptFragment(%s) = %q, %v", k, got, err)
+		}
+	}
+	for _, k := range []string{prefetchKeyURI, key} {
+		if n := keys.callCount(k); n != 1 {
+			t.Fatalf("/key calls for %s = %d, want 1", k, n)
+		}
+	}
+	if err := c.PrepareKeys(context.Background(), "101", []string{key, "skd://unknown"}); err == nil {
+		t.Fatal("PrepareKeys with a key the wrapper refuses returned nil")
+	}
+}
+
 // The built-in parser decrypts Temari's public golden sample (track
 // 1720704575, MIT) from a /key reply shaped like wrapper-lite's, whose data
 // object also carries adamId, keyUri and contentKey.

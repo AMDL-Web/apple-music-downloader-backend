@@ -344,6 +344,8 @@ func (postDecryptFixtureWrapper) WebPlayback(context.Context, string) (string, e
 	return "", errors.New("unexpected wrapper playback request in offline fixture test")
 }
 
+func (postDecryptFixtureWrapper) PrepareKeys(context.Context, string, []string) error { return nil }
+
 func (w postDecryptFixtureWrapper) NewDecryptSession(context.Context, string) (wrapper.DecryptSession, error) {
 	if w.fixture == nil {
 		return nil, errors.New("offline fixture is not configured")

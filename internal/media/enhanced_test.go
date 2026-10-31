@@ -46,8 +46,9 @@ func TestSelectEnhancedMediaDoesNotDownloadEncryptedMedia(t *testing.T) {
 	cfg := config.Default()
 	cfg.Download.TempDir = t.TempDir()
 	downloader := newTestDownloader(&Downloader{
-		cfg:  cfg,
-		http: server.Client(),
+		cfg:     cfg,
+		http:    server.Client(),
+		wrapper: fakeDownloaderWrapper{},
 	})
 	item := &domain.JobItem{ID: "item-1"}
 	reporter := &recordingReporter{}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sync"
 	"time"
 
@@ -97,6 +98,25 @@ func (s *decryptSession) DecryptFragment(key string, samples [][]byte) ([][]byte
 }
 
 func (s *decryptSession) Close() error { return nil }
+
+// PrepareKeys fetches the templates of adamID's keys that are not cached yet
+// and returns once each is cached or has failed, joining fetches already in
+// flight. wrapper-lite answers /key one at a time, about two seconds each, so
+// a track's keys are worth fetching while its media downloads: its decrypt
+// session then finds them cached and runs at CPU speed. Empty and repeated
+// keys are skipped. The error joins every key's failure.
+func (c *Client) PrepareKeys(ctx context.Context, adamID string, keys []string) error {
+	errs := make([]error, len(keys))
+	var wg sync.WaitGroup
+	for i, key := range keys {
+		if key == "" || slices.Contains(keys[:i], key) {
+			continue
+		}
+		wg.Go(func() { _, errs[i] = c.template(ctx, adamID, key) })
+	}
+	wg.Wait()
+	return errors.Join(errs...)
+}
 
 // template returns key's decrypter from the cache, fetching it on a miss. The
 // prefetch key is fetched for adamId 0 and never evicted.

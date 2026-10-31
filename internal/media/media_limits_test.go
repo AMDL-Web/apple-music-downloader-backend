@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -283,5 +284,111 @@ func TestDecryptLimitIsGlobalAndCanceledWaiterDoesNotEnter(t *testing.T) {
 	case <-firstDone:
 	case <-time.After(time.Second):
 		t.Fatal("first decrypt did not exit")
+	}
+}
+
+// wrapper-lite answers /key one at a time, so a track's keys are fetched while
+// its media downloads, and a track whose keys are not in yet waits in
+// waiting_decrypt without a decrypt slot instead of showing as decrypting.
+func TestKeysAreFetchedDuringTheDownloadAndAwaitedBeforeDecrypting(t *testing.T) {
+	releaseMedia, testDone := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-releaseMedia:
+		case <-testDone:
+			return
+		}
+		_, _ = w.Write([]byte("media"))
+	}))
+	defer server.Close()
+	defer close(testDone) // a failed test must not leave Close waiting on the handler
+
+	asked := make(chan []string, 4)
+	keysReady := make(chan struct{})
+	w := fakeDownloaderWrapper{prepareKeys: func(ctx context.Context, songID string, keys []string) error {
+		asked <- append([]string{songID}, keys...)
+		select {
+		case <-keysReady:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}}
+	cfg := config.Default()
+	cfg.Download.TempDir = t.TempDir()
+	d := (newTestDownloader(&Downloader{cfg: cfg, wrapper: w, http: server.Client()})).withConfig(cfg)
+	d.decryptLimit = limits.NewSemaphore(1)
+
+	type result struct {
+		media selectedDownloadMedia
+		err   error
+	}
+	downloaded := make(chan result, 1)
+	go func() {
+		media, err := d.downloadSelectedEnhancedMedia(context.Background(),
+			selectedDownloadMedia{info: selectedMediaInfo{MediaURI: server.URL, Keys: []string{"skd://k"}}, songID: "song"},
+			"alac", "job-keys", "out.m4a", func(domain.ItemStatus, string, func(*domain.ItemProgress)) {})
+		downloaded <- result{media, err}
+	}()
+	select {
+	case got := <-asked:
+		if fmt.Sprint(got) != "[song skd://k]" {
+			t.Fatalf("PrepareKeys(%v), want song and skd://k", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the keys were not asked for while the media downloaded")
+	}
+	close(releaseMedia)
+	var got result
+	select {
+	case got = <-downloaded:
+	case <-time.After(time.Second):
+		t.Fatal("download did not finish")
+	}
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	defer got.media.release()
+
+	var mu sync.Mutex
+	var seen []string
+	decryptDone := make(chan error, 1)
+	go func() {
+		decryptDone <- d.downloadEnhancedCodec(context.Background(), domain.Job{ID: "job-keys"}, &domain.JobItem{ID: "item"},
+			applemusic.Song{ID: "song"}, "alac", trackLyrics{}, nil, cfg.Download.TempDir+"/out.m4a", got.media, &recordingReporter{},
+			func(status domain.ItemStatus, message string, _ func(*domain.ItemProgress)) {
+				mu.Lock()
+				seen = append(seen, string(status)+": "+message)
+				mu.Unlock()
+			})
+	}()
+	select {
+	case <-asked:
+	case <-time.After(time.Second):
+		t.Fatal("the decrypt phase did not wait for the keys")
+	}
+	mu.Lock()
+	before := fmt.Sprint(seen)
+	mu.Unlock()
+	if before != "[waiting_decrypt: waiting for decryption key]" {
+		t.Fatalf("statuses while the keys are missing = %s, want only waiting_decrypt", before)
+	}
+	slotCtx, cancelSlot := context.WithTimeout(context.Background(), time.Second)
+	release, err := d.decryptLimit.Acquire(slotCtx)
+	cancelSlot()
+	if err != nil {
+		t.Fatalf("the decrypt slot is held while the track waits for its keys: %v", err)
+	}
+	release()
+	close(keysReady)
+	select {
+	case <-decryptDone: // the bytes are not a real stream; reaching decrypt is enough
+	case <-time.After(5 * time.Second):
+		t.Fatal("decrypt phase did not finish")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(seen, "decrypting: opening decrypt session") {
+		t.Fatalf("statuses = %v, want decrypting once the keys arrived", seen)
 	}
 }

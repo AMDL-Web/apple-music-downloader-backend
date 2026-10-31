@@ -64,7 +64,7 @@ test('jobCounts defaults missing counters to zero', () => {
 
 test('item status views', () => {
   assert.deepEqual(itemStatusView({ status: 'waiting_download' }), { icon: 'clock', role: 'neutral', label: 'Waiting for download slot' });
-  assert.equal(itemStatusView({ status: 'waiting_decrypt' }).label, 'Waiting for decrypt slot');
+  assert.equal(itemStatusView({ status: 'waiting_decrypt' }).label, 'Waiting to decrypt');
   assert.equal(itemStatusView({ status: 'decrypting' }).role, 'info');
   assert.equal(itemStatusView({ status: 'decrypting' }).label, 'Decrypting');
   assert.deepEqual(itemStatusView({ status: 'skipped_existing' }), { icon: 'archive', role: 'skipped', label: 'Already on disk' });
@@ -152,14 +152,17 @@ test('stage segments are weighted by their share of a track run', () => {
   const segs = stageSegments({ status: 'decrypting', progress: { resolved: true, download: 1, decrypt: 0.3 } });
   assert.deepEqual(
     segs.map((s) => [s.key, s.weight]),
-    [['resolve', 0.09], ['download', 0.77], ['decrypt', 0.09], ['remux', 0.01], ['verify', 0.02], ['tag', 0.01], ['save', 0.01]],
+    [['resolve', 0.13], ['download', 0.8], ['decrypt', 0.02], ['remux', 0.0125], ['verify', 0.0125], ['tag', 0.0125], ['save', 0.0125]],
   );
   const total = Object.values(STAGE_WEIGHTS).reduce((a, w) => a + w, 0);
   assert.ok(Math.abs(total - 1) < 1e-9, `weights add up to ${total}`);
   assert.deepEqual(Object.keys(STAGE_WEIGHTS), segs.map((s) => s.key), 'one weight per stage, in pipeline order');
   for (const [k, w] of Object.entries(STAGE_WEIGHTS)) {
     if (k !== 'download') assert.ok(STAGE_WEIGHTS.download > w, `download outweighs ${k}`);
-    if (!['download', 'resolve', 'decrypt'].includes(k)) assert.ok(STAGE_WEIGHTS.decrypt > w, `decrypt outweighs ${k}`);
+    if (!['download', 'resolve', 'decrypt'].includes(k)) {
+      assert.ok(STAGE_WEIGHTS.decrypt > w, `decrypt outweighs ${k}`);
+      assert.equal(w, STAGE_WEIGHTS.remux, `the four stages after decrypt are equally wide, ${k} too`);
+    }
   }
   assert.ok(Object.isFrozen(STAGE_WEIGHTS));
 });

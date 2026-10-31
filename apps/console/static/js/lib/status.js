@@ -76,7 +76,7 @@ export function itemStatusView(item) {
         view = { icon: 'clock', role: 'neutral', label: 'Waiting for download slot' };
         break;
       case 'waiting_decrypt':
-        view = { icon: 'clock', role: 'neutral', label: 'Waiting for decrypt slot' };
+        view = { icon: 'clock', role: 'neutral', label: 'Waiting to decrypt' };
         break;
       case 'completed':
         view = { icon: 'circle-check', role: 'success', label: 'Completed' };
@@ -242,7 +242,7 @@ const STAGE_LABELS = { resolve: 'Resolve', download: 'Download', decrypt: 'Decry
  * values (internal/progress#Weights); TestWeightsMatchConsole there keeps them
  * equal.
  */
-export const STAGE_WEIGHTS = Object.freeze({ resolve: 0.09, download: 0.77, decrypt: 0.09, remux: 0.01, verify: 0.02, tag: 0.01, save: 0.01 });
+export const STAGE_WEIGHTS = Object.freeze({ resolve: 0.13, download: 0.8, decrypt: 0.02, remux: 0.0125, verify: 0.0125, tag: 0.0125, save: 0.0125 });
 
 /**
  * The seven pipeline stages of one item. Download and decrypt carry their

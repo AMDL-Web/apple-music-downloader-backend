@@ -65,6 +65,23 @@ func TestWeightsMatchConsole(t *testing.T) {
 	}
 }
 
+// The stage bar draws the four stages after decrypt at one width.
+func TestWeightsSumToOneAndTheShortStagesMatch(t *testing.T) {
+	sum := 0.0
+	for _, w := range Weights {
+		sum += w
+	}
+	near(t, sum, 1)
+	for s := StageVerify; s < StageCount; s++ {
+		if Weights[s] != Weights[StageRemux] {
+			t.Errorf("weight of stage %d = %v, want %v like remux", s, Weights[s], Weights[StageRemux])
+		}
+	}
+	if Weights[StageDecrypt] <= Weights[StageRemux] {
+		t.Errorf("decrypt weight %v is not wider than the stages after it (%v)", Weights[StageDecrypt], Weights[StageRemux])
+	}
+}
+
 func TestItemFraction(t *testing.T) {
 	if ItemFraction(item(1, domain.ItemCompleted, domain.ItemProgress{})) != 1 ||
 		ItemFraction(item(1, domain.ItemSkipped, domain.ItemProgress{})) != 1 ||

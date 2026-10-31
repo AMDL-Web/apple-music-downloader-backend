@@ -137,6 +137,13 @@ which leaves a thread for another client, and closes an idle one after a few sec
 Decryption runs in the backend: wrapper-lite's `/key` returns a white-box template per
 key URI, which is cached across jobs (`templateCacheSize` entries; the prefetch key's
 template is kept for the life of the process), so each key costs one `/key` request.
+wrapper-lite answers `/key` one at a time, a couple of seconds each, while decrypting a
+track with its template takes a fraction of a second. So a track's keys are fetched as
+soon as its stream is chosen, while its media downloads
+(`internal/media#Downloader.prefetchKeys`), and a downloaded track whose keys are not in
+yet stays `waiting_decrypt`, without a decrypt permit, until they are. An album's
+tracks then queue for their keys during the transfers instead of one after another at
+the decrypt stage.
 Media already downloaded but not yet decrypted is additionally held back by internal
 in-flight backpressure — with `D` download and `X` decrypt permits the internal in-flight
 ceiling is `D+X`.

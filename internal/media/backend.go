@@ -41,6 +41,9 @@ type mediaBackend interface {
 	// stage creates the scratch file a codec attempt flattens, verifies and
 	// tags before it is committed; cleanup removes whatever is left of it.
 	stage(media encryptedMedia) (staged stagedFile, cleanup func(), err error)
+	// prepareKeys fetches the decryption keys of an enhanced codec's stream
+	// ahead of its decrypt session, joining a fetch already in flight.
+	prepareKeys(ctx context.Context, songID string, keys []string) error
 	// decrypt decrypts req's input into the staged file, remuxing it into a
 	// progressive MP4 on the way.
 	decrypt(ctx context.Context, req decryptRequest, hooks decryptHooks) error
@@ -97,6 +100,8 @@ type encryptedMedia struct {
 	// before the transfer. It stays held while the media waits for decryption
 	// and is idempotent so cleanup paths can safely converge.
 	releaseInFlight func()
+	// stopKeys ends the key prefetch the transfer started, if it still runs.
+	stopKeys func()
 }
 
 // open returns a reader over the encrypted bytes and their size.
@@ -121,6 +126,9 @@ func (m encryptedMedia) open() (io.Reader, int64, func(), error) {
 func (m encryptedMedia) release() {
 	if m.releaseInFlight != nil {
 		m.releaseInFlight()
+	}
+	if m.stopKeys != nil {
+		m.stopKeys()
 	}
 }
 
@@ -237,6 +245,13 @@ func (m realMedia) stage(encryptedMedia) (stagedFile, func(), error) {
 	path := f.Name()
 	_ = f.Close()
 	return stagedFile{path: path}, func() { _ = os.Remove(path) }, nil
+}
+
+func (m realMedia) prepareKeys(ctx context.Context, songID string, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	return m.d.wrapper.PrepareKeys(ctx, songID, keys)
 }
 
 func (m realMedia) decrypt(ctx context.Context, req decryptRequest, hooks decryptHooks) error {

@@ -66,6 +66,10 @@ func (simulatedMedia) stage(media encryptedMedia) (stagedFile, func(), error) {
 	return stagedFile{size: media.size}, func() {}, nil
 }
 
+// prepareKeys has no wrapper to ask; the simulated decrypt pauses for its key
+// instead.
+func (simulatedMedia) prepareKeys(context.Context, string, []string) error { return nil }
+
 func (m simulatedMedia) decrypt(ctx context.Context, req decryptRequest, hooks decryptHooks) error {
 	if err := simulatePause(ctx, simulatedKeyPause); err != nil {
 		return err

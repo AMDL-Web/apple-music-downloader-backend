@@ -16,6 +16,8 @@ import (
 // fetch phase, its encrypted media.
 type selectedDownloadMedia struct {
 	info selectedMediaInfo
+	// songID is the adamId the stream's keys are fetched for.
+	songID string
 	// estimatedBytes is the size info's bandwidth predicts for the track.
 	estimatedBytes int64
 	encryptedMedia
@@ -33,7 +35,7 @@ func (d *Downloader) selectEnhancedMedia(ctx context.Context, job domain.Job, it
 		"attempt": item.Attempt, "max_attempts": item.MaxAttempts,
 	})})
 
-	return selectedDownloadMedia{info: info, estimatedBytes: estimatedMediaBytes(song.DurationInMillis, info.Bandwidth)}, nil
+	return selectedDownloadMedia{info: info, songID: song.ID, estimatedBytes: estimatedMediaBytes(song.DurationInMillis, info.Bandwidth)}, nil
 }
 
 // selectEnhancedStream is the download boundary between media discovery and
@@ -127,12 +129,14 @@ func (d *Downloader) resolveEnhancedHLS(ctx context.Context, storefront string, 
 	return master, false, nil
 }
 
-// downloadSelectedEnhancedMedia is the enhanced codec's fetch phase: it waits
-// for the in-flight and download permits and transfers the still-encrypted
-// media. The in-flight permit is returned held, in selected.releaseInFlight,
-// until decryption has consumed the bytes.
+// downloadSelectedEnhancedMedia is the enhanced codec's fetch phase: it starts
+// fetching the stream's keys, waits for the in-flight and download permits and
+// transfers the still-encrypted media. The in-flight permit is returned held,
+// in selected.releaseInFlight, until decryption has consumed the bytes, and
+// the key fetch keeps running until selected.release.
 func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected selectedDownloadMedia, codec, jobID, outPath string, set publishStage) (selectedDownloadMedia, error) {
 	codecName := strings.ToUpper(codec)
+	stopKeys := d.prefetchKeys(ctx, selected)
 	onProgress := func(done, total int64) {
 		if total <= 0 {
 			return // Content-Length unknown; the meter stays at 0
@@ -143,11 +147,13 @@ func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected
 	set(domain.ItemWaitingDownload, "waiting for download slot", nil)
 	releaseInFlight, err := d.inFlightLimit.Acquire(ctx)
 	if err != nil {
+		stopKeys()
 		return selectedDownloadMedia{}, err
 	}
 	releaseDownload, err := d.downloadLimit.Acquire(ctx)
 	if err != nil {
 		releaseInFlight()
+		stopKeys()
 		return selectedDownloadMedia{}, err
 	}
 	set(domain.ItemDownloading, fmt.Sprintf("Downloading %s encrypted media", codecName), startDownload)
@@ -160,11 +166,26 @@ func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected
 	}()
 	if err != nil {
 		releaseInFlight()
+		stopKeys()
 		return selectedDownloadMedia{}, fmt.Errorf("download encrypted media: %w", err)
 	}
 	media.releaseInFlight = releaseInFlight
+	media.stopKeys = stopKeys
 	selected.encryptedMedia = media
 	return selected, nil
+}
+
+// prefetchKeys fetches the stream's keys in the background and returns what
+// stops it. wrapper-lite answers /key one at a time, about two seconds each, so
+// fetching them after the download would line an album's tracks up behind one
+// another at the decrypt stage; fetched during it, the wait overlaps the
+// transfers. The playback permits hand the keys out in job and track order.
+// A failure is left to the decrypt phase, which asks again.
+func (d *Downloader) prefetchKeys(ctx context.Context, selected selectedDownloadMedia) func() {
+	ctx, cancel := context.WithCancel(ctx)
+	backend := d.backend()
+	go func() { _ = backend.prepareKeys(ctx, selected.songID, selected.info.Keys) }()
+	return cancel
 }
 
 // downloadEnhancedCodec is the enhanced codec's decrypt phase: it decrypts the
@@ -185,6 +206,15 @@ func (d *Downloader) downloadEnhancedCodec(ctx context.Context, job domain.Job, 
 	}
 	defer cleanupStaged()
 
+	// Wait for the keys before taking a decrypt slot, so a track counts as
+	// decrypting only while it decrypts. This usually joins the fetch the
+	// transfer started. A failed key is left to the session, which fetches the
+	// keys the fragments use and reports what went wrong.
+	set(domain.ItemWaitingDecrypt, "waiting for decryption key", nil)
+	_ = backend.prepareKeys(ctx, song.ID, selected.info.Keys)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	set(domain.ItemWaitingDecrypt, "waiting for decrypt slot", nil)
 	releaseDecrypt, err := d.decryptLimit.Acquire(ctx)
 	if err != nil {

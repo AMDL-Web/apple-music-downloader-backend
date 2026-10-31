@@ -3362,8 +3362,9 @@ components:
           description: >-
             Current pipeline state. `waiting_download` and `waiting_decrypt`
             mean the item is queued at the corresponding global concurrency
-            pool; `downloading` and `decrypting` begin only after that pool has
-            admitted the item.
+            pool, and `waiting_decrypt` also covers waiting for the track's
+            decryption keys; `downloading` and `decrypting` begin only after
+            that pool has admitted the item.
           enum: [queued, resolving, waiting_download, downloading, waiting_decrypt, decrypting, remuxing, tagging, saving, completed, failed, skipped_existing, cancelled]
         progress:
           $ref: '#/components/schemas/ItemProgress'
