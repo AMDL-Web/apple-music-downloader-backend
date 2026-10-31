@@ -73,9 +73,10 @@ export function useDialog(ref, onClose) {
  * .scrim + .<className>[role][aria-modal][data-dialog=<name>]. Clicking the
  * scrim or pressing Escape calls onClose; without onClose the dialog can only
  * be closed by its own buttons. Label it with `labelledBy` (an id inside
- * `children`) or `label`.
+ * `children`) or `label`. `style` places the panel (an anchored menu), and
+ * `onKeyDown` sees keys before the shared handling (Escape, Tab).
  */
-export function Dialog({ name = '', role = 'dialog', className = 'sheet', placement = 'center', label, labelledBy, describedBy, onClose, children }) {
+export function Dialog({ name = '', role = 'dialog', className = 'sheet', placement = 'center', label, labelledBy, describedBy, style, onKeyDown, onClose, children }) {
   const ref = useRef(null);
   useDialog(ref, onClose);
   return html`<div class="overlay-host" data-placement=${placement}>
@@ -89,6 +90,8 @@ export function Dialog({ name = '', role = 'dialog', className = 'sheet', placem
       aria-describedby=${describedBy}
       data-dialog=${name}
       tabindex="-1"
+      style=${style}
+      onKeyDown=${onKeyDown}
       ref=${ref}
     >
       ${children}

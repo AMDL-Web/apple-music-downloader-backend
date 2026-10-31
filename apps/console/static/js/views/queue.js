@@ -1,10 +1,12 @@
-// Queue page: All / Active / Completed / Failed / Cancelled tabs (All first and the default), search and type filter, a dense
-// job list kept live from the downloads feed, and a selection mode for
-// Retry, Cancel and Delete on many jobs (views/queue-select.js).
+// Queue page: All / Active / Completed / Failed / Cancelled tabs (All, the
+// default, first), search and type filter, a dense job list kept live from
+// the downloads feed with a "…" menu on each row (views/queue-menu.js), and
+// a selection mode for Retry, Cancel and Delete on many jobs
+// (views/queue-select.js).
 
 import { html, useState, useEffect, useRef } from '../ui/preact.js';
 import { listDownloads } from '../api.js';
-import { jobTitle, isUnresolved, inputLabel, count } from '../lib/format.js';
+import { count } from '../lib/format.js';
 import { activeFirst, isNotFound } from '../lib/jobview.js';
 import { appendPage } from '../lib/store.js';
 import { buildHash, queueFilters, queueQuery, queueMatchFilter, queueAppends, rememberQueue } from '../lib/route.js';
@@ -16,6 +18,7 @@ import { useBulkRun, SelectionBar, BulkConfirm } from './queue-select.js';
 import { JobRow, applyFeedToList } from './queue-row.js';
 import { useChipRow } from './queue-chips.js';
 import { QueueEmpty } from './queue-empty.js';
+import { JobMenu, runOne, jobName } from './queue-menu.js';
 import { cached, remember } from '../lib/cache.js';
 
 export { JobRow, applyFeedToList };
@@ -191,11 +194,22 @@ export function QueuePage({ route }) {
     setConfirm(null);
     rescueUntil.current = Date.now() + 3000;
   };
+  // A row's menu action starts (a delete, or a cancel or retry that may move
+  // it to another tab): if the row leaves, focus goes to the "…" of the row
+  // after it (or before it, at the end of the list).
+  const rescueTo = useRef(null);
+  const onLeaving = (id) => {
+    const li = document.querySelector(`.page-queue li[data-job-id="${CSS.escape(id)}"]`);
+    const next = li && (li.nextElementSibling || li.previousElementSibling);
+    rescueTo.current = next ? next.getAttribute('data-job-id') : null;
+    rescueUntil.current = Date.now() + 3000;
+  };
   useEffect(() => {
     if (Date.now() > rescueUntil.current) return;
     const active = document.activeElement;
     if (active && active !== document.body) return;
-    const target = RESCUE.map((q) => document.querySelector(q)).find(Boolean);
+    const row = rescueTo.current && document.querySelector(`.page-queue li[data-job-id="${CSS.escape(rescueTo.current)}"] .job-menu-btn`);
+    const target = row || RESCUE.map((q) => document.querySelector(q)).find(Boolean);
     if (target) target.focus({ preventScroll: true });
   });
   const onAction = (action) => {
@@ -279,14 +293,15 @@ export function QueuePage({ route }) {
         ${rows.map((job) => {
           const on = selecting && selected.has(job.id);
           const retry = !selecting && job.status === 'failed' && !isNotFound(job.error);
-          return html`<li key=${job.id} class="job-item" data-job-id=${job.id} data-selected=${on ? '' : undefined} data-action=${retry ? 'retry' : undefined}>
+          const action = selecting ? undefined : retry ? 'retry' : 'menu';
+          return html`<li key=${job.id} class="job-item" data-job-id=${job.id} data-selected=${on ? '' : undefined} data-action=${action}>
             ${selecting
               ? html`<label class="job-check">
                   <input
                     type="checkbox"
                     class="job-check-input"
                     checked=${on}
-                    aria-label=${`Select ${isUnresolved(job) ? inputLabel(job.input) : jobTitle(job)}`}
+                    aria-label=${`Select ${jobName(job)}`}
                     onClick=${(e) => toggle(job.id, e.shiftKey)}
                   />
                 </label>`
@@ -302,11 +317,15 @@ export function QueuePage({ route }) {
                   size="sm"
                   icon="rotate"
                   className="job-retry"
-                  aria-label=${`Retry ${isUnresolved(job) ? inputLabel(job.input) : jobTitle(job)}`}
+                  aria-label=${`Retry ${jobName(job)}`}
                   disabled=${Boolean(bulk.run)}
-                  onClick=${() => runAction('retry', [job])}
+                  onClick=${() => {
+                    onLeaving(job.id);
+                    runOne(app, 'retry', job);
+                  }}
                 >Retry</${Button}>`
               : null}
+            ${selecting ? null : html`<${JobMenu} job=${job} href=${rowHref(job)} onLeaving=${onLeaving} />`}
           </li>`;
         })}
       </ul>

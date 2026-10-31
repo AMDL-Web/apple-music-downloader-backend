@@ -272,17 +272,40 @@ export function Segmented({ label, options, value, onChange, size }) {
   </div>`;
 }
 
+/**
+ * Puts `text` on the clipboard and says so in a toast. Where the Clipboard
+ * API is missing or refused (a page served over plain http on a LAN address
+ * is not a secure context), a selected off-screen textarea and the copy
+ * command stand in.
+ */
+export async function copyText(app, text) {
+  let done = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    done = true;
+  } catch {
+    const box = document.createElement('textarea');
+    box.value = text;
+    box.setAttribute('readonly', '');
+    box.className = 'sr-only';
+    const back = document.activeElement;
+    document.body.append(box);
+    box.select();
+    try {
+      done = document.execCommand('copy');
+    } catch {
+      done = false;
+    }
+    box.remove();
+    if (back && typeof back.focus === 'function') back.focus({ preventScroll: true });
+  }
+  if (done) app.toast({ message: 'Copied to clipboard' });
+  else app.toast({ message: 'Copy failed: the browser blocked clipboard access', role: 'danger' });
+}
+
 export function CopyButton({ text, label = 'Copy' }) {
   const app = useApp();
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      app.toast({ message: 'Copied to clipboard' });
-    } catch {
-      app.toast({ message: 'Copy failed: the browser blocked clipboard access', role: 'danger' });
-    }
-  };
-  return html`<${Button} variant="ghost" size="sm" icon="copy" aria-label=${label} title=${label} onClick=${copy} />`;
+  return html`<${Button} variant="ghost" size="sm" icon="copy" aria-label=${label} title=${label} onClick=${() => copyText(app, text)} />`;
 }
 
 /** Key/value list; values may be any node. */

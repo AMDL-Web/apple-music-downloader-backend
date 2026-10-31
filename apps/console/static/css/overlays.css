@@ -321,6 +321,94 @@
   margin: 0;
 }
 
+/* A menu behind a button (ui/menu.js): from 640 px a small panel over a
+   clear scrim, placed from the button (style top or bottom, and right); on
+   a phone a sheet of full-width rows under the job's name. Items fill on
+   hover and on keyboard focus, in the panel's shape less its padding. */
+.overlay-host[data-placement="anchor"] {
+  display: block;
+  padding: 0;
+}
+
+.overlay-host[data-placement="anchor"] > .scrim {
+  background: transparent;
+  animation: none;
+}
+
+.menu {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  min-width: 176px;
+  max-width: calc(100vw - var(--s-4));
+  padding: var(--s-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: calc(var(--r-control) + var(--s-1));
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-float);
+  animation: fade-in var(--dur-fast) var(--ease-out);
+}
+
+.menu:focus {
+  outline: none;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-h);
+  padding: 0 var(--s-3);
+  border: 0;
+  border-radius: var(--r-control);
+  background: transparent;
+  font-size: var(--fs-14);
+  line-height: var(--lh-14);
+  text-align: start;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.menu-item:hover,
+.menu-item:focus-visible {
+  background: var(--bg-hover);
+  outline: none;
+}
+
+.menu-sep {
+  height: 1px;
+  margin: var(--s-1) var(--s-2);
+  background: var(--border-subtle);
+}
+
+.menu-sheet {
+  gap: 0;
+  padding: var(--s-6) var(--s-2) var(--s-3);
+}
+
+.menu-heading {
+  margin: 0;
+  padding: 0 var(--s-3) var(--s-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-13);
+  line-height: var(--lh-13);
+  font-weight: var(--w-regular);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.menu-sheet > .menu-item {
+  min-height: var(--touch);
+  font-size: var(--fs-16);
+  line-height: var(--lh-16);
+}
+
+@media (pointer: coarse) {
+  .menu-item {
+    min-height: var(--touch);
+  }
+}
+
 /* The shortcut sheet: opens near the top, its head stays while the groups
    scroll, two columns from 640 px. Keys are keycaps; the words around them
    ("then", "in a field") are plain text. */

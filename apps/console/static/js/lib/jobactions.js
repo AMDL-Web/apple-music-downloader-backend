@@ -7,6 +7,7 @@
 // deleted.
 
 import { isTerminal } from './status.js';
+import { isNotFound } from './jobview.js';
 
 export const JOB_ACTIONS = ['retry', 'cancel', 'delete'];
 
@@ -31,6 +32,24 @@ export function jobAllows(job, action) {
     default:
       return false;
   }
+}
+
+const MENU_LABELS = { details: 'Show details', retry: 'Retry', cancel: 'Cancel', copy: 'Copy link', delete: 'Delete…' };
+
+/**
+ * A Queue row's menu, as the desktop app draws it: Show details; Cancel
+ * (queued, running) or Retry (failed, cancelled); then Copy link (the job's
+ * input), and for a finished job Delete… after a separator of its own. A job
+ * under way can only be cancelled; a link Apple has nothing at (a 404) gets no
+ * Retry, as in the lists. Entries are {id, label} or {separator: true}.
+ */
+export function rowMenu(job) {
+  const ids = ['details'];
+  if (jobAllows(job, 'cancel')) ids.push('cancel');
+  else if (jobAllows(job, 'retry') && !isNotFound(job.error)) ids.push('retry');
+  if (job && job.input) ids.push('-', 'copy');
+  if (jobAllows(job, 'delete')) ids.push('-', 'delete');
+  return ids.map((id) => (id === '-' ? { separator: true } : { id, label: MENU_LABELS[id] }));
 }
 
 /** The jobs each action applies to, in the order given: {retry, cancel, delete}. */

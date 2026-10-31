@@ -46,19 +46,28 @@
   gap: var(--s-2);
 }
 
-/* A failed job's Retry sits at the row's end, beside the link: a button
-   cannot live inside it. Every Queue row reserves the same trailing slot
-   (--job-trail, the width of the button; the chevron sits at its end), and a
-   failed row's slot holds the button, so the status, the time and the slot
-   line up down the list. The item takes over the hover fill. */
+/* Buttons sit beside a row's link, since a button cannot live inside it:
+   Retry on a failed job, then the "…" menu (views/queue-menu.js) on every
+   row. The trailing slot is as wide on every row (--job-trail, the width of
+   Retry, then the menu button), so the status, the time, Retry and "…" line
+   up down the list; the link runs under an empty Retry slot. Selecting, a
+   row has no buttons and its link keeps the same room at its end. The item
+   takes over the hover fill, so it stays while the pointer is on a button.
+   The Queue has no chevron: "…" ends the row. */
 .page-queue {
   --job-trail: 76px;
 }
 
+.page-queue .job-chevron {
+  display: none;
+}
+
 .job-item[data-action] {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) calc(var(--job-trail) + var(--card-pad-x));
+  grid-template-columns: minmax(0, 1fr) var(--job-trail) auto;
   align-items: center;
+  column-gap: var(--s-2);
+  padding-inline-end: calc(var(--card-pad-x) - var(--s-2));
 }
 
 .job-item[data-action]:hover {
@@ -74,27 +83,61 @@
   background: transparent;
 }
 
-.job-item[data-action] .job-chevron {
-  display: none;
+.page-queue .job-list.is-selecting > li > .job-row {
+  --job-trail: calc(76px + var(--s-2) + var(--control-h));
 }
 
 .job-retry {
+  grid-row: 1;
+  grid-column: 2;
   justify-self: end;
-  margin-inline-end: var(--card-pad-x);
+}
+
+.job-menu-btn {
+  grid-row: 1;
+  grid-column: -2;
+  color: var(--text-secondary);
+}
+
+/* On a phone the button meets the card's edge: its ring is drawn inside. */
+.job-menu-btn:focus-visible {
+  outline-offset: -2px;
+}
+
+.job-item .job-menu-btn:hover,
+.job-item .job-menu-btn[aria-expanded="true"] {
+  background: var(--track);
+  color: var(--text-primary);
+}
+
+@media (max-width: 639px), (pointer: coarse) {
+  .job-menu-btn {
+    width: var(--touch);
+    height: var(--touch);
+  }
+
+  .page-queue .job-list.is-selecting > li > .job-row {
+    --job-trail: calc(76px + var(--s-2) + var(--touch));
+  }
 }
 
 @media (max-width: 639px) {
-  /* On a phone the button goes under the text, in line with the title. */
+  /* On a phone "…" closes the row, its glyph where the row's padding ends
+     and its 44 px target over the link's padding, and a failed job's Retry
+     goes under the text, in line with the title. */
   .job-item[data-action] {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 0;
+    padding-inline-end: 0;
   }
 
   .job-item[data-action] > .job-row {
-    margin-inline-end: 0;
-    padding-bottom: var(--s-2);
+    margin-inline-end: calc(-1 * (var(--s-4) + var(--s-1)));
   }
 
   .job-retry {
+    grid-row: 2;
+    grid-column: 1;
     justify-self: start;
     margin: 0 0 var(--s-3) calc(var(--s-4) + 48px + var(--s-3));
   }

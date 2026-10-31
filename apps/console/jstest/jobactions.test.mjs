@@ -10,6 +10,7 @@ import {
   bulkProgressText,
   bulkLabel,
   bulkSummary,
+  rowMenu,
 } from '../static/js/lib/jobactions.js';
 
 const job = (id, status, title = id) => ({ id, status, title });
@@ -109,4 +110,19 @@ test('bulkSummary says so when nothing went through', () => {
   assert.deepEqual(s, { message: "Couldn't retry 1 job: IGOR (another active job already downloads this link).", role: 'danger' });
   const r = bulkSummary('retry', [ok(job('a', 'failed')), bad(job('b', 'failed', 'IGOR'), err(503, 'queue_full'))], title);
   assert.equal(r.message, 'Queued 1 of 2 jobs again. 1 failed: IGOR (the queue is full).');
+});
+
+test('a row menu offers what the status of its job allows, as in the desktop app', () => {
+  const ids = (status, input = 'https://music.apple.com/us/album/x/1') =>
+    rowMenu({ id: 'j', status, input }).map((it) => (it.separator ? '-' : it.id));
+  assert.deepEqual(ids('queued'), ['details', 'cancel', '-', 'copy']);
+  assert.deepEqual(ids('running'), ['details', 'cancel', '-', 'copy'], 'a job under way can only be cancelled');
+  assert.deepEqual(ids('completed'), ['details', '-', 'copy', '-', 'delete']);
+  assert.deepEqual(ids('failed'), ['details', 'retry', '-', 'copy', '-', 'delete']);
+  assert.deepEqual(ids('cancelled'), ['details', 'retry', '-', 'copy', '-', 'delete']);
+  assert.deepEqual(ids('completed', ''), ['details', '-', 'delete'], 'no link, nothing to copy');
+  const gone = rowMenu({ id: 'j', status: 'failed', input: 'x', error: 'Apple Music has no album 1 in storefront cn (404)' });
+  assert.deepEqual(gone.map((it) => (it.separator ? '-' : it.id)), ['details', '-', 'copy', '-', 'delete'], 'a link Apple has nothing at gets no Retry');
+  const labels = rowMenu({ id: 'j', status: 'failed', input: 'x' }).filter((it) => !it.separator).map((it) => it.label);
+  assert.deepEqual(labels, ['Show details', 'Retry', 'Copy link', 'Delete…']);
 });
