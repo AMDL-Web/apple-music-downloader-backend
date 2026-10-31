@@ -28,15 +28,18 @@ type (
 	eventMsg    struct{ ev domain.Event }
 	followedMsg struct{ id string }
 	lookupMsg   struct {
+		gen     int
 		links   []string
 		lookups []lookupResult
 	}
 	searchMsg struct {
+		gen  int
 		term string
 		res  client.SearchResult
 		err  error
 	}
 	albumsMsg struct {
+		gen    int
 		artist client.SearchHit
 		res    client.ArtistAlbums
 		err    error
@@ -45,7 +48,15 @@ type (
 		batch domain.BatchSubmitResponse
 		err   error
 	}
-	printMsg struct{ text string }
+	doneMsg struct {
+		out string
+		err error
+	}
+	jobsMsg struct {
+		gen  int
+		jobs []domain.Job
+		err  error
+	}
 	loginMsg struct {
 		status, loginID string
 		err             error
@@ -102,7 +113,7 @@ func followJob(ctx context.Context, c *client.Client, b *bus, id string) {
 	b.send(followedMsg{id})
 }
 
-func lookupLinks(ctx context.Context, c *client.Client, links []string) tea.Cmd {
+func lookupLinks(ctx context.Context, c *client.Client, gen int, links []string) tea.Cmd {
 	return func() tea.Msg {
 		out := make([]lookupResult, len(links))
 		for i, l := range links {
@@ -111,25 +122,25 @@ func lookupLinks(ctx context.Context, c *client.Client, links []string) tea.Cmd 
 			cancel()
 			out[i] = lookupResult{link: l, l: res, err: err}
 		}
-		return lookupMsg{links: links, lookups: out}
+		return lookupMsg{gen: gen, links: links, lookups: out}
 	}
 }
 
-func search(ctx context.Context, c *client.Client, term string) tea.Cmd {
+func search(ctx context.Context, c *client.Client, gen int, term string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 		res, err := c.Search(ctx, client.SearchQuery{Term: term, Limit: 6})
-		return searchMsg{term: term, res: res, err: err}
+		return searchMsg{gen: gen, term: term, res: res, err: err}
 	}
 }
 
-func artistAlbums(ctx context.Context, c *client.Client, artist client.SearchHit) tea.Cmd {
+func artistAlbums(ctx context.Context, c *client.Client, gen int, artist client.SearchHit) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 		res, err := c.ArtistAlbums(ctx, artist.ID, client.PageQuery{Limit: 50})
-		return albumsMsg{artist: artist, res: res, err: err}
+		return albumsMsg{gen: gen, artist: artist, res: res, err: err}
 	}
 }
 
@@ -142,6 +153,15 @@ func submit(ctx context.Context, c *client.Client, urls []string) tea.Cmd {
 			err = nil // the per-link results say why each was refused
 		}
 		return submitMsg{batch: res, err: err}
+	}
+}
+
+func listJobs(ctx context.Context, c *client.Client, gen int, q client.ListQuery) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		l, err := c.Downloads(ctx, q)
+		return jobsMsg{gen: gen, jobs: l.Downloads, err: err}
 	}
 }
 

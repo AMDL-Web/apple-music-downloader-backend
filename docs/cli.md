@@ -222,24 +222,44 @@ which are all queued or running already are not an error. `set_config`, like
 
 `amdl` with no arguments in a terminal, or `amdl tui`, opens an interactive interface
 for people (`apps/amdl/internal/tui`). It renders inline rather than taking over the
-screen: what is done goes into the terminal's own scrollback (each request and its
-answer, and one line per job when it finishes), and only the bottom of the screen is
-redrawn.
+screen: what is done goes into the terminal's own scrollback (the banner, each request
+and its answer, and one line per job when it finishes), and only the bottom of the
+screen is redrawn.
 
+- **The banner** opens the session: the logo, amdl and its version, the server with its
+  wrapper's state, the server's download folder with the space left there, and how many
+  jobs the server has saved and failed so far.
 - **The prompt** takes a pasted Apple Music link (several at once download as a batch),
   which shows a preview to confirm with Enter; plain text followed by Enter, which
-  searches the catalog (nothing is searched while typing) and lists the hits (↑↓ to move, Space to select several, Tab to filter by type, → to open an
-  artist's albums, Enter to download); or a `/` command, listed as you type it (`/help`
-  shows them all, `/login` signs the wrapper in without echoing the password).
-- **Above the prompt** sits one card per job in progress, up to three: its title, the
-  album bar of `internal/progress#AlbumProgress` (finished tracks in the order they
-  finished, the overall progress as a fainter fill, one cell per track up to
-  `internal/progress#TickMax`) with the count and percent, and a seven-stage bar for each
-  track in flight. The card takes its color from the album's artwork. `ctrl+o` shows every
-  track, `ctrl+t` every job.
-- **Below the prompt** a status line counts the jobs; the header names the server.
-- **Narrow terminals** drop the per-track status column, then the artist and the track
-  rows; short ones keep fewer cards (`apps/amdl/internal/tui#wideCols` and its siblings).
+  searches the catalog (nothing is searched while typing) and lists the hits (↑↓ to
+  move, Space to select several, Tab to filter by type, → to open an artist's albums,
+  Enter to download); or a `/` command, listed as you type it (↑↓ choose, Tab
+  completes, Enter runs; `/help` shows them all, `/login` signs the wrapper in without
+  echoing the password). Esc closes a panel, drops a search still in flight, or clears
+  the prompt.
+- **Above the prompt** sits one card per job in progress, up to three, in the order the
+  jobs appeared: its title and session number, the album bar of
+  `internal/progress#AlbumProgress` (finished tracks in the order they finished, the
+  rest of the progress dashed, one cell per track up to `internal/progress#TickMax`)
+  with the count, percent and time left, and three track rows with a seven-stage bar
+  each. A running card keeps its height until the job ends
+  (`apps/amdl/internal/tui#tracksPerCard`). The card takes its color from the album's
+  artwork. `ctrl+o` shows every track, `ctrl+t` every job.
+- **Jobs have session numbers**, `#1`, `#2`, on their cards and finished lines, which
+  `/cancel`, `/retry`, `/remove` and `/logs` take, as well as the start of a job ID.
+- **Below the prompt** open the panels (the `/` menu, search hits, the preview, help),
+  so opening one does not move the prompt, and under everything one status line: the
+  connection, the job counts, and the keys that matter at that moment.
+- **Widths**: past 120 columns the layout stays 120 wide; narrow terminals drop the
+  per-track status column, then the artist and the track rows, and below 40 columns
+  the prompt's border; short ones keep fewer cards (`apps/amdl/internal/tui#wideCols`
+  and its siblings). When the width changes, the screen and its scrollback are cleared
+  and the session's output is printed again at the new width, since a terminal that
+  rewraps its lines would leave copies of the old bottom region on screen. `ctrl+l`
+  does the same on demand; what the terminal showed before amdl started is cleared too.
+- **Colors** follow the terminal's background (light or dark) and color depth;
+  `NO_COLOR` with any value turns them off, and the bars and states still read by their
+  shapes (━ done, ╍ in progress, ─ not started, ✓ ✗ ⊘).
 - **Leaving** takes `ctrl+c` twice, or `ctrl+d` on an empty prompt. Downloads keep
   running on the server.
 

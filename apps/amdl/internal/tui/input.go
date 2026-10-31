@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,7 +61,7 @@ func (m *model) onKey(k tea.KeyPressMsg) tea.Cmd {
 			return m.quit()
 		}
 	case "ctrl+l":
-		return tea.ClearScreen
+		return m.redraw()
 	case "ctrl+o":
 		m.expanded = !m.expanded
 		return nil
@@ -73,15 +75,16 @@ func (m *model) onKey(k tea.KeyPressMsg) tea.Cmd {
 	case panelConfirm:
 		switch key {
 		case "y", "Y", "enter":
-			id := m.confirm.id
+			id, ref := m.confirm.id, m.ref(m.confirm.id)
 			m.panel = panelNone
-			return m.do("removed", func(ctx context.Context) (string, error) {
+			return m.do("removing", func(ctx context.Context) (string, error) {
 				_, err := m.c.Call(ctx, http.MethodDelete, "/api/v1/downloads/"+id, nil, nil)
-				return "removed " + id, err
+				return "removed " + ref, err
 			})
 		case "n", "N", "esc":
 			m.panel = panelNone
-			return tea.Println(m.reply("kept " + m.confirm.id))
+			text := m.reply("kept " + m.ref(m.confirm.id))
+			return m.println(func(int) string { return text })
 		}
 		return nil
 	case panelResults:
@@ -105,19 +108,20 @@ func (m *model) onKey(k tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 	}
+	if ms := m.menu(); len(ms) > 0 {
+		if cmd, ok := m.menuKey(key, ms); ok {
+			return cmd
+		}
+	}
 	switch key {
 	case "enter":
 		return m.enter()
 	case "esc":
-		m.input.SetValue("")
-		return nil
-	case "tab":
-		if v := m.input.Value(); strings.HasPrefix(v, "/") && !strings.Contains(v, " ") {
-			if ms := m.menu(); len(ms) > 0 {
-				m.input.SetValue(ms[0].name + " ")
-				m.input.CursorEnd()
-			}
+		if m.reading {
+			m.reqGen++
+			m.reading, m.busy = false, ""
 		}
+		m.input.SetValue("")
 		return nil
 	case "up", "down":
 		if len(m.history) == 0 {
@@ -141,9 +145,44 @@ func (m *model) onKey(k tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 	}
+	before := m.input.Value()
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(k)
+	if m.input.Value() != before {
+		m.menuSel = 0
+	}
 	return cmd
+}
+
+// menuKey handles the keys of the / menu; ok is false for keys the prompt
+// should get instead. Enter runs the chosen command, or completes it when it
+// takes an argument.
+func (m *model) menuKey(key string, ms []slash) (tea.Cmd, bool) {
+	sel := min(m.menuSel, len(ms)-1)
+	complete := func() {
+		m.input.SetValue(ms[sel].name + " ")
+		m.input.CursorEnd()
+		m.menuSel = 0
+	}
+	switch key {
+	case "up":
+		m.menuSel = (sel + len(ms) - 1) % len(ms)
+	case "down":
+		m.menuSel = (sel + 1) % len(ms)
+	case "tab":
+		complete()
+	case "enter":
+		if ms[sel].args != "" && !strings.HasPrefix(ms[sel].args, "[") {
+			complete()
+			return nil, true
+		}
+		m.input.SetValue(ms[sel].name)
+		m.menuSel = 0
+		return m.enter(), true
+	default:
+		return nil, false
+	}
+	return nil, true
 }
 
 func (m *model) quit() tea.Cmd {
@@ -188,8 +227,7 @@ func (m *model) resultsKey(key string) (tea.Cmd, bool) {
 			return nil, false
 		}
 		if h := r.items[vis[r.cursor]].hit; h.Type == "artist" {
-			m.busy = "reading " + h.Name + "'s albums"
-			return artistAlbums(m.ctx, m.c, h), true
+			return artistAlbums(m.ctx, m.c, m.read("reading "+h.Name+"'s albums"), h), true
 		}
 	case "left":
 		if m.input.Value() != "" || r.back == nil {
@@ -212,8 +250,7 @@ func (m *model) resultsKey(key string) (tea.Cmd, bool) {
 		if len(urls) == 0 && len(vis) > 0 {
 			h := r.items[vis[r.cursor]].hit
 			if h.Type == "artist" {
-				m.busy = "reading " + h.Name + "'s albums"
-				return artistAlbums(m.ctx, m.c, h), true
+				return artistAlbums(m.ctx, m.c, m.read("reading "+h.Name+"'s albums"), h), true
 			}
 			urls, names = []string{h.URL}, []string{h.Name}
 			m.titles[h.URL] = h.Name
@@ -223,7 +260,8 @@ func (m *model) resultsKey(key string) (tea.Cmd, bool) {
 		}
 		m.closePanel()
 		m.busy = "queueing"
-		return tea.Sequence(tea.Println(m.you(strings.Join(names, ", "))), submit(m.ctx, m.c, urls)), true
+		you := m.you(strings.Join(names, ", "))
+		return tea.Sequence(m.println(func(int) string { return you }), submit(m.ctx, m.c, urls)), true
 	default:
 		return nil, false
 	}
@@ -238,18 +276,35 @@ func (m *model) enter() tea.Cmd {
 	m.input.SetValue("")
 	m.history = append(m.history, line)
 	m.histPos = len(m.history)
-	echo := tea.Println(m.you(line))
+	you := m.you(unescape(line))
+	echo := m.println(func(int) string { return you })
+	m.closePanel()
 	if strings.HasPrefix(line, "/") {
 		return tea.Sequence(echo, m.command(line))
 	}
 	if links := linksIn(line); len(links) > 0 {
-		m.closePanel()
-		m.busy = "looking up"
-		return tea.Sequence(echo, lookupLinks(m.ctx, m.c, links))
+		return tea.Sequence(echo, lookupLinks(m.ctx, m.c, m.read("looking up"), links))
 	}
-	m.closePanel()
-	m.busy = "searching"
-	return tea.Sequence(echo, search(m.ctx, m.c, line))
+	return tea.Sequence(echo, search(m.ctx, m.c, m.read("searching"), line))
+}
+
+// read starts a request whose answer only opens a panel or prints a list, so
+// esc or a newer request can drop it; the answer carries the returned number.
+func (m *model) read(busy string) int {
+	m.reqGen++
+	m.reading, m.busy = true, busy
+	return m.reqGen
+}
+
+// unescape shows a pasted link's percent-encoded titles as text.
+func unescape(line string) string {
+	if !strings.Contains(line, "%") {
+		return line
+	}
+	if s, err := url.PathUnescape(line); err == nil {
+		return s
+	}
+	return line
 }
 
 // linksIn returns the Apple Music links in a line, or nil when it has none.
@@ -284,34 +339,39 @@ func (m *model) do(busy string, fn func(ctx context.Context) (string, error)) te
 		ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
 		defer cancel()
 		out, err := fn(ctx)
-		if err != nil {
-			return printMsg{m.theme.style(m.theme.bad).Render("  ⎿ ") + errText(err)}
-		}
 		if out == "" {
 			out = busy
 		}
-		return printMsg{m.reply(out)}
+		return doneMsg{out: out, err: err}
 	}
 }
 
-// jobRef resolves what a person typed for a job: an id, an id's prefix, or the
-// number of a card in the live region.
+// jobRef resolves what a person typed for a job: its session number, with or
+// without #, or the start of its ID.
 func (m *model) jobRef(ref string) string {
-	ids := m.activeIDs()
-	if n := 0; len(ref) <= 2 {
-		if _, err := fmt.Sscanf(ref, "%d", &n); err == nil && n >= 1 && n <= len(ids) {
-			return ids[n-1]
+	ref = strings.TrimPrefix(ref, "#")
+	if n, err := strconv.Atoi(ref); err == nil && len(ref) <= 4 {
+		for id, k := range m.num {
+			if k == n {
+				return id
+			}
 		}
 	}
 	if !strings.HasPrefix(ref, "job_") {
 		ref = "job_" + ref
 	}
-	for _, id := range ids {
+	for id := range m.num {
 		if strings.HasPrefix(id, ref) {
 			return id
 		}
 	}
 	return ref
+}
+
+// say prints a reply under the line the person entered.
+func (m *model) say(s string) tea.Cmd {
+	text := m.reply(s)
+	return m.println(func(int) string { return text })
 }
 
 func (m *model) command(line string) tea.Cmd {
@@ -332,50 +392,38 @@ func (m *model) command(line string) tea.Cmd {
 		return m.quit()
 	case "/search":
 		if arg == "" {
-			return tea.Println(m.reply("usage: /search <text>"))
+			return m.say("usage: /search <text>")
 		}
-		m.busy = "searching"
-		return search(m.ctx, m.c, arg)
+		return search(m.ctx, m.c, m.read("searching"), arg)
 	case "/download":
 		links := linksIn(arg)
 		if len(links) == 0 {
-			return tea.Println(m.reply("usage: /download <link>…"))
+			return m.say("usage: /download <link>…")
 		}
 		m.busy = "queueing"
 		return submit(m.ctx, m.c, links)
 	case "/jobs":
-		return m.do("jobs", func(ctx context.Context) (string, error) {
-			l, err := m.c.Downloads(ctx, client.ListQuery{Limit: 10})
-			if err != nil {
-				return "", err
-			}
-			return m.jobTable(l.Downloads), nil
-		})
+		return listJobs(m.ctx, m.c, m.read("reading jobs"), client.ListQuery{Limit: 10})
 	case "/library":
-		return m.do("library", func(ctx context.Context) (string, error) {
-			l, err := m.c.Downloads(ctx, client.ListQuery{Limit: 10, Status: []domain.JobStatus{domain.JobCompleted}, Search: arg, Sort: "updated_at"})
-			if err != nil {
-				return "", err
-			}
-			return m.jobTable(l.Downloads), nil
-		})
+		return listJobs(m.ctx, m.c, m.read("reading the library"), client.ListQuery{Limit: 10, Status: []domain.JobStatus{domain.JobCompleted}, Search: arg, Sort: "updated_at"})
 	case "/cancel", "/retry":
 		id, ok := needJob()
 		if !ok {
-			return tea.Println(m.reply("usage: " + name + " <job>"))
+			return m.say("usage: " + name + " <job>")
 		}
+		ref := m.ref(id)
 		return m.do(strings.TrimPrefix(name, "/")+" sent", func(ctx context.Context) (string, error) {
 			if name == "/cancel" {
-				return "cancelling " + id, m.c.Cancel(ctx, id)
+				return "cancelling " + ref, m.c.Cancel(ctx, id)
 			}
-			return "retrying " + id, m.c.Retry(ctx, id)
+			return "retrying " + ref, m.c.Retry(ctx, id)
 		})
 	case "/remove":
 		id, ok := needJob()
 		if !ok {
-			return tea.Println(m.reply("usage: /remove <job>"))
+			return m.say("usage: /remove <job>")
 		}
-		m.confirm.id, m.confirm.prompt = id, "delete the records of "+id+"? the files stay on disk"
+		m.confirm.id, m.confirm.prompt = id, "delete the records of "+m.ref(id)+"? the files stay on disk"
 		m.panel = panelConfirm
 		return nil
 	case "/system":
@@ -384,8 +432,12 @@ func (m *model) command(line string) tea.Cmd {
 			if err != nil {
 				return "", err
 			}
-			out := fmt.Sprintf("amdl %s (%s) · %s/%s · up %s · %d/%d workers busy · queue %d/%d",
-				s.Version, s.Commit, s.OS, s.Arch, format.Duration(time.Duration(s.UptimeSeconds)*time.Second),
+			version := s.Version
+			if s.Commit != "" {
+				version += " (" + s.Commit + ")"
+			}
+			out := fmt.Sprintf("amdl %s · %s/%s · up %s · %d/%d workers busy · queue %d/%d",
+				version, s.OS, s.Arch, format.Duration(time.Duration(s.UptimeSeconds)*time.Second),
 				s.Jobs.Active, s.Jobs.Workers, s.Jobs.QueueDepth, s.Jobs.QueueCapacity)
 			for _, st := range s.Storage {
 				if st.Error == "" {
@@ -411,20 +463,21 @@ func (m *model) command(line string) tea.Cmd {
 		m.input.SetValue("")
 		return nil
 	case "/logs":
+		q := map[string][]string{"level": {"warn,error"}, "limit": {"8"}}
+		if arg != "" {
+			q["job_id"] = []string{m.jobRef(arg)}
+		}
 		return m.do("logs", func(ctx context.Context) (string, error) {
-			q := map[string][]string{"level": {"warn,error"}, "limit": {"8"}}
-			if arg != "" {
-				q["job_id"] = []string{m.jobRef(arg)}
-			}
 			raw, err := m.c.Call(ctx, http.MethodGet, "/api/v1/logs", q, nil)
 			if err != nil {
 				return "", err
 			}
 			var r struct {
 				Logs []struct {
-					Time  time.Time `json:"time"`
-					Level string    `json:"level"`
-					Msg   string    `json:"msg"`
+					Time       time.Time      `json:"time"`
+					Level      string         `json:"level"`
+					Message    string         `json:"message"`
+					Attributes map[string]any `json:"attributes"`
 				} `json:"logs"`
 			}
 			if err := jsonInto(raw, &r); err != nil {
@@ -438,7 +491,11 @@ func (m *model) command(line string) tea.Cmd {
 				if i > 0 {
 					b.WriteString("\n    ")
 				}
-				fmt.Fprintf(&b, "%s %-5s %s", format.Seconds(l.Time), l.Level, l.Msg)
+				msg := l.Message
+				if e, ok := l.Attributes["error"].(string); ok && e != "" {
+					msg += ": " + e
+				}
+				fmt.Fprintf(&b, "%s %-5s %s", format.Seconds(l.Time), l.Level, msg)
 			}
 			return b.String(), nil
 		})
@@ -474,7 +531,7 @@ func (m *model) command(line string) tea.Cmd {
 			return "", err
 		})
 	}
-	return tea.Println(m.reply("unknown command " + name + " · /help"))
+	return m.say("unknown command " + name + " · /help")
 }
 
 // loginKey walks the sign-in: Apple ID, password (never echoed), then the
@@ -484,7 +541,8 @@ func (m *model) loginKey(k tea.KeyPressMsg) tea.Cmd {
 	switch k.String() {
 	case "esc":
 		m.endLogin()
-		return tea.Println(m.reply("sign-in cancelled"))
+		text := m.reply("sign-in cancelled")
+		return m.println(func(int) string { return text })
 	case "enter":
 		v := m.input.Value()
 		m.input.SetValue("")

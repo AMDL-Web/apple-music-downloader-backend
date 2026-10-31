@@ -11,35 +11,51 @@ import (
 )
 
 // theme is the palette, chosen for a dark or a light terminal. Job cards take
-// their accent from the album's artwork color instead of clay.
+// their accent from the album's artwork color instead of the brand accent.
 type theme struct {
-	dark                         bool
-	bg, fg, dim, faint, gap      color.Color
-	clay, ok, bad, skipped, info color.Color
+	dark                    bool
+	bg, fg, dim, faint, sel color.Color
+	accent, ok, bad, warn   color.Color
+	skipped                 color.Color
+	bars                    [4]color.Color
 }
 
-func newTheme(dark bool) theme {
+// newTheme picks the palette for the terminal's background; bg is the color
+// the terminal reported, nil when it did not answer.
+func newTheme(dark bool, bg color.Color) theme {
+	var t theme
 	if dark {
-		return theme{dark: true,
-			bg: hex("1c1b19"), fg: hex("e8e6dc"), dim: hex("8a8880"), faint: hex("3a3936"), gap: hex("2e2d2a"),
-			clay: hex("d97757"), ok: hex("9cc27a"), bad: hex("e3906f"), skipped: hex("6b6a64"), info: hex("7fb2e5")}
+		t = theme{dark: true,
+			bg: hex("1c1b19"), fg: hex("e8e6dc"), dim: hex("8a8880"), faint: hex("45443f"), sel: hex("2c2b28"),
+			accent: hex("fb7185"), ok: hex("9cc27a"), bad: hex("f2836b"), warn: hex("e0b060"), skipped: hex("6b6a64"),
+			// The four bars of favicon.svg.
+			bars: [4]color.Color{hex("fb7185"), hex("fbbf24"), hex("34d399"), hex("818cf8")}}
+	} else {
+		t = theme{
+			bg: hex("faf9f5"), fg: hex("141413"), dim: hex("6f6d66"), faint: hex("cfccc2"), sel: hex("ebe9e1"),
+			accent: hex("e11d48"), ok: hex("4f7a34"), bad: hex("b8442a"), warn: hex("9a6512"), skipped: hex("a3a19a"),
+			bars: [4]color.Color{hex("e11d48"), hex("d97706"), hex("059669"), hex("4f46e5")}}
 	}
-	return theme{
-		bg: hex("faf9f5"), fg: hex("141413"), dim: hex("7a7870"), faint: hex("dedcd3"), gap: hex("ebe9e1"),
-		clay: hex("c4623f"), ok: hex("4f7a34"), bad: hex("b0532f"), skipped: hex("a3a19a"), info: hex("2f6aa8")}
+	if bg != nil {
+		t.bg = bg
+		t.sel = mix(bg, t.fg, 0.1)
+	}
+	return t
 }
 
 func hex(s string) color.Color { return lipgloss.Color("#" + s) }
 
 func (t theme) style(c color.Color) lipgloss.Style { return lipgloss.NewStyle().Foreground(c) }
 
-// accent returns the card color for an album's background color: the color
-// itself when it stands out from the terminal, else a lighter or darker
-// version of it, else clay.
-func (t theme) accent(bgHex string) color.Color {
+func (t theme) bold() lipgloss.Style { return lipgloss.NewStyle().Foreground(t.fg).Bold(true) }
+
+// albumAccent returns the card color for an album's background color: the
+// color itself when it stands out from the terminal, else a lighter or darker
+// version of it, else the brand accent.
+func (t theme) albumAccent(bgHex string) color.Color {
 	c, ok := parseHex(bgHex)
 	if !ok {
-		return t.clay
+		return t.accent
 	}
 	for i := 0; i < 6 && contrast(c, t.bg) < 3; i++ {
 		if t.dark {
@@ -49,14 +65,14 @@ func (t theme) accent(bgHex string) color.Color {
 		}
 	}
 	if contrast(c, t.bg) < 3 {
-		return t.clay
+		return t.accent
 	}
 	return c
 }
 
-// soft is c faded halfway into the background: the album bar's translucent
-// fill.
-func (t theme) soft(c color.Color) color.Color { return mix(c, t.bg, 0.55) }
+// soft is c faded halfway into the background: the part of the album bar
+// still in progress.
+func (t theme) soft(c color.Color) color.Color { return mix(c, t.bg, 0.5) }
 
 func parseHex(s string) (color.Color, bool) {
 	s = strings.TrimPrefix(s, "#")
