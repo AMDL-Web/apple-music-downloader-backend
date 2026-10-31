@@ -76,6 +76,7 @@ passes it on through `internal/api#Deps`, and the API leaves `/` and `/console/`
 | `internal/format` | sizes, durations, rates and quality labels the clients show | |
 | `internal/capability` | the one table of client capabilities (CLI command, MCP tool, safety) and the operations parsed from the embedded spec | hold behaviour; a capability without an operation runs in its client |
 | `internal/wrapperhost` | the wrapper amdl runs in a QEMU guest: pinned download of upstream's guest, QEMU arguments, the supervisor and its fw_cfg login | ship upstream's files or put a credential on a command line |
+| `internal/demo` | a made-up backend held in memory behind an `http.RoundTripper`, for the products' browser demos | open a port or reach anything outside the process |
 | `internal/local` | the backend run inside a client's process (the desktop app, `amdl --server embedded`): its directories, its config, and the runtime file that lets a second client find it, and the lock that keeps one backend per data directory | |
 
 ### 2.1 The wrapper and decryption

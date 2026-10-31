@@ -8,9 +8,9 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"amdl/apps/desktop/internal/artwork"
-	"amdl/apps/desktop/internal/demo"
 	"amdl/apps/desktop/internal/store"
 	"amdl/internal/client"
+	"amdl/internal/demo"
 )
 
 // demoApp is an App on the demo's in-memory backend, whose answers wait

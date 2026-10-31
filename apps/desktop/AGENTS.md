@@ -66,8 +66,8 @@ the backend with a wrapper here or on another machine.
 - ffmpeg and other console programs start through
   `internal/sysproc#NoConsole`, or each start flashes a console on Windows.
 - The browser build (`make desktop-web`) is the demo, on the in-memory
-  backend of `apps/desktop/internal/demo`: what runs this computer's
-  backend stays in `!js` files, and a new client call gets a route there.
+  backend of `internal/demo`: what runs this computer's backend stays in
+  `!js` files, and a new client call gets a route there.
 
 ## Verify
 

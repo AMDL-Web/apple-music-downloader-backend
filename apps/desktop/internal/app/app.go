@@ -17,7 +17,6 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"amdl/apps/desktop/internal/artwork"
-	"amdl/apps/desktop/internal/demo"
 	"amdl/apps/desktop/internal/ffmpeg"
 	"amdl/apps/desktop/internal/mode"
 	"amdl/apps/desktop/internal/motion"
@@ -27,6 +26,7 @@ import (
 	appui "amdl/apps/desktop/internal/ui"
 	"amdl/internal/buildinfo"
 	"amdl/internal/client"
+	"amdl/internal/demo"
 	"amdl/internal/wrapperhost"
 )
 

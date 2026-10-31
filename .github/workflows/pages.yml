@@ -12,6 +12,7 @@ on:
       - apps/site/**
       - apps/console/static/**
       - apps/desktop/**
+      - internal/demo/**
       - apps/amdl/internal/tui/**
       - Makefile
       - .github/workflows/pages.yml
