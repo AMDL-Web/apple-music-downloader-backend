@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -45,10 +46,18 @@ var shims = map[string]map[string]string{
 	"github.com/atotto/clipboard": {"clipboard_js.go": "clipboard_js.go.txt"},
 }
 
-// xterm is the terminal the page runs, fetched from npm and checked against
-// the integrity npm publishes for it (npm view @xterm/xterm@<v> dist.integrity).
-var xterm = struct{ version, integrity string }{
-	"5.5.0", "sha512-hqJHYaQb5OptNunnyAnkHyM8aCjZ1MEIDTQu1iIbbTD/xops91NB5yq1ZK/dC2JDbVWtF23zUtl9JE2NqwT87A==",
+// xterm is the terminal the page runs and its WebGL renderer, fetched from
+// npm into xterm/ and checked against the integrity npm publishes for each
+// (npm view <name>@<version> dist.integrity). files maps a path in the
+// package's tarball to its name in xterm/.
+var xterm = []struct {
+	name, version, integrity string
+	files                    map[string]string
+}{
+	{"@xterm/xterm", "5.5.0", "sha512-hqJHYaQb5OptNunnyAnkHyM8aCjZ1MEIDTQu1iIbbTD/xops91NB5yq1ZK/dC2JDbVWtF23zUtl9JE2NqwT87A==",
+		map[string]string{"package/lib/xterm.js": "xterm.js", "package/css/xterm.css": "xterm.css", "package/LICENSE": "LICENSE"}},
+	{"@xterm/addon-webgl", "0.18.0", "sha512-xCnfMBTI+/HKPdRnSOHaJDRqEpq2Ugy8LEj9GiY4J3zJObo3joylIFaMvzBwbYRg8zLtkO0KQaStCeSfoaI2/w==",
+		map[string]string{"package/lib/addon-webgl.js": "addon-webgl.js", "package/LICENSE": "LICENSE-addon-webgl"}},
 }
 
 func main() {
@@ -114,8 +123,10 @@ func build(out, ldflags string) error {
 	if err := copyFile(filepath.Join(goroot, "lib", "wasm", "wasm_exec.js"), filepath.Join(out, "wasm_exec.js")); err != nil {
 		return err
 	}
-	if err := fetchXterm(filepath.Join(out, "xterm")); err != nil {
-		return fmt.Errorf("xterm.js %s: %w", xterm.version, err)
+	for _, pkg := range xterm {
+		if err := fetchNPM(filepath.Join(out, "xterm"), pkg.name, pkg.version, pkg.integrity, pkg.files); err != nil {
+			return fmt.Errorf("%s %s: %w", pkg.name, pkg.version, err)
+		}
 	}
 	page, err := fs.ReadDir(assets, "page")
 	if err != nil {
@@ -148,7 +159,7 @@ func build(out, ldflags string) error {
 // their content: the CDN in front of the website keeps scripts and
 // stylesheets for hours, and wasm_exec.js has to come from the Go that built
 // amdl.wasm.
-var versioned = []string{"amdl.wasm", "wasm_exec.js", "app.js", "app.css", "xterm/xterm.js", "xterm/xterm.css"}
+var versioned = []string{"amdl.wasm", "wasm_exec.js", "app.js", "app.css", "xterm/xterm.js", "xterm/addon-webgl.js", "xterm/xterm.css"}
 
 func writeIndex(out string) error {
 	index, err := assets.ReadFile("page/index.html")
@@ -203,11 +214,12 @@ func patched(root, tmp, path string, files map[string]string) (string, error) {
 	return dst, nil
 }
 
-// fetchXterm writes xterm.js, its stylesheet and its licence into dir.
-func fetchXterm(dir string) error {
+// fetchNPM writes files of the npm package name@version into dir.
+func fetchNPM(dir, name, version, integrity string, files map[string]string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	url := fmt.Sprintf("https://registry.npmjs.org/@xterm/xterm/-/xterm-%s.tgz", xterm.version)
+	base := name[strings.LastIndex(name, "/")+1:]
+	url := fmt.Sprintf("https://registry.npmjs.org/%s/-/%s-%s.tgz", name, base, version)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -225,10 +237,10 @@ func fetchXterm(dir string) error {
 		return err
 	}
 	sum := sha512.Sum512(tgz)
-	if got := "sha512-" + base64.StdEncoding.EncodeToString(sum[:]); got != xterm.integrity {
-		return fmt.Errorf("integrity %s, want %s", got, xterm.integrity)
+	if got := "sha512-" + base64.StdEncoding.EncodeToString(sum[:]); got != integrity {
+		return fmt.Errorf("integrity %s, want %s", got, integrity)
 	}
-	want := map[string]string{"package/lib/xterm.js": "xterm.js", "package/css/xterm.css": "xterm.css", "package/LICENSE": "LICENSE"}
+	want := maps.Clone(files)
 	zr, err := gzip.NewReader(bytes.NewReader(tgz))
 	if err != nil {
 		return err

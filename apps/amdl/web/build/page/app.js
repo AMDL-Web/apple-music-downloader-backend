@@ -23,6 +23,14 @@
       : { background: '#141413', foreground: '#e8e6dc', cursor: '#fb7185', selectionBackground: '#3a3936' },
   });
   term.open(el);
+  // WebGL draws block glyphs edge to edge, as terminals do, so the logo's
+  // bars are whole; the DOM renderer leaves the font's gaps between rows.
+  // Without WebGL, or once its context is lost, the page keeps the DOM one.
+  try {
+    var gl = new WebglAddon.WebglAddon();
+    gl.onContextLoss(function () { gl.dispose(); });
+    term.loadAddon(gl);
+  } catch (e) {}
   window.amdlTerm = term;
   term.write('\x1b[2mloading amdl…\x1b[0m');
   term.focus();

@@ -18,8 +18,8 @@ builds the page; CI runs it.
 - The TUI reaches the backend only through `internal/client`. A call it
   starts making needs a route in `internal/demo` too, or the browser build
   answers it with an error.
-- xterm.js comes from npm, pinned with its integrity at
-  `apps/amdl/web/build#xterm`.
+- xterm.js and its WebGL renderer come from npm, pinned with their
+  integrity at `apps/amdl/web/build#xterm`.
 
 ## Verify
 

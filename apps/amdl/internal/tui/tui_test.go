@@ -181,6 +181,20 @@ func TestHeaderShowsBeforeTheServerAnswers(t *testing.T) {
 	}
 }
 
+// Until the banner is printed the live region holds it and the prompt only,
+// so printing it does not push its own first rows off a short terminal.
+func TestCardsWaitForTheBanner(t *testing.T) {
+	m := sample(t)
+	m.headerDone = false
+	if out := stripANSI(render(m, 100)); !strings.Contains(out, "amdl 2.0.0") || strings.Contains(out, "◆") {
+		t.Errorf("before the banner is printed:\n%s", out)
+	}
+	m.headerDone = true
+	if out := stripANSI(render(m, 100)); !strings.Contains(out, "◆ IGOR") {
+		t.Errorf("after it:\n%s", out)
+	}
+}
+
 func TestWhatIsPrintedBeforeTheBannerFollowsIt(t *testing.T) {
 	m := sample(t)
 	m.system, m.headerDone, m.gotCounts, m.bgKnown = nil, false, false, false

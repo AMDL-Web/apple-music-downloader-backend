@@ -46,7 +46,10 @@ func (m *model) View() tea.View {
 	if panel != "" {
 		room -= strings.Count(panel, "\n") + 1
 	}
-	if c := m.cards(w, room); c != "" {
+	// The cards wait for the banner to go to the scrollback: printing it
+	// above a region that holds both would scroll the banner's first rows
+	// off a short terminal (println).
+	if c := m.cards(w, room); c != "" && m.headerDone {
 		top = append(top, c)
 	}
 	m.promptRow = 0
