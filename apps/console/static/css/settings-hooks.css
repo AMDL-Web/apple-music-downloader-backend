@@ -1,0 +1,73 @@
+/* Settings › Hooks (views/settings-hooks.js): the list of hooks.yaml's
+   entries. */
+
+/* ---- Hooks -------------------------------------------------------- */
+
+.settings-hooks {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-hook {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1_5);
+  padding: var(--s-3) 0;
+  border-top: var(--row-divider);
+}
+
+.settings-hook:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.settings-hook[data-off] .settings-hook-name {
+  color: var(--text-secondary);
+}
+
+.settings-hook-line {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.settings-hook-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-14);
+  line-height: var(--lh-14);
+  font-weight: var(--w-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-hook-runs {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--s-2);
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: var(--fs-13);
+  line-height: var(--lh-13);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-hook-split {
+  flex: none;
+  width: 48px;
+}
+
+.settings-hook-scope {
+  flex-wrap: wrap;
+}
+
+.settings-hook-types {
+  color: var(--text-secondary);
+  font-size: var(--fs-12);
+  line-height: var(--lh-12);
+}
