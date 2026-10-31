@@ -149,6 +149,7 @@ type model struct {
 	bgKnown     bool
 	headerWait  bool
 	headerDone  bool
+	held        []entry // printed before the banner, which comes first
 	transcript  []entry
 	promptRow   int
 	promptInset int
@@ -378,6 +379,10 @@ func (m *model) fail(err error) tea.Cmd {
 
 // println puts a block into scrollback and keeps it for redraws.
 func (m *model) println(e entry) tea.Cmd {
+	if !m.headerDone {
+		m.held = append(m.held, e)
+		return nil
+	}
 	m.transcript = append(m.transcript, e)
 	if len(m.transcript) > maxTranscript {
 		m.transcript = m.transcript[len(m.transcript)-maxTranscript:]
@@ -426,7 +431,12 @@ func (m *model) commitHeader() tea.Cmd {
 		return nil
 	}
 	m.headerDone = true
-	return m.println(m.header)
+	cmds := []tea.Cmd{m.println(m.header)}
+	for _, e := range m.held {
+		cmds = append(cmds, m.println(e))
+	}
+	m.held = nil
+	return tea.Sequence(cmds...)
 }
 
 // number gives a job its session number the first time it is seen.

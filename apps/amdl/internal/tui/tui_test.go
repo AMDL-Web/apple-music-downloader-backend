@@ -225,6 +225,28 @@ func TestHeaderShowsBeforeTheServerAnswers(t *testing.T) {
 	}
 }
 
+func TestWhatIsPrintedBeforeTheBannerFollowsIt(t *testing.T) {
+	m := sample(t)
+	m.system, m.headerDone, m.gotCounts, m.bgKnown = nil, false, false, false
+	typeText(m, "tidal")
+	m.onKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(m.transcript) != 0 {
+		t.Fatalf("printed before the banner: %d entries", len(m.transcript))
+	}
+	m.update(connectedMsg{system: client.SystemInfo{}})
+	m.update(snapshotMsg{list: client.DownloadList{}})
+	m.update(tea.BackgroundColorMsg{Color: lipgloss.Color("#000000")})
+	if len(m.transcript) != 2 {
+		t.Fatalf("transcript has %d entries, want the banner and the line typed before it", len(m.transcript))
+	}
+	if first := stripANSI(m.transcript[0](100)); !strings.Contains(first, "amdl 2.0.0") {
+		t.Errorf("the banner comes first: %q", first)
+	}
+	if second := stripANSI(m.transcript[1](100)); !strings.Contains(second, "tidal") {
+		t.Errorf("then the line typed while it waited: %q", second)
+	}
+}
+
 func TestPanelsOpenBelowThePrompt(t *testing.T) {
 	m := sample(t)
 	before := strings.Split(stripANSI(render(m, 100)), "\n")

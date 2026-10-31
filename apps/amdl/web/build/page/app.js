@@ -23,6 +23,7 @@
       : { background: '#141413', foreground: '#e8e6dc', cursor: '#fb7185', selectionBackground: '#3a3936' },
   });
   term.open(el);
+  window.amdlTerm = term;
   term.write('\x1b[2mloading amdl…\x1b[0m');
   term.focus();
   // A click anywhere on the page, the margin round the terminal included,
@@ -33,9 +34,10 @@
     term.focus();
   });
 
-  // What is typed while amdl.wasm loads waits here, up to a few lines, and
-  // goes to the TUI once it runs.
-  var early = '';
+  // What is typed while amdl.wasm loads waits here, after what index.html
+  // caught before this ran, up to a few lines, and goes to the TUI once it
+  // runs.
+  var early = window.amdlEarly || '';
   var typed = term.onData(function (d) { early = (early + d).slice(-512); });
 
   // size is how many cells fit the box, from the cell xterm.js measured.

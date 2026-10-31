@@ -5,6 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>amdl</title>
 <link rel="icon" href="data:,">
+<script>
+// Keys pressed before app.js runs, as while the page loads in the website's
+// frame; app.js hands them to the TUI with the rest.
+var amdlEarly = '';
+addEventListener('keydown', function early(e) {
+  if (window.amdlTerm) return removeEventListener('keydown', early);
+  if (e.key === 'Enter') amdlEarly += '\r';
+  else if (e.key === 'Backspace') amdlEarly = amdlEarly.slice(0, -1);
+  else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) amdlEarly += e.key;
+});
+</script>
 <link rel="stylesheet" href="xterm/xterm.css">
 <link rel="stylesheet" href="app.css">
 </head>
