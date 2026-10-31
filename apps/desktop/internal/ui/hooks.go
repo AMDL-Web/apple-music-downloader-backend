@@ -8,7 +8,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"amdl/apps/desktop/internal/hookpreset"
+	"amdl/internal/hookpreset"
 	"amdl/internal/client"
 )
 
