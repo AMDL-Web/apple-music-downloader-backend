@@ -145,12 +145,20 @@ func TestTheFeedCarriesProgressAndTheJobItsTracks(t *testing.T) {
 	if progress == 0 || completed == 0 || finished != 1 {
 		t.Errorf("job events: %d progress, %d completed, %d finished", progress, completed, finished)
 	}
+	// The feed is a stream of its own: its last messages may still be on
+	// their way when the job's follow ends.
 	var moved, done bool
-	for len(msgs) > 0 {
-		m := <-msgs
-		if m.Job != nil && m.Job.ID == running.ID {
-			moved = moved || (m.Job.Progress != nil && *m.Job.Progress > *running.Progress)
-			done = done || m.Job.Status == domain.JobCompleted
+	wait := time.After(5 * time.Second)
+read:
+	for !moved || !done {
+		select {
+		case m := <-msgs:
+			if m.Job != nil && m.Job.ID == running.ID {
+				moved = moved || (m.Job.Progress != nil && *m.Job.Progress > *running.Progress)
+				done = done || m.Job.Status == domain.JobCompleted
+			}
+		case <-wait:
+			break read
 		}
 	}
 	if !moved || !done {
