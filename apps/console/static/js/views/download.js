@@ -6,7 +6,8 @@
 // term and follows the address both ways; it lasts for the tab. Parts:
 // download-hero.js, download-config.js, download-address.js, download-lookup.js,
 // download-links.js, download-search*.js, download-preset.js,
-// download-quality.js, download-results.js; the logic is pure in lib/.
+// download-quality.js, download-results.js, download-confirm.js; the logic
+// is pure in lib/.
 
 import { html, useState, useEffect, useRef, useMemo, useCallback } from '../ui/preact.js';
 import { newDownloadUrls, buildHash } from '../lib/route.js';
@@ -21,7 +22,6 @@ import { artPalette } from '../lib/format.js';
 import { useApp } from '../ui/components.js';
 import { useDebounced } from '../ui/hooks.js';
 import { useStatus } from '../ui/system-status.js';
-import { ConfirmDialog } from '../ui/dialogs.js';
 import { useServerConfig } from './download-config.js';
 import { useLookups } from './download-lookup.js';
 import { LinksCard } from './download-links.js';
@@ -33,6 +33,7 @@ import { SearchCard } from './download-search.js';
 import { useSearch, useHitActions, toResults } from './download-search-state.js';
 import { useAddressSync, useDraft } from './download-address.js';
 import { Compose, Options, clearBox } from './download-hero.js';
+import { ArtistConfirm } from './download-confirm.js';
 
 // The quality choice lasts for the tab too, so the next album can follow
 // with the same one: a PRESETS id or 'custom' with its values.
@@ -431,19 +432,6 @@ export function DownloadPage({ route }) {
           onClose=${() => setQuality(null)}
         />`
       : null}
-    ${confirm
-      ? html`<${ConfirmDialog}
-          title=${confirm.names.length === 1 ? `Download everything by ${confirm.names[0]}?` : `Download everything by ${confirm.names.length} artists?`}
-          confirmLabel=${confirm.label}
-          onConfirm=${() => {
-            setConfirm(null);
-            confirm.run();
-          }}
-          onCancel=${() => setConfirm(null)}
-        >
-          <p>An artist link queues the artist's whole discography as one job: every album, often hundreds of tracks or more. You can cancel it from the queue.</p>
-          ${confirm.names.length > 1 ? html`<p dir="auto">${confirm.names.join(', ')}</p>` : null}
-        </${ConfirmDialog}>`
-      : null}
+    ${confirm ? html`<${ArtistConfirm} confirm=${confirm} onClose=${() => setConfirm(null)} />` : null}
   </div>`;
 }
