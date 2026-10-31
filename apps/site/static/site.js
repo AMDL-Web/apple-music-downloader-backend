@@ -33,7 +33,7 @@
     });
   }
 
-  // Without this script both panels show, one after the other.
+  // The page draws each tab list with its first tab open (blocks.mjs#tabs).
   for (const list of document.querySelectorAll('[role="tablist"]')) {
     const tabs = [...list.querySelectorAll('[role="tab"]')];
     const select = (tab, focus) => {
@@ -54,23 +54,39 @@
         select(tabs[(i + step + tabs.length) % tabs.length], true);
       });
     });
-    list.hidden = false;
-    select(tabs[0]);
+    // A link to a tab (#tab-…) opens it as well as scrolling to it.
+    for (const tab of tabs) for (const a of document.querySelectorAll(`a[href="#${tab.id}"]`)) a.addEventListener('click', () => select(tab));
   }
 
-  // Live demos: on a narrow screen the window draws a 1280 px wide app scaled
-  // to fit (site.css), and an app off screen is told so, which stops its jobs
-  // moving.
-  for (const frame of document.querySelectorAll('.win-console iframe')) {
-    const body = frame.parentElement;
-    new ResizeObserver(() => body.style.setProperty('--demo-scale', String(body.clientWidth / 1280))).observe(body);
-    let offscreen = true;
-    const tell = () => frame.contentWindow?.postMessage({ amdlDemoOffscreen: offscreen }, location.origin);
-    new IntersectionObserver(([entry]) => {
-      offscreen = !entry.isIntersecting;
-      tell();
-    }).observe(frame);
-    frame.addEventListener('load', tell);
+  // Live demos. A box with data-scale draws its app that many px wide and
+  // scales it to fit (--s, used by demo.css). A console loads as it nears the
+  // screen and is told when it is off screen, which stops its jobs moving.
+  for (const box of document.querySelectorAll('[data-scale]')) {
+    new ResizeObserver(() => box.style.setProperty('--s', String(box.clientWidth / Number(box.dataset.scale)))).observe(box);
+  }
+  const shown = new WeakSet();
+  const tell = (frame) => frame.contentWindow?.postMessage({ amdlDemoOffscreen: !shown.has(frame) }, location.origin);
+  const near = new IntersectionObserver(
+    (entries) => {
+      for (const { target, isIntersecting } of entries) {
+        if (!isIntersecting) continue;
+        near.unobserve(target);
+        target.src = target.dataset.src;
+      }
+    },
+    { rootMargin: '600px 0px' },
+  );
+  const seen = new IntersectionObserver((entries) => {
+    for (const { target, isIntersecting } of entries) {
+      if (isIntersecting) shown.add(target);
+      else shown.delete(target);
+      tell(target);
+    }
+  });
+  for (const frame of document.querySelectorAll('iframe[data-demo]')) {
+    near.observe(frame);
+    seen.observe(frame);
+    frame.addEventListener('load', () => tell(frame));
   }
 
   // The desktop app's web build loads when the visitor starts it, and wears

@@ -1,5 +1,7 @@
-/* The live demos under the hero. build.mjs inlines this file after site.css,
-   whose :root holds the tokens it uses. */
+/* The live demos: the console and the desktop app in windows under the hero,
+   and the console's pinned views in the products section. build.mjs inlines
+   this file after site.css, whose :root holds the tokens it uses. site.js
+   sets --s on each [data-scale] box: its width over that many px. */
 
 /* Live demo: each app in a window, the console live in an iframe. */
 .demo { border-top: 1px solid var(--line); background: var(--bg-subtle); }
@@ -22,34 +24,40 @@
 .win-action svg { width: 14px; height: 14px; }
 .win-body { position: relative; height: clamp(560px, 76vh, 760px); }
 .win-body iframe { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
-.win-body .shot { height: 100%; border: 0; border-radius: 0; box-shadow: none; object-fit: cover; object-position: left top; }
 .win-open { display: none; }
-/* The desktop app needs 820 px: below that its window keeps the screenshot. */
-.win-desktop .win-body { container-type: inline-size; }
+/* The desktop app shows its icon and a button until the visitor starts it. */
+.win-desktop { container-type: inline-size; }
 .win-desktop .win-body iframe { position: absolute; inset: 0; display: none; }
-.win-start { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; border: 0; background: linear-gradient(transparent, var(--scrim)); cursor: pointer; }
-.win-start span { display: inline-flex; align-items: center; gap: 8px; height: 44px; padding: 0 18px; border-radius: 10px; background: var(--btn-bg); color: var(--btn-fg); font-size: 15px; font-weight: 550; }
-.win-start svg { width: 16px; height: 16px; transition: transform 0.2s; }
+.win-desktop .is-live iframe { display: block; }
+.win-start { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; width: 100%; border: 0; background: var(--bg-subtle); cursor: pointer; }
+.is-live .win-start { display: none; }
+.win-start img { width: 72px; height: 72px; }
+.win-start span, .win-open span { display: inline-flex; align-items: center; gap: 8px; height: 44px; padding: 0 18px; border-radius: 10px; background: var(--btn-bg); color: var(--btn-fg); font-size: 15px; font-weight: 550; }
+.win-start svg, .win-open svg { width: 16px; height: 16px; transition: transform 0.2s; }
 .win-start:hover svg { transform: translateX(2px); }
-.win-start:focus-visible { outline: none; }
-.win-start:focus-visible span { outline: 2px solid var(--accent); outline-offset: 2px; }
-@container (min-width: 820px) {
-  .win-start { display: flex; }
-  .win-desktop .is-live iframe { display: block; }
-  .win-desktop .is-live .win-start { display: none; }
+.win-start:focus-visible, .win-open:focus-visible { outline: none; }
+.win-start:focus-visible span, .win-open:focus-visible span { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Narrower than 820 px, the app's minimum, the window draws it at 1280 x 800
+   scaled to fit; a visitor can still use it. */
+@container (max-width: 819.98px) {
+  .win-desktop .win-body { height: auto; aspect-ratio: 16 / 10; overflow: hidden; }
+  .win-desktop .win-body iframe { inset: 0 auto auto 0; width: 1280px; height: 800px; transform: scale(var(--s, 0.27)); transform-origin: 0 0; }
+  .win-desktop .win-action { display: none; }
 }
 .demo-note { margin: 0; padding: 20px var(--pad) 28px; color: var(--muted); font-size: 14px; line-height: 1.6; text-align: center; }
 
-/* Narrow screens: the console draws its desktop layout at 1280 x 800, scaled
-   to the window (site.js sets --demo-scale), and a tap opens it full screen,
-   where it lays itself out for the screen. */
+/* A pinned view (build.mjs view()): the console drawn at --vw x --vh, showing
+   --cw px of that width from --vx, scaled to the figure. It takes no input. */
+.live { position: relative; overflow: hidden; aspect-ratio: var(--cw) / var(--vh); border: 1px solid var(--line); border-radius: 10px; background: var(--bg); box-shadow: var(--shadow); }
+.live iframe { position: absolute; top: 0; left: 0; width: calc(var(--vw) * 1px); height: calc(var(--vh) * 1px); border: 0; transform: scale(var(--s, 0)) translateX(calc(var(--vx) * -1px)); transform-origin: 0 0; pointer-events: none; }
+.g-phone .live { border-radius: clamp(10px, 1.6vw, 20px); }
+
+/* Narrow screens: the console window draws the desktop layout at 1280 x 800,
+   scaled to fit, and a tap opens it full screen, where it lays itself out for
+   the screen. */
 @media (max-width: 720px) {
-  .win-body { height: auto; aspect-ratio: 16 / 10; overflow: hidden; }
-  .win-body iframe { position: absolute; top: 0; left: 0; width: 1280px; height: 800px; transform: scale(var(--demo-scale, 0.27)); transform-origin: 0 0; pointer-events: none; }
-  .win-action { display: none; }
+  .win-console .win-body { height: auto; aspect-ratio: 16 / 10; overflow: hidden; }
+  .win-console .win-body iframe { position: absolute; top: 0; left: 0; width: 1280px; height: 800px; transform: scale(var(--s, 0.27)); transform-origin: 0 0; pointer-events: none; }
+  .win-console .win-action { display: none; }
   .win-open { display: flex; position: absolute; inset: 0; align-items: flex-end; justify-content: center; padding: 14px; background: linear-gradient(transparent 45%, var(--scrim)); text-decoration: none; }
-  .win-open span { display: inline-flex; align-items: center; gap: 8px; height: 44px; padding: 0 18px; border-radius: 10px; background: var(--btn-bg); color: var(--btn-fg); font-size: 15px; font-weight: 550; }
-  .win-open svg { width: 16px; height: 16px; }
-  .win-open:focus-visible { outline: none; }
-  .win-open:focus-visible span { outline: 2px solid var(--accent); outline-offset: 2px; }
 }

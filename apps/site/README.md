@@ -13,13 +13,15 @@ nothing from another host.
 
 | Path | What it holds |
 | --- | --- |
-| `build.mjs` | The template and the build: renders `content/<lang>.json` into a page, inlines the stylesheets and `static/site.js`, copies the images |
+| `build.mjs` | The template and the build: renders `content/<lang>.json` into a page and inlines the stylesheets and `static/site.js` |
 | `blocks.mjs` | The template's pieces that do not depend on the content: escaping, icons, code blocks with copy buttons, tab lists |
 | `content/` | The page text, one file per language with the same keys. Strings may use `` `code` ``, `**strong**` and `[text](href)`; an href may start with `{repo}` or `{blob}` |
-| `static/` | Stylesheets (`site.css`, and `demo.css` for the live demos), script, favicon, Open Graph card, the hero animation (`hero.html`), the terminal capture (`tui.html`), the CLI and MCP samples, and the screenshots in `img/` |
+| `static/` | Stylesheets (`site.css`, and `demo.css` for the live demos), script, favicon, the Open Graph card's template (`og.html`), the hero animation (`hero.html`), and the CLI and MCP samples |
+| `ansi.mjs` | Turns a frame of the terminal interface, with its color escapes, into the HTML the page shows |
+| `og.mjs` | Draws `og.png` from `static/og.html` and the English hero with headless Chrome |
 | `demo/` | The live console demo: the fake backend (`fake-api.js`), its made-up catalog, the module that installs it (`boot.js`), and `bundle.mjs`, which puts the demo into the build |
 | `serve.mjs` | The preview server behind `--serve` |
-| `build.test.mjs` | Content parity, links and anchors, local-only resources, image sizes, arguments |
+| `build.test.mjs` | Content parity, links and anchors, local-only resources, the terminal frame, the Open Graph card, arguments |
 | `demo.test.mjs` | The fake backend answers every console call, stays on its own origin, and runs jobs to the end |
 
 ## Build and preview
@@ -49,10 +51,23 @@ node --test apps/site/
 
 runs the tests; `make node-test` includes them.
 
+That preview has the console demo only. The page as published also has the desktop demo,
+a frame of the terminal interface and the Open Graph card, which `make site` adds; it
+needs Go, Node.js and Chrome, and writes `apps/site/dist/` (`SITE_OUT` elsewhere):
+
+- `make desktop-web` builds the desktop app's web build, given to `--desktop`.
+- The TUI's snapshot test, `apps/amdl/internal/tui` `TestEveryLineFitsTheTerminal`
+  with `AMDL_TUI_SNAPSHOTS=<dir>`, writes a frame per terminal width; `--tui` takes the
+  100-column one, `ansi.mjs` turns it into HTML, and the build refuses a frame that shows
+  a private address.
+- `og.mjs` draws `og.png` into the built site; `CHROME` names the browser binary when it
+  is not in the usual places.
+
 ## Live demo
 
 Under the hero, a window runs the real web console on made-up data, with a second tab
-for the desktop app.
+for the desktop app; the products section shows more views of the same console. The page
+has no screenshots.
 
 - The build copies `apps/console/static` to `demo/console/` and loads `demo/boot.js` in
   front of the console's `main.js`. boot.js replaces `fetch`: calls under `/api/v1`, the
@@ -66,23 +81,28 @@ for the desktop app.
 - `demo.test.mjs` checks that every `/api/v1` call in `apps/console/static/js/api.js`
   gets an answer, so a new console call needs a handler in `fake-api.js`. Nothing checks
   that a response keeps its shape: click through the demo after changing one.
-- The desktop tab shows the `desktop` screenshot. Given the desktop app's web build with
-  `--desktop <dir>` (a directory with its `index.html`), the build copies it to
-  `demo/desktop/`, and a button over the screenshot starts it in the window: it is several
-  megabytes of wasm, so it loads only then, and only where the window is at least 820 px
-  wide, the app's minimum. The page passes its theme in as `data-mygo-theme`.
+- The products section's console views are the demo opened at a route and drawn at a
+  fixed size, scaled to fit, taking no input: `demo/bundle.mjs#SCENES` lists each one's
+  route, size and crop, and `demo.test.mjs` checks that its job or search exists in the
+  demo. Each console, the window's included, loads as it nears the screen and stops its
+  jobs while off screen.
+- Given the desktop app's web build with `--desktop <dir>` (a directory with its
+  `index.html`), the build copies it to `demo/desktop/` and adds the desktop tab: the app's
+  icon and a button that starts it. It is several megabytes of wasm, so it loads only
+  then. Where the window is narrower than 820 px, the app's minimum, it draws the app at
+  1280 x 800 scaled to fit. The page passes its theme in as `data-mygo-theme`.
 - Up to 720 px wide the console window is a scaled-down live view; a tap opens
   `demo/console/` full screen, where the console lays itself out for the screen.
 
 ## Publishing
 
 GitHub Pages serves the site, built by `.github/workflows/pages.yml`. A push to the
-branch in `build.mjs#REF` that touches the site, the desktop app or the workflow builds
-the desktop demo with `make desktop-web`, builds the site with
-`--base https://amdl.lyjw.me/` and deploys it; `gh workflow run pages.yml --ref <branch>`
-runs it by hand. The workflow refuses a branch other than the one `REF` names, so the
-page's install commands and repository links point at the branch it was built from. The
-`github-pages` environment lets `dev` and `main` deploy:
+branch in `build.mjs#REF` that touches the site, the console, the desktop app, the TUI,
+the Makefile or the workflow runs `make site` (see [Build and preview](#build-and-preview))
+and deploys the result; `gh workflow run pages.yml --ref <branch>` runs it by hand. The
+workflow refuses a branch other than the one `REF` names, so the page's install commands
+and repository links point at the branch it was built from. The `github-pages`
+environment lets `dev` and `main` deploy:
 
 ```bash
 gh api repos/AMDL-Web/apple-music-downloader/environments/github-pages/deployment-branch-policies \
@@ -131,15 +151,15 @@ The site follows `dev` until a release and `main` from the release on.
   is written for Chinese readers, not translated word for word.
 - Every claim comes from the repository: the root README, `docs/`, or what the code
   does. A feature that is not released says so.
-- Screenshots are WebP in `static/img`, named `<shot>-<light|dark>-<width>.webp`, two
-  widths per theme as `build.mjs#SHOTS` lists. Take them from a simulate-mode server
-  (`make dev`) or a test install, with no personal paths, addresses or account names in
-  view.
+- There are no screenshots to update: the console views are the demo, the terminal frame
+  comes from the TUI's snapshot test, and `og.png` from `static/og.html` and the English
+  hero, all at build time. A view that should show something else changes its route in
+  `demo/bundle.mjs#SCENES` or the demo's world in `demo/fake-api.js`.
 - `static/hero.html` is the hero animation: one inline SVG with its own `<style>`
   (`ah-*` classes, `--ah-*` custom properties for both themes) and an optional script
   that pauses it off screen and adds pointer parallax. Its ids are `ah-*`, so a page holds
   one. `--ah-hole` is the page background, the color the record's centre hole shows.
-- The terminal capture is `tmux capture-pane -e` output converted to HTML spans; a wide
+- In the terminal frame each run of one style is a span with an inline color, and a wide
   (CJK) character sits in a `<span class="w">` so the columns line up.
 
 ## Theme and language

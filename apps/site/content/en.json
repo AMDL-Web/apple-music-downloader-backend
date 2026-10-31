@@ -120,9 +120,9 @@
         "Logs, and status and settings on one page, on desktop and phone"
       ],
       "shots": {
-        "overview": "The console's overview: the health line, two albums downloading in the live queue, the latest finished album and a wall of covers",
+        "overview": "The console's overview, on made-up data: the health line, three jobs running in the live queue, the latest finished album and a wall of covers",
         "drawer": "A finished album's drawer over the queue, in the album's colors: the progress bar and every track with its length and size",
-        "search": "New download: catalog search results for Yorushika with each song's audio formats",
+        "search": "New download: catalog search results for Mira Lune, a made-up artist, with each song's audio formats",
         "phone": "A finished album's drawer on a phone"
       }
     },
@@ -141,8 +141,7 @@
       "label": "Desktop",
       "name": "Desktop app",
       "text": "A native app for macOS, Windows and Linux, drawn with MyGo's native UI. It works as a client of your server, or runs the pipeline itself and talks to a remote wrapper, sharing one backend and one download history with the command line. It ships with 2.0. The packages are not signed yet, so each system asks once before opening it: [installing the desktop app]({blob}/docs/install.md#the-desktop-app).",
-      "shot": "The desktop app on Windows, searching the catalog for Yorushika",
-      "caption": "On Windows"
+      "try": "Try the live demo"
     }
   },
   "features": {

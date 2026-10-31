@@ -11,8 +11,9 @@ data/
 /dist/
 # make desktop and make desktop-web output.
 /apps/desktop/build/
-# node apps/site/build.mjs output.
+# node apps/site/build.mjs output, and the terminal frame make site renders.
 /apps/site/dist/
+/apps/site/build/
 
 test/
 

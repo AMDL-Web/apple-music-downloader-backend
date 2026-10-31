@@ -69,9 +69,12 @@ export const copyButton = (ui, text) =>
 export const codeBlock = (ui, lines, { label = '', copy = true, wrap = false } = {}) =>
   `<div class="code${label ? '' : ' code-solo'}${wrap ? ' code-wrap' : ''}">${label ? `<div class="code-bar"><span>${esc(label)}</span>${copy ? copyButton(ui, commands(lines)) : ''}</div>` : ''}<pre tabindex="0"><code>${codeLines(lines)}</code></pre>${!label && copy ? copyButton(ui, commands(lines).length ? commands(lines) : lines.join('\n')) : ''}</div>`;
 
-// A tab list over panels; site.js wires it up, and without the script every
-// panel shows, one after another.
+// A tab list over panels, drawn with the first one open so the page does not
+// move when site.js wires it up. Without scripts, NOSCRIPT_TABS shows every
+// panel, one after another, and no tab list.
 export const tabs = (label, items) =>
-  `<div class="tabs"><div class="tablist" role="tablist" aria-label="${esc(label)}" hidden>${items
+  `<div class="tabs"><div class="tablist" role="tablist" aria-label="${esc(label)}">${items
     .map((t, i) => `<button type="button" role="tab" id="tab-${t.id}" aria-controls="panel-${t.id}" aria-selected="${i === 0}"${i ? ' tabindex="-1"' : ''}>${esc(t.label)}</button>`)
-    .join('')}</div>${items.map((t) => `<div class="panel" id="panel-${t.id}" role="tabpanel" aria-labelledby="tab-${t.id}">${t.html}</div>`).join('')}</div>`;
+    .join('')}</div>${items.map((t, i) => `<div class="panel" id="panel-${t.id}" role="tabpanel" aria-labelledby="tab-${t.id}"${i ? ' hidden' : ''}>${t.html}</div>`).join('')}</div>`;
+
+export const NOSCRIPT_TABS = '<noscript><style>.tablist{display:none}.tabs .panel[hidden]{display:grid!important}</style></noscript>';

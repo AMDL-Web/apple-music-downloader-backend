@@ -1,7 +1,7 @@
 # apps/site
 
 The static website, built by `apps/site/build.mjs` from one template and a content file
-per language. How to build, preview and add screenshots: [README.md](README.md).
+per language. How to build, preview and publish: [README.md](README.md).
 
 ## Rules
 
@@ -16,9 +16,10 @@ per language. How to build, preview and add screenshots: [README.md](README.md).
   claim here updates the content in the same commit.
 - Links into the repository go through `{repo}` and `{blob}`, which follow
   `build.mjs#REF`; links inside the site stay relative.
-- Screenshots come from simulate mode, a test install or the reports, with no personal
-  paths, LAN addresses or account names in view; the tests reject private addresses in
-  the built pages.
+- The page has no screenshots or fixed captures: the console views are the demo at a
+  route (`demo/bundle.mjs#SCENES`), the terminal frame and `og.png` are made by
+  `make site`. The tests reject private addresses in the built pages, and the build
+  rejects a terminal frame that shows one.
 - `static/hero.html` stays decorative (`aria-hidden`), animates only `transform` and
   `opacity`, and stops on `prefers-reduced-motion`.
 - Theme follows `prefers-color-scheme` unless `data-theme` is set on `<html>`, and every

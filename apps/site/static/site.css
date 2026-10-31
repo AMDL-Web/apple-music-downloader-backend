@@ -79,13 +79,13 @@
   }
 }
 
-/* Theme-paired content: screenshots and the toggle's icon. */
-.only-dark, .i-moon { display: none; }
-:root[data-theme="dark"] .only-dark, :root[data-theme="dark"] .i-moon { display: block; }
-:root[data-theme="dark"] .only-light, :root[data-theme="dark"] .i-sun { display: none; }
+/* The theme toggle shows the icon of the theme in use. */
+.i-moon { display: none; }
+:root[data-theme="dark"] .i-moon { display: block; }
+:root[data-theme="dark"] .i-sun { display: none; }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .only-dark, :root:not([data-theme="light"]) .i-moon { display: block; }
-  :root:not([data-theme="light"]) .only-light, :root:not([data-theme="light"]) .i-sun { display: none; }
+  :root:not([data-theme="light"]) .i-moon { display: block; }
+  :root:not([data-theme="light"]) .i-sun { display: none; }
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -290,16 +290,11 @@ h3 { font-weight: 600; letter-spacing: -0.015em; }
 .points li { position: relative; padding-left: 20px; color: var(--muted); font-size: 15px; line-height: 1.6; }
 .points li::before { content: ""; position: absolute; top: 0.8em; left: 0; width: 9px; height: 1px; background: currentColor; }
 .prod-media { display: flex; flex-direction: column; justify-content: center; min-width: 0; padding: clamp(20px, 3vw, 40px); border-left: 1px solid var(--line); background: var(--bg-subtle); }
-.prod-media figure { margin: 0; }
-figcaption { margin-top: 12px; color: var(--muted); font: 500 11px/1.5 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; }
-:lang(zh-CN) figcaption { letter-spacing: 0.06em; }
-.shot { width: 100%; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); box-shadow: var(--shadow); }
 
 .gallery { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(12px, 2vw, 20px); padding: 0 var(--pad) clamp(40px, 5vw, 56px); }
 .gallery figure { margin: 0; }
 .g-main { position: relative; grid-column: 1 / -1; margin-bottom: clamp(24px, 5vw, 64px); }
 .g-phone { position: absolute; right: clamp(10px, 3vw, 40px); bottom: calc(-1 * clamp(24px, 5vw, 64px)); width: clamp(84px, 19%, 220px); }
-.g-phone .shot { border-radius: clamp(10px, 1.6vw, 20px); }
 
 .term-wrap { padding: 0 var(--pad) clamp(40px, 5vw, 56px); }
 .term { overflow-x: auto; border: 1px solid #262624; border-radius: 12px; background: #141413; box-shadow: var(--shadow); }

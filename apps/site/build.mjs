@@ -6,8 +6,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { ICON, codeBlock, copyButton, esc, tabs } from './blocks.mjs';
-import { buildDemo } from './demo/bundle.mjs';
+import { ansiToHtml } from './ansi.mjs';
+import { ICON, NOSCRIPT_TABS, codeBlock, copyButton, esc, tabs } from './blocks.mjs';
+import { SCENES, buildDemo } from './demo/bundle.mjs';
 import { serve } from './serve.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -28,22 +29,24 @@ export const LANGS = [
 const THEME_KEY = 'amdl-site-theme';
 const LANG_KEY = 'amdl-site-lang';
 
-const USAGE = `usage: node apps/site/build.mjs [--out <dir>] [--base <url>] [--desktop <dir>] [--serve <port>]
+const USAGE = `usage: node apps/site/build.mjs [--out <dir>] [--base <url>] [--desktop <dir>] [--tui <file>] [--serve <port>]
 
   --out <dir>      where to write the site (default: apps/site/dist)
   --base <url>     absolute URL the site is served from, such as https://example.org/;
-                   adds canonical, hreflang and Open Graph URLs
+                   adds canonical, hreflang and Open Graph URLs (og.mjs draws og.png)
   --desktop <dir>  the desktop app's web build (an index.html and its files), embedded
-                   as the live desktop demo; without it the page shows a screenshot
+                   as the live desktop demo; without it the page has no desktop demo
+  --tui <file>     a frame of the terminal interface with its color escapes, as the
+                   TUI's snapshot test writes it; without it the page shows none
   --serve <port>   after building, serve the output on 127.0.0.1:<port>`;
 
 export class UsageError extends Error {}
 
 export function parseArgs(argv) {
-  const opts = { out: path.join(here, 'dist'), base: '', desktop: '', serve: 0 };
+  const opts = { out: path.join(here, 'dist'), base: '', desktop: '', tui: '', serve: 0 };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
-    if (!['--out', '--base', '--desktop', '--serve'].includes(flag)) throw new UsageError(`unknown argument: ${flag}`);
+    if (!['--out', '--base', '--desktop', '--tui', '--serve'].includes(flag)) throw new UsageError(`unknown argument: ${flag}`);
     const value = argv[++i];
     if (value === undefined || value.startsWith('--')) throw new UsageError(`${flag} needs a value`);
     if (flag === '--out') opts.out = path.resolve(value);
@@ -60,6 +63,10 @@ export function parseArgs(argv) {
     if (flag === '--desktop') {
       opts.desktop = path.resolve(value);
       if (!fs.existsSync(path.join(opts.desktop, 'index.html'))) throw new UsageError(`--desktop has no index.html: ${value}`);
+    }
+    if (flag === '--tui') {
+      opts.tui = path.resolve(value);
+      if (!fs.statSync(opts.tui, { throwIfNoEntry: false })?.isFile()) throw new UsageError(`--tui is not a file: ${value}`);
     }
     if (flag === '--serve') {
       const port = Number(value);
@@ -128,43 +135,19 @@ const CODE = {
 };
 
 
-// ---- images ----------------------------------------------------------------
+// ---- terminal --------------------------------------------------------------
 
-// Reads the pixel size from a WebP header (lossy VP8, lossless VP8L or VP8X).
-export function webpSize(buf) {
-  if (buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WEBP') throw new Error('not a WebP file');
-  const chunk = buf.toString('ascii', 12, 16);
-  if (chunk === 'VP8 ') return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
-  if (chunk === 'VP8L') {
-    const b = buf.readUInt32LE(21);
-    return { width: (b & 0x3fff) + 1, height: ((b >> 14) & 0x3fff) + 1 };
-  }
-  if (chunk === 'VP8X') return { width: buf.readUIntLE(24, 3) + 1, height: buf.readUIntLE(27, 3) + 1 };
-  throw new Error(`unknown WebP chunk ${chunk}`);
+// Loopback and LAN addresses: a frame of a real install may show one, and the
+// page must not. The tests check the built pages; the build checks the TUI
+// frame it is given.
+export const PRIVATE_ADDRESS = /\b(?:127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)\b/;
+
+export function terminalFrame(file) {
+  const html = ansiToHtml(fs.readFileSync(file, 'utf8'));
+  const leak = PRIVATE_ADDRESS.exec(html);
+  if (leak) throw new Error(`${file} shows the private address ${leak[0]}`);
+  return html;
 }
-
-// Every screenshot exists as <name>-<theme>-<width>.webp in static/img, in a
-// large and a small width; the page shows the one that matches the theme.
-export const SHOTS = {
-  overview: { widths: [1600, 800], sizes: '(min-width: 1240px) 1160px, 100vw' },
-  drawer: { widths: [1600, 800], sizes: '(min-width: 960px) 560px, 100vw' },
-  search: { widths: [1600, 800], sizes: '(min-width: 960px) 560px, 100vw' },
-  phone: { widths: [780, 390], sizes: '(min-width: 960px) 260px, 60vw' },
-  desktop: { widths: [1600, 800], sizes: '(min-width: 960px) 620px, 100vw' },
-};
-
-function shot(ctx, name, alt) {
-  const spec = SHOTS[name];
-  return ['light', 'dark']
-    .map((theme) => {
-      const files = spec.widths.map((w) => `${name}-${theme}-${w}.webp`);
-      const { width, height } = ctx.image(files[0]);
-      const srcset = files.map((f, i) => `../img/${f} ${spec.widths[i]}w`).join(', ');
-      return `<img class="shot only-${theme}" src="../img/${files[0]}" srcset="${srcset}" sizes="${spec.sizes}" width="${width}" height="${height}" alt="${esc(alt)}" loading="lazy" decoding="async">`;
-    })
-    .join('');
-}
-
 
 // ---- page ------------------------------------------------------------------
 
@@ -201,6 +184,7 @@ export function renderPage(c, ctx) {
   head.push(
     `<script>try{var d=document.documentElement,t=localStorage.getItem(${JSON.stringify(THEME_KEY)});if(t==="light"||t==="dark")d.setAttribute("data-theme",t);localStorage.setItem(${JSON.stringify(LANG_KEY)},d.lang)}catch(e){}</script>`,
     `<style>${ctx.css}</style>`,
+    NOSCRIPT_TABS,
   );
 
   const p = c.products;
@@ -227,34 +211,50 @@ export function renderPage(c, ctx) {
 <div class="hero-art">${ctx.hero}</div>
 </section>`;
 
-  // The live demos: the console with made-up data, and the desktop app's web
+  // The live demos: the console on made-up data, and the desktop app's web
   // build when there is one, each in a window. The desktop app is a few
-  // megabytes of wasm: its screenshot shows until the visitor starts it.
+  // megabytes of wasm, so it loads when the visitor starts it. site.js loads
+  // the console as it nears the screen and scales a window drawn at a fixed
+  // size (data-scale) to fit.
   const d = c.demo;
   const win = (kind, title, extra, body) =>
-    `<div class="window win-${kind}"><div class="win-bar"><span class="lights" aria-hidden="true"><i></i><i></i><i></i></span><span class="win-title">${title}</span>${extra}</div><div class="win-body">${body}</div></div>`;
-  const live = (src, title) =>
-    `<iframe src="${src}" title="${esc(title)}" loading="lazy"></iframe><a class="win-open" href="${src}"><span>${esc(d.open)}${ICON.out}</span></a>`;
+    `<div class="window win-${kind}"><div class="win-bar"><span class="lights" aria-hidden="true"><i></i><i></i><i></i></span><span class="win-title">${title}</span>${extra}</div><div class="win-body" data-scale="1280">${body}</div></div>`;
   const full = (src) => `<a class="win-action" href="${src}">${esc(d.fullScreen)}${ICON.out}</a>`;
-  const demo = `<section class="demo" aria-label="${esc(d.label)}">
-${tabs(d.label, [
-  { id: 'demo-console', label: d.tabs.console, html: win('console', esc(d.address), full('../demo/console/'), live('../demo/console/', d.consoleFrame)) },
-  {
-    id: 'demo-desktop',
-    label: d.tabs.desktop,
-    html: win(
+  const consoleWin = win(
+    'console',
+    esc(d.address),
+    full('../demo/console/'),
+    `<iframe data-demo data-src="../demo/console/" title="${esc(d.consoleFrame)}"></iframe><a class="win-open" href="../demo/console/"><span>${esc(d.open)}${ICON.out}</span></a>`,
+  );
+  const icon = ctx.desktop?.icon ? `<img src="../demo/desktop/${ctx.desktop.icon}" width="72" height="72" alt="">` : '';
+  const desktopWin =
+    ctx.desktop &&
+    win(
       'desktop',
       'AMDL',
-      ctx.desktop ? full('../demo/desktop/') : '',
-      shot(ctx, 'desktop', p.desktop.shot) +
-        (ctx.desktop
-          ? `<iframe data-src="../demo/desktop/" title="${esc(d.desktopFrame)}"></iframe><button class="win-start" type="button"><span>${esc(d.start)}${ICON.arrow}</span></button>`
-          : ''),
-    ),
-  },
-])}
+      full('../demo/desktop/'),
+      `<iframe data-src="../demo/desktop/" title="${esc(d.desktopFrame)}"></iframe><button class="win-start" type="button">${icon}<span>${esc(d.start)}${ICON.arrow}</span></button>`,
+    );
+  const demo = `<section class="demo" aria-label="${esc(d.label)}">
+${
+  desktopWin
+    ? tabs(d.label, [
+        { id: 'demo-console', label: d.tabs.console, html: consoleWin },
+        { id: 'demo-desktop', label: d.tabs.desktop, html: desktopWin },
+      ])
+    : `<div class="panel">${consoleWin}</div>`
+}
 <p class="demo-note">${inline(d.note)}</p>
 </section>`;
+
+  // A view of the console pinned to a route (demo/bundle.mjs#SCENES), where a
+  // screenshot would be: the demo, drawn at its own size and scaled to fit,
+  // taking no input.
+  const view = (name, alt) => {
+    const v = SCENES[name];
+    const shown = v.view ?? v.width;
+    return `<div class="live" role="img" aria-label="${esc(alt)}" data-scale="${shown}" style="--vw:${v.width};--vh:${v.height};--vx:${v.x ?? 0};--cw:${shown}"><iframe data-demo data-src="../demo/console/${v.route}" title="${esc(alt)}" tabindex="-1" inert></iframe></div>`;
+  };
 
   const stats = `<dl class="stats">${c.stats
     .map((s) => `<div><dt>${esc(s.label)}</dt><dd>${esc(s.value)}${s.unit ? `<span>${esc(s.unit)}</span>` : ''}</dd></div>`)
@@ -276,12 +276,12 @@ ${tabs(d.label, [
 <article class="prod prod-split" id="server" aria-label="${esc(p.server.label)}">${prodCopy(p.server)}<div class="prod-media">${codeBlock(ui, CODE.server, { label: p.server.codeTitle, wrap: true })}</div></article>
 <article class="prod" id="console" aria-label="${esc(p.console.label)}">${prodCopy(p.console)}
 <div class="gallery">
-<div class="g-main"><figure>${shot(ctx, 'overview', p.console.shots.overview)}</figure><figure class="g-phone">${shot(ctx, 'phone', p.console.shots.phone)}</figure></div>
-<figure>${shot(ctx, 'drawer', p.console.shots.drawer)}</figure>
-<figure>${shot(ctx, 'search', p.console.shots.search)}</figure>
+<div class="g-main"><figure>${view('overview', p.console.shots.overview)}</figure><figure class="g-phone">${view('phone', p.console.shots.phone)}</figure></div>
+<figure>${view('drawer', p.console.shots.drawer)}</figure>
+<figure>${view('search', p.console.shots.search)}</figure>
 </div></article>
-<article class="prod" id="terminal" aria-label="${esc(p.terminal.label)}">${prodCopy(p.terminal)}<div class="term-wrap"><div class="term" role="img" aria-label="${esc(p.terminal.shot)}"><pre>${ctx.tui}</pre></div></div></article>
-<article class="prod prod-split" id="desktop" aria-label="${esc(p.desktop.label)}">${prodCopy(p.desktop)}<div class="prod-media"><figure>${shot(ctx, 'desktop', p.desktop.shot)}<figcaption>${esc(p.desktop.caption)}</figcaption></figure></div></article>
+<article class="prod" id="terminal" aria-label="${esc(p.terminal.label)}">${prodCopy(p.terminal)}${ctx.tui ? `<div class="term-wrap"><div class="term" role="img" aria-label="${esc(p.terminal.shot)}"><pre>${ctx.tui}</pre></div></div>` : ''}</article>
+<article class="prod" id="desktop" aria-label="${esc(p.desktop.label)}">${prodCopy(p.desktop, ctx.desktop ? `<div class="cta"><a class="btn" href="#tab-demo-desktop">${esc(p.desktop.try)}${ICON.arrow}</a></div>` : '')}</article>
 </section>`;
 
   const features = `<section class="sec" id="details" aria-labelledby="details-title">${secHead(c.features, 'details-title')}
@@ -388,30 +388,24 @@ export function loadContent(code) {
   return JSON.parse(fs.readFileSync(path.join(here, 'content', `${code}.json`), 'utf8'));
 }
 
-export function build({ out, base = '', desktop = '' }) {
+export function build({ out, base = '', desktop = '', tui = '' }) {
   const staticDir = path.join(here, 'static');
   const read = (rel) => fs.readFileSync(path.join(staticDir, rel), 'utf8');
-  const sizes = new Map();
-  const image = (file) => {
-    if (!sizes.has(file)) sizes.set(file, webpSize(fs.readFileSync(path.join(staticDir, 'img', file))));
-    return sizes.get(file);
-  };
   const shared = {
     css: squeeze(`${read('site.css')}\n${read('demo.css')}`),
     js: read('site.js').trim(),
-    tui: read('tui.html').trim(),
+    tui: tui ? terminalFrame(tui) : '',
     hero: read('hero.html').trim(),
     cli: read('cli.txt').trimEnd().split('\n'),
     mcp: read('mcp.txt').trimEnd().split('\n---\n').map((b) => b.split('\n')),
-    image,
     base,
-    desktop: Boolean(desktop),
+    // The page shows the app's icon on the button that starts it.
+    desktop: desktop ? { icon: fs.readdirSync(desktop).find((f) => /^icon\.(?:png|svg|webp)$/.test(f)) ?? '' } : null,
   };
 
   fs.rmSync(out, { recursive: true, force: true });
   fs.mkdirSync(out, { recursive: true });
-  fs.cpSync(path.join(staticDir, 'img'), path.join(out, 'img'), { recursive: true });
-  for (const file of ['favicon.svg', 'og.png']) fs.copyFileSync(path.join(staticDir, file), path.join(out, file));
+  fs.copyFileSync(path.join(staticDir, 'favicon.svg'), path.join(out, 'favicon.svg'));
   buildDemo(out, { desktop });
 
   const pages = [];

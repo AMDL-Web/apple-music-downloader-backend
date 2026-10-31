@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+body { position: relative; overflow: hidden; width: 1200px; height: 630px; margin: 0; background: #0a0a0a; color: #fafafa; font-family: Inter, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; -webkit-font-smoothing: antialiased; }
+.rule { position: absolute; inset: 40px; border: 1px solid #262626; }
+.disc { position: absolute; top: 120px; right: -120px; width: 520px; height: 520px; border: 1px solid #262626; border-radius: 50%; background: repeating-radial-gradient(circle, transparent 0 9px, #1c1c1c 9px 10px), #111111; }
+.disc::after { content: ""; position: absolute; inset: 36%; border-radius: 50%; background: #3b0a17; }
+.copy { position: absolute; top: 92px; right: 96px; left: 96px; }
+.brand { display: flex; align-items: center; gap: 12px; font-size: 34px; font-weight: 650; letter-spacing: -0.02em; }
+.meter { display: flex; align-items: flex-end; gap: 4px; height: 26px; }
+.meter i { width: 6px; border-radius: 3px; }
+.meter i:nth-child(1) { height: 62%; background: #fb7185; }
+.meter i:nth-child(2) { height: 100%; background: #fbbf24; }
+.meter i:nth-child(3) { height: 45%; background: #34d399; }
+.meter i:nth-child(4) { height: 80%; background: #818cf8; }
+.kicker { display: flex; align-items: center; gap: 14px; margin-top: 96px; color: #a3a3a3; font: 500 18px/1 ui-monospace, "SF Mono", Menlo, "DejaVu Sans Mono", monospace; letter-spacing: 0.14em; text-transform: uppercase; }
+.kicker b { width: 9px; height: 9px; border-radius: 50%; background: #fb7185; }
+h1 { margin: 26px 0 0; font-size: 76px; font-weight: 650; line-height: 1.04; letter-spacing: -0.045em; }
+h1 span { display: block; color: #737373; }
+</style>
+</head>
+<body>
+<div class="disc"></div>
+<div class="rule"></div>
+<div class="copy">
+<div class="brand">AMDL<span class="meter"><i></i><i></i><i></i><i></i></span></div>
+<div class="kicker"><b></b>{{kicker}}</div>
+<h1>{{title}}<span>{{subtitle}}</span></h1>
+</div>
+</body>
+</html>

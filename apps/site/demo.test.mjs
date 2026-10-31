@@ -6,7 +6,7 @@ import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { albumProgress } from '../console/static/js/lib/album-progress.js';
-import { CONSOLE_STATIC, DEMO_CSP, buildDemo, demoIndex } from './demo/bundle.mjs';
+import { CONSOLE_STATIC, DEMO_CSP, SCENES, buildDemo, demoIndex } from './demo/bundle.mjs';
 import { albums, artists, playlists, songs } from './demo/catalog.js';
 import { createDemoFetch, createFakeApi } from './demo/fake-api.js';
 
@@ -136,6 +136,28 @@ describe('fake API', () => {
     assert.ok(byArtist.albums.items.length >= 2);
     const any = await (await call(api, 'GET', '../api/v1/search?term=zzzz')).json();
     assert.ok(any.songs.items.length > 0 && any.albums.items.length > 0);
+  });
+});
+
+describe('pinned views', () => {
+  // A route whose job or search the demo lacks would show an empty drawer or
+  // a page of no results where the site means to show the console at work.
+  test("each view's job is in the demo's world, finished, and its search finds songs", async () => {
+    const api = fresh();
+    for (const [name, v] of Object.entries(SCENES)) {
+      const job = /^#\/\w+\/(job_[0-9a-f]+)$/.exec(v.route)?.[1];
+      const term = new URLSearchParams(v.route.split('?')[1] ?? '').get('q');
+      assert.ok(job || term || v.route === '#/', `${name}: ${v.route}`);
+      if (job) {
+        const res = await call(api, 'GET', `../api/v1/downloads/${job}`);
+        assert.equal(res.status, 200, name);
+        assert.equal((await res.json()).job.status, 'completed', name);
+      }
+      if (term) {
+        const res = await call(api, 'GET', `../api/v1/search?term=${encodeURIComponent(term)}`);
+        assert.ok((await res.json()).songs.items.length >= 4, name);
+      }
+    }
   });
 });
 

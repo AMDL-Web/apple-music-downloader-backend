@@ -6,9 +6,29 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { albumProgress } from '../../console/static/js/lib/album-progress.js';
+import { createFakeApi } from './fake-api.js';
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const CONSOLE_STATIC = path.join(here, '..', '..', 'console', 'static');
 const MODULES = ['boot.js', 'fake-api.js', 'catalog.js'];
+
+// The console views the products section shows: the demo opened at a route
+// and drawn at its own viewport size, `width` x `height`; `x` and `view` show
+// only `view` px of that width, from `x`. Job ids come from the demo's world,
+// which names every job the same way on each visit.
+const world = createFakeApi({ progress: albumProgress, timers: { setInterval: () => 0, clearInterval: () => {} } });
+const job = (title) => {
+  const found = [...world.jobs.values()].find((j) => j.title === title);
+  if (!found) throw new Error(`the demo has no job titled ${title}`);
+  return found.id;
+};
+export const SCENES = {
+  overview: { route: '#/', width: 1280, height: 800 },
+  phone: { route: `#/overview/${job('ひかりの地図')}`, width: 390, height: 844 },
+  drawer: { route: `#/queue/${job('潮汐来信')}`, width: 1280, height: 850, x: 480, view: 800 },
+  search: { route: `#/new?q=${encodeURIComponent('Mira Lune')}`, width: 1040, height: 850, x: 240, view: 800 },
+};
 
 // The console's own policy (apps/console/console.go) without the hosts it
 // reads covers and motion artwork from: the demo reaches only its own files.

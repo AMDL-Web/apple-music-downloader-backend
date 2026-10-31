@@ -1,7 +1,7 @@
 name: Pages
 
-# Build the website, with the desktop app's browser demo, and publish it on
-# GitHub Pages at its custom domain. It follows the branch build.mjs#REF
+# Build the website with its live demos (make site) and publish it on GitHub
+# Pages at its custom domain. It follows the branch build.mjs#REF
 # names: dev until a release, main from then on
 # (apps/site/README.md#release-day).
 
@@ -10,7 +10,10 @@ on:
     branches: [dev]
     paths:
       - apps/site/**
+      - apps/console/static/**
       - apps/desktop/**
+      - apps/amdl/internal/tui/**
+      - Makefile
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -49,11 +52,13 @@ jobs:
           BRANCH: ${{ github.ref_name }}
         run: node --input-type=module -e "import { REF } from './apps/site/build.mjs'; if (REF !== process.env.BRANCH) { console.error('apps/site/build.mjs#REF is ' + REF + ', not ' + process.env.BRANCH); process.exit(1); }"
 
-      - name: Build the desktop demo
-        run: make desktop-web
+      # og.mjs draws the Open Graph card with the runner's Chrome; Inter is
+      # the card's typeface.
+      - name: Install the card's font
+        run: sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends fonts-inter
 
       - name: Build
-        run: node apps/site/build.mjs --base https://amdl.lyjw.me/ --out _site --desktop apps/desktop/build/web
+        run: make site SITE_OUT=_site
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5

@@ -6,8 +6,11 @@ import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { ansiToHtml } from './ansi.mjs';
 import { commands } from './blocks.mjs';
-import { LANGS, REF, REPO, SHOTS, UsageError, build, inline, loadContent, parseArgs, webpSize } from './build.mjs';
+import { LANGS, PRIVATE_ADDRESS, REF, REPO, UsageError, build, inline, loadContent, parseArgs, terminalFrame } from './build.mjs';
+import { SCENES } from './demo/bundle.mjs';
+import { OG_SIZE, findChrome, ogHtml, pngSize, renderOg } from './og.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const script = path.join(here, 'build.mjs');
@@ -34,6 +37,7 @@ describe('arguments', () => {
     ['a --serve that is not a port', ['--serve', 'abc']],
     ['a --serve out of range', ['--serve', '70000']],
     ['a --desktop without an index.html', ['--desktop', fs.mkdtempSync(path.join(os.tmpdir(), 'amdl-desktop-'))]],
+    ['a --tui that is not a file', ['--tui', os.tmpdir()]],
   ]) {
     test(`rejects ${name}`, () => assert.throws(() => parseArgs(argv), UsageError));
   }
@@ -78,27 +82,65 @@ describe('content', () => {
   });
 });
 
-describe('images', () => {
-  const dir = path.join(here, 'static', 'img');
+describe('terminal frame', () => {
+  const tmp = (text) => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'amdl-tui-')), 'tui.ansi');
+    fs.writeFileSync(file, text);
+    return file;
+  };
 
-  test('each file is as wide as its name says', () => {
-    for (const file of fs.readdirSync(dir)) {
-      const width = Number(/-(\d+)\.webp$/.exec(file)?.[1]);
-      assert.ok(width, `${file} does not end in -<width>.webp`);
-      assert.equal(webpSize(fs.readFileSync(path.join(dir, file))).width, width, file);
+  test('escapes become spans, wide characters take two cells and tabs line up', () => {
+    const frame = '\x1b[38;2;217;119;87m✻ \x1b[1;38;2;232;230;220mamdl\x1b[0m <b>\n\x1b]8;;https://x\x1b\\\x1b[4mlink\x1b[24m\x1b]8;;\x1b\\ 雾港\tx  \n\n';
+    assert.equal(
+      ansiToHtml(frame),
+      '<span style="color:#d97757">✻ </span><span class="b" style="color:#e8e6dc">amdl</span> &lt;b&gt;\n<span class="u">link</span> <span class="w">雾</span><span class="w">港</span>       x',
+    );
+  });
+
+  test('a frame given with --tui is on the page', () => {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), 'amdl-site-'));
+    try {
+      build({ out, tui: parseArgs(['--tui', tmp('\x1b[1mamdl\x1b[0m 2.0.0')]).tui });
+      assert.match(fs.readFileSync(path.join(out, 'en', 'index.html'), 'utf8'), /<pre><span class="b">amdl<\/span> 2\.0\.0<\/pre>/);
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true });
     }
   });
 
-  test('every screenshot exists in both themes and every width', () => {
-    for (const [name, spec] of Object.entries(SHOTS)) {
-      for (const theme of ['light', 'dark']) {
-        for (const w of spec.widths) assert.ok(fs.existsSync(path.join(dir, `${name}-${theme}-${w}.webp`)), `${name}-${theme}-${w}.webp`);
-      }
-    }
+  test('a frame that shows a private address is refused', () => {
+    assert.throws(() => terminalFrame(tmp('nas (http://192.168.3.5:18570)')), /private address 192\.168\.3\.5/);
+  });
+});
+
+describe('Open Graph card', () => {
+  test('the card carries the English hero', () => {
+    const c = loadContent('en');
+    const html = ogHtml(c);
+    assert.doesNotMatch(html, /\{\{/);
+    assert.ok(html.includes(c.hero.subtitle));
   });
 
-  test('webpSize rejects other files', () => {
-    assert.throws(() => webpSize(Buffer.from('not an image at all, honestly')), /not a WebP/);
+  test('pngSize reads a PNG header and rejects other files', () => {
+    const head = Buffer.alloc(24);
+    head.write('\x89PNG\r\n\x1a\n', 0, 'latin1');
+    head.write('IHDR', 12, 'ascii');
+    head.writeUInt32BE(1200, 16);
+    head.writeUInt32BE(630, 20);
+    assert.deepEqual(pngSize(head), { width: 1200, height: 630 });
+    assert.throws(() => pngSize(Buffer.from('not an image at all, honestly')), /not a PNG/);
+  });
+
+  let chrome = '';
+  try {
+    chrome = findChrome();
+  } catch {}
+  test('Chrome draws it at its size', { skip: !chrome && 'no Chrome here' }, () => {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), 'amdl-og-'));
+    try {
+      assert.deepEqual(pngSize(fs.readFileSync(renderOg(out, { chrome }))), OG_SIZE);
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true });
+    }
   });
 });
 
@@ -108,9 +150,13 @@ describe('desktop demo', () => {
     const out = fs.mkdtempSync(path.join(os.tmpdir(), 'amdl-site-'));
     try {
       fs.writeFileSync(path.join(web, 'index.html'), '<!doctype html><title>AMDL</title>');
+      fs.writeFileSync(path.join(web, 'icon.png'), '');
       build({ out, desktop: parseArgs(['--desktop', web]).desktop });
       assert.ok(fs.existsSync(path.join(out, 'demo', 'desktop', 'index.html')));
-      assert.match(fs.readFileSync(path.join(out, 'en', 'index.html'), 'utf8'), /<iframe data-src="\.\.\/demo\/desktop\/"/);
+      const html = fs.readFileSync(path.join(out, 'en', 'index.html'), 'utf8');
+      assert.match(html, /<iframe data-src="\.\.\/demo\/desktop\/"/);
+      assert.match(html, /<button class="win-start" type="button"><img src="\.\.\/demo\/desktop\/icon\.png"/);
+      assert.match(html, /id="tab-demo-desktop"/);
     } finally {
       fs.rmSync(web, { recursive: true, force: true });
       fs.rmSync(out, { recursive: true, force: true });
@@ -128,11 +174,20 @@ describe('built site', () => {
   });
   after(() => fs.rmSync(out, { recursive: true, force: true }));
 
-  test('without a desktop build, the desktop demo is a screenshot', () => {
+  test('without a desktop build or a terminal frame, the page has neither', () => {
     for (const lang of LANGS) {
       const html = pages[`${lang.code}/index.html`];
-      assert.match(html, /<iframe src="\.\.\/demo\/console\/"/);
-      assert.doesNotMatch(html, /demo\/desktop/);
+      assert.match(html, /<iframe data-demo data-src="\.\.\/demo\/console\/"/);
+      assert.doesNotMatch(html, /demo\/desktop|id="tab-demo-/);
+      assert.doesNotMatch(html, /class="term"/);
+    }
+  });
+
+  test('the console views are the demo at their routes, with no screenshots', () => {
+    for (const lang of LANGS) {
+      const html = pages[`${lang.code}/index.html`];
+      for (const v of Object.values(SCENES)) assert.ok(html.includes(`data-src="../demo/console/${v.route}"`), v.route);
+      assert.doesNotMatch(html, /<img |srcset=/);
     }
   });
 
@@ -183,14 +238,14 @@ describe('built site', () => {
     for (const lang of LANGS) {
       for (const [img] of pages[`${lang.code}/index.html`].matchAll(/<img [^>]+>/g)) {
         assert.match(img, /\swidth="\d+" height="\d+"/, img);
-        assert.match(img, /\salt="[^"]+"/, img);
+        assert.match(img, /\salt="[^"]*"/, img);
       }
     }
   });
 
   test('no private addresses leak into the pages', () => {
     for (const [page, html] of Object.entries(pages)) {
-      assert.doesNotMatch(html, /\b(?:127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)\b/, page);
+      assert.doesNotMatch(html, PRIVATE_ADDRESS, page);
     }
   });
 });

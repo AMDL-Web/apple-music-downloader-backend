@@ -24,7 +24,7 @@ DEV_DIR := data/dev
 DEV_LISTEN := 127.0.0.1:18080
 DOCKER_IMAGE ?= amdl-backend:dev
 
-.PHONY: help build run dev fmt fmt-check vet test race vuln node-test check temaridiff docker dist dist-check desktop desktop-web
+.PHONY: help build run dev fmt fmt-check vet test race vuln node-test check temaridiff docker dist dist-check desktop desktop-web site
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{ printf "  %-10s %s\n", $$1, $$2 }'
@@ -124,3 +124,15 @@ desktop: ## Package the desktop app for DESKTOP_PLATFORMS (default: this machine
 
 desktop-web: ## Build the desktop app's browser demo into apps/desktop/build/web/
 	$(DESKTOP_MYGO) -platform web
+
+# The website as GitHub Pages publishes it (.github/workflows/pages.yml): the
+# desktop demo, a frame of the terminal interface from its snapshot test, the
+# pages, and the Open Graph card, which needs Chrome (apps/site/og.mjs).
+SITE_OUT ?= apps/site/dist
+SITE_BASE ?= https://amdl.lyjw.me/
+
+site: desktop-web ## Build the website with its demos into SITE_OUT (default apps/site/dist/)
+	mkdir -p apps/site/build
+	AMDL_TUI_SNAPSHOTS=$(CURDIR)/apps/site/build $(GO) test -count=1 -run '^TestEveryLineFitsTheTerminal$$' ./apps/amdl/internal/tui/
+	node apps/site/build.mjs --base $(SITE_BASE) --out $(SITE_OUT) --desktop apps/desktop/build/web --tui apps/site/build/tui-100.ansi
+	node apps/site/og.mjs --out $(SITE_OUT)
