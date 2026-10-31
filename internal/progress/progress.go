@@ -60,10 +60,14 @@ func (s Stages) Current() Stage {
 	return StageCount
 }
 
-// statusRank orders the item statuses of a run, so a stage counts as done once
-// the item has moved past it even when its flag is false: Verified stays false
-// when download.check_integrity is off, and an unmeasurable transfer never
-// reports a fraction.
+// statusRank orders the item statuses of a run as the pipeline publishes them,
+// so a stage counts as done once the item has moved past it even when its flag
+// is false: Verified stays false when download.check_integrity is off, and an
+// unmeasurable transfer never reports a fraction. Saving comes before tagging
+// because the integrity check runs under saving and the tag write under
+// tagging (internal/media#Downloader.finalizeTrackOutput); a rank that put
+// them the other way round showed the tag stage done while saving and undone
+// again at tagging, which Rate reads as a retry.
 var statusRank = map[domain.ItemStatus]int{
 	domain.ItemQueued:          0,
 	domain.ItemResolving:       1,
@@ -72,8 +76,8 @@ var statusRank = map[domain.ItemStatus]int{
 	domain.ItemWaitingDecrypt:  4,
 	domain.ItemDecrypting:      5,
 	domain.ItemRemuxing:        6,
-	domain.ItemTagging:         7,
-	domain.ItemSaving:          8,
+	domain.ItemSaving:          7,
+	domain.ItemTagging:         8,
 	domain.ItemCompleted:       9,
 }
 
@@ -106,9 +110,9 @@ func ItemStages(it domain.JobItem) Stages {
 		StageResolve:  done(p.Resolved, domain.ItemWaitingDownload),
 		StageDownload: frac(p.Download, domain.ItemWaitingDecrypt),
 		StageDecrypt:  frac(p.Decrypt, domain.ItemRemuxing),
-		StageRemux:    done(p.Remuxed, domain.ItemTagging),
+		StageRemux:    done(p.Remuxed, domain.ItemSaving),
 		StageVerify:   done(p.Verified, domain.ItemTagging),
-		StageTag:      done(p.Tagged, domain.ItemSaving),
+		StageTag:      done(p.Tagged, domain.ItemCompleted),
 		StageSave:     done(p.Saved, domain.ItemCompleted),
 	}
 }

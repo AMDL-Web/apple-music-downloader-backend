@@ -183,3 +183,48 @@ func TestItemEventsRecountTracks(t *testing.T) {
 		t.Fatalf("counters completed=%d failed=%d done=%d, want 1, 1, 1", j.CompletedItems, j.FailedItems, j.Done())
 	}
 }
+
+// A track working through the finish phase must not reset the time-left
+// estimate: Left showed "—" for the whole of a job's second half because every
+// finished track stepped the job's progress back and the estimate began again.
+func TestRemainingSurvivesTracksFinishing(t *testing.T) {
+	s, _ := newTestStore(t)
+	now := at(0)
+	s.SetClock(func() time.Time { return now })
+	job := domain.Job{ID: "j", Status: domain.JobRunning, TotalItems: 2}
+	s.ApplySnapshot(client.DownloadList{Downloads: []domain.Job{job}})
+	got := domain.ItemProgress{Resolved: true, Download: 1, Decrypt: 1}
+	remuxed := got
+	remuxed.Remuxed = true
+	verified := remuxed
+	verified.Verified = true
+	tagged := verified
+	tagged.Tagged = true
+	s.applyDetail("j", client.DownloadDetail{Job: job, EventCursor: 1, Items: []domain.JobItem{
+		{ID: "a", Index: 1, Status: domain.ItemRemuxing, Progress: got},
+		{ID: "b", Index: 2, Status: domain.ItemDownloading, Progress: domain.ItemProgress{Resolved: true}},
+	}})
+	finish := []domain.JobItem{
+		{ID: "a", Index: 1, Status: domain.ItemSaving, Progress: remuxed},
+		{ID: "a", Index: 1, Status: domain.ItemSaving, Progress: verified},
+		{ID: "a", Index: 1, Status: domain.ItemTagging, Progress: verified},
+		{ID: "a", Index: 1, Status: domain.ItemTagging, Progress: tagged},
+		{ID: "a", Index: 1, Status: domain.ItemCompleted, Progress: tagged},
+	}
+	id := int64(1)
+	send := func(it domain.JobItem) {
+		id++
+		s.applyEvent("j", domain.Event{ID: id, ItemID: it.ID, Type: domain.EventItemProgress, Payload: mustJSON(it)})
+	}
+	for step := 1; step <= 12; step++ {
+		now = at(0).Add(time.Duration(step) * 2 * time.Second)
+		send(domain.JobItem{ID: "b", Index: 2, Status: domain.ItemDownloading,
+			Progress: domain.ItemProgress{Resolved: true, Download: float64(step) / 14}})
+		if step <= len(finish) {
+			send(finish[step-1])
+		}
+		if r := s.Job("j").Remaining; step >= 3 && r <= 0 {
+			t.Fatalf("step %d: no time left estimate while progress rises (progress %.3f)", step, s.Job("j").Progress)
+		}
+	}
+}

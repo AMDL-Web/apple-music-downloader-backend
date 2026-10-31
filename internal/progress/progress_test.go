@@ -198,6 +198,50 @@ func TestItemStagesCountsPassedStages(t *testing.T) {
 	near(t, s.Weighted(), Weights[StageResolve]+Weights[StageDownload]+Weights[StageDecrypt]+Weights[StageRemux]+Weights[StageVerify])
 }
 
+// The pipeline publishes saving (verify) before tagging
+// (internal/media#Downloader.finalizeTrackOutput), so a track's stages must
+// only move forward along that order: a step back reads as a retry to Rate
+// and throws away the time-left estimate at every finished track.
+func TestItemStagesNeverStepBackThroughTheFinishPhase(t *testing.T) {
+	done := domain.ItemProgress{Resolved: true, Download: 1, Decrypt: 1}
+	remuxed := done
+	remuxed.Remuxed = true
+	verified := remuxed
+	verified.Verified = true
+	tagged := verified
+	tagged.Tagged = true
+	for _, tc := range []struct {
+		name string
+		seq  []domain.JobItem
+	}{
+		{"checked", []domain.JobItem{
+			item(1, domain.ItemRemuxing, done), item(1, domain.ItemRemuxing, remuxed),
+			item(1, domain.ItemSaving, remuxed), item(1, domain.ItemSaving, verified),
+			item(1, domain.ItemTagging, verified), item(1, domain.ItemTagging, tagged),
+			item(1, domain.ItemCompleted, tagged),
+		}},
+		{"unchecked", []domain.JobItem{
+			item(1, domain.ItemRemuxing, remuxed), item(1, domain.ItemSaving, remuxed),
+			item(1, domain.ItemTagging, remuxed), item(1, domain.ItemTagging, remuxed),
+			item(1, domain.ItemCompleted, remuxed),
+		}},
+	} {
+		prev := ItemStages(tc.seq[0])
+		for i, it := range tc.seq[1:] {
+			cur := ItemStages(it)
+			for st := range cur {
+				if cur[st] < prev[st] {
+					t.Errorf("%s step %d (%s): stage %d went from %v back to %v", tc.name, i+1, it.Status, st, prev[st], cur[st])
+				}
+			}
+			if cur.Weighted() < prev.Weighted() {
+				t.Errorf("%s step %d (%s): weighted %v fell from %v", tc.name, i+1, it.Status, cur.Weighted(), prev.Weighted())
+			}
+			prev = cur
+		}
+	}
+}
+
 func TestRateRemaining(t *testing.T) {
 	var r Rate
 	t0 := time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)
