@@ -133,11 +133,12 @@ func (d *Downloader) resolveEnhancedHLS(ctx context.Context, storefront string, 
 // until decryption has consumed the bytes.
 func (d *Downloader) downloadSelectedEnhancedMedia(ctx context.Context, selected selectedDownloadMedia, codec, jobID, outPath string, set publishStage) (selectedDownloadMedia, error) {
 	codecName := strings.ToUpper(codec)
-	onProgress := func(p float64) {
-		if p < 0 {
+	onProgress := func(done, total int64) {
+		if total <= 0 {
 			return // Content-Length unknown; the meter stays at 0
 		}
-		set(domain.ItemDownloading, fmt.Sprintf("%s download %.0f%%", codecName, p*100), downloadFrac(p))
+		p := clampFrac(float64(done) / float64(total))
+		set(domain.ItemDownloading, fmt.Sprintf("%s download %.0f%%", codecName, p*100), downloadProgress(done, p))
 	}
 	set(domain.ItemWaitingDownload, "waiting for download slot", nil)
 	releaseInFlight, err := d.inFlightLimit.Acquire(ctx)

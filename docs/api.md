@@ -433,7 +433,8 @@ item rows keep their final state.
 
 `download.progress_event_interval_ms` (default 500, range 0–10000) is the minimum gap
 between two `item_progress` events for the same item in the same state. It throttles only
-the download and decrypt meters; status changes, stage marks and one-shot events always
+the download and decrypt meters (and `progress.download_bytes`, which moves with the download
+meter); status changes, stage marks and one-shot events always
 publish immediately. A value held back by the interval is flushed just before whatever
 event supersedes it, so the last percentage before a state change is never lost and a
 client resuming from a cursor sees the same sequence as a live one. It is read once when

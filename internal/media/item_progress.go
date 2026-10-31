@@ -30,18 +30,20 @@ func markSaved(p *domain.ItemProgress) { p.Saved = true }
 // through it. Reaching decrypt also means the transfer finished, whether or not
 // the download meter got to say so (an unmeasurable response never reports a
 // fraction), so pin it here rather than leave it stale until the item completes.
-func startDownload(p *domain.ItemProgress) { p.Download = 0 }
+func startDownload(p *domain.ItemProgress) { p.Download, p.DownloadBytes = 0, 0 }
 
 func startDecrypt(p *domain.ItemProgress) {
 	p.Download = 1
 	p.Decrypt = 0
 }
 
-// downloadFrac and decryptFrac move one meter. Fractions outside [0,1] are
+// downloadProgress and decryptFrac move one meter. Fractions outside [0,1] are
 // clamped rather than rejected: a transfer whose reported total turns out to be
-// short should saturate the bar, not push it past full.
-func downloadFrac(v float64) func(*domain.ItemProgress) {
-	return func(p *domain.ItemProgress) { p.Download = clampFrac(v) }
+// short should saturate the bar, not push it past full. downloadProgress also
+// records the bytes the transfer holds, which is what the fraction is a share
+// of.
+func downloadProgress(bytes int64, frac float64) func(*domain.ItemProgress) {
+	return func(p *domain.ItemProgress) { p.Download, p.DownloadBytes = clampFrac(frac), max(bytes, 0) }
 }
 
 func decryptFrac(v float64) func(*domain.ItemProgress) {

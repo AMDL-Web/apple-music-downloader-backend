@@ -67,8 +67,8 @@ func TestDownloadToFileResumesInterruptedTransfer(t *testing.T) {
 	}
 
 	var progress []float64
-	path, err := downloadToFile(context.Background(), server.Client(), server.URL, dir, testResumeOwner, key, func(value float64) {
-		progress = append(progress, value)
+	path, err := downloadToFile(context.Background(), server.Client(), server.URL, dir, testResumeOwner, key, func(done, total int64) {
+		progress = append(progress, float64(done)/float64(total))
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -275,8 +275,8 @@ func TestDownloadToFileValidatesCompletedCheckpointWith416(t *testing.T) {
 	}
 
 	var progress []float64
-	path, err := downloadToFile(context.Background(), server.Client(), server.URL, dir, testResumeOwner, key, func(value float64) {
-		progress = append(progress, value)
+	path, err := downloadToFile(context.Background(), server.Client(), server.URL, dir, testResumeOwner, key, func(done, total int64) {
+		progress = append(progress, float64(done)/float64(total))
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -291,28 +291,33 @@ func (j *job) place(i int, now time.Time) {
 	dl := downloadTime(it.AdamID)
 	t := j.ran[i]
 	p := domain.ItemProgress{Resolved: true}
+	size := int64(durationMS(it.AdamID)) * 290
 	switch {
 	case t < dl:
 		it.Status, p.Download = domain.ItemDownloading, float64(t)/float64(dl)
+		p.DownloadBytes = int64(p.Download * float64(size))
 	case t < dl+decryptTime:
-		it.Status, p.Download, p.Decrypt = domain.ItemDecrypting, 1, float64(t-dl)/float64(decryptTime)
+		it.Status, p.Download, p.DownloadBytes, p.Decrypt = domain.ItemDecrypting, 1, size, float64(t-dl)/float64(decryptTime)
 	case t < dl+decryptTime+writeTime:
 		p.CompleteTransfers()
+		p.DownloadBytes = size
 		w := t - dl - decryptTime
-		p.Remuxed, p.Verified = true, true
+		// The pipeline's order: remux, then saving (the integrity check),
+		// then tagging.
 		switch {
 		case w < writeTime/3:
 			it.Status = domain.ItemRemuxing
 		case w < writeTime*2/3:
-			it.Status, p.Tagged = domain.ItemTagging, true
+			it.Status, p.Remuxed, p.Verified = domain.ItemSaving, true, true
 		default:
-			it.Status, p.Tagged = domain.ItemSaving, true
+			it.Status, p.Remuxed, p.Verified = domain.ItemTagging, true, true
 		}
 	default:
 		p.CompleteTransfers()
+		p.DownloadBytes = size
 		p.Remuxed, p.Verified, p.Tagged, p.Saved = true, true, true, true
 		it.Status = domain.ItemCompleted
-		it.FileSize = int64(durationMS(it.AdamID)) * 290
+		it.FileSize = size
 		it.OutputPath = fmt.Sprintf("%s/%s/%s/%02d %s.m4a", musicDir, j.album.artist.name, j.album.title, it.Index, it.Title)
 		if it.HasLyrics {
 			it.LyricsStatus = domain.LyricsFetched

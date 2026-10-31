@@ -89,8 +89,10 @@ func TestDownloadBytesResumesInterruptedTransfer(t *testing.T) {
 			defer server.Close()
 
 			var progress []float64
-			raw, err := downloadBytesWithRangeResume(context.Background(), server.Client(), server.URL, func(value float64) {
-				progress = append(progress, value)
+			var lastDone, lastTotal int64
+			raw, err := downloadBytesWithRangeResume(context.Background(), server.Client(), server.URL, func(done, total int64) {
+				progress = append(progress, float64(done)/float64(total))
+				lastDone, lastTotal = done, total
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -100,6 +102,9 @@ func TestDownloadBytesResumesInterruptedTransfer(t *testing.T) {
 			}
 			if len(progress) == 0 || progress[len(progress)-1] != 1 {
 				t.Fatalf("progress = %v, want final 1", progress)
+			}
+			if lastDone != int64(len(payload)) || lastTotal != int64(len(payload)) {
+				t.Fatalf("last progress = %d of %d bytes, want %d of %d", lastDone, lastTotal, len(payload), len(payload))
 			}
 			sawPartialProgress := false
 			for i := 1; i < len(progress); i++ {

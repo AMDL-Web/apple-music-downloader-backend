@@ -99,10 +99,22 @@ func (j *Job) Bytes() int64 {
 	return n
 }
 
-// AvgSpeed is the bytes written per second of the run, until now or until
-// it finished, from the sizes of finished tracks: the API reports no live
-// transfer rate, so this is an average and moves only as tracks finish. 0
-// when unknown.
+// Transferred is the bytes the run has moved so far: the sizes of the tracks
+// written plus what the tracks still in flight have downloaded, so the
+// average speed has a value from the first downloaded bytes.
+func (j *Job) Transferred() int64 {
+	n := j.Bytes()
+	for _, it := range j.Items {
+		if it.Status != domain.ItemCompleted {
+			n += it.Progress.DownloadBytes
+		}
+	}
+	return n
+}
+
+// AvgSpeed is the bytes moved per second of the run, until now or until it
+// finished (Transferred over the elapsed time). The API reports no live
+// transfer rate, so this is an average. 0 when unknown.
 func (j *Job) AvgSpeed(now time.Time) float64 {
 	if j.StartedAt == nil {
 		return 0
@@ -114,7 +126,7 @@ func (j *Job) AvgSpeed(now time.Time) float64 {
 	if elapsed < 1 {
 		return 0
 	}
-	return float64(j.Bytes()) / elapsed
+	return float64(j.Transferred()) / elapsed
 }
 
 // Phase is what a job is doing, for its status pill.

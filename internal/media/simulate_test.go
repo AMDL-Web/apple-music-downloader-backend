@@ -20,17 +20,19 @@ import (
 
 // wantSimulatedProgress is the breakdown a simulated track must finish on when
 // it is driven through the real entry point: every stage marked, both meters
-// full. Verified follows the config exactly as the real pipeline does — no
-// integrity check configured, no mark.
-func wantSimulatedProgress(cfg config.Config) domain.ItemProgress {
+// full, and the transfer's byte count at the size the manifest predicted.
+// Verified follows the config exactly as the real pipeline does: no integrity
+// check configured, no mark.
+func wantSimulatedProgress(cfg config.Config, downloadBytes int64) domain.ItemProgress {
 	return domain.ItemProgress{
-		Download: 1,
-		Decrypt:  1,
-		Resolved: true,
-		Remuxed:  true,
-		Verified: cfg.Download.CheckIntegrity,
-		Tagged:   true,
-		Saved:    true,
+		Download:      1,
+		Decrypt:       1,
+		DownloadBytes: downloadBytes,
+		Resolved:      true,
+		Remuxed:       true,
+		Verified:      cfg.Download.CheckIntegrity,
+		Tagged:        true,
+		Saved:         true,
 	}
 }
 
@@ -112,12 +114,21 @@ func TestSimulateTrackSelectsRealMediaButNeverDownloadsOrWrites(t *testing.T) {
 		t.Fatalf("simulate mode downloaded encrypted media %d time(s), want 0", encryptedMediaHits.Load())
 	}
 
+	// The manifest's average bandwidth over the one second song.
+	wantBytes := estimatedMediaBytes(1000, 2500000)
 	seenStatuses := map[string]bool{}
-	var codecSelected, itemCompleted bool
+	var codecSelected, itemCompleted, sawDownloadedBytes bool
 	for _, ev := range reporter.events {
 		switch ev.Type {
 		case "item_progress":
 			seenStatuses[ev.Phase] = true
+			var snapshot domain.JobItem
+			if err := json.Unmarshal(ev.Payload, &snapshot); err != nil {
+				t.Fatalf("decode item_progress payload: %v", err)
+			}
+			if got := snapshot.Progress.DownloadBytes; got > 0 && got <= wantBytes {
+				sawDownloadedBytes = true
+			}
 		case "codec_selected":
 			codecSelected = true
 			if ev.Phase != "alac" {
@@ -136,7 +147,7 @@ func TestSimulateTrackSelectsRealMediaButNeverDownloadsOrWrites(t *testing.T) {
 			if err := json.Unmarshal(ev.Payload, &snapshot); err != nil {
 				t.Fatalf("decode item_completed payload: %v", err)
 			}
-			if snapshot.Status != domain.ItemCompleted || snapshot.Progress != wantSimulatedProgress(cfg) || snapshot.Bitrate != 2500000 || snapshot.UpdatedAt.IsZero() {
+			if snapshot.Status != domain.ItemCompleted || snapshot.Progress != wantSimulatedProgress(cfg, wantBytes) || snapshot.Bitrate != 2500000 || snapshot.UpdatedAt.IsZero() {
 				t.Fatalf("item_completed snapshot = %+v, want complete REST item state", snapshot)
 			}
 		case "item_failed", "item_skipped", "codec_failed", "codec_fallback":
@@ -152,6 +163,9 @@ func TestSimulateTrackSelectsRealMediaButNeverDownloadsOrWrites(t *testing.T) {
 			t.Errorf("missing item_progress event for status %q", status)
 		}
 	}
+	if !sawDownloadedBytes {
+		t.Error("no item_progress event reported download_bytes")
+	}
 	if !codecSelected {
 		t.Error("missing codec_selected event")
 	}
@@ -163,8 +177,8 @@ func TestSimulateTrackSelectsRealMediaButNeverDownloadsOrWrites(t *testing.T) {
 		t.Fatal("expected item updates")
 	}
 	final := reporter.items[len(reporter.items)-1]
-	if final.Status != domain.ItemCompleted || final.Progress != wantSimulatedProgress(cfg) {
-		t.Fatalf("final item state = %s/%+v, want completed/%+v", final.Status, final.Progress, wantSimulatedProgress(cfg))
+	if final.Status != domain.ItemCompleted || final.Progress != wantSimulatedProgress(cfg, wantBytes) {
+		t.Fatalf("final item state = %s/%+v, want completed/%+v", final.Status, final.Progress, wantSimulatedProgress(cfg, wantBytes))
 	}
 	if final.Codec != "alac" || final.OutputPath == "" {
 		t.Fatalf("final item codec/output_path = %q/%q, want alac and a non-empty path", final.Codec, final.OutputPath)

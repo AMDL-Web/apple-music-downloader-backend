@@ -334,8 +334,8 @@ func TestOpenMigrates1xDatabasePreservingRows(t *testing.T) {
 	}
 	defer store.Close()
 	ctx := context.Background()
-	if got := userVersion(t, store.db); got != 2 {
-		t.Fatalf("user_version = %d, want 2", got)
+	if got := userVersion(t, store.db); got != 3 {
+		t.Fatalf("user_version = %d, want 3", got)
 	}
 	after := dumpAll(t, store.db)
 
@@ -350,6 +350,9 @@ func TestOpenMigrates1xDatabasePreservingRows(t *testing.T) {
 		if !jobCols[added] {
 			t.Errorf("jobs.%s missing after migration", added)
 		}
+	}
+	if !columnsOf(t, store.db, "job_items")["download_bytes"] {
+		t.Error("job_items.download_bytes missing after migration")
 	}
 	for _, index := range []string{"idx_jobs_active_key", "idx_job_items_job_id", "idx_job_events_job_id_id", "idx_job_events_type_created"} {
 		if !indexExists(t, store.db, index) {
@@ -541,8 +544,8 @@ func TestOpenCreatesLatestSchemaInFreshDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if got := userVersion(t, store.db); got != 2 || got != latestSchemaVersion() {
-		t.Fatalf("fresh user_version = %d, want 2 (latest %d)", got, latestSchemaVersion())
+	if got := userVersion(t, store.db); got != 3 || got != latestSchemaVersion() {
+		t.Fatalf("fresh user_version = %d, want 3 (latest %d)", got, latestSchemaVersion())
 	}
 	jobCols := columnsOf(t, store.db, "jobs")
 	if jobCols["force"] || jobCols["done_items"] || jobCols["failed_items"] || !jobCols["started_at"] || !jobCols["finished_at"] {

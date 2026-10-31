@@ -196,9 +196,10 @@ func (d *Downloader) fetchAACLCMedia(ctx context.Context, job domain.Job, item *
 		return backend.fetch(ctx, fetchRequest{
 			codec: "aac-lc", uri: media.MediaURI,
 			estimatedBytes: estimatedMediaBytes(song.DurationInMillis, aacLCBandwidth),
-		}, func(p float64) {
-			if p >= 0 {
-				set(domain.ItemDownloading, fmt.Sprintf("downloading %.0f%%", p*100), downloadFrac(p))
+		}, func(done, total int64) {
+			if total > 0 {
+				p := clampFrac(float64(done) / float64(total))
+				set(domain.ItemDownloading, fmt.Sprintf("downloading %.0f%%", p*100), downloadProgress(done, p))
 			}
 		})
 	}()

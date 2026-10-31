@@ -30,7 +30,7 @@ type mediaBackend interface {
 	// resolveAACLC resolves a song's AAC-LC WebPlayback asset.
 	resolveAACLC(ctx context.Context, songID string) (aacLCMedia, error)
 	// fetch transfers one codec's still-encrypted media.
-	fetch(ctx context.Context, req fetchRequest, progress func(float64)) (encryptedMedia, error)
+	fetch(ctx context.Context, req fetchRequest, progress transferProgress) (encryptedMedia, error)
 	// discardCheckpoint drops a resumable transfer for outPath that is no
 	// longer needed because the output already exists.
 	discardCheckpoint(jobID, outPath string)
@@ -202,7 +202,7 @@ func (m realMedia) resolveAACLC(ctx context.Context, songID string) (aacLCMedia,
 	return media, nil
 }
 
-func (m realMedia) fetch(ctx context.Context, req fetchRequest, progress func(float64)) (encryptedMedia, error) {
+func (m realMedia) fetch(ctx context.Context, req fetchRequest, progress transferProgress) (encryptedMedia, error) {
 	switch {
 	case req.codec == "aac-lc":
 		raw, err := downloadBytes(ctx, m.d.http, req.uri, progress)

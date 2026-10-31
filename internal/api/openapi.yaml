@@ -3239,7 +3239,7 @@ components:
         A codec fallback or retry resets the breakdown to `resolved` only, so
         the meters and flags always describe the attempt currently in flight,
         never one that already failed.
-      required: [download, decrypt, resolved, remuxed, verified, tagged, saved]
+      required: [download, decrypt, download_bytes, resolved, remuxed, verified, tagged, saved]
       properties:
         download:
           type: number
@@ -3250,6 +3250,18 @@ components:
             Content-Length never yields a fraction), so 0 alongside
             status=downloading means "running, size unknown", not "no bytes
             yet". Pinned to 1 when the item completes.
+        download_bytes:
+          type: integer
+          format: int64
+          description: >-
+            Bytes of the encrypted media the current attempt has received, the
+            amount `download` is the share of. It moves together with
+            `download`, so it is as coarse (whole-percent steps) and is 0 in the
+            same cases: before the transfer starts and while it cannot be
+            measured. Unlike `download` it is not pinned when the item
+            completes; the final size is the item's `file_size`. A client adds
+            it to the `file_size` of the finished items for the bytes a job has
+            moved so far.
         decrypt:
           type: number
           format: double

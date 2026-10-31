@@ -291,6 +291,8 @@ client should retry either), and `422 no_urls_accepted` otherwise; the batch bod
 - Migration 2 is the 2.0 schema: `jobs.started_at`/`finished_at` (backfilled from
   events), drops `jobs.force`, `jobs.done_items` and `jobs.failed_items`, indexes
   `job_events(type, created_at)` and deletes `item_progress` events of terminal jobs.
+- Migration 3 adds `job_items.download_bytes`, the bytes of encrypted media the current
+  attempt has received (`progress.download_bytes` in the API).
 - Migrations preserve every row of user data (jobs, items, milestone events,
   library-sync anchor). A test builds a database from the frozen 1.x schema SQL, inserts
   rows, migrates, and asserts every row survived and migration 1 changed nothing on a

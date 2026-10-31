@@ -56,10 +56,10 @@ func TestProgressMeterMutatorsClamp(t *testing.T) {
 	var p domain.ItemProgress
 	// A transfer whose reported total turns out short must saturate, not
 	// overshoot; a negative can only come from a bad total and means "unknown".
-	downloadFrac(1.4)(&p)
+	downloadProgress(7000, 1.4)(&p)
 	decryptFrac(-0.2)(&p)
-	if p.Download != 1 || p.Decrypt != 0 {
-		t.Fatalf("clamped meters = %+v, want download=1 decrypt=0", p)
+	if p.Download != 1 || p.Decrypt != 0 || p.DownloadBytes != 7000 {
+		t.Fatalf("clamped meters = %+v, want download=1 decrypt=0 bytes=7000", p)
 	}
 }
 

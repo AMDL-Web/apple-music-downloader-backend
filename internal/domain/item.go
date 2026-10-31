@@ -84,6 +84,12 @@ type ItemProgress struct {
 	// along the way.
 	Download float64 `json:"download"`
 	Decrypt  float64 `json:"decrypt"`
+	// DownloadBytes is how much of the encrypted media this attempt has
+	// received, which is what Download is the share of. It moves with Download
+	// (whole-percent steps) and is 0 under the same conditions: before the
+	// transfer starts and while it cannot be measured. It is not pinned when
+	// the item completes; JobItem.FileSize is the final size.
+	DownloadBytes int64 `json:"download_bytes"`
 	// Resolved: catalog metadata for the track was fetched.
 	Resolved bool `json:"resolved"`
 	// Remuxed: the decrypted stream was flattened into a progressive MP4.

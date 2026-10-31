@@ -133,7 +133,7 @@ func TestJobItemProgressRoundTrip(t *testing.T) {
 	// A half-decrypted item: both meters carry a fraction and only the earlier
 	// stages are marked, so a round-trip that silently collapsed the breakdown
 	// into one value could not reproduce it.
-	want := domain.ItemProgress{Download: 1, Decrypt: 0.42, Resolved: true}
+	want := domain.ItemProgress{Download: 1, Decrypt: 0.42, DownloadBytes: 31_457_280, Resolved: true}
 	item := domain.JobItem{
 		ID: "item-1", JobID: "job-1", AdamID: "123", Kind: "song", Index: 1,
 		Status: domain.ItemDecrypting, Progress: want, CreatedAt: now, UpdatedAt: now,
@@ -154,7 +154,7 @@ func TestJobItemProgressRoundTrip(t *testing.T) {
 
 	updated := items[0]
 	updated.Status = domain.ItemCompleted
-	updated.Progress = domain.ItemProgress{Download: 1, Decrypt: 1, Resolved: true, Remuxed: true, Verified: true, Tagged: true, Saved: true}
+	updated.Progress = domain.ItemProgress{Download: 1, Decrypt: 1, DownloadBytes: 31_457_280, Resolved: true, Remuxed: true, Verified: true, Tagged: true, Saved: true}
 	if err := store.UpdateItem(ctx, updated); err != nil {
 		t.Fatal(err)
 	}

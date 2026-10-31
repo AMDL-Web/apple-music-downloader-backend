@@ -47,12 +47,12 @@ func (simulatedMedia) resolveAACLC(context.Context, string) (aacLCMedia, error) 
 	return aacLCMedia{}, nil
 }
 
-func (m simulatedMedia) fetch(ctx context.Context, req fetchRequest, progress func(float64)) (encryptedMedia, error) {
+func (m simulatedMedia) fetch(ctx context.Context, req fetchRequest, progress transferProgress) (encryptedMedia, error) {
 	size := req.estimatedBytes
 	if size <= 0 {
 		size = estimatedMediaBytes(0, 0)
 	}
-	if err := m.transfer(ctx, size, progress); err != nil {
+	if err := m.transfer(ctx, size, func(p float64) { progress(int64(p*float64(size)), size) }); err != nil {
 		return encryptedMedia{}, err
 	}
 	return encryptedMedia{size: size}, nil

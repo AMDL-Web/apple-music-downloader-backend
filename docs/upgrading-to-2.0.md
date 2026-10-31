@@ -330,7 +330,11 @@ The first start applies migrations in one transaction each:
   items);
 - indexes `job_events(type, created_at)` for `/stats`;
 - deletes `item_progress` events of finished jobs (live progress telemetry; item rows
-  keep their final state).
+  keep their final state);
+- adds `job_items.download_bytes` (0 for every existing row), the bytes of encrypted
+  media an item's current attempt has received. A database that has run this
+  migration is refused by an older build, so a release candidate from before it cannot
+  open the file again.
 
 No migration rewrites `jobs.overrides`: a row that still holds a `media_user_token`,
 `hooks` or another removed field is read with it ignored, and the job's next terminal

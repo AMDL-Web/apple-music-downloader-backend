@@ -54,7 +54,7 @@ const codecKey = (it) => (it.codec === 'alac' ? `alac-${it.bit_depth}-${Math.flo
 function stageFields(stage, frac, key) {
   const c = CODECS[key] || CODECS['alac-16-44'];
   const label = c.codec === 'alac' ? 'ALAC' : c.codec.toUpperCase();
-  const p = { download: 0, decrypt: 0, resolved: false, remuxed: false, verified: false, tagged: false, saved: false };
+  const p = { download: 0, decrypt: 0, download_bytes: 0, resolved: false, remuxed: false, verified: false, tagged: false, saved: false };
   const codec = { codec: c.codec, bit_depth: c.bit_depth, sample_rate: c.sample_rate, bitrate: c.bitrate };
   switch (stage) {
     case 'queued':
@@ -76,7 +76,7 @@ function stageFields(stage, frac, key) {
     case 'saving':
       return { status: 'saving', progress: { ...p, resolved: true, download: 1, decrypt: 1, remuxed: true, tagged: true, verified: true }, status_message: 'saving', ...codec };
     case 'completed':
-      return { status: 'completed', progress: { download: 1, decrypt: 1, resolved: true, remuxed: true, verified: true, tagged: true, saved: true }, status_message: 'saved', ...codec };
+      return { status: 'completed', progress: { download: 1, decrypt: 1, download_bytes: 0, resolved: true, remuxed: true, verified: true, tagged: true, saved: true }, status_message: 'saved', ...codec };
     case 'skipped_existing':
       return { status: 'skipped_existing', progress: { ...p, resolved: true }, status_message: 'File already exists; skipped', ...codec };
     case 'failed':

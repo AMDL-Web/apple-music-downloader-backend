@@ -99,9 +99,13 @@ func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
 	return raw, nil
 }
 
+// transferProgress is told how many bytes of a download are held and how many
+// the response announced; total is 0 while the size is unknown.
+type transferProgress func(done, total int64)
+
 // downloadBytes fetches uri into memory without an internal reconnect. AAC-LC
 // uses this path and leaves retry/backoff to its caller.
-func downloadBytes(ctx context.Context, client *http.Client, uri string, onProgress func(float64)) ([]byte, error) {
+func downloadBytes(ctx context.Context, client *http.Client, uri string, onProgress transferProgress) ([]byte, error) {
 	return downloadToMemory(ctx, client, uri, false, mediaStallTimeout, onProgress)
 }
 
@@ -112,14 +116,13 @@ func downloadBytes(ctx context.Context, client *http.Client, uri string, onProgr
 // the caller's outer retry policy remains responsible for backoff and further
 // attempts.
 //
-// onProgress, if non-nil, is called periodically with a value in [0,1]
-// representing cumulative download progress. If the total size is unknown the
-// callback receives -1.
-func downloadBytesWithRangeResume(ctx context.Context, client *http.Client, uri string, onProgress func(float64)) ([]byte, error) {
+// onProgress, if non-nil, is called periodically with the bytes held so far
+// and the announced total, which is 0 when the size is unknown.
+func downloadBytesWithRangeResume(ctx context.Context, client *http.Client, uri string, onProgress transferProgress) ([]byte, error) {
 	return downloadToMemory(ctx, client, uri, true, mediaStallTimeout, onProgress)
 }
 
-func downloadToMemory(ctx context.Context, client *http.Client, uri string, allowRangeResume bool, stall time.Duration, onProgress func(float64)) ([]byte, error) {
+func downloadToMemory(ctx context.Context, client *http.Client, uri string, allowRangeResume bool, stall time.Duration, onProgress transferProgress) ([]byte, error) {
 	sink := &memorySink{uri: uri}
 	transfer := &rangeTransfer{
 		client: client, uri: uri, stall: stall, sink: sink,
@@ -162,11 +165,11 @@ func downloadToMemory(ctx context.Context, client *http.Client, uri string, allo
 // causes a safe full restart instead of mixing bytes from different objects.
 // The caller must call cleanupResumableDownload after the encrypted media is no
 // longer needed.
-func downloadToFile(ctx context.Context, client *http.Client, uri, dir, owner, resumeKey string, onProgress func(float64)) (string, error) {
+func downloadToFile(ctx context.Context, client *http.Client, uri, dir, owner, resumeKey string, onProgress transferProgress) (string, error) {
 	return downloadToCheckpoint(ctx, client, uri, dir, owner, resumeKey, mediaStallTimeout, onProgress)
 }
 
-func downloadToCheckpoint(ctx context.Context, client *http.Client, uri, dir, owner, resumeKey string, stall time.Duration, onProgress func(float64)) (string, error) {
+func downloadToCheckpoint(ctx context.Context, client *http.Client, uri, dir, owner, resumeKey string, stall time.Duration, onProgress transferProgress) (string, error) {
 	path, metadataPath := resumableDownloadPaths(dir, owner, resumeKey)
 	offset, metadata := loadResumeCheckpoint(path, metadataPath, uri)
 	sink := &fileSink{path: path, n: offset}
@@ -247,7 +250,7 @@ type rangeTransfer struct {
 	// requireComplete accepts a 416 for the held length only when meta says a
 	// previous transfer completed (the on-disk checkpoint).
 	requireComplete bool
-	onProgress      func(float64)
+	onProgress      transferProgress
 	// beforeBody runs once the response headers are accepted, before the first
 	// body byte is written.
 	beforeBody func(resumeMetadata) error
@@ -283,11 +286,7 @@ func (t *rangeTransfer) progress(done, total int64) {
 	if t.onProgress == nil {
 		return
 	}
-	if total > 0 {
-		t.onProgress(min(1, float64(done)/float64(total)))
-	} else {
-		t.onProgress(-1)
-	}
+	t.onProgress(done, max(total, 0))
 }
 
 func (t *rangeTransfer) attempt(ctx context.Context) error {
@@ -330,7 +329,7 @@ func (t *rangeTransfer) attempt(ctx context.Context) error {
 			(!t.requireComplete || t.meta.Complete) && !resumeObjectChanged(t.meta, resp.Header) {
 			t.meta.Total = parsedTotal
 			if t.onProgress != nil {
-				t.onProgress(1)
+				t.onProgress(parsedTotal, parsedTotal)
 			}
 			return nil
 		}
@@ -407,7 +406,7 @@ func (t *rangeTransfer) readBody(reqCtx context.Context, cancel context.CancelCa
 				return false, err
 			}
 			if t.onProgress != nil && total > 0 {
-				t.onProgress(min(1, float64(t.sink.Len())/float64(total)))
+				t.onProgress(t.sink.Len(), total)
 			}
 		}
 		if readErr == io.EOF {

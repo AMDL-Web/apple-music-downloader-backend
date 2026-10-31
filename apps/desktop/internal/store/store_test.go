@@ -184,6 +184,26 @@ func TestItemEventsRecountTracks(t *testing.T) {
 	}
 }
 
+// AVG SPEED was empty until the first track finished, because only finished
+// tracks' file sizes counted: the bytes of tracks still downloading count too,
+// and a finished track counts once, by its file size.
+func TestAvgSpeedCountsTracksStillDownloading(t *testing.T) {
+	started := at(0)
+	j := &Job{Job: domain.Job{ID: "j", Status: domain.JobRunning, StartedAt: &started}}
+	j.Items = []domain.JobItem{
+		{ID: "a", Index: 1, Status: domain.ItemDownloading, Progress: domain.ItemProgress{Download: 0.5, DownloadBytes: 30 << 20}},
+		{ID: "b", Index: 2, Status: domain.ItemDecrypting, Progress: domain.ItemProgress{Download: 1, DownloadBytes: 20 << 20}},
+	}
+	if got, want := j.AvgSpeed(started.Add(10*time.Second)), float64(5<<20); got != want {
+		t.Fatalf("avg speed with nothing finished = %v, want %v", got, want)
+	}
+	// Track b finishes: its file size replaces its download bytes.
+	j.Items[1] = domain.JobItem{ID: "b", Index: 2, Status: domain.ItemCompleted, FileSize: 21 << 20, Progress: domain.ItemProgress{Download: 1, DownloadBytes: 20 << 20}}
+	if got, want := j.AvgSpeed(started.Add(10*time.Second)), float64(51<<20)/10; got != want {
+		t.Fatalf("avg speed after one finished = %v, want %v", got, want)
+	}
+}
+
 // A track working through the finish phase must not reset the time-left
 // estimate: Left showed "—" for the whole of a job's second half because every
 // finished track stepped the job's progress back and the estimate began again.

@@ -15,6 +15,7 @@ import (
 var migrations = []func(ctx context.Context, tx *sql.Tx) error{
 	migrateTo1, // the final 1.x schema, for databases created by any 1.x release
 	migrateTo2, // 2.0: job timing columns, counters derived from items, event pruning
+	migrateTo3, // job_items.download_bytes
 }
 
 // latestSchemaVersion is the user_version a database has after Open.
