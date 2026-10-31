@@ -194,7 +194,8 @@ func (a *App) appearanceSettings(c *ui.Context, k *Tokens) {
 	ui.Column(c).Gap(8).Children(func() {
 		label(c, k, "Theme")
 		theme := a.set.theme
-		segmented(c, k, "theme", &a.set.theme, []string{"System", "Light", "Dark"}, nil)
+		// A row, so the track is as wide as its choices.
+		ui.Row(c).Children(func() { segmented(c, k, "theme", &a.set.theme, []string{"System", "Light", "Dark"}, nil) })
 		if a.set.theme != theme {
 			next := a.Settings
 			next.Theme = themeNames[a.set.theme]
