@@ -15,8 +15,8 @@ import (
 
 // sidebar is the window's left column (Pulse, MyGo 云音乐): the traffic
 // lights and the sidebar button over its top, the sections with colored
-// tiles and live readings, and at its foot the connection over the job
-// downloading now. It is w wide as it slides open or closed; its content keeps its
+// tiles and live readings, and at its foot the job downloading now over
+// the connection. It is w wide as it slides open or closed; its content keeps its
 // width meanwhile, clipped, so nothing in it reflows.
 //
 // Where the window shows its material (vib), the sidebar paints no ground
@@ -47,8 +47,8 @@ func (a *App) sidebar(c *ui.Context, k *Tokens, vib bool, w float32) {
 			})
 			ui.Spacer(c)
 			ui.Column(c).Children(func() {
-				a.serverCard(c, k)
 				a.nowSlot(c, k)
+				a.serverCard(c, k)
 			})
 		})
 	})
@@ -292,8 +292,9 @@ func hostOf(u string) string {
 }
 
 // nowHeight is the height of the card of the job downloading now, and
-// nowGap the room above it: its slot opens and closes over both, so the
-// connection card above slides rather than jumps.
+// nowGap the room between it and the connection card under it: its slot
+// opens and closes over both, upward into the empty room under the
+// sections, so neither the sections nor the connection card move.
 const nowHeight, nowGap = 56, 8
 
 // nowSlot holds the small card of the job downloading now, at the
@@ -309,7 +310,7 @@ func (a *App) nowSlot(c *ui.Context, k *Tokens) {
 	if j != nil {
 		open = 1
 	}
-	slot := ui.Column(c.Key("now-slot")).Clip().Justify(ui.End)
+	slot := ui.Column(c.Key("now-slot")).Clip()
 	shown := slot.AnimateWith("open", open, sidebarSlide, ui.EaseOut)
 	slot.Height((nowHeight + nowGap) * shown)
 	if shown < 0.01 {
