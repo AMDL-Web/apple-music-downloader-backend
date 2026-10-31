@@ -16,14 +16,18 @@ type settingsForm struct {
 	// sections run as one page; page follows its scroll.
 	page string
 	// tops are the sections' tops in the window, and areaTop the scroll
-	// area's, as the last frame laid them out.
+	// area's, as the last frame laid them out at scroll laidY.
 	tops    map[string]float32
 	areaTop float32
+	laidY   float32
 	// pin is a section held at the top until the user scrolls, while the
 	// sections above it may still grow as their state arrives; pinY is
-	// where it put the scroll last.
-	pin  string
-	pinY float32
+	// where it put the scroll last. gliding is a navigation click's smooth
+	// scroll to it, which glideTo is the end of.
+	pin     string
+	pinY    float32
+	gliding bool
+	glideTo float32
 	// draft holds the app's connection settings until Apply, since
 	// applying them connects again.
 	loaded  bool
@@ -93,7 +97,7 @@ func (a *App) GoSettings(page string) {
 // there until the user scrolls.
 func (a *App) showSection(id string) {
 	f := &a.set
-	f.page, f.pin, f.pinY = id, id, -1
+	f.page, f.pin, f.pinY, f.gliding = id, id, -1, false
 }
 
 func (a *App) settings(c *ui.Context, k *Tokens) {
@@ -205,6 +209,10 @@ func (a *App) followSections(c *ui.Context) {
 	if st == nil {
 		return
 	}
+	// A glide has already moved st.Y this frame; the tops are where the
+	// last one laid the sections, at laidY.
+	laid := f.laidY
+	defer func() { f.laidY = st.Y }()
 	if f.pin != "" {
 		top, ok := f.tops[f.pin]
 		switch {
@@ -216,12 +224,23 @@ func (a *App) followSections(c *ui.Context) {
 			c.Invalidate()
 			return
 		default:
-			y := max(0, min(st.Y+top-f.areaTop, st.MaxY))
+			y := max(0, min(laid+top-f.areaTop, st.MaxY))
+			f.page = f.pin
+			if f.gliding && st.Scrolling() {
+				// The sections above may grow while it glides: it glides
+				// to where the section is now.
+				if y-f.glideTo > 1 || f.glideTo-y > 1 {
+					st.ScrollTo(0, y, ui.Smooth)
+					f.glideTo = y
+				}
+				return
+			}
+			f.gliding = false
 			if y != st.Y {
 				st.Y = y
 				c.Invalidate()
 			}
-			f.pinY, f.page = st.Y, f.pin
+			f.pinY = st.Y
 			return
 		}
 	}
@@ -255,9 +274,10 @@ func (a *App) settingsNavItem(c *ui.Context, k *Tokens, p settingsPage) {
 		it.Background(k.Raise)
 	}
 	if it.Clicked() {
-		f.page, f.pin = p.id, ""
+		f.page, f.pin, f.pinY = p.id, p.id, -1
 		if st, top := a.scrolls["settings"], f.tops[p.id]; st != nil {
-			st.ScrollTo(0, max(0, min(st.Y+top-f.areaTop, st.MaxY)), ui.Smooth)
+			f.gliding, f.glideTo = true, max(0, min(f.laidY+top-f.areaTop, st.MaxY))
+			st.ScrollTo(0, f.glideTo, ui.Smooth)
 		}
 	}
 	it.Cursor(ui.CursorPointer).Children(func() {
