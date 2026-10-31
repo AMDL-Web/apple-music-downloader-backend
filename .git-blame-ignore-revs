@@ -46,3 +46,7 @@ d1a2168ba6250a36401fedaa109edf0b9009beb6
 d9fe175f9dac521866c8e33938024c6100a535d7
 # refactor(tui): split the card and input tests out of tui_test.go (move-only)
 47dd874ffd8070ba8ee3f6bfad29ae9373a86cfa
+# refactor(console): move search job tracking and song rows to their own files
+e80b7e3d1a9e7af8e6f511fbc599216cea703533
+# refactor(console): move New download's artist confirm to its own file (move-only)
+4d91665861b73299ee134659a67db868eddc5310
