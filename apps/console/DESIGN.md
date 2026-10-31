@@ -34,7 +34,7 @@ wins and this page is fixed in the same change. Sources are listed in
 | Route | Page | Content |
 | --- | --- | --- |
 | `#/` (also `#/overview`) | Overview | Sections (in DOM order) a server-health strip (`.health-strip`, one line when healthy, a notice per severity naming each Settings domain that needs action (`lib/domains.js` `attentionRows`), each linking to its section, and Status to the Settings board), `attention` (only while a job failed in the last 24 h: up to 2, each with Retry unless Apple has nothing at its link), `live` (8 active jobs, each opening its drawer over the Overview; when none, a card shaped like a job's, its link Log in while no account is logged in), `recent` (the latest release as a banner, then two rows of earlier ones, one tile per album; See all is the Queue's Completed tab), `kpis` (Queued, Running, Completed, Failed: label and number only), `throughput` (from `/stats`; one sentence under three days of data) |
-| `#/queue?tab=active\|completed\|failed\|cancelled\|all&type=&q=` | Queue | Tabs with counts from the feed's `status_counts`, search over title, artist and URL, type filter, dense job list, Load more, selection mode (Retry, Cancel, Delete on many jobs), Retry all on the Failed and Cancelled tabs (leaving out links Apple has nothing at) |
+| `#/queue?tab=all\|active\|completed\|failed\|cancelled&type=&q=` | Queue | Tabs with counts (All first and the default) from the feed's `status_counts`, search over title, artist and URL, type filter, dense job list, Load more, selection mode (Retry, Cancel, Delete on many jobs), Retry all on the Failed and Cancelled tabs (leaving out links Apple has nothing at) |
 | `#/overview/:id`, `#/queue/:id`, `#/new/:id` | Job drawer | Over its page: header with a summary line ("ALAC 24/44.1 · 14 tracks · 692 MB", the size once every track has finished), the failure reason, Cancel/Retry/Remove, the tracks (one line each; stage meters only on a track that is working or has an outcome, and on every track once the drawer has shown the job live), Files (completed jobs), and a closed Details (times, job ID, Activity with persisted history plus live events, hooks) |
 | `#/logs?level=&component=&job_id=&request_id=&q=` | Logs | Level chips, component, search, filter chips, live tail, expandable rows; the page head links to Settings › Logs |
 | `#/new?url=&q=&artist=&group=` | New download | The page head, then a column `--compose-w` wide at most: the compose field (the text box) with the quality preset under it, section `links` (a row per link found) or the search results (catalog hits for words without a link, in sections `hits-albums`, `hits-songs`, `hits-playlists`, `hits-artists`, `--stage-max` wide at most), the dock (count, the quality it will download or asks for, Download) while the box holds links, `results` (after a submit), and in the empty page a closed "Browser shortcut" disclosure. `url` carries one or more links, newline- or space-separated and URL-encoded (`lib/route.js` `newDownloadHash`, `newDownloadUrls`), and follows the text box; `lib/links.js` parses them. `q` is the search term (`newSearchHash`), which follows the text box too, `artist` the artist whose albums the search card shows, a pushed entry so Back returns to the hits, and `group` the group shown alone (`lib/search.js` `searchGroup`), pushed from every group and replaced between groups, kept while the term changes and dropped with it |
@@ -64,9 +64,9 @@ head links back to its settings.
 
 Filters live in the hash query, so a filtered view is a link. The sidebar,
 the tab bar, `g q` and the palette open the Queue on its last tab, type and
-words for the life of the browser tab (`lib/route.js` `queueHash`); a tab
-the page picked itself (`tab=all` when nothing is active) is not kept. KPI tiles open the
-matching Queue tab; the drawer's "View logs" opens `#/logs?job_id=…`; a log
+words for the life of the browser tab (`lib/route.js` `queueHash`), else on
+All. KPI tiles open the matching Queue tab (Queued and Running the Active tab), and
+the live queue's Open queue the Active tab; the drawer's "View logs" opens `#/logs?job_id=…`; a log
 row's job chip filters to that job. The tab title reads `"{Page} · AMDL"`, and
 `"{n} running · {Page} · AMDL"` while jobs run.
 

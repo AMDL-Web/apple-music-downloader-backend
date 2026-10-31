@@ -51,8 +51,8 @@ export function OverviewPage() {
 }
 
 const TILES = [
-  { key: 'queued', label: 'Queued', icon: 'circle-dashed', role: 'neutral', href: buildHash('queue', {}) },
-  { key: 'running', label: 'Running', icon: 'dot', role: 'info', href: buildHash('queue', {}) },
+  { key: 'queued', label: 'Queued', icon: 'circle-dashed', role: 'neutral', href: buildHash('queue', { tab: 'active' }) },
+  { key: 'running', label: 'Running', icon: 'dot', role: 'info', href: buildHash('queue', { tab: 'active' }) },
   { key: 'completed', label: 'Completed', icon: 'circle-check', role: 'success', href: buildHash('queue', { tab: 'all' }) },
   { key: 'failed', label: 'Failed', icon: 'circle-x', role: 'danger', href: buildHash('queue', { tab: 'failed' }) },
 ];
@@ -139,7 +139,7 @@ function LiveQueue({ loggedOut }) {
     section="live"
     title="Live queue"
     labelId="live-queue-title"
-    actions=${html`<${LinkButton} variant="ghost" size="sm" href=${buildHash('queue', {})}>Open queue</${LinkButton}>`}
+    actions=${html`<${LinkButton} variant="ghost" size="sm" href=${buildHash('queue', { tab: 'active' })}>Open queue</${LinkButton}>`}
   >${body}</${Card}>`;
 }
 

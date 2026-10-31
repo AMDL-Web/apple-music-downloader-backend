@@ -5,6 +5,7 @@ import {
   refusedMove,
   parseHash,
   buildHash,
+  QUEUE_TABS,
   queueFilters,
   rememberQueue,
   queueHash,
@@ -92,8 +93,9 @@ test('#/settings takes an optional section', () => {
 });
 
 test('queue tabs map to API queries', () => {
-  const active = queueFilters({});
-  assert.deepEqual(active, { tab: 'active', type: '', q: '' });
+  assert.deepEqual(QUEUE_TABS, ['all', 'active', 'completed', 'failed', 'cancelled'], 'All comes first');
+  assert.deepEqual(queueFilters({}), { tab: 'all', type: '', q: '' }, 'the Queue opens on All');
+  const active = queueFilters({ tab: 'active' });
   assert.deepEqual(queueQuery(active), { limit: 50, offset: 0, status: 'running,queued', sort: 'created_at', order: 'asc' });
   assert.deepEqual(queueQuery(queueFilters({ tab: 'failed', type: 'album', q: 'x' }), 50, 25), {
     limit: 25,
@@ -108,7 +110,7 @@ test('queue tabs map to API queries', () => {
   assert.deepEqual(queueQuery(queueFilters({ tab: 'completed' })), { limit: 50, offset: 0, status: 'completed', sort: 'updated_at', order: 'desc' });
   assert.deepEqual(queueQuery(queueFilters({ tab: 'cancelled' })), { limit: 50, offset: 0, status: 'cancelled', sort: 'updated_at', order: 'desc' });
   assert.equal(queueFilters({ tab: 'cancelled' }).tab, 'cancelled');
-  assert.equal(queueFilters({ tab: 'bogus', type: 'bogus' }).tab, 'active');
+  assert.equal(queueFilters({ tab: 'bogus', type: 'bogus' }).tab, 'all');
   assert.deepEqual(queueMatchFilter({ tab: 'failed', type: 'song', q: 'z' }), { statuses: ['failed'], types: ['song'], q: 'z' });
 });
 
@@ -157,7 +159,7 @@ test('the plain way to the Queue returns to its last filters', () => {
   rememberQueue({ tab: 'failed', type: 'album', q: 'ado' });
   assert.equal(queueHash(), '#/queue?tab=failed&type=album&q=ado');
   rememberQueue({ tab: '', type: '', q: 'ado' });
-  assert.equal(queueHash(), '#/queue?q=ado', 'a tab the page chose is not kept');
+  assert.equal(queueHash(), '#/queue?q=ado', 'no tab in the link: the default, All');
   rememberQueue({});
   assert.equal(queueHash(), '#/queue');
 });

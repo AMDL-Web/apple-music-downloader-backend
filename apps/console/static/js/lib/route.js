@@ -57,7 +57,7 @@ export function parseHash(hash) {
 // palette) returns to them; a link that names its own filters still wins.
 let queueKept = {};
 
-/** Keeps the Queue's filters; `tab` is '' when the page chose it, not the person. */
+/** Keeps the Queue's filters; `tab` is '' when the link named none. */
 export function rememberQueue({ tab = '', type = '', q = '' } = {}) {
   queueKept = { tab, type, q };
 }
@@ -106,13 +106,14 @@ export function refusedMove(shownIdx, state) {
   return { undo: shownIdx - idx, redo: idx - shownIdx };
 }
 
-export const QUEUE_TABS = ['active', 'completed', 'failed', 'cancelled', 'all'];
+/** The Queue's tabs in the order drawn; the first, All, is the default. */
+export const QUEUE_TABS = ['all', 'active', 'completed', 'failed', 'cancelled'];
 
 const TAB_STATUSES = { active: ['running', 'queued'], completed: ['completed'], failed: ['failed'], cancelled: ['cancelled'], all: [] };
 
 /** Normalizes queue route params: tab, type and q. */
 export function queueFilters(params = {}) {
-  const tab = QUEUE_TABS.includes(params.tab) ? params.tab : 'active';
+  const tab = QUEUE_TABS.includes(params.tab) ? params.tab : QUEUE_TABS[0];
   const type = ['album', 'playlist', 'song', 'artist', 'station'].includes(params.type) ? params.type : '';
   const q = typeof params.q === 'string' ? params.q : '';
   return { tab, type, q };

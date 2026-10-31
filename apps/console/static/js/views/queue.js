@@ -1,4 +1,4 @@
-// Queue page: Active / Completed / Failed / Cancelled / All tabs, search and type filter, a dense
+// Queue page: All / Active / Completed / Failed / Cancelled tabs (All first and the default), search and type filter, a dense
 // job list kept live from the downloads feed, and a selection mode for
 // Retry, Cancel and Delete on many jobs (views/queue-select.js).
 
@@ -52,37 +52,11 @@ export function QueuePage({ route }) {
     app.navigate(buildHash('queue', { ...route.params, ...patch }, route.jobId), { replace: true });
   };
 
-  // A visit with no tab in the link opens on Active, unless nothing is queued
-  // or running: an empty Active list is a dead end, and the finished and
-  // failed jobs are one tap away. Once the counts are known the link is
-  // replaced with tab=all (Back does not return to the empty list). Choosing
-  // Active writes tab=active, so it never bounces. Until the counts arrive
-  // (or a second and a half pass) the list shows its skeleton.
-  const implicitTab = !route.params.tab;
   const haveCounts = Boolean(app.counts);
-  const [patient, setPatient] = useState(true);
   useEffect(() => {
-    if (!implicitTab || haveCounts) return undefined;
-    setPatient(true);
-    const t = setTimeout(() => setPatient(false), 1500);
-    return () => clearTimeout(t);
-  }, [implicitTab, haveCounts]);
-  // A tab this rule picks is not the person's, so the Queue does not keep it.
-  const autoTab = useRef(false);
-  useEffect(() => {
-    if (!implicitTab || !app.counts) return;
-    if (app.counts.queued + app.counts.running !== 0) return;
-    autoTab.current = true;
-    setParams({ tab: 'all' });
-  }, [implicitTab, haveCounts]);
-  useEffect(() => {
-    rememberQueue({ tab: autoTab.current && route.params.tab === 'all' ? '' : route.params.tab || '', type: filters.type, q: filters.q });
+    rememberQueue({ tab: route.params.tab || '', type: filters.type, q: filters.q });
   }, [route.params.tab, filters.type, filters.q]);
-  const chooseTab = (tab) => {
-    autoTab.current = false;
-    setParams({ tab });
-  };
-  const waiting = implicitTab && !haveCounts && patient;
+  const chooseTab = (tab) => setParams({ tab });
   // The tabs carry the counts: on a cold load they wait unseen for them (or
   // HOLD_MS) instead of widening when the numbers arrive.
   const [held, setHeld] = useState(!haveCounts);
@@ -136,8 +110,8 @@ export function QueuePage({ route }) {
   };
 
   useEffect(() => {
-    if (!waiting) load(0);
-  }, [key, waiting]);
+    load(0);
+  }, [key]);
 
   useEffect(() => {
     const filter = queueMatchFilter(filters);
@@ -264,11 +238,11 @@ export function QueuePage({ route }) {
   // The failed count is the one number that asks for attention: danger text.
   const failedCount = c && c.failed > 0 ? html`<span class="seg-count-danger">${c.failed}</span>` : c ? c.failed : undefined;
   const tabs = [
+    { value: 'all', label: 'All', count: c ? c.total : undefined },
     { value: 'active', label: 'Active', count: c ? c.queued + c.running : undefined },
     { value: 'completed', label: 'Completed', count: c ? c.completed : undefined },
     { value: 'failed', label: 'Failed', count: failedCount },
     { value: 'cancelled', label: 'Cancelled', count: c ? c.cancelled : undefined },
-    { value: 'all', label: 'All', count: c ? c.total : undefined },
   ];
   const rowHref = (job) => buildHash('queue', route.params, job.id);
   // On a narrow phone the status tabs scroll sideways; the open one stays in view.
@@ -296,7 +270,7 @@ export function QueuePage({ route }) {
       : null;
 
   let body;
-  if (waiting || (state.loading && state.jobs.length === 0)) body = html`<${SkeletonJobRows} n=${6} />`;
+  if (state.loading && state.jobs.length === 0) body = html`<${SkeletonJobRows} n=${6} />`;
   else if (state.error && state.jobs.length === 0)
     body = html`<${ErrorNote} title="Couldn't load downloads" error=${state.error} onRetry=${() => load(0)} />`;
   else if (state.jobs.length === 0) body = html`<${QueueEmpty} filters=${filters} tabs=${tabs} onClear=${() => { setQInput(''); setParams({ q: '', type: '' }); }} onShowAll=${() => chooseTab('all')} />`;
