@@ -44,3 +44,5 @@ d1a2168ba6250a36401fedaa109edf0b9009beb6
 2cb006ecc043d72fa9eec9e33a761f5d3bdff41d
 # refactor(media): move the codec attempt out of track.go (move-only)
 d9fe175f9dac521866c8e33938024c6100a535d7
+# refactor(tui): split the card and input tests out of tui_test.go (move-only)
+47dd874ffd8070ba8ee3f6bfad29ae9373a86cfa
