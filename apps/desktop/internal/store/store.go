@@ -231,6 +231,10 @@ func (s *Store) Following(id string) bool { return s.followers[id] != nil }
 // Cancel asks the backend to cancel job id.
 func (s *Store) Cancel(id string) { s.act(id, "Cancelled", (*client.Client).Cancel) }
 
+// Delete asks the backend to delete finished job id; the feed then drops
+// it.
+func (s *Store) Delete(id string) { s.act(id, "Deleted", (*client.Client).Delete) }
+
 // Retry asks the backend to retry job id.
 func (s *Store) Retry(id string) { s.act(id, "Queued again", (*client.Client).Retry) }
 

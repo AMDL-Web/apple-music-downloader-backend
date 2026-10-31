@@ -140,6 +140,10 @@ type App struct {
 	// click since confirmAt.
 	confirmAll string
 	confirmAt  time.Time
+	// deleting is the job whose delete waits for its dialog's answer;
+	// deleteOpen keeps the dialog up.
+	deleting   *store.Job
+	deleteOpen bool
 	// panelH is the height the tray panel was last fitted to.
 	panelH float32
 }

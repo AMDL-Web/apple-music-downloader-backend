@@ -7,6 +7,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"amdl/apps/desktop/internal/mode"
 	"amdl/apps/desktop/internal/store"
 	"amdl/apps/desktop/internal/widgets"
 	"amdl/internal/client"
@@ -321,11 +322,19 @@ func (a *App) jobRow(c *ui.Context, k *Tokens, j *store.Job, compact bool) {
 			})
 		})
 		if !compact {
-			ui.Box(c).Width(110).Children(func() { statusPill(c, k, j) })
+			// The column keeps its width whatever the state; the pill in it
+			// is as wide as its words.
+			ui.Row(c).Width(110).AlignItems(ui.Center).Children(func() { statusPill(c, k, j) })
 		}
+		// PopoverMenu would open only for the secondary button.
 		more := ui.ButtonBase(c.Key("more")).Size(28, 28).Radius(radiusControl).Center().Label("More actions")
-		more.PopoverMenu(func(m *ui.Menu) { a.jobMenu(m, j) })
-		more.Cursor(ui.CursorPointer).Children(func() { ui.Icon(c, icMore).FontSize(16).TextColor(k.Faint) })
+		col := k.Faint
+		if more.Hovered() {
+			more.Background(k.Track)
+			col = k.Fg
+		}
+		more.PopoverMenuButton(func(m *ui.Menu) { a.jobMenu(m, j) })
+		more.Cursor(ui.CursorPointer).Children(func() { ui.Icon(c, icMore).FontSize(16).TextColor(col) })
 	})
 }
 
@@ -389,6 +398,8 @@ func statusPill(c *ui.Context, k *Tokens, j *store.Job) {
 	}
 }
 
+// jobMenu is what can be done with j in its state: a job under way is
+// cancelled, a finished one deleted.
 func (a *App) jobMenu(m *ui.Menu, j *store.Job) {
 	if m.Item("Show details").Chosen() {
 		a.OpenJob(j.ID)
@@ -403,8 +414,57 @@ func (a *App) jobMenu(m *ui.Menu, j *store.Job) {
 			a.Store.Retry(j.ID)
 		}
 	}
+	if dir := a.revealDir(j); dir != "" && m.Item(revealLabel).Chosen() {
+		a.Act.Reveal(dir)
+	}
 	m.Separator()
 	if m.Item("Copy link").Chosen() {
 		a.Act.CopyText(j.Input)
+	}
+	if j.Status.IsTerminal() {
+		m.Separator()
+		if m.Item("Delete…").Chosen() {
+			a.askDelete(j)
+		}
+	}
+}
+
+// revealDir is the folder of j's tracks on this computer, or "" when they
+// are on another machine or nowhere yet.
+func (a *App) revealDir(j *store.Job) string {
+	if a.Settings.Mode != mode.Standalone {
+		return ""
+	}
+	return savedDir(j)
+}
+
+// askDelete opens the dialog that deletes j.
+func (a *App) askDelete(j *store.Job) { a.deleting, a.deleteOpen = j, true }
+
+// deleteDialog confirms a job's delete, which keeps its files.
+func (a *App) deleteDialog(c *ui.Context, k *Tokens) {
+	j := a.deleting
+	if j == nil {
+		return
+	}
+	ui.DialogBase(c.Key("delete"), &a.deleteOpen, func(back, panel ui.Element) {
+		back.Background(ui.RGBA(0, 0, 0, 0.45))
+		panel.Width(440).Padding(padCard).Gap(12).Radius(radiusCard).Background(k.Raise).Border(1, k.Line2).Shadow(0, 18, 48, 0, ui.RGBA(0, 0, 0, 0.4))
+		ui.Text(c, "Delete “"+clip(j.Name(), 48)+"”?").FontSize(15).FontWeight(650).MaxLines(2).Ellipsis("…")
+		ui.Text(c, "The download and its history leave the queue. Files already saved stay on disk.").FontSize(12.5).TextColor(k.Muted).LineHeight(1.5)
+		ui.Row(c).Gap(8).Justify(ui.End).Padding(6, 0, 0, 0).Children(func() {
+			if button(c, k, buttonPlain, "Cancel", nil).Clicked() {
+				a.deleteOpen = false
+			}
+			ok := button(c, k, buttonPrimary, "Delete", nil)
+			ok.Background(k.Bad)
+			if ok.Clicked() {
+				a.Store.Delete(j.ID)
+				a.deleteOpen = false
+			}
+		})
+	})
+	if !a.deleteOpen {
+		a.deleting = nil
 	}
 }

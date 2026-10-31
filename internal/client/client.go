@@ -330,6 +330,12 @@ func (c *Client) Cancel(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodPost, "/api/v1/downloads/"+url.PathEscape(id)+"/cancel", nil, nil, nil)
 }
 
+// Delete removes a finished job and its records with DELETE
+// /api/v1/downloads/{id}; a queued or running one answers job_active.
+func (c *Client) Delete(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/api/v1/downloads/"+url.PathEscape(id), nil, nil, nil)
+}
+
 // Retry re-enqueues a failed or cancelled job.
 func (c *Client) Retry(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodPost, "/api/v1/downloads/"+url.PathEscape(id)+"/retry", nil, nil, nil)

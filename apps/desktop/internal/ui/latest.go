@@ -7,7 +7,6 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"amdl/apps/desktop/internal/mode"
 	"amdl/apps/desktop/internal/store"
 	"amdl/apps/desktop/internal/widgets"
 	"amdl/internal/format"
@@ -99,10 +98,7 @@ func (a *App) latestHero(c *ui.Context, k *Tokens, j *store.Job, compact bool) {
 				})
 			}
 			ui.Row(c).Gap(8).Children(func() {
-				dir := ""
-				if a.Settings.Mode == mode.Standalone {
-					dir = savedDir(j)
-				}
+				dir := a.revealDir(j)
 				if dir == "" {
 					if artButton(c, "Details", hc.title, hc.ink).Clicked() {
 						a.OpenJob(j.ID)

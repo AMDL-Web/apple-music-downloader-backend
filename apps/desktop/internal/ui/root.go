@@ -85,6 +85,7 @@ func (a *App) View(c *ui.Context) {
 			a.sidebarToggle(c, k)
 		}
 	})
+	a.deleteDialog(c, k)
 	a.toast(c, k)
 	a.scrollbars(c, k)
 	// Last: SetTheme, which scrollbars calls, gives the root the theme's

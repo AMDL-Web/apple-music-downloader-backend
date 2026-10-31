@@ -9,7 +9,6 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"amdl/apps/desktop/internal/mode"
 	"amdl/apps/desktop/internal/store"
 	"amdl/apps/desktop/internal/widgets"
 	"amdl/internal/domain"
@@ -100,10 +99,8 @@ func (a *App) detailJob(c *ui.Context, k *Tokens, j *store.Job) {
 			})
 		})
 		ui.Column(c).Gap(8).Children(func() {
-			if a.Settings.Mode == mode.Standalone {
-				if dir := savedDir(j); dir != "" && button(c, k, buttonOnArt, revealLabel, nil).Clicked() {
-					a.Act.Reveal(dir)
-				}
+			if dir := a.revealDir(j); dir != "" && button(c, k, buttonOnArt, revealLabel, nil).Clicked() {
+				a.Act.Reveal(dir)
 			}
 			switch j.Status {
 			case domain.JobQueued, domain.JobRunning:
@@ -114,6 +111,9 @@ func (a *App) detailJob(c *ui.Context, k *Tokens, j *store.Job) {
 				if button(c, k, buttonOnArt, "Retry", nil).Clicked() {
 					a.Store.Retry(j.ID)
 				}
+			}
+			if j.Status.IsTerminal() && button(c, k, buttonOnArt, "Delete", nil).Label("Delete this download").Clicked() {
+				a.askDelete(j)
 			}
 		})
 	})

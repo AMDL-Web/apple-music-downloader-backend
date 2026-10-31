@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -71,6 +72,7 @@ func (b *Backend) handler() http.Handler {
 		b.retry(j, now)
 		return nil
 	}))
+	m.HandleFunc("DELETE /api/v1/downloads/{id}", b.remove)
 	m.HandleFunc("POST /api/v1/lookup", b.lookup)
 	m.HandleFunc("GET /api/v1/search", b.search)
 	m.HandleFunc("GET /api/v1/artists/{id}/albums", b.artistAlbums)
@@ -240,6 +242,32 @@ func (b *Backend) act(fn func(*job, time.Time) error) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, j.snapshot())
 	}
+}
+
+// remove deletes a finished job, as DELETE /downloads/{id} does: one that
+// is queued or running is refused.
+func (b *Backend) remove(w http.ResponseWriter, r *http.Request) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	j := b.job(r.PathValue("id"))
+	switch {
+	case j == nil:
+		writeError(w, http.StatusNotFound, "job_not_found", "no such job")
+		return
+	case !j.Status.IsTerminal():
+		writeError(w, http.StatusConflict, "job_active", "the job is still queued or running; cancel it first")
+		return
+	}
+	b.jobs = slices.DeleteFunc(b.jobs, func(x *job) bool { return x == j })
+	b.seq++
+	msg := domain.DownloadFeedMessage{Type: "download_deleted", JobID: j.ID, EventID: b.seq, StatusCounts: b.counts()}
+	for ch := range b.feeds {
+		select {
+		case ch <- msg:
+		default:
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // resolve finds what a link names in the catalog: an album, or a song of
